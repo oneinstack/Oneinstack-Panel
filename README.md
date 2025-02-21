@@ -1,34 +1,34 @@
-<h1 align="center">Oneinstack 服务器管理面板</h1>
+<h1 align="center">Oneinstack Server Management Panel</h1>
 
 [![GitHub forks](https://img.shields.io/github/forks/guangzhengli/oneinstack)](https://github.com/guangzhengli/oneinstack/network)
 [![GitHub stars](https://img.shields.io/github/stars/guangzhengli/oneinstack)](https://github.com/guangzhengli/oneinstack/stargazers)
 [![GitHub license](https://img.shields.io/github/license/guangzhengli/oneinstack)](https://github.com/guangzhengli/oneinstack/blob/main/LICENSE)
 ![GitHub release](https://img.shields.io/github/v/release/guangzhengli/oneinstack)
 
-> 一款开源的 Linux 服务器运维管理面板，让服务器管理更简单、更安全、更高效
+> An open-source Linux server operation and maintenance management panel, making server management simpler, safer, and more efficient
 
-## 🚀 功能特性
+## 🚀 Features
 
-- 🛡️ 可视化服务器状态监控（CPU/内存/磁盘/网络）
-- 🔧 一键安装常用服务/软件（Nginx/MySQL/Redis 等）
-- 🔐 自动防火墙配置与管理
-- 🌐 网站/FTP
-- 🔄 定时任务管理（Crontab）
-- [ x ] 📊 实时日志查看与分析
-- [ x ] 数据库可视化管理
-- [ x ] ⚡ 内置 BBR 网络加速优化
-- [ x ] 📡 支持多语言操作界面
+- 🛡️ Visual server status monitoring (CPU/Memory/Disk/Network)
+- 🔧 One-click installation of common services/software (Nginx/MySQL/Redis etc.)
+- 🔐 Automatic firewall configuration and management
+- 🌐 Website/FTP management
+- 🔄 Scheduled task management (Crontab)
+- [x] 📊 Real-time log viewing and analysis
+- [x] Database visual management
+- [x] ⚡ Built-in BBR network acceleration optimization
+- [x] 📡 Multi-language interface support
 
-## 📦 快速安装
+## 📦 Quick Installation
 
-### 系统要求
+### System Requirements
 
-- 操作系统：CentOS 7+/Ubuntu 20.04+
-- 内存：推荐 1GB 以上
-- 磁盘空间：至少 20GB 可用空间
-- 需要 root 权限
+- OS: CentOS 7+/Ubuntu 20.04+
+- Memory: Recommended 1GB+
+- Disk Space: At least 20GB free space
+- Root privileges required
 
-### 安装命令
+### Installation Commands
 
 #### CentOS
 
@@ -46,57 +46,56 @@ chmod +x install_ubuntu.sh
 ./install_ubuntu.sh
 ```
 
-安装完成后访问：`http://你的服务器IP:8089`
+After installation, visit: `http://your-server-ip:8089`
 
-## 🖥️ 管理功能
+## 🖥️ Management Features
 
-### 服务器管理
+### Server Management
 
-- 实时资源监控
+- Real-time resource monitoring
 
-![alt 属性文本](img/1.png)
+![alt text](img/1.png)
 
-- 防火墙规则配置
+- Firewall rule configuration
 
-![alt 属性文本](img/2.png)
+![alt text](img/2.png)
 
-- SSH 端口管理
+- SSH port management
+- System service management
+- Scheduled task management
 
-- 系统服务管理
-- 定时任务管理
+![alt text](img/3.png)
 
-![alt 属性文本](img/3.png)
+- System update notifications
 
-- 系统更新提醒
+### Application Management
 
-### 应用管理
+- One-click installation:
+  - Web Server: Nginx
+  - Databases: MySQL/Redis
+  - Runtimes: PHP/Java
 
-- 一键安装：
-  - Web 服务器：Nginx
-  - 数据库：MySQL/Redis
-  - 运行环境：PHP/JAVA
+### Website Management
 
-### 网站管理
+- Static hosting
+- Reverse Proxy
 
-- 静态代理
-- 反向代理
+## 🛠️ Technology Stack
 
-## 🛠️ 技术架构
+- Core Language: Go
+- Frontend Framework: Vue.js
+- Database: SQLite
+- Process Management: Systemd
 
-- 核心语言：Go
-- 前端框架：Vue.js
-- 数据库：SQLite
-- 进程管理：Systemd
+## 🤝 Contributions
 
-## 🤝 参与贡献
+We welcome contributions of all kinds!
 
-我们欢迎任何形式的贡献！
+## 📄 License
 
-## 📄 开源协议
-
-本项目采用 [MIT License](LICENSE) 开源协议。
+This project is licensed under the [Apache License 2.0](LICENSE).
 
 ---
 
-> 🌍 官网地址：[https://oneinstack.com](https://oneinstack.com)  
-> 🐛 问题反馈：[GitHub Issues](https://github.com/guangzhengli/oneinstack/issues)
+> 🌍 Official Website: [https://oneinstack.com](https://oneinstack.com)  
+> 🐛 Bug Report: [GitHub Issues](https://github.com/guangzhengli/oneinstack/issues)
