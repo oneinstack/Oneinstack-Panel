@@ -127,6 +127,7 @@ func SetupRouter() *gin.Engine {
 		crong.POST("/del", cron.DeleteCron)
 		crong.POST("/disable", cron.DisableCron)
 		crong.POST("/enable", cron.EnableCron)
+		crong.POST("/log", cron.GetCronLogList)
 	}
 
 	return r

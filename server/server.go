@@ -1,7 +1,6 @@
 package server
 
 import (
-	"log"
 	"oneinstack/app"
 	"oneinstack/internal/services/software"
 )
@@ -10,8 +9,5 @@ import (
 func Start() {
 	app.Viper()
 
-	if err := app.InitDB(app.GetBasePath() + "myadmin.db"); err != nil {
-		log.Fatal("InitDB error:", err)
-	}
 	go software.Sync()
 }

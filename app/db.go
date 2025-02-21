@@ -13,6 +13,12 @@ import (
 	"gorm.io/gorm/logger"
 )
 
+func init() {
+	if err := InitDB(GetBasePath() + "myadmin.db"); err != nil {
+		log.Fatal("InitDB error:", err)
+	}
+}
+
 func InitDB(dbPath string) error {
 	gc := &gorm.Config{}
 	gc.Logger = logger.Default.LogMode(logger.Error)
@@ -72,7 +78,11 @@ func createTables() error {
 	if err != nil {
 		return err
 	}
-	err = db.AutoMigrate(&models.Cron{})
+	err = db.AutoMigrate(&models.CronJob{})
+	if err != nil {
+		return err
+	}
+	err = db.AutoMigrate(&models.JobExecution{})
 	if err != nil {
 		return err
 	}

@@ -3,11 +3,16 @@ package cron
 import (
 	"net/http"
 	"oneinstack/core"
+	"oneinstack/internal/models"
 	"oneinstack/internal/services/cron"
 	"oneinstack/router/input"
+	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
+
+var cronService = cron.NewCronService()
 
 func GetCronList(c *gin.Context) {
 	var param input.CronParam
@@ -15,12 +20,26 @@ func GetCronList(c *gin.Context) {
 		core.HandleError(c, http.StatusBadRequest, err, nil)
 		return
 	}
-	rules, err := cron.GetCronList(c, &param)
+	p, err := cron.GetCronList(c, &param)
 	if err != nil {
 		core.HandleError(c, http.StatusInternalServerError, err, nil)
 		return
 	}
-	core.HandleSuccess(c, rules)
+	core.HandleSuccess(c, p)
+}
+
+func GetCronLogList(c *gin.Context) {
+	var param input.CronParam
+	if err := c.ShouldBindJSON(&param); err != nil {
+		core.HandleError(c, http.StatusBadRequest, err, nil)
+		return
+	}
+	p, err := cron.GetCronLogList(c, &param)
+	if err != nil {
+		core.HandleError(c, http.StatusInternalServerError, err, nil)
+		return
+	}
+	core.HandleSuccess(c, p)
 }
 
 func AddCron(c *gin.Context) {
@@ -29,12 +48,22 @@ func AddCron(c *gin.Context) {
 		core.HandleError(c, http.StatusBadRequest, err, nil)
 		return
 	}
-	err := cron.AddCron(c, &param)
-	if err != nil {
+
+	job := &models.CronJob{
+		Command:     param.Command,
+		Schedule:    strings.Join(param.Schedule, ","),
+		Description: param.Description,
+		Name:        param.Name,
+		Enabled:     true,
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+	}
+
+	if err := cronService.AddJob(job); err != nil {
 		core.HandleError(c, http.StatusInternalServerError, err, nil)
 		return
 	}
-	core.HandleSuccess(c, nil)
+	core.HandleSuccess(c, job)
 }
 
 func UpdateCron(c *gin.Context) {
@@ -43,8 +72,16 @@ func UpdateCron(c *gin.Context) {
 		core.HandleError(c, http.StatusBadRequest, err, nil)
 		return
 	}
-	err := cron.UpdateCron(c, &param)
-	if err != nil {
+	updateData := &models.CronJob{
+		Command:     param.Command,
+		Schedule:    strings.Join(param.Schedule, ","),
+		Description: param.Description,
+		Name:        param.Name,
+		Enabled:     true,
+		UpdatedAt:   time.Now(),
+	}
+
+	if err := cronService.UpdateJob(uint(param.ID), updateData); err != nil {
 		core.HandleError(c, http.StatusInternalServerError, err, nil)
 		return
 	}
@@ -58,11 +95,7 @@ func DeleteCron(c *gin.Context) {
 		return
 	}
 	for _, id := range param.IDs {
-		err := cron.DeleteCron(c, id)
-		if err != nil {
-			core.HandleError(c, http.StatusInternalServerError, err, nil)
-			return
-		}
+		cronService.DeleteJob(uint(id))
 	}
 	core.HandleSuccess(c, nil)
 }
@@ -73,10 +106,13 @@ func DisableCron(c *gin.Context) {
 		core.HandleError(c, http.StatusBadRequest, err, nil)
 		return
 	}
-	err := cron.DisableCron(c, param.IDs)
+	crons, err := cron.GetCronByIDs(c, param.IDs)
 	if err != nil {
 		core.HandleError(c, http.StatusInternalServerError, err, nil)
 		return
+	}
+	for _, c := range crons {
+		cronService.UpdateJob(c.ID, c)
 	}
 	core.HandleSuccess(c, nil)
 }
@@ -87,10 +123,13 @@ func EnableCron(c *gin.Context) {
 		core.HandleError(c, http.StatusBadRequest, err, nil)
 		return
 	}
-	err := cron.EnableCron(c, param.IDs)
+	crons, err := cron.GetCronByIDs(c, param.IDs)
 	if err != nil {
 		core.HandleError(c, http.StatusInternalServerError, err, nil)
 		return
+	}
+	for _, c := range crons {
+		cronService.UpdateJob(c.ID, c)
 	}
 	core.HandleSuccess(c, nil)
 }

@@ -11,6 +11,7 @@ require (
 	github.com/imroc/req/v3 v3.49.1
 	github.com/mattn/go-sqlite3 v1.14.24
 	github.com/redis/go-redis/v9 v9.7.0
+	github.com/robfig/cron/v3 v3.0.1
 	github.com/shirou/gopsutil/v4 v4.24.11
 	github.com/spf13/cobra v1.8.1
 	github.com/spf13/viper v1.19.0

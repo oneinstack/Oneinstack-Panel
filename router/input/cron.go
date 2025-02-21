@@ -6,12 +6,12 @@ type CronParam struct {
 }
 
 type AddCronParam struct {
-	ID           int      `json:"id"`
-	CronType     string   `json:"cron_type"`
-	Name         string   `json:"name"`
-	CronTimes    []string `json:"cron_times"`
-	ShellContent string   `json:"shell_content"`
-	Status       int      `json:"status"`
+	ID          uint     `json:"id"`
+	Name        string   `json:"name"`
+	Command     string   `json:"command"`
+	Schedule    []string `json:"schedule"`
+	Description string   `json:"description"`
+	Enabled     bool     `json:"enabled"`
 }
 
 type CronIDs struct {
