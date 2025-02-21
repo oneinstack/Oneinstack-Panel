@@ -1,2 +1,3 @@
 system:
-  port: 8089
+    port: 8089
+    remote: 'http://localhost:8189/v1/sys/update'

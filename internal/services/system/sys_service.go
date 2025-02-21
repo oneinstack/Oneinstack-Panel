@@ -359,10 +359,6 @@ func UpdateSystemPort(port string) error {
 	if err != nil {
 		return fmt.Errorf(" Failed to update configuration file: %v", err)
 	}
-	tx := app.DB().Model(&app.ONE_CONFIG.System).Update("port", port)
-	if tx.Error != nil {
-		return tx.Error
-	}
 	return nil
 }
 
@@ -372,8 +368,8 @@ func UpdateUser(user models.User) error {
 	if tx.Error != nil {
 		return tx.Error
 	}
-	if user.Username != "" && user.Password != "" {
-		return fmt.Errorf("Username and Password cannot be empty")
+	if user.Username == "" {
+		return fmt.Errorf("Username is empty")
 	}
 	if user.Password != "" {
 		u.Password = user.Password

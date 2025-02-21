@@ -3,6 +3,7 @@ package software
 import (
 	"errors"
 	"fmt"
+	"log"
 	"oneinstack/app"
 	"oneinstack/internal/models"
 	"oneinstack/router/input"
@@ -230,6 +231,11 @@ func (ps InstallOP) executeShScript(scriptName string, sync bool, args ...string
 	}
 
 	go func(bp *input.InstallParams) {
+		defer func() {
+			if err := recover(); err != nil {
+				log.Println("InstallParams panic error:", err)
+			}
+		}()
 		fmt.Println("cmd running" + scriptName)
 		err = cmd.Wait()
 		fmt.Println("cmd done" + scriptName)
