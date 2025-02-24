@@ -1,8 +1,8 @@
 <h1 align="center">Oneinstack Server Management Panel</h1>
 
-[![GitHub forks](https://img.shields.io/github/forks/guangzhengli/oneinstack)](https://github.com/guangzhengli/oneinstack/network)
-[![GitHub stars](https://img.shields.io/github/stars/guangzhengli/oneinstack)](https://github.com/guangzhengli/oneinstack/stargazers)
-[![GitHub license](https://img.shields.io/github/license/guangzhengli/oneinstack)](https://github.com/guangzhengli/oneinstack/blob/main/LICENSE)
+[![GitHub forks](https://img.shields.io/github/forks/guangzhengli/oneinstack)](https://github.com/oneinstack/Oneinstack-Panel/network)
+[![GitHub stars](https://img.shields.io/github/stars/guangzhengli/oneinstack)](https://github.com/oneinstack/Oneinstack-Panel/stargazers)
+[![GitHub license](https://img.shields.io/github/license/guangzhengli/oneinstack)](https://github.com/oneinstack/Oneinstack-Panel/blob/main/LICENSE)
 ![GitHub release](https://img.shields.io/github/v/release/guangzhengli/oneinstack)
 
 > An open-source Linux server operation and maintenance management panel, making server management simpler, safer, and more efficient
@@ -33,17 +33,13 @@
 #### CentOS
 
 ```bash
-wget -O install_centos.sh https://raw.githubusercontent.com/guangzhengli/oneinstack/main/install-cent.sh
-chmod +x install_centos.sh
-./install_centos.sh
+wget -O install-cent.sh https://cdn.bugotech.com/oneinstack/install-cent.sh && chmod +x install-cent.sh && ./install-cent.sh
 ```
 
 #### Ubuntu
 
 ```bash
-wget -O install_ubuntu.sh https://raw.githubusercontent.com/guangzhengli/oneinstack/main/install-ubuntu.sh
-chmod +x install_ubuntu.sh
-./install_ubuntu.sh
+wget -O install-ubuntu.sh https://cdn.bugotech.com/oneinstack/install-ubuntu.sh && chmod +x install-ubuntu.sh && ./install-ubuntu.sh
 ```
 
 After installation, visit: `http://your-server-ip:8089`
@@ -98,4 +94,4 @@ This project is licensed under the [Apache License 2.0](LICENSE).
 ---
 
 > 🌍 Official Website: [https://oneinstack.com](https://oneinstack.com)  
-> 🐛 Bug Report: [GitHub Issues](https://github.com/guangzhengli/oneinstack/issues)
+> 🐛 Bug Report: [GitHub Issues](https://github.com/oneinstack/Oneinstack-Panel/issues)

@@ -20,8 +20,20 @@ Prepare_System() {
     fi
 
     timedatectl set-timezone Asia/Shanghai
+    
+    # 添加阿里云CentOS镜像源
+    if [ "$in_china" = "true" ]; then
+        sed -e 's|^mirrorlist=|#mirrorlist=|g' \
+            -e 's|^#baseurl=http://mirror.centos.org|baseurl=https://mirrors.aliyun.com|g' \
+            -i.bak \
+            /etc/yum.repos.d/CentOS-*.repo
+    fi
+
     yum update -y
-    yum install -y curl wget zip unzip tar p7zip p7zip-plugins git jq git-core dos2unix make sudo ufw crontab
+    yum install -y curl wget zip unzip tar p7zip p7zip-plugins git jq git-core dos2unix make sudo firewalld crontab
+    
+    # 安装基础库
+    yum install -y glibc glibc-common libgcc libc6
 
     # 启用 ufw 并设置规则
     ufw disable

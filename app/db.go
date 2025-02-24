@@ -437,7 +437,7 @@ func getAdminUser() error {
 	if tx.Error != nil {
 		return tx.Error
 	}
-	fmt.Printf("用户创建成功.\n用户名: %s\n密码: %s\n", user.Username, user.Password)
+	fmt.Printf("用户创建成功.\n用户名: %s\n用户密码: %s\n", user.Username, user.Password)
 	return nil
 }
 

@@ -20,8 +20,21 @@ Prepare_System() {
     fi
 
     timedatectl set-timezone Asia/Shanghai
+    
+    # 添加阿里云Ubuntu镜像源
+    if [ "$in_china" = "true" ]; then
+        cp /etc/apt/sources.list /etc/apt/sources.list.bak
+        cat > /etc/apt/sources.list << EOF
+deb http://mirrors.aliyun.com/ubuntu/ jammy main restricted universe multiverse
+deb http://mirrors.aliyun.com/ubuntu/ jammy-security main restricted universe multiverse
+deb http://mirrors.aliyun.com/ubuntu/ jammy-updates main restricted universe multiverse
+deb http://mirrors.aliyun.com/ubuntu/ jammy-proposed main restricted universe multiverse
+deb http://mirrors.aliyun.com/ubuntu/ jammy-backports main restricted universe multiverse
+EOF
+    fi
+
     apt update -y
-    apt install -y curl wget zip unzip tar p7zip p7zip-full git jq git dos2unix make sudo ufw crontab
+    apt install -y libc6 libc-bin curl wget zip unzip tar p7zip p7zip-full git jq git dos2unix make sudo ufw crontab
 
     # 启用 ufw 并设置规则
     ufw disable
