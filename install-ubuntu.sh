@@ -98,7 +98,11 @@ Install_One
 
 clear
 echo -e $LOGO
-echo '面板安装成功！'
-journalctl -u one --no-pager | grep "用户"
+echo -e "\n\n面板安装成功！\n+----------------------------------------------------"
+echo "服务状态："
+systemctl status one --no-pager
+echo -e "\n最近日志："
+journalctl -u one --no-pager -n 100 --since "5 min ago" -o cat
+echo -e "+----------------------------------------------------\n提示：后续查看日志可使用 journalctl -u one -f"
 cd ${current_path}
 rm -f install_ubuntu.sh
