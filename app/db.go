@@ -23,7 +23,6 @@ func InitDB(dbPath string) error {
 	gc := &gorm.Config{}
 	gc.Logger = logger.Default.LogMode(logger.Error)
 	if ENV == "debug" {
-		fmt.Println("创建db..." + dbPath)
 		gc.Logger = logger.Default.LogMode(logger.Info)
 	}
 
@@ -428,7 +427,17 @@ func setupAdminUser() error {
 	if tx.Error != nil {
 		return tx.Error
 	}
-	fmt.Printf("用户创建成功.\n用户名: %s\n密码: %s\n", username, password)
+	fmt.Printf("用户创建成功.\n用户名: %s\n用户密码: %s\n", username, password)
+	return nil
+}
+
+func getAdminUser() error {
+	var user models.User
+	tx := DB().First(&user)
+	if tx.Error != nil {
+		return tx.Error
+	}
+	fmt.Printf("用户创建成功.\n用户名: %s\n密码: %s\n", user.Username, user.Password)
 	return nil
 }
 

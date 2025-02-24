@@ -86,6 +86,6 @@ Install_One
 clear
 echo -e $LOGO
 echo '面板安装成功！'
-journalctl -u one --no-pager
+journalctl -u one --no-pager | grep "用户"
 cd ${current_path}
 rm -f install_centos.sh
