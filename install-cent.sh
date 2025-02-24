@@ -24,10 +24,7 @@ Prepare_System() {
     yum install -y curl wget zip unzip tar p7zip p7zip-plugins git jq git-core dos2unix make sudo ufw crontab
 
     # 启用 ufw 并设置规则
-    ufw enable
-    ufw allow 80,443/tcp
-    ufw allow ssh
-    ufw reload
+    ufw disable
 
     # 安装 BBR
     sysctl -w net.ipv4.tcp_congestion_control=bbr
@@ -35,7 +32,7 @@ Prepare_System() {
 }
 
 Install_One() {
-    local url="https://github.com/jimbirthday/oneinstack/releases/download/test/one"
+    local url="https://cdn.bugotech.com/oneinstack/one"
     local dest="/usr/local/one/one"
     local timeout=30  # 设置下载超时时间为30秒
 
