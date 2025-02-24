@@ -89,7 +89,7 @@ func GetCronByIDs(c *gin.Context, ids []int) ([]*models.CronJob, error) {
 }
 
 func GetCronLogList(c *gin.Context, param *input.CronParam) (*services.PaginatedResult[models.JobExecution], error) {
-	tx := app.DB().Model(&models.JobExecution{}).Order("start_time DESC")
+	tx := app.DB().Model(&models.JobExecution{}).Where("cron_job_id = ?", param.ID).Order("start_time DESC")
 	return services.Paginate[models.JobExecution](tx, &models.JobExecution{}, &input.Page{
 		Page:     param.Page.Page,
 		PageSize: param.Page.PageSize,

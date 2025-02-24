@@ -16,7 +16,7 @@ func main() {
 	flag.StringVar(&pth, "d", "", "ui dir")
 	flag.Parse()
 	if pth == "" {
-		pth = "./web/dist"
+		pth = "./dist"
 	}
 	err := gengo()
 	if err != nil {

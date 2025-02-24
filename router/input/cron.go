@@ -2,6 +2,7 @@ package input
 
 type CronParam struct {
 	Page
+	ID   int    `json:"id"`
 	Name string `json:"name"`
 }
 
