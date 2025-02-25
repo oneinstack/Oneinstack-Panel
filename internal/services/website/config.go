@@ -44,7 +44,7 @@ server {
     server_name %s;
 
     location / {
-        proxy_pass %s;
+        proxy_pass %s://%s;
         proxy_set_header Host %s;   # 使用 TarUrl 字段作为 Host
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -101,7 +101,7 @@ func GetNginxConfig(p *models.Website) (string, error) {
 	case "php":
 		config = fmt.Sprintf(tps["php"], p.Name, p.Domain, p.RootDir, p.RootDir, p.Remark, p.Name, p.Name)
 	case "proxy":
-		config = fmt.Sprintf(tps["proxy"], p.Name, p.Domain, p.SendUrl, p.TarUrl, p.Remark, p.Name, p.Name)
+		config = fmt.Sprintf(tps["proxy"], p.Name, p.Domain, p.Pact, p.SendUrl, p.TarUrl, p.Remark, p.Name, p.Name)
 	case "static":
 		config = fmt.Sprintf(tps["static"], p.Name, p.Domain, p.RootDir, p.Remark, p.Name, p.Name)
 	}

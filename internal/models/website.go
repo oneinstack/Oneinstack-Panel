@@ -1,8 +1,9 @@
 package models
 
 import (
-	"gorm.io/gorm"
 	"time"
+
+	"gorm.io/gorm"
 )
 
 type Website struct {
@@ -16,6 +17,7 @@ type Website struct {
 	SendUrl    string    `json:"send_url"`
 	Class      string    `json:"class"`
 	Type       string    `json:"type"`
+	Pact       string    `json:"pact"`
 	CreateTime time.Time `json:"create_time"`
 	UpdateTime time.Time `json:"update_time"`
 }
