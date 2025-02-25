@@ -14,7 +14,7 @@ var (
 )
 
 var BASE_PATH = "/usr/local/one/"
-var ENV = "debug"
+var ENV = ""
 
 func DB() *gorm.DB {
 	return db

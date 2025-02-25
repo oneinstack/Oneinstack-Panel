@@ -148,7 +148,7 @@ Install_One
 clear
 echo -e $LOGO
 echo -e "\n\n面板安装成功！\n+----------------------------------------------------"
-echo "服务状态："
+echo "服务状态：创建默认配置文件"
 systemctl status one --no-pager
 sleep 5
 echo -e "\n最近日志："

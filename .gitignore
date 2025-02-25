@@ -23,6 +23,7 @@ cmd/oneinstack
 !install.sh
 !install-ubuntu.sh
 !install-cent.sh
+!update.sh
 
 server.pid
 
