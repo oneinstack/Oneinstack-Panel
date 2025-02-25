@@ -888,6 +888,10 @@ install_dependencies() {
             ;;
     esac
 }
+    
+mkdir -p /var/lib/nginx
+mkdir -p /var/lib/nginx/body
+mkdir -p /var/lib/nginx/fastcgi
 
 # 调用安装依赖函数
 install_dependencies
