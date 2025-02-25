@@ -30,16 +30,8 @@
 
 ### Installation Commands
 
-#### CentOS
-
 ```bash
-wget -O install-cent.sh https://cdn.bugotech.com/oneinstack/install-cent.sh && chmod +x install-cent.sh && ./install-cent.sh
-```
-
-#### Ubuntu
-
-```bash
-wget -O install-ubuntu.sh https://cdn.bugotech.com/oneinstack/install-ubuntu.sh && chmod +x install-ubuntu.sh && ./install-ubuntu.sh
+ wget -O install.sh https://cdn.bugotech.com/oneinstack/install.sh && chmod +x install.sh && ./install.sh
 ```
 
 After installation, visit: `http://your-server-ip:8089`

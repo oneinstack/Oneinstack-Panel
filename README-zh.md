@@ -30,20 +30,10 @@
 
 ### 安装命令
 
-#### CentOS
+#### 安装脚本
 
 ```bash
-wget -O install_centos.sh https://raw.githubusercontent.com/guangzhengli/oneinstack/main/install-cent.sh
-chmod +x install_centos.sh
-./install_centos.sh
-```
-
-#### Ubuntu
-
-```bash
-wget -O install_ubuntu.sh https://raw.githubusercontent.com/guangzhengli/oneinstack/main/install-ubuntu.sh
-chmod +x install_ubuntu.sh
-./install_ubuntu.sh
+wget -O install.sh https://cdn.bugotech.com/oneinstack/install.sh && chmod +x install.sh && ./install.sh
 ```
 
 安装完成后访问：`http://你的服务器IP:8089`
