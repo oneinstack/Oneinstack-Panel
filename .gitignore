@@ -36,3 +36,5 @@ dist
 version
 
 .DS_Store
+
+mysql*
