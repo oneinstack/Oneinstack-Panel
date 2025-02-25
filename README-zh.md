@@ -38,6 +38,12 @@ wget -O install.sh https://cdn.bugotech.com/oneinstack/install.sh && chmod +x in
 
 安装完成后访问：`http://你的服务器IP:8089`
 
+#### 更新脚本
+
+```bash
+wget -O update.sh https://cdn.bugotech.com/oneinstack/update.sh && chmod +x update.sh && ./update.sh
+```
+
 ## 🖥️ 管理功能
 
 ### 服务器管理

@@ -32,6 +32,13 @@
 
 ```bash
  wget -O install.sh https://cdn.bugotech.com/oneinstack/install.sh && chmod +x install.sh && ./install.sh
+
+```
+
+### Update
+
+```bash
+wget -O update.sh https://cdn.bugotech.com/oneinstack/update.sh && chmod +x update.sh && ./update.sh
 ```
 
 After installation, visit: `http://your-server-ip:8089`
