@@ -96,7 +96,7 @@ func (ps InstallOP) executeShScriptLocal(fn string, sy bool) (string, error) {
 	case "webserver":
 		return ps.executeShScript(fn, sy)
 	case "db":
-		return ps.executeShScript(fn, sy, "-p", ps.BashParams.Pwd, "-P", "3306")
+		return ps.executeShScript(fn, sy, "-p", "Bugo123456", "-P", "3306")
 	case "redis":
 		if ps.BashParams.Version == "6.2.0" {
 			return ps.executeShScript(fn, sy, "6")
@@ -285,17 +285,19 @@ var mysql55 = `
 
 # 默认值
 ROOT_PASSWORD=""
-
+MYSQL_PORT=3306
 # 函数：显示帮助信息
 usage() {
-  echo "用法: $0 -p <root_password>"
-  exit 1
+  echo "Usage: $0 -p <root_password> -P <mysql_port>"
+  echo "  -p  设置 MySQL root 密码 (必需)"
+  echo "  -P  设置 MySQL 端口号 (默认: 3306)"
 }
 
 # 解析命令行参数
-while getopts "p:" opt; do
+while getopts "p:P:h" opt; do
   case "$opt" in
     p) ROOT_PASSWORD="$OPTARG" ;;  # 设置 root 密码
+    P) MYSQL_PORT="$OPTARG" ;;
     *) usage ;;  # 不支持的选项
   esac
 done

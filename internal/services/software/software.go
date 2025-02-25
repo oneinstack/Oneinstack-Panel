@@ -1,6 +1,7 @@
 package software
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"oneinstack/app"
@@ -93,6 +94,8 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 			"MAX(resource) as resource," +
 			"MAX(is_update) as is_update," +
 			"MAX(installed) as installed," +
+			"MAX(params) as params," +
+			"MAX(log) as log," +
 			"MAX(tags) as tags").
 		Group("`key`")
 	if param.Id > 0 {
@@ -146,7 +149,7 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 
 	// 转换版本格式
 	var groupedResults []output.Software
-	for _, item := range paginated.Data {
+	for i, item := range paginated.Data {
 		groupedResults = append(groupedResults, output.Software{
 			Id:       item.Id,
 			Name:     item.Name,
@@ -155,8 +158,15 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 			Type:     item.Type,
 			Status:   item.Status,
 			Resource: item.Resource,
+			Log:      item.Log,
 			Versions: strings.Split(item.Versions, ","),
 		})
+		var params []*output.SoftParam
+		if item.Key == "db" {
+			continue
+		}
+		_ = json.Unmarshal([]byte(item.Params), &params)
+		groupedResults[i].Params = params
 	}
 
 	return &services.PaginatedResult[output.Software]{
