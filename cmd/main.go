@@ -2,7 +2,9 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"oneinstack/app"
 	"oneinstack/internal/services/software"
 	"oneinstack/internal/services/system"
@@ -11,9 +13,11 @@ import (
 	"oneinstack/router/input"
 	"oneinstack/server"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 )
@@ -35,6 +39,7 @@ func main() {
 	rootCmd.AddCommand(serverCmd)
 	rootCmd.AddCommand(changePortCmd)
 	rootCmd.AddCommand(debugCmd)
+	rootCmd.AddCommand(updateCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Println(err)
@@ -272,5 +277,69 @@ var debugCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		app.ENV = "debug"
 		startServer()
+	},
+}
+
+var updateCmd = &cobra.Command{
+	Use:     "update",
+	Short:   "Update system components",
+	Example: "update",
+	Run: func(cmd *cobra.Command, args []string) {
+		fmt.Println("开始系统更新...")
+
+		// 创建临时文件
+		tmpFile, err := os.CreateTemp("", "update-*.sh")
+		if err != nil {
+			log.Fatalf("创建临时文件失败: %v", err)
+		}
+		defer os.Remove(tmpFile.Name())
+
+		// 下载更新脚本
+		fmt.Println("下载更新脚本...")
+		client := &http.Client{Timeout: 30 * time.Second}
+		resp, err := client.Get("https://cdn.bugotech.com/oneinstack/update.sh")
+		if err != nil {
+			log.Fatalf("下载失败: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			log.Fatalf("服务器返回错误状态码: %d", resp.StatusCode)
+		}
+
+		// 保存到临时文件
+		if _, err := io.Copy(tmpFile, resp.Body); err != nil {
+			log.Fatalf("保存脚本失败: %v", err)
+		}
+
+		// 设置执行权限
+		if err := os.Chmod(tmpFile.Name(), 0755); err != nil {
+			log.Fatalf("设置执行权限失败: %v", err)
+		}
+
+		// 创建日志文件
+		logFile := "update_" + time.Now().Format("20060102-150405") + ".log"
+		f, err := os.Create(logFile)
+		if err != nil {
+			log.Fatalf("创建日志文件失败: %v", err)
+		}
+		defer f.Close()
+
+		// 执行更新脚本（同时输出到文件和控制台）
+		fmt.Printf("执行更新脚本，日志保存至: %s\n", logFile)
+		updateCmd := exec.Command("bash", tmpFile.Name())
+
+		// 创建多路输出器
+		multiStdout := io.MultiWriter(f, os.Stdout)
+		multiStderr := io.MultiWriter(f, os.Stderr)
+
+		updateCmd.Stdout = multiStdout
+		updateCmd.Stderr = multiStderr
+
+		if err := updateCmd.Run(); err != nil {
+			log.Fatalf("\n更新执行失败: %v\n请查看完整日志文件: %s", err, logFile)
+		}
+
+		fmt.Println("\n系统更新完成！")
 	},
 }
