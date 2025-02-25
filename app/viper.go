@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"oneinstack/utils"
 	"os"
 
 	"github.com/fsnotify/fsnotify"
@@ -9,11 +10,11 @@ import (
 )
 
 func Viper(path ...string) *viper.Viper {
+	utils.EnsureOneDir() // 新增目录检查
 	config := GetBasePath() + "config.yaml"
 
 	// 检查 config.yaml 是否存在
 	if _, err := os.Stat(config); os.IsNotExist(err) {
-		fmt.Println("未找到 config.yaml 文件，创建默认配置文件..." + config)
 		defaultConfig := `
 system:
     port: 8089
@@ -23,7 +24,6 @@ system:
 		if err != nil {
 			panic(fmt.Errorf("无法创建默认配置文件: %s", err))
 		}
-		fmt.Println("默认配置文件已创建: config.yaml")
 	}
 
 	v := viper.New()

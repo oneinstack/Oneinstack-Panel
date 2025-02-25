@@ -14,6 +14,7 @@ import (
 )
 
 func init() {
+	utils.EnsureOneDir() // 新增目录检查
 	if err := InitDB(GetBasePath() + "myadmin.db"); err != nil {
 		log.Fatal("InitDB error:", err)
 	}

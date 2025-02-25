@@ -99,7 +99,7 @@ func startServer() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Println(ip + ":" + app.ONE_CONFIG.System.Port)
+	fmt.Println("访问地址" + ip + ":" + app.ONE_CONFIG.System.Port)
 	if err := r.Run("0.0.0.0:" + app.ONE_CONFIG.System.Port); err != nil {
 		log.Fatal("Server run error:", err)
 	}

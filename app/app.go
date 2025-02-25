@@ -21,8 +21,5 @@ func DB() *gorm.DB {
 }
 
 func GetBasePath() string {
-	if ENV == "debug" {
-		return ""
-	}
 	return BASE_PATH
 }
