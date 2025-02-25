@@ -12,6 +12,7 @@ import (
 	web "oneinstack/router"
 	"oneinstack/router/input"
 	"oneinstack/server"
+	"oneinstack/utils"
 	"os"
 	"os/exec"
 	"strconv"
@@ -94,6 +95,11 @@ func startServer() {
 		app.ONE_CONFIG.System.Port = "8089"
 	}
 	app.InitUser()
+	ip, err := utils.GetLinuxIP()
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(ip + ":" + app.ONE_CONFIG.System.Port)
 	if err := r.Run("0.0.0.0:" + app.ONE_CONFIG.System.Port); err != nil {
 		log.Fatal("Server run error:", err)
 	}
