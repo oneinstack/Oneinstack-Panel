@@ -33,7 +33,7 @@
 #### 安装脚本
 
 ```bash
-wget -O install.sh https://cdn.bugotech.com/oneinstack/install.sh && chmod +x install.sh && ./install.sh
+wget -O install.sh https://bugo-1301111475.cos.ap-guangzhou.myqcloud.com/oneinstack/install.sh && chmod +x install.sh && ./install.sh
 ```
 
 安装完成后访问：`http://你的服务器IP:8089`
@@ -41,7 +41,7 @@ wget -O install.sh https://cdn.bugotech.com/oneinstack/install.sh && chmod +x in
 #### 更新脚本
 
 ```bash
-wget -O update.sh https://cdn.bugotech.com/oneinstack/update.sh && chmod +x update.sh && ./update.sh
+wget -O update.sh https://bugo-1301111475.cos.ap-guangzhou.myqcloud.com/oneinstack/update.sh && chmod +x update.sh && ./update.sh
 ```
 
 ## 🖥️ 管理功能
