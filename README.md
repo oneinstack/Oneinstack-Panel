@@ -7,6 +7,11 @@
 
 > An open-source Linux server operation and maintenance management panel, making server management simpler, safer, and more efficient
 
+## Language
+
+- [English](README.md)
+- [简体中文](README-zh.md)
+
 ## 🚀 Features
 
 - 🛡️ Visual server status monitoring (CPU/Memory/Disk/Network)
