@@ -72,13 +72,13 @@ EOF
 }
 
 Install_One() {
-    local url="https://cdn.bugotech.com/oneinstack/one"
+    local url="https://bugo-1301111475.cos.ap-guangzhou.myqcloud.com/oneinstack/one"
     local tarfile="/tmp/one.tar"
     local timeout=30
 
     # 下载并解压
     echo "正在下载安装包..."
-    curl --max-time $timeout -L -o "$tarfile" "${url}.tar" || error "下载失败"
+    curl -k --max-time $timeout -L -o "$tarfile" "${url}.tar" || error "下载失败"
     
     # 验证文件类型
     if ! file "$tarfile" | grep -q 'tar archive'; then

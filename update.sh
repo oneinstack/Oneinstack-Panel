@@ -13,7 +13,7 @@ error() {
 
 # 更新核心文件
 Update_Core() {
-    local url="https://cdn.bugotech.com/oneinstack/one"
+    local url="https://bugo-1301111475.cos.ap-guangzhou.myqcloud.com/oneinstack/one"
     local tarfile="/tmp/one_update_$(date +%s).tar"
     local timeout=30
     local max_retries=3
@@ -22,7 +22,7 @@ Update_Core() {
     # 带重试机制的下载
     while [ $retry_count -lt $max_retries ]; do
         echo "下载更新包(尝试 $((retry_count+1))/$max_retries)..."
-        if curl --max-time $timeout -L -o "$tarfile" "${url}.tar"; then
+        if curl -k --max-time $timeout -L -o "$tarfile" "${url}.tar"; then
             break
         else
             retry_count=$((retry_count+1))
@@ -36,6 +36,8 @@ Update_Core() {
     # 验证文件类型
     file "$tarfile" | grep -q 'tar archive' || error "更新包格式错误"
 
+    echo "停止服务"
+    systemctl stop one
     echo "更新核心程序..."
     tar --overwrite -xvf "$tarfile" -C /usr/local/one/ one || error "解压失败"
     
@@ -45,6 +47,7 @@ Update_Core() {
     # 设置权限
     chmod +x /usr/local/one/one
     rm -f "$tarfile"
+    systemctl start one
 }
 
 clear
@@ -54,7 +57,7 @@ echo -e $LOGO
 Update_Core
 
 echo -e "\n+----------------------------------------------------"
-echo -e "文件更新完成！\n如需应用更新，请手动重启服务："
+echo -e "更新完成！\n如需应用更新，请手动重启服务："
 echo -e "systemctl restart one"
 echo -e "\n提示：查看实时日志可使用 journalctl -u one -f"
 cd ${current_path}
