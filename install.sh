@@ -108,7 +108,9 @@ Install_One() {
 Description=One Service
 
 [Service]
-ExecStart=/bin/bash -c "/usr/local/one/one server start >> /usr/local/one/info.log 2>&1"
+ExecStart=/usr/local/one/one server start
+StandardOutput=file:/usr/local/one/info.log
+StandardError=inherit
 ExecStop=/usr/local/one/one server stop
 
 [Install]

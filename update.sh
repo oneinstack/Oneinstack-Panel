@@ -39,6 +39,7 @@ Update_Core() {
     echo "停止服务"
     systemctl stop one
     echo "更新核心程序..."
+    rm /usr/local/one/one
     tar --overwrite -xvf "$tarfile" -C /usr/local/one/ one || error "解压失败"
     
     # 验证文件
@@ -57,8 +58,7 @@ echo -e $LOGO
 Update_Core
 
 echo -e "\n+----------------------------------------------------"
-echo -e "更新完成！\n如需应用更新，请手动重启服务："
-echo -e "systemctl restart one"
+echo -e "更新完成！\n"
 echo -e "\n提示：查看实时日志可使用 journalctl -u one -f"
 cd ${current_path}
 rm -f update.sh
