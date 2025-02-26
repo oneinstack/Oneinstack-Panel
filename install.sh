@@ -97,13 +97,18 @@ Install_One() {
     chmod +x /usr/local/one/one
     chmod +x /usr/local/one/tools/* 2>/dev/null
 
+    # 初始化日志文件
+    touch /usr/local/one/info.log
+    chmod 644 /usr/local/one/info.log
+    chown root:root /usr/local/one/info.log
+
     # 创建 systemd 服务
     cat <<EOF > /etc/systemd/system/one.service
 [Unit]
 Description=One Service
 
 [Service]
-ExecStart=/usr/local/one/one server start
+ExecStart=/bin/bash -c "/usr/local/one/one server start >> /usr/local/one/info.log 2>&1"
 ExecStop=/usr/local/one/one server stop
 
 [Install]
@@ -113,6 +118,19 @@ EOF
     systemctl daemon-reload
     systemctl enable one
     systemctl start one
+
+    # 添加日志轮转
+    cat <<EOF > /etc/logrotate.d/one
++/usr/local/one/info.log {
+    daily
+    missingok
+    rotate 7
+    compress
+    delaycompress
+    notifempty
+    create 644 root root
+}
+EOF
 
     # 添加PATH
     grep -q "/usr/local/one" /etc/profile || echo "export PATH=\$PATH:/usr/local/one" >> /etc/profile
@@ -151,8 +169,12 @@ echo -e "\n\n面板安装成功！\n+-------------------------------------------
 echo "服务状态：创建默认配置文件"
 systemctl status one --no-pager
 sleep 5
-echo -e "\n最近日志："
-journalctl -u one --no-pager -n 100 --since "5 min ago" -o cat
+if [ -f /usr/local/one/info.log ]; then
+    cat /usr/local/one/info.log | grep '用户'
+    cat /usr/local/one/info.log | grep '访问'
+else
+    echo "日志文件尚未生成，请稍后查看 /usr/local/one/info.log"
+fi
 echo -e "+----------------------------------------------------\n提示：后续查看日志可使用 journalctl -u one -f"
 cd ${current_path}
 rm -f install.sh 
