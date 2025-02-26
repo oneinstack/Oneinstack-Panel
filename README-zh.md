@@ -1,9 +1,9 @@
 <h1 align="center">Oneinstack 服务器管理面板</h1>
 
-[![GitHub forks](https://img.shields.io/github/forks/guangzhengli/oneinstack)](https://github.com/oneinstack/Oneinstack-Panel/network)
-[![GitHub stars](https://img.shields.io/github/stars/guangzhengli/oneinstack)](https://github.com/oneinstack/Oneinstack-Panel/stargazers)
-[![GitHub license](https://img.shields.io/github/license/guangzhengli/oneinstack)](https://github.com/oneinstack/Oneinstack-Panel/blob/main/LICENSE)
-![GitHub release](https://img.shields.io/github/v/release/guangzhengli/oneinstack)
+[![GitHub forks](https://img.shields.io/github/forks/oneinstack/Oneinstack-Panel)](https://github.com/oneinstack/Oneinstack-Panel/network)
+[![GitHub stars](https://img.shields.io/github/stars/oneinstack/Oneinstack-Panel)](https://github.com/oneinstack/Oneinstack-Panel/stargazers)
+[![GitHub license](https://img.shields.io/github/license/oneinstack/Oneinstack-Panel)](https://github.com/oneinstack/Oneinstack-Panel/blob/main/LICENSE)
+![GitHub release](https://img.shields.io/github/v/release/oneinstack/Oneinstack-Panel)
 
 > 一款开源的 Linux 服务器运维管理面板，让服务器管理更简单、更安全、更高效
 
