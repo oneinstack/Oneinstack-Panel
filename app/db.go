@@ -7,10 +7,9 @@ import (
 	"oneinstack/internal/models"
 	"oneinstack/utils"
 
-	"gorm.io/driver/sqlite"
+	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
-	_ "modernc.org/sqlite"
 )
 
 func init() {
