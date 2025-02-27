@@ -8,31 +8,39 @@ import (
 
 type Softwaren struct {
 	gorm.Model
-	Name        string    `gorm:"size:100;uniqueIndex" json:"name"`
-	Description string    `gorm:"size:255" json:"description"`
-	Tags        string    `gorm:"size:255" json:"tags"`
-	Versions    []Version `json:"versions"`
+	Name         string    `gorm:"size:100;uniqueIndex" json:"name"`
+	Description  string    `gorm:"size:255" json:"description"`
+	Tags         string    `gorm:"size:255" json:"tags"`
+	Versions     []Version `gorm:"foreignKey:SoftwareID" json:"versions"`
+	HasUpdate    bool      `gorm:"" json:"has_update"`
+	LastSyncedAt time.Time `gorm:"index" json:"last_synced_at"`
+}
+
+func (Softwaren) TableName() string {
+	return "softwarens"
 }
 
 type Version struct {
 	gorm.Model
-	SoftwareID    uint          `gorm:"index" json:"software_id"`
-	Version       string        `gorm:"size:50;index" json:"version"`
+	SoftwareID    uint          `gorm:"index:idx_software_version,priority:1" json:"software_id"`
+	Version       string        `gorm:"index:idx_software_version,priority:2" json:"version"`
 	VersionName   string        `gorm:"size:100" json:"version_name"`
 	DownloadURL   string        `gorm:"type:text" json:"download_url"`
-	InstallConfig InstallConfig `gorm:"foreignKey:VersionID" json:"install_config"`
+	InstallConfig InstallConfig `gorm:"foreignKey:VersionID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;" json:"install_config"`
 	InstallTime   time.Time     `gorm:"" json:"install_time"`
-	HasUpdate     bool          `gorm:"" json:"has_update"`
 	IsInstalled   bool          `gorm:"" json:"is_installed"`
+	InstallPath   string        `gorm:"size:255" json:"install_path"`
+	InstallParams string        `gorm:"type:text" json:"install_params"`
+	InstallLog    string        `gorm:"type:text" json:"install_log"`
 }
 
 type InstallConfig struct {
 	gorm.Model
 	VersionID       uint             `gorm:"index" json:"version_id"`
 	BasePath        string           `gorm:"size:255" json:"base_path"`
-	ConfigParams    []ConfigParam    `gorm:"foreignKey:InstallConfigID" json:"config_params"`
-	ServiceConfig   ServiceConfig    `gorm:"foreignKey:InstallConfigID" json:"service_config"`
-	ConfigTemplates []ConfigTemplate `gorm:"foreignKey:InstallConfigID" json:"config_templates"`
+	ConfigParams    []ConfigParam    `gorm:"foreignKey:InstallConfigID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;" json:"config_params"`
+	ServiceConfig   ServiceConfig    `gorm:"foreignKey:InstallConfigID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;" json:"service_config"`
+	ConfigTemplates []ConfigTemplate `gorm:"foreignKey:InstallConfigID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;" json:"config_templates"`
 }
 
 type ConfigParam struct {

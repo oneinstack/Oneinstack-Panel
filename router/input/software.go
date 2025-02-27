@@ -13,3 +13,13 @@ type SoftwareParam struct {
 	Tags      string `json:"tags"`
 	Page
 }
+
+type InstallSoftwareParam struct {
+	Id        int `json:"id"`
+	VersionId int `json:"version_id"`
+	Params    []struct {
+		Key   string `json:"key"`
+		Value string `json:"value"`
+		Type  string `json:"type"`
+	} `json:"params"`
+}

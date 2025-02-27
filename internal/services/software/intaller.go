@@ -2,7 +2,6 @@ package software
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,92 +11,113 @@ import (
 	"path/filepath"
 	"strings"
 	"text/template"
+	"time"
 )
 
-// 配置结构体映射
-type SoftwareConfig struct {
-	Software []*models.Softwaren `json:"software"`
-}
-
-// 加载软件配置
-func LoadSoftwareConfig(path string) (*SoftwareConfig, error) {
-	var config SoftwareConfig
-	content, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	if err := json.Unmarshal(content, &config); err != nil {
-		return nil, err
-	}
-	return &config, nil
-}
-
 // 安装软件
-func InstallSoftware(softwareName, version string, params map[string]map[string]string, rootPath string) error {
-	configs, err := LoadSoftwareConfig("software.json")
+func InstallSoftwareAsync(soft *models.Softwaren, params map[string]map[string]string, rootPath string) (string, error) {
+	// 创建日志记录器
+	logger, err := NewInstallLogger(soft.Name, soft.Versions[0].Version)
 	if err != nil {
-		return err
+		return "", err
 	}
-	targetVersion := models.Version{}
-	found := false
-	versionName := ""
-	for _, s := range configs.Software {
-		if s.Name == softwareName {
-			for _, v := range s.Versions {
-				versionName = v.VersionName
-				if v.Version == version {
-					targetVersion = v
-					found = true
-					break
-				}
-			}
-		}
-	}
-	if !found {
-		return fmt.Errorf("software %s version %s not found", softwareName, version)
+	defer logger.Close()
+
+	// 创建安装任务
+	job := &InstallJob{
+		SoftwareName: soft.Name,
+		Version:      soft.Versions[0].Version,
+		LogPath:      logger.LogPath,
+		Status:       "pending",
+		CreatedAt:    time.Now(),
 	}
 
+	key := fmt.Sprintf("%s-%s", job.SoftwareName, job.Version)
+	jobMutex.Lock()
+	installJobs[key] = job
+	jobMutex.Unlock()
+
+	// 启动异步安装
+	go func() {
+		jobMutex.Lock()
+		job.Status = "running"
+		jobMutex.Unlock()
+
+		logger.Write("开始安装 %s 版本 %s", soft.Name, soft.Versions[0].Version)
+		err := installSoftware(soft, params, rootPath, logger)
+
+		jobMutex.Lock()
+		defer jobMutex.Unlock()
+		if err != nil {
+			logger.Write("安装失败: %v", err)
+			job.Status = "failed"
+		} else {
+			logger.Write("安装成功")
+			job.Status = "completed"
+		}
+	}()
+
+	return logger.LogPath, nil
+}
+
+// 原InstallSoftware改为私有方法
+func installSoftware(soft *models.Softwaren, params map[string]map[string]string, rootPath string, logger *InstallLogger) error {
+	if _, err := os.Stat(rootPath); os.IsNotExist(err) {
+		logger.Write("创建安装目录: %s", rootPath)
+		os.MkdirAll(rootPath, 0755)
+	}
+	targetVersion := soft.Versions[0]
+	versionName := targetVersion.VersionName
 	// 创建安装目录
 	basePath := renderTemplate(targetVersion.InstallConfig.BasePath, map[string]interface{}{
 		"root":    rootPath,
-		"name":    softwareName,
-		"version": version,
+		"name":    soft.Name,
+		"version": targetVersion.Version,
 	})
+	logger.Write("生成基础路径: %s", basePath)
 	if err := os.MkdirAll(basePath, 0755); err != nil {
-		fmt.Println(err.Error())
+		logger.Write("创建目录失败: %v", err)
 		return err
 	}
 
 	// 下载文件
 	downloadPath := filepath.Join(basePath, versionName)
+	logger.Write("开始下载文件: %s", targetVersion.DownloadURL)
 	if err := downloadFile(targetVersion.DownloadURL, downloadPath); err != nil {
-		fmt.Println(err.Error())
+		logger.Write("下载失败: %v", err)
 		return err
 	}
+	logger.Write("下载完成，保存到: %s", downloadPath)
 
 	// 创建bin目录并设置环境变量
 	binPath := filepath.Join(basePath, "bin")
 	if err := os.MkdirAll(binPath, 0755); err != nil {
+		logger.Write("创建bin目录失败: %v", err)
 		return err
 	}
 	if err := updateSystemPath(binPath); err != nil {
+		logger.Write("更新PATH失败: %v", err)
 		return fmt.Errorf("failed to update PATH: %v", err)
 	}
 	confPath := filepath.Join(basePath, "conf")
 	if err := os.MkdirAll(confPath, 0755); err != nil {
+		logger.Write("创建conf目录失败: %v", err)
 		return err
 	}
 
 	dataPath := filepath.Join(basePath, "data")
 	if err := os.MkdirAll(dataPath, 0755); err != nil {
+		logger.Write("创建data目录失败: %v", err)
 		return err
 	}
 
 	// 解压文件
+	logger.Write("开始解压文件: %s", downloadPath)
 	if err := extractFile(downloadPath, binPath); err != nil {
-		fmt.Println("123" + err.Error())
+		logger.Write("解压失败: %v", err)
 		return err
 	}
+	logger.Write("解压完成到: %s", binPath)
 
 	// 生成配置文件
 	for _, templateStr := range targetVersion.InstallConfig.ConfigTemplates {
@@ -106,7 +126,9 @@ func InstallSoftware(softwareName, version string, params map[string]map[string]
 		for _, param := range targetVersion.InstallConfig.ConfigParams {
 			targetParams[param.Name] = param.Name
 		}
+		logger.Write("生成配置文件: %s", outputPath)
 		if err := generateConfig(templateStr.Content, templateStr.FileName, targetParams, params, outputPath); err != nil {
+			logger.Write("生成配置文件失败: %v", err)
 			return err
 		}
 	}
@@ -114,6 +136,7 @@ func InstallSoftware(softwareName, version string, params map[string]map[string]
 	// 生成系统服务配置
 	serviceConfig := targetVersion.InstallConfig.ServiceConfig
 	if serviceConfig.SystemdTemplate != "" {
+		logger.Write("生成systemd服务配置")
 		serviceContent := renderTemplate(serviceConfig.SystemdTemplate, map[string]interface{}{
 			"start_cmd": renderTemplate(serviceConfig.StartCmd, map[string]interface{}{
 				"conf":   confPath,
@@ -132,10 +155,12 @@ func InstallSoftware(softwareName, version string, params map[string]map[string]
 			"params": params,
 		})
 
-		servicePath := filepath.Join("/etc/systemd/system/", softwareName+".service")
+		servicePath := filepath.Join("/etc/systemd/system/", versionName+".service")
 		if err := os.WriteFile(servicePath, []byte(serviceContent), 0644); err != nil {
+			logger.Write("写入服务文件失败: %v", err)
 			return fmt.Errorf("failed to write service file: %v", err)
 		}
+		logger.Write("服务文件已写入: %s", servicePath)
 	}
 
 	return nil

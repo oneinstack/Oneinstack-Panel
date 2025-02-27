@@ -63,3 +63,47 @@ func Exploration(c *gin.Context) {
 	ok := software.Exploration(&req)
 	core.HandleSuccess(c, ok)
 }
+
+func GetSoftwares(c *gin.Context) {
+	var req input.SoftwareParam
+	if err := c.ShouldBindJSON(&req); err != nil {
+		core.HandleError(c, http.StatusUnauthorized, core.ErrBadRequest, err)
+		return
+	}
+	data, err := software.GetSoftwareList(&req)
+	if err != nil {
+		core.HandleError(c, http.StatusInternalServerError, err, nil)
+		return
+	}
+	core.HandleSuccess(c, data)
+}
+
+func GetInstallLog(c *gin.Context) {
+	sft := c.Param("software")
+	version := c.Param("version")
+	content, err := software.GetInstallLog(sft, version)
+	if err != nil {
+		core.HandleError(c, http.StatusInternalServerError, err, nil)
+		return
+	}
+
+	core.HandleSuccess(c, gin.H{
+		"logs": content,
+	})
+}
+
+func Installed(c *gin.Context) {
+	var req input.InstallSoftwareParam
+	if err := c.ShouldBindJSON(&req); err != nil {
+		core.HandleError(c, http.StatusUnauthorized, core.ErrBadRequest, err)
+		return
+	}
+	err := software.InstallSoftwaren(&req)
+	if err != nil {
+		core.HandleError(c, http.StatusInternalServerError, err, nil)
+		return
+	}
+	core.HandleSuccess(c, gin.H{
+		"message": "success",
+	})
+}

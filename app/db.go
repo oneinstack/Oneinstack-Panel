@@ -22,12 +22,12 @@ func init() {
 
 func InitDB(dbPath string) error {
 	gc := &gorm.Config{}
-	gc.Logger = logger.Default.LogMode(logger.Error)
+	gc.Logger = logger.Default.LogMode(logger.Info)
 	if ENV == "debug" {
 		gc.Logger = logger.Default.LogMode(logger.Info)
 	}
 
-	d, err := gorm.Open(sqlite.Open(dbPath))
+	d, err := gorm.Open(sqlite.Open(dbPath + "?_foreign_keys=1"))
 	if err != nil {
 		return err
 	}
@@ -106,21 +106,20 @@ func createTables() error {
 }
 
 func initSoftware() error {
-	err := db.AutoMigrate(&models.Softwaren{})
-	if err != nil {
-		return err
+	// 按依赖顺序迁移表
+	tables := []interface{}{
+		&models.Softwaren{},
+		&models.Version{},
+		&models.InstallConfig{},
+		&models.ServiceConfig{},
+		&models.ConfigParam{},
+		&models.ConfigTemplate{},
 	}
-	err = db.AutoMigrate(&models.Version{})
-	if err != nil {
-		return err
-	}
-	err = db.AutoMigrate(&models.InstallConfig{})
-	if err != nil {
-		return err
-	}
-	err = db.AutoMigrate(&models.ConfigParam{})
-	if err != nil {
-		return err
+
+	for _, table := range tables {
+		if err := db.AutoMigrate(table); err != nil {
+			return err
+		}
 	}
 
 	// 初始化软件数据
@@ -216,12 +215,17 @@ func initSoftware() error {
 		},
 	}
 
-	// 批量创建软件数据
-	if err := db.CreateInBatches([]*models.Softwaren{caddy, php}, 2).Error; err != nil {
+	// 创建记录时使用事务处理关联
+	tx := db.Begin()
+	if err := tx.Create(caddy).Error; err != nil {
+		tx.Rollback()
 		return err
 	}
-
-	return nil
+	if err := tx.Create(php).Error; err != nil {
+		tx.Rollback()
+		return err
+	}
+	return tx.Commit().Error
 }
 
 func initDic() error {

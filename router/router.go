@@ -86,6 +86,7 @@ func SetupRouter() *gin.Engine {
 	sys.Use(middleware.AuthMiddleware())
 	{
 		softg.POST("/list", software.GetSoftware)
+		softg.POST("/lists", software.GetSoftwares)
 		softg.GET("/getlog", software.GetLogContent)
 		softg.POST("/install", software.RunInstallation)
 		softg.POST("/exploration", software.Exploration)
@@ -128,6 +129,12 @@ func SetupRouter() *gin.Engine {
 		crong.POST("/disable", cron.DisableCron)
 		crong.POST("/enable", cron.EnableCron)
 		crong.POST("/log", cron.GetCronLogList)
+	}
+
+	// 安装日志相关
+	logGroup := g.Group("/software")
+	{
+		logGroup.GET("/:software/versions/:version/log", software.GetInstallLog)
 	}
 
 	return r

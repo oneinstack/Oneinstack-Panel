@@ -3,19 +3,33 @@ package software
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
+	"log"
 	"oneinstack/app"
 	"oneinstack/internal/models"
 	"oneinstack/internal/services"
+	"oneinstack/pkg"
 	"oneinstack/router/input"
 	"oneinstack/router/output"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 
-	"github.com/imroc/req/v3"
 	"gorm.io/gorm"
 )
+
+var (
+	installJobs = make(map[string]*InstallJob)
+	jobMutex    sync.RWMutex
+)
+
+type InstallJob struct {
+	SoftwareName string
+	Version      string
+	LogPath      string
+	Status       string // pending | running | completed | failed
+	CreatedAt    time.Time
+}
 
 func RunInstall(p *input.InstallParams) (string, error) {
 	op, err := NewInstallOP(p)
@@ -181,73 +195,156 @@ func Sync() {
 	ticker := time.NewTicker(5 * time.Hour)
 	defer ticker.Stop()
 	for range ticker.C {
-		type Data struct {
-			Softwares []*models.Software `json:"soft"`
+		if err := syncSoftware(); err != nil {
+			log.Printf("软件同步失败: %v", err)
 		}
-		type Response struct {
-			Code    int    `json:"code"`
-			Message string `json:"message"`
-			Data    *Data  `json:"data"`
-		}
-		client := req.C()
-		var result Response
-		url := app.ONE_CONFIG.System.Remote + "?key=onesync"
-		if app.ONE_CONFIG.System.Remote == "" {
-			url = "http://localhost:8189/v1/sys/update"
-		}
-		resps, err := client.R().SetSuccessResult(&result).Post(url)
-
-		if err != nil {
-			fmt.Println("同步软件失败:", err.Error())
-			continue
-		}
-
-		if !resps.IsSuccessState() {
-			fmt.Println("同步软件失败")
-			continue
-		}
-		if result.Data != nil && len(result.Data.Softwares) <= 0 {
-			continue
-		}
-		for _, s := range result.Data.Softwares {
-			sf := &models.Software{}
-			tx := app.DB().Where("key =? and version = ?", s.Key, s.Version).First(sf)
-			if tx.Error != nil && !errors.Is(tx.Error, gorm.ErrRecordNotFound) {
-				fmt.Println("同步软件失败:", tx.Error.Error())
-				continue
-			}
-
-			if sf.Id <= 0 {
-				osf := &models.Software{}
-				tx := app.DB().Where("key =? and installed = 1", s.Key).First(osf)
-				if tx.Error != nil && !errors.Is(tx.Error, gorm.ErrRecordNotFound) {
-					fmt.Println("同步软件失败状态更新:", tx.Error.Error())
-				}
-				if osf.Id > 0 {
-					osf.IsUpdate = true
-					app.DB().Updates(osf)
-				}
-				sf = &models.Software{
-					Name:      s.Name,
-					Key:       s.Key,
-					Icon:      s.Icon,
-					Type:      s.Type,
-					Status:    s.Status,
-					Resource:  "remote",
-					Installed: s.Installed,
-					Log:       s.Log,
-					Version:   s.Version,
-					Tags:      s.Tags,
-					Params:    s.Params,
-					Script:    s.Script,
-				}
-				app.DB().Create(sf)
-			} else {
-				sf.Script = s.Script
-				sf.Resource = "remote"
-				app.DB().Updates(sf)
-			}
-		}
-
 	}
+}
+
+func syncSoftware() error {
+
+	tx := app.DB().Begin()
+	defer tx.Rollback()
+	result, err := pkg.SyncSoftware()
+	if err != nil {
+		return err
+	}
+	for _, remoteSoft := range result {
+		var localSoft models.Softwaren
+		if err := tx.Preload("Versions").Where("name = ?", remoteSoft.Name).First(&localSoft).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				// 新软件
+				if err := createSoftwareWithVersions(tx, remoteSoft); err != nil {
+					return err
+				}
+			} else {
+				return err
+			}
+			continue
+		}
+
+		// 检查版本更新
+		hasUpdate := false
+		for _, remoteVer := range remoteSoft.Versions {
+			exists := false
+			for _, localVer := range localSoft.Versions {
+				if localVer.Version == remoteVer.Version {
+					exists = true
+					break
+				}
+			}
+
+			if !exists {
+				hasUpdate = true
+				// 添加新版本
+				newVer := remoteVer
+				newVer.SoftwareID = localSoft.ID
+				// 递归创建关联配置
+				if err := createVersionWithConfigs(tx, &newVer); err != nil {
+					return err
+				}
+			}
+		}
+
+		// 更新has_update状态
+		if hasUpdate != localSoft.HasUpdate {
+			if err := tx.Model(&localSoft).Update("has_update", hasUpdate).Error; err != nil {
+				return err
+			}
+		}
+	}
+
+	return tx.Commit().Error
+}
+
+func createSoftwareWithVersions(tx *gorm.DB, soft *models.Softwaren) error {
+	// 创建主记录
+	if err := tx.Create(soft).Error; err != nil {
+		return err
+	}
+
+	// 递归创建关联数据
+	for i := range soft.Versions {
+		version := &soft.Versions[i]
+		version.SoftwareID = soft.ID
+
+		// 创建版本
+		if err := tx.Create(version).Error; err != nil {
+			return err
+		}
+
+		// 处理InstallConfig
+		installConfig := version.InstallConfig
+		installConfig.VersionID = version.ID
+		if err := tx.Create(&installConfig).Error; err != nil {
+			return err
+		}
+
+		// 创建ConfigParams
+		for j := range installConfig.ConfigParams {
+			param := &installConfig.ConfigParams[j]
+			param.InstallConfigID = installConfig.ID
+			if err := tx.Create(param).Error; err != nil {
+				return err
+			}
+		}
+
+		// 创建ServiceConfig
+		serviceConfig := installConfig.ServiceConfig
+		serviceConfig.InstallConfigID = installConfig.ID
+		if err := tx.Create(&serviceConfig).Error; err != nil {
+			return err
+		}
+
+		// 创建ConfigTemplates
+		for j := range installConfig.ConfigTemplates {
+			template := &installConfig.ConfigTemplates[j]
+			template.InstallConfigID = installConfig.ID
+			if err := tx.Create(template).Error; err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func createVersionWithConfigs(tx *gorm.DB, version *models.Version) error {
+	// 创建版本
+	if err := tx.Create(version).Error; err != nil {
+		return err
+	}
+
+	// 处理InstallConfig
+	installConfig := version.InstallConfig
+	installConfig.VersionID = version.ID
+	if err := tx.Create(&installConfig).Error; err != nil {
+		return err
+	}
+
+	// 创建ConfigParams
+	for j := range installConfig.ConfigParams {
+		param := &installConfig.ConfigParams[j]
+		param.InstallConfigID = installConfig.ID
+		if err := tx.Create(param).Error; err != nil {
+			return err
+		}
+	}
+
+	// 创建ServiceConfig
+	serviceConfig := installConfig.ServiceConfig
+	serviceConfig.InstallConfigID = installConfig.ID
+	if err := tx.Create(&serviceConfig).Error; err != nil {
+		return err
+	}
+
+	// 创建ConfigTemplates
+	for j := range installConfig.ConfigTemplates {
+		template := &installConfig.ConfigTemplates[j]
+		template.InstallConfigID = installConfig.ID
+		if err := tx.Create(template).Error; err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
