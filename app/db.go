@@ -131,15 +131,89 @@ func initSoftware() error {
 		return nil
 	}
 
-	// 创建Caddy软件
+	// 创建Java
+	java := &models.Softwaren{
+		Name:        "java",
+		Description: "Java开发工具包",
+		Versions: []models.Version{
+			{
+				Version:     "17.0.8",
+				VersionName: "jdk",
+				DownloadURL: "https://download.java.net/openjdk/jdk17/ri/openjdk-17+35_linux-x64_bin.tar.gz",
+				InstallConfig: models.InstallConfig{
+					BasePath: "{{.root}}/{{.name}}/v{{.version}}",
+					ConfigParams: []models.ConfigParam{
+						{
+							ConfigFile:  "java.env",
+							Name:        "JAVA_HOME",
+							Type:        "string",
+							Description: "Java安装路径",
+							Required:    true,
+						},
+						{
+							ConfigFile:   "java.env",
+							Name:         "JAVA_OPTS",
+							Type:         "string",
+							Description:  "JVM启动参数",
+							DefaultValue: "-Xms512m -Xmx1024m",
+						},
+					},
+					ServiceConfig: models.ServiceConfig{
+						SystemdTemplate: "",
+					},
+					ConfigTemplates: []models.ConfigTemplate{
+						{
+							FileName: "java.env",
+							Content:  "export JAVA_HOME={{.params.JAVA_HOME}}\nexport PATH=$JAVA_HOME/bin:$PATH\nexport JAVA_OPTS=\"{{.params.JAVA_OPTS}}\"",
+						},
+					},
+				},
+			},
+			{
+				Version:     "11.0.20",
+				VersionName: "jdk",
+				DownloadURL: "https://download.java.net/openjdk/jdk11/ri/openjdk-11+28_linux-x64_bin.tar.gz",
+				InstallConfig: models.InstallConfig{
+					BasePath: "{{.root}}/{{.name}}/v{{.version}}",
+					ConfigParams: []models.ConfigParam{
+						{
+							ConfigFile:  "java.env",
+							Name:        "JAVA_HOME",
+							Type:        "string",
+							Description: "Java安装路径",
+							Required:    true,
+						},
+						{
+							ConfigFile:   "java.env",
+							Name:         "JAVA_OPTS",
+							Type:         "string",
+							Description:  "JVM启动参数",
+							DefaultValue: "-Xms512m -Xmx1024m",
+						},
+					},
+					ServiceConfig: models.ServiceConfig{
+						SystemdTemplate: "",
+					},
+					ConfigTemplates: []models.ConfigTemplate{
+						{
+							FileName: "java.env",
+							Content:  "export JAVA_HOME={{.params.JAVA_HOME}}\nexport PATH=$JAVA_HOME/bin:$PATH\nexport JAVA_OPTS=\"{{.params.JAVA_OPTS}}\"",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	// 创建Caddy
 	caddy := &models.Softwaren{
 		Name:        "caddy",
 		Description: "现代Web服务器",
 		Versions: []models.Version{
 			{
-				Version:     "2.7.5",
+				Version:     "2.9.1",
 				VersionName: "caddy",
-				DownloadURL: "https://github.com/caddyserver/caddy/releases/download/v2.7.5/caddy_2.7.5_linux_amd64.tar.gz",
+				DownloadURL: "https://cdn.bugotech.com/oneinstack/soft/caddy_2.9.1_linux_amd64.tar.gz",
 				InstallConfig: models.InstallConfig{
 					BasePath: "{{.root}}/{{.name}}/v{{.version}}",
 					ConfigParams: []models.ConfigParam{
@@ -179,9 +253,9 @@ func initSoftware() error {
 		Description: "PHP脚本解释器",
 		Versions: []models.Version{
 			{
-				Version:     "8.3.7",
+				Version:     "8.2.20",
 				VersionName: "php-fpm",
-				DownloadURL: "https://www.php.net/distributions/php-8.3.7.tar.gz",
+				DownloadURL: "https://www.php.net/distributions/php-8.2.20.tar.gz",
 				InstallConfig: models.InstallConfig{
 					BasePath: "{{.root}}/{{.name}}/v{{.version}}",
 					ConfigParams: []models.ConfigParam{
@@ -215,15 +289,170 @@ func initSoftware() error {
 		},
 	}
 
-	// 创建记录时使用事务处理关联
-	tx := db.Begin()
-	if err := tx.Create(caddy).Error; err != nil {
-		tx.Rollback()
-		return err
+	// 创建Redis
+	redis := &models.Softwaren{
+		Name:        "redis",
+		Description: "内存数据库",
+		Versions: []models.Version{
+			{
+				Version:     "7.2.4",
+				VersionName: "redis-server",
+				DownloadURL: "https://download.redis.io/releases/redis-7.2.4.tar.gz",
+				InstallConfig: models.InstallConfig{
+					BasePath: "{{.root}}/{{.name}}/v{{.version}}",
+					ConfigParams: []models.ConfigParam{
+						{
+							ConfigFile:   "redis.conf",
+							Name:         "port",
+							Type:         "int",
+							Description:  "服务端口",
+							DefaultValue: "6379",
+						},
+						{
+							ConfigFile:   "redis.conf",
+							Name:         "maxmemory",
+							Type:         "string",
+							Description:  "最大内存",
+							DefaultValue: "256mb",
+						},
+					},
+					ServiceConfig: models.ServiceConfig{
+						StartCmd:        "{{.bin}}/redis-server {{.conf}}/redis.conf",
+						ReloadCmd:       "{{.bin}}/redis-cli config rewrite",
+						SystemdTemplate: "[Unit]\nDescription=Redis In-Memory Data Store\nAfter=network.target\n\n[Service]\nExecStart={{.start_cmd}}\nRestart=always\n\n[Install]\nWantedBy=multi-user.target",
+					},
+					ConfigTemplates: []models.ConfigTemplate{
+						{
+							FileName: "redis.conf",
+							Content:  "port {{.params.port}}\nmaxmemory {{.params.maxmemory}}",
+						},
+					},
+				},
+			},
+			{
+				Version:     "6.2.14",
+				VersionName: "redis-server",
+				DownloadURL: "https://download.redis.io/releases/redis-6.2.14.tar.gz",
+				InstallConfig: models.InstallConfig{
+					BasePath: "{{.root}}/{{.name}}/v{{.version}}",
+					ConfigParams: []models.ConfigParam{
+						{
+							ConfigFile:   "redis.conf",
+							Name:         "port",
+							Type:         "int",
+							Description:  "服务端口",
+							DefaultValue: "6379",
+						},
+						{
+							ConfigFile:   "redis.conf",
+							Name:         "maxmemory",
+							Type:         "string",
+							Description:  "最大内存",
+							DefaultValue: "256mb",
+						},
+					},
+					ServiceConfig: models.ServiceConfig{
+						StartCmd:        "{{.bin}}/redis-server {{.conf}}/redis.conf",
+						ReloadCmd:       "{{.bin}}/redis-cli config rewrite",
+						SystemdTemplate: "[Unit]\nDescription=Redis In-Memory Data Store\nAfter=network.target\n\n[Service]\nExecStart={{.start_cmd}}\nRestart=always\n\n[Install]\nWantedBy=multi-user.target",
+					},
+					ConfigTemplates: []models.ConfigTemplate{
+						{
+							FileName: "redis.conf",
+							Content:  "port {{.params.port}}\nmaxmemory {{.params.maxmemory}}",
+						},
+					},
+				},
+			},
+		},
 	}
-	if err := tx.Create(php).Error; err != nil {
-		tx.Rollback()
-		return err
+
+	// 创建MySQL
+	mysql := &models.Softwaren{
+		Name:        "mysql",
+		Description: "关系型数据库",
+		Versions: []models.Version{
+			{
+				Version:     "8.0.33",
+				VersionName: "mysql-server",
+				DownloadURL: "https://dev.mysql.com/get/Downloads/MySQL-8.0/mysql-8.0.33-linux-glibc2.28-x86_64.tar.gz",
+				InstallConfig: models.InstallConfig{
+					BasePath: "{{.root}}/{{.name}}/v{{.version}}",
+					ConfigParams: []models.ConfigParam{
+						{
+							ConfigFile:  "my.cnf",
+							Name:        "root_password",
+							Type:        "string",
+							Description: "root用户密码",
+							Sensitive:   true,
+							Required:    true,
+						},
+						{
+							ConfigFile:   "my.cnf",
+							Name:         "port",
+							Type:         "int",
+							Description:  "服务端口",
+							DefaultValue: "3306",
+						},
+					},
+					ServiceConfig: models.ServiceConfig{
+						StartCmd:        "{{.bin}}/mysqld --defaults-file={{.conf}}/my.cnf --initialize-insecure && {{.bin}}/mysqld_safe --defaults-file={{.conf}}/my.cnf",
+						SystemdTemplate: "[Unit]\nDescription=MySQL Database Server\nAfter=network.target\n\n[Service]\nExecStart={{.bin}}/mysqld --defaults-file={{.conf}}/my.cnf\nRestart=always\nEnvironment=MYSQL_ROOT_PASSWORD={{.params.root_password}}\n\n[Install]\nWantedBy=multi-user.target",
+					},
+					ConfigTemplates: []models.ConfigTemplate{
+						{
+							FileName: "my.cnf",
+							Content:  "[mysqld]\nport = {{.params.port}}\nbind-address = 0.0.0.0",
+						},
+					},
+				},
+			},
+			{
+				Version:     "5.7.43",
+				VersionName: "mysql-server",
+				DownloadURL: "https://dev.mysql.com/get/Downloads/MySQL-5.7/mysql-5.7.43-linux-glibc2.28-x86_64.tar.gz",
+				InstallConfig: models.InstallConfig{
+					BasePath: "{{.root}}/{{.name}}/v{{.version}}",
+					ConfigParams: []models.ConfigParam{
+						{
+							ConfigFile:  "my.cnf",
+							Name:        "root_password",
+							Type:        "string",
+							Description: "root用户密码",
+							Sensitive:   true,
+							Required:    true,
+						},
+						{
+							ConfigFile:   "my.cnf",
+							Name:         "port",
+							Type:         "int",
+							Description:  "服务端口",
+							DefaultValue: "3306",
+						},
+					},
+					ServiceConfig: models.ServiceConfig{
+						StartCmd:        "{{.bin}}/mysqld --defaults-file={{.conf}}/my.cnf --initialize-insecure && {{.bin}}/mysqld_safe --defaults-file={{.conf}}/my.cnf",
+						SystemdTemplate: "[Unit]\nDescription=MySQL Database Server\nAfter=network.target\n\n[Service]\nExecStart={{.bin}}/mysqld --defaults-file={{.conf}}/my.cnf\nRestart=always\nEnvironment=MYSQL_ROOT_PASSWORD={{.params.root_password}}\n\n[Install]\nWantedBy=multi-user.target",
+					},
+					ConfigTemplates: []models.ConfigTemplate{
+						{
+							FileName: "my.cnf",
+							Content:  "[mysqld]\nport = {{.params.port}}\nbind-address = 0.0.0.0",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	// 在事务中创建所有软件
+	tx := db.Begin()
+	softwareList := []*models.Softwaren{caddy, php, java, redis, mysql}
+	for _, soft := range softwareList {
+		if err := tx.Create(soft).Error; err != nil {
+			tx.Rollback()
+			return err
+		}
 	}
 	return tx.Commit().Error
 }

@@ -163,6 +163,19 @@ func installSoftware(soft *models.Softwaren, params map[string]map[string]string
 		logger.Write("服务文件已写入: %s", servicePath)
 	}
 
+	logger.Write("重新加载systemd配置")
+	if err := exec.Command("systemctl", "daemon-reload").Run(); err != nil {
+		logger.Write("systemd配置重载失败: %v", err)
+	}
+
+	logger.Write("启用并启动服务: %s", versionName)
+	if err := exec.Command("systemctl", "enable", versionName+".service").Run(); err != nil {
+		logger.Write("服务启用失败: %v", err)
+	}
+	if err := exec.Command("systemctl", "start", versionName+".service").Run(); err != nil {
+		logger.Write("服务启动失败: %v", err)
+	}
+
 	return nil
 }
 

@@ -7,6 +7,8 @@ import (
 	"oneinstack/internal/services"
 	"oneinstack/router/input"
 	"os"
+
+	"gorm.io/gorm"
 )
 
 func GetSoftwareList(param *input.SoftwareParam) (*services.PaginatedResult[models.Softwaren], error) {
@@ -68,11 +70,13 @@ func GetSoftwareList(param *input.SoftwareParam) (*services.PaginatedResult[mode
 }
 
 func InstallSoftwaren(param *input.InstallSoftwareParam) error {
-	tx := app.DB().Preload("Versions").
-		Preload("Versions.InstallConfig.ServiceConfig").
-		Preload("Versions.InstallConfig.ConfigTemplates").
-		Preload("Versions.InstallConfig.ConfigParams").
-		Where("id = ?", param.Id).
+	tx := app.DB().Preload("Versions", func(db *gorm.DB) *gorm.DB {
+		return db.Preload("InstallConfig.ServiceConfig").
+			Preload("InstallConfig.ConfigTemplates").
+			Preload("InstallConfig.ConfigParams")
+	}).
+		Joins("LEFT JOIN versions ON softwarens.id = versions.software_id").
+		Where("softwarens.id = ?", param.Id).
 		Where("versions.id = ?", param.VersionId)
 
 	soft := &models.Softwaren{}

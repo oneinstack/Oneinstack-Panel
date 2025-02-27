@@ -1,6 +1,78 @@
 {
     "software": [
         {
+            "name": "java",
+            "description": "Java开发工具包",
+            "versions": [
+                {
+                    "version": "17.0.8",
+                    "version_name": "jdk",
+                    "download_url": "https://download.java.net/openjdk/jdk17/ri/openjdk-17+35_linux-x64_bin.tar.gz",
+                    "install_config": {
+                        "base_path": "{{.root}}/{{.name}}/v{{.version}}",
+                        "config_params": {
+                            "java.env": [
+                                {
+                                    "name": "JAVA_HOME",
+                                    "type": "string",
+                                    "description": "Java安装路径",
+                                    "required": true
+                                },
+                                {
+                                    "name": "JAVA_OPTS",
+                                    "type": "string",
+                                    "description": "JVM启动参数",
+                                    "default": "-Xms512m -Xmx1024m"
+                                }
+                            ]
+                        },
+                        "service_config": {
+                            "systemd_template": ""
+                        },
+                        "config_templates": [
+                            {
+                                "file_name": "java.env",
+                                "content": "export JAVA_HOME={{.params.JAVA_HOME}}\nexport PATH=$JAVA_HOME/bin:$PATH\nexport JAVA_OPTS=\"{{.params.JAVA_OPTS}}\""
+                            }
+                        ]
+                    }
+                },
+                {
+                    "version": "11.0.20",
+                    "version_name": "jdk",
+                    "download_url": "https://download.java.net/openjdk/jdk11/ri/openjdk-11+28_linux-x64_bin.tar.gz",
+                    "install_config": {
+                        "base_path": "{{.root}}/{{.name}}/v{{.version}}",
+                        "config_params": {
+                            "java.env": [
+                                {
+                                    "name": "JAVA_HOME",
+                                    "type": "string",
+                                    "description": "Java安装路径",
+                                    "required": true
+                                },
+                                {
+                                    "name": "JAVA_OPTS",
+                                    "type": "string",
+                                    "description": "JVM启动参数",
+                                    "default": "-Xms512m -Xmx1024m"
+                                }
+                            ]
+                        },
+                        "service_config": {
+                            "systemd_template": ""
+                        },
+                        "config_templates": [
+                            {
+                                "file_name": "java.env",
+                                "content": "export JAVA_HOME={{.params.JAVA_HOME}}\nexport PATH=$JAVA_HOME/bin:$PATH\nexport JAVA_OPTS=\"{{.params.JAVA_OPTS}}\""
+                            }
+                        ]
+                    }
+                }
+            ]
+        },
+        {
             "name": "caddy",
             "description": "现代Web服务器",
             "versions": [
@@ -8,6 +80,40 @@
                     "version": "2.7.5",
                     "version_name": "caddy",
                     "download_url": "https://github.com/caddyserver/caddy/releases/download/v2.7.5/caddy_2.7.5_linux_amd64.tar.gz",
+                    "install_config": {
+                        "base_path": "{{.root}}/{{.name}}/v{{.version}}",
+                        "config_params": {
+                            "Caddyfile": [
+                                {
+                                    "name": "admin_email",
+                                    "type": "string",
+                                    "description": "管理员邮箱(用于HTTPS证书)"
+                                },
+                                {
+                                    "name": "domain",
+                                    "type": "string",
+                                    "description": "主域名",
+                                    "required": true
+                                }
+                            ]
+                        },
+                        "service_config": {
+                            "start_cmd": "{{.bin}}/caddy run --config {{.conf}}/Caddyfile",
+                            "reload_cmd": "{{.bin}}/caddy reload --config {{.conf}}/Caddyfile",
+                            "systemd_template": "[Unit]\nDescription=Caddy Web Server\nAfter=network.target\n\n[Service]\nExecStart={{.start_cmd}}\nRestart=always\nEnvironment=CADDY_EMAIL={{.params.admin_email}}\n\n[Install]\nWantedBy=multi-user.target"
+                        },
+                        "config_templates": [
+                            {
+                                "file_name": "Caddyfile",
+                                "content": "{{.params.domain}} {\n respond \"Hello from Caddy\"\n}"
+                            }
+                        ]
+                    }
+                },
+                {
+                    "version": "2.6.4",
+                    "version_name": "caddy",
+                    "download_url": "https://github.com/caddyserver/caddy/releases/download/v2.6.4/caddy_2.6.4_linux_amd64.tar.gz",
                     "install_config": {
                         "base_path": "{{.root}}/{{.name}}/v{{.version}}",
                         "config_params": {
@@ -48,6 +154,40 @@
                     "version": "8.3.7",
                     "version_name": "php-fpm",
                     "download_url": "https://www.php.net/distributions/php-8.3.7.tar.gz",
+                    "install_config": {
+                        "base_path": "{{.root}}/{{.name}}/v{{.version}}",
+                        "config_params": {
+                            "php.ini": [
+                                {
+                                    "name": "max_execution_time",
+                                    "type": "int",
+                                    "description": "最大执行时间（秒）",
+                                    "default": 30
+                                },
+                                {
+                                    "name": "memory_limit",
+                                    "type": "string",
+                                    "description": "内存限制",
+                                    "default": "128M"
+                                }
+                            ]
+                        },
+                        "service_config": {
+                            "start_cmd": "{{.bin}}/php-fpm -y {{.conf}}/php-fpm.conf",
+                            "systemd_template": "[Unit]\nDescription=PHP FastCGI Process Manager\nAfter=network.target\n\n[Service]\nExecStart={{.start_cmd}}\nRestart=always\n\n[Install]\nWantedBy=multi-user.target"
+                        },
+                        "config_templates": [
+                            {
+                                "file_name": "php.ini",
+                                "content": "max_execution_time = {{.params.max_execution_time}}\nmemory_limit = {{.params.memory_limit}}"
+                            }
+                        ]
+                    }
+                },
+                {
+                    "version": "8.2.20",
+                    "version_name": "php-fpm",
+                    "download_url": "https://www.php.net/distributions/php-8.2.20.tar.gz",
                     "install_config": {
                         "base_path": "{{.root}}/{{.name}}/v{{.version}}",
                         "config_params": {
@@ -118,6 +258,41 @@
                             }
                         ]
                     }
+                },
+                {
+                    "version": "6.2.14",
+                    "version_name": "redis-server",
+                    "download_url": "https://download.redis.io/releases/redis-6.2.14.tar.gz",
+                    "install_config": {
+                        "base_path": "{{.root}}/{{.name}}/v{{.version}}",
+                        "config_params": {
+                            "redis.conf": [
+                                {
+                                    "name": "port",
+                                    "type": "int",
+                                    "description": "服务端口",
+                                    "default": 6379
+                                },
+                                {
+                                    "name": "maxmemory",
+                                    "type": "string",
+                                    "description": "最大内存",
+                                    "default": "256mb"
+                                }
+                            ]
+                        },
+                        "service_config": {
+                            "start_cmd": "{{.bin}}/redis-server {{.conf}}/redis.conf",
+                            "reload_cmd": "{{.bin}}/redis-cli config rewrite",
+                            "systemd_template": "[Unit]\nDescription=Redis In-Memory Data Store\nAfter=network.target\n\n[Service]\nExecStart={{.start_cmd}}\nRestart=always\n\n[Install]\nWantedBy=multi-user.target"
+                        },
+                        "config_templates": [
+                            {
+                                "file_name": "redis.conf",
+                                "content": "port {{.params.port}}\nmaxmemory {{.params.maxmemory}}"
+                            }
+                        ]
+                    }
                 }
             ]
         },
@@ -129,6 +304,41 @@
                     "version": "8.0.33",
                     "version_name": "mysql-server",
                     "download_url": "https://dev.mysql.com/get/Downloads/MySQL-8.0/mysql-8.0.33-linux-glibc2.28-x86_64.tar.gz",
+                    "install_config": {
+                        "base_path": "{{.root}}/{{.name}}/v{{.version}}",
+                        "config_params": {
+                            "my.cnf": [
+                                {
+                                    "name": "root_password",
+                                    "type": "string",
+                                    "description": "root用户密码",
+                                    "sensitive": true,
+                                    "required": true
+                                },
+                                {
+                                    "name": "port",
+                                    "type": "int",
+                                    "description": "服务端口",
+                                    "default": 3306
+                                }
+                            ]
+                        },
+                        "service_config": {
+                            "start_cmd": "{{.bin}}/mysqld --defaults-file={{.conf}}/my.cnf --initialize-insecure && {{.bin}}/mysqld_safe --defaults-file={{.conf}}/my.cnf",
+                            "systemd_template": "[Unit]\nDescription=MySQL Database Server\nAfter=network.target\n\n[Service]\nExecStart={{.bin}}/mysqld --defaults-file={{.conf}}/my.cnf\nRestart=always\nEnvironment=MYSQL_ROOT_PASSWORD={{.params.root_password}}\n\n[Install]\nWantedBy=multi-user.target"
+                        },
+                        "config_templates": [
+                            {
+                                "file_name": "my.cnf",
+                                "content": "[mysqld]\nport = {{.params.port}}\nbind-address = 0.0.0.0"
+                            }
+                        ]
+                    }
+                },
+                {
+                    "version": "5.7.43",
+                    "version_name": "mysql-server",
+                    "download_url": "https://dev.mysql.com/get/Downloads/MySQL-5.7/mysql-5.7.43-linux-glibc2.28-x86_64.tar.gz",
                     "install_config": {
                         "base_path": "{{.root}}/{{.name}}/v{{.version}}",
                         "config_params": {
