@@ -75,15 +75,15 @@ func installSoftware(soft *models.Softwaren, params map[string]map[string]string
 		"version": targetVersion.Version,
 	})
 	logger.Write("生成基础路径: %s", basePath)
+	fmt.Println(basePath)
 	if err := os.MkdirAll(basePath, 0755); err != nil {
 		logger.Write("创建目录失败: %v", err)
 		return err
 	}
 
 	// 下载文件
-	downloadPath := filepath.Join(basePath, versionName)
-	logger.Write("开始下载文件: %s", targetVersion.DownloadURL)
-	if err := downloadFile(targetVersion.DownloadURL, downloadPath); err != nil {
+	downloadPath, err := downloadFile(targetVersion.DownloadURL, basePath)
+	if err != nil {
 		logger.Write("下载失败: %v", err)
 		return err
 	}
@@ -113,6 +113,7 @@ func installSoftware(soft *models.Softwaren, params map[string]map[string]string
 
 	// 解压文件
 	logger.Write("开始解压文件: %s", downloadPath)
+	fmt.Println(binPath)
 	if err := extractFile(downloadPath, binPath); err != nil {
 		logger.Write("解压失败: %v", err)
 		return err
@@ -211,22 +212,46 @@ func renderTemplate(tpl string, data map[string]interface{}) string {
 	return buf.String()
 }
 
-// 文件下载
-func downloadFile(url, path string) error {
-	resp, err := http.Get(url)
+// 文件下载（返回实际下载路径）
+func downloadFile(urlStr string, saveDir string) (string, error) {
+	// 从URL提取文件名
+	fileName := filepath.Base(urlStr)
+	// 去除可能的查询参数
+	if cleanName := strings.Split(fileName, "?"); len(cleanName) > 0 {
+		fileName = cleanName[0]
+	}
+
+	// 创建保存目录
+	if err := os.MkdirAll(saveDir, 0755); err != nil {
+		return "", fmt.Errorf("创建目录失败: %w", err)
+	}
+
+	// 发起HTTP请求
+	resp, err := http.Get(urlStr)
 	if err != nil {
-		return err
+		return "", fmt.Errorf("请求失败: %w", err)
 	}
 	defer resp.Body.Close()
 
-	out, err := os.Create(path)
+	// 检查状态码
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("无效状态码: %d", resp.StatusCode)
+	}
+
+	// 创建目标文件
+	filePath := filepath.Join(saveDir, fileName)
+	out, err := os.Create(filePath)
 	if err != nil {
-		return err
+		return "", fmt.Errorf("创建文件失败: %w", err)
 	}
 	defer out.Close()
 
-	_, err = io.Copy(out, resp.Body)
-	return err
+	// 复制数据
+	if _, err = io.Copy(out, resp.Body); err != nil {
+		return "", fmt.Errorf("下载失败: %w", err)
+	}
+
+	return filePath, nil
 }
 
 // 文件解压

@@ -1,6 +1,7 @@
 package software
 
 import (
+	"encoding/json"
 	"fmt"
 	"oneinstack/app"
 	"oneinstack/internal/models"
@@ -86,12 +87,14 @@ func InstallSoftwaren(param *input.InstallSoftwareParam) error {
 	}
 	mapParams := make(map[string]map[string]string)
 	for _, p := range param.Params {
-		if _, ok := mapParams[p.Type]; !ok {
-			mapParams[p.Type] = make(map[string]string)
+		if _, ok := mapParams[p.ConfigFile]; !ok {
+			mapParams[p.ConfigFile] = make(map[string]string)
 		}
-		mapParams[p.Type][p.Key] = p.Value
+		mapParams[p.ConfigFile][p.Key] = p.Value
 	}
-
+	jsonParams, _ := json.Marshal(mapParams)
+	fmt.Println(string(jsonParams))
+	// return nil
 	_, err := InstallSoftwareAsync(soft, mapParams, "/usr/local/onesoft")
 	return err
 }

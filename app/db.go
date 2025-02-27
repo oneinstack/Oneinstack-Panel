@@ -213,7 +213,7 @@ func initSoftware() error {
 			{
 				Version:     "2.9.1",
 				VersionName: "caddy",
-				DownloadURL: "https://cdn.bugotech.com/oneinstack/soft/caddy_2.9.1_linux_amd64.tar.gz",
+				DownloadURL: "https://bugo-1301111475.cos.ap-guangzhou.myqcloud.com/oneinstack/soft/caddy_2.9.1_linux_amd64.tar.gz",
 				InstallConfig: models.InstallConfig{
 					BasePath: "{{.root}}/{{.name}}/v{{.version}}",
 					ConfigParams: []models.ConfigParam{
@@ -239,7 +239,7 @@ func initSoftware() error {
 					ConfigTemplates: []models.ConfigTemplate{
 						{
 							FileName: "Caddyfile",
-							Content:  "{{.params.domain}} {\n respond \"Hello from Caddy\"\n}",
+							Content:  "{{.domain}} {\n respond \"Hello from Caddy\"\n}",
 						},
 					},
 				},

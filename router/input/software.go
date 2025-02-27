@@ -18,8 +18,8 @@ type InstallSoftwareParam struct {
 	Id        int `json:"id"`
 	VersionId int `json:"version_id"`
 	Params    []struct {
-		Key   string `json:"key"`
-		Value string `json:"value"`
-		Type  string `json:"type"`
+		Key        string `json:"key"`
+		Value      string `json:"value"`
+		ConfigFile string `json:"config_file"`
 	} `json:"params"`
 }
