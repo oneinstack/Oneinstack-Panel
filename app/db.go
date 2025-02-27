@@ -138,7 +138,7 @@ func initSoftware() error {
 			{
 				Version:     "7u80",
 				VersionName: "jdk",
-				DownloadURL: "https://bugo-1301111475.cos.ap-guangzhou.myqcloud.com/oneinstack/soft/jdk-7u80-linux-x64.tar.gz ",
+				DownloadURL: "https://bugo-1301111475.cos.ap-guangzhou.myqcloud.com/oneinstack/soft/jdk-7u80-linux-x64.tar.gz",
 				InstallConfig: models.InstallConfig{
 					BasePath:     "{{.root}}/{{.name}}/v{{.version}}",
 					ConfigParams: nil,

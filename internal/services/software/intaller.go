@@ -85,6 +85,7 @@ func installSoftware(soft *models.Softwaren, params map[string]map[string]string
 	downloadPath, err := downloadFile(targetVersion.DownloadURL, basePath)
 	if err != nil {
 		logger.Write("下载失败: %v", err)
+		fmt.Println("下载失败", err.Error())
 		return err
 	}
 	logger.Write("下载完成，保存到: %s", downloadPath)
@@ -92,21 +93,21 @@ func installSoftware(soft *models.Softwaren, params map[string]map[string]string
 	// 创建bin目录并设置环境变量
 	binPath := filepath.Join(basePath, "bin")
 	if err := os.MkdirAll(binPath, 0755); err != nil {
+		fmt.Println("创建bin目录失败: %v", err)
 		logger.Write("创建bin目录失败: %v", err)
 		return err
 	}
-	if err := updateSystemPath(binPath); err != nil {
-		logger.Write("更新PATH失败: %v", err)
-		return fmt.Errorf("failed to update PATH: %v", err)
-	}
+
 	confPath := filepath.Join(basePath, "conf")
 	if err := os.MkdirAll(confPath, 0755); err != nil {
+		fmt.Println("创建conf目录失败: %v", err)
 		logger.Write("创建conf目录失败: %v", err)
 		return err
 	}
 
 	dataPath := filepath.Join(basePath, "data")
 	if err := os.MkdirAll(dataPath, 0755); err != nil {
+		fmt.Println("创建data目录失败: %v", err)
 		logger.Write("创建data目录失败: %v", err)
 		return err
 	}
@@ -116,9 +117,17 @@ func installSoftware(soft *models.Softwaren, params map[string]map[string]string
 	fmt.Println(binPath)
 	if err := extractFile(downloadPath, binPath); err != nil {
 		logger.Write("解压失败: %v", err)
+		fmt.Println("下载失败", err.Error())
 		return err
 	}
+	fmt.Println("解压完成到: %s", binPath)
 	logger.Write("解压完成到: %s", binPath)
+
+	if err := updateSystemPath(binPath); err != nil {
+		fmt.Println("更新PATH失败: %v", err)
+		logger.Write("更新PATH失败: %v", err)
+		return fmt.Errorf("failed to update PATH: %v", err)
+	}
 
 	// 生成配置文件
 	for _, templateStr := range targetVersion.InstallConfig.ConfigTemplates {
@@ -183,60 +192,59 @@ func installSoftware(soft *models.Softwaren, params map[string]map[string]string
 // 更新系统PATH环境变量
 func updateSystemPath(binPath string) error {
 	binSubPath := filepath.Join(binPath, "bin")
-	envFile := "/etc/environment"
+	envFile := "./profile"
+	if _, err := os.Stat(envFile); os.IsNotExist(err) {
+		os.Create(envFile)
+	}
 
-	// 读取现有环境配置
+	// 读取现有配置
 	content, err := os.ReadFile(envFile)
 	if err != nil {
-		return fmt.Errorf("读取环境文件失败: %w", err)
+		return fmt.Errorf("读取配置文件失败: %w", err)
 	}
 
-	// 解析现有PATH
-	pathValue, exists := parseEnvVar(string(content), "PATH")
-	newPaths := []string{binPath, binSubPath}
+	// 检查路径是否已存在
+	existingContent := string(content)
+	pathsToAdd := []string{binPath, binSubPath}
+	var needUpdate bool
 
-	// 构建新PATH
-	var newPath string
-	if exists {
-		// 去重处理
-		existingPaths := strings.Split(pathValue, ":")
-		pathMap := make(map[string]struct{})
-		for _, p := range existingPaths {
-			pathMap[p] = struct{}{}
+	// 构建新的PATH设置
+	var newLines []string
+	for _, path := range pathsToAdd {
+		// 检查是否已存在该路径
+		if !strings.Contains(existingContent, fmt.Sprintf(":$PATH:%s", path)) {
+			newLines = append(newLines, fmt.Sprintf("export PATH=$PATH:%s", path))
+			needUpdate = true
 		}
+	}
 
-		// 添加新路径（如果不存在）
-		var updatedPaths []string
-		for _, p := range append(existingPaths, newPaths...) {
-			if _, ok := pathMap[p]; ok {
-				continue
-			}
-			updatedPaths = append(updatedPaths, p)
-			pathMap[p] = struct{}{}
+	if !needUpdate {
+		return nil
+	}
+
+	// 追加新配置到文件末尾
+	file, err := os.OpenFile(envFile, os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		return fmt.Errorf("打开配置文件失败: %w", err)
+	}
+	defer file.Close()
+
+	// 写入新的PATH设置
+	if _, err := file.WriteString("\n\n# Added by onesoft installer\n"); err != nil {
+		return fmt.Errorf("写入配置失败: %w", err)
+	}
+	for _, line := range newLines {
+		if _, err := file.WriteString(line + "\n"); err != nil {
+			return fmt.Errorf("写入配置失败: %w", err)
 		}
-		newPath = strings.Join(updatedPaths, ":")
-	} else {
-		newPath = strings.Join(append(newPaths, os.Getenv("PATH")), ":")
 	}
 
-	// 保留其他环境变量
-	var output strings.Builder
-	for _, line := range strings.Split(string(content), "\n") {
-		if strings.HasPrefix(line, "PATH=") {
-			continue
-		}
-		output.WriteString(line + "\n")
+	// 立即生效（需要root权限）
+	cmd := exec.Command("/bin/bash", "-c", "source /etc/profile && export -p")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("刷新环境变量失败: %w\n输出: %s", err, string(output))
 	}
 
-	// 写入新PATH（带引号兼容不同格式）
-	output.WriteString(fmt.Sprintf("PATH=\"%s\"\n", newPath))
-
-	// 写回文件
-	if err := os.WriteFile(envFile, []byte(output.String()), 0644); err != nil {
-		return fmt.Errorf("写入环境文件失败: %w", err)
-	}
-
-	// 立即生效（需要用户重新登录）
 	return nil
 }
 
@@ -278,6 +286,7 @@ func downloadFile(urlStr string, saveDir string) (string, error) {
 
 	// 发起HTTP请求
 	resp, err := http.Get(urlStr)
+	fmt.Println("下载文件", urlStr)
 	if err != nil {
 		return "", fmt.Errorf("请求失败: %w", err)
 	}
@@ -306,14 +315,61 @@ func downloadFile(urlStr string, saveDir string) (string, error) {
 
 // 文件解压
 func extractFile(src, dest string) error {
+	// 创建临时目录用于检查文件结构
+	tmpDir, err := os.MkdirTemp("", "extract-")
+	if err != nil {
+		return fmt.Errorf("创建临时目录失败: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	// 先解压到临时目录检查结构
+	cmd := exec.Command("tar", "xf", src, "-C", tmpDir)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("临时解压失败: %w\n输出: %s", err, output)
+	}
+
+	// 检查解压后的目录结构
+	entries, err := os.ReadDir(tmpDir)
+	if err != nil {
+		return fmt.Errorf("读取临时目录失败: %w", err)
+	}
+
+	// 判断是否需要剥离顶层目录
+	stripComponents := 0
+	if len(entries) == 1 && entries[0].IsDir() {
+		// 如果只有一个目录，需要剥离顶层
+		stripComponents = 1
+	}
+
+	// 根据文件类型构建解压命令
+	args := []string{"-x"}
 	switch {
 	case strings.HasSuffix(src, ".tar.gz"):
-		return exec.Command("tar", "xzf", src, "-C", dest).Run()
+		args = append(args, "-z")
 	case strings.HasSuffix(src, ".tar.xz"):
-		return exec.Command("tar", "xJf", src, "-C", dest).Run()
+		args = append(args, "-J")
 	default:
-		return fmt.Errorf("unsupported11 file format")
+		return fmt.Errorf("unsupported file format")
 	}
+
+	// 添加剥离目录参数
+	if stripComponents > 0 {
+		args = append(args, fmt.Sprintf("--strip-components=%d", stripComponents))
+	}
+
+	// 添加必要参数（顺序很重要！）
+	args = append(args,
+		"-f", src,
+		"-C", dest,
+	)
+
+	// 执行正式解压
+	cmd = exec.Command("tar", args...)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("解压失败: %w\n命令: %s\n输出: %s", err, cmd.String(), output)
+	}
+
+	return nil
 }
 
 // 生成配置文件

@@ -13,7 +13,7 @@ var (
 	ONE_VIP    *viper.Viper
 )
 
-var BASE_PATH = "/usr/local/one/"
+var BASE_PATH = "./"
 var ENV = ""
 
 func DB() *gorm.DB {

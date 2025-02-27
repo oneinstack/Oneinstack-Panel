@@ -71,17 +71,17 @@ func GetSoftwareList(param *input.SoftwareParam) (*services.PaginatedResult[mode
 }
 
 func InstallSoftwaren(param *input.InstallSoftwareParam) error {
+	softs := &models.Softwaren{}
 	tx := app.DB().Preload("Versions", func(db *gorm.DB) *gorm.DB {
-		return db.Preload("InstallConfig.ServiceConfig").
+		return db.Where("id = ?", param.VersionId).
+			Preload("InstallConfig.ServiceConfig").
 			Preload("InstallConfig.ConfigTemplates").
 			Preload("InstallConfig.ConfigParams")
 	}).
-		Joins("LEFT JOIN versions ON softwarens.id = versions.software_id").
 		Where("softwarens.id = ?", param.Id).
-		Where("versions.id = ?", param.VersionId)
+		Joins("INNER JOIN versions ON versions.software_id = softwarens.id AND versions.id = ?", param.VersionId).
+		First(softs)
 
-	soft := &models.Softwaren{}
-	tx = tx.First(soft)
 	if tx.Error != nil {
 		return tx.Error
 	}
@@ -92,10 +92,11 @@ func InstallSoftwaren(param *input.InstallSoftwareParam) error {
 		}
 		mapParams[p.ConfigFile][p.Key] = p.Value
 	}
-	jsonParams, _ := json.Marshal(mapParams)
+	jsonParams, _ := json.Marshal(softs)
 	fmt.Println(string(jsonParams))
 	// return nil
-	_, err := InstallSoftwareAsync(soft, mapParams, "/usr/local/onesoft")
+	// _, err := InstallSoftwareAsync(soft, mapParams, "/usr/local/onesoft")
+	_, err := InstallSoftwareAsync(softs, mapParams, "./onesoft")
 	return err
 }
 

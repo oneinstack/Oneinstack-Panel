@@ -7,7 +7,8 @@ import (
 	"time"
 )
 
-const logDir = "/usr/local/onesoft/log/install"
+const logDir = "./onesoft/log/install"
+// const logDir = "/usr/local/onesoft/log/install"
 
 type InstallLogger struct {
 	LogPath string
