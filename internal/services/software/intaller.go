@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"oneinstack/internal/models"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,34 +16,7 @@ import (
 
 // 配置结构体映射
 type SoftwareConfig struct {
-	Software []struct {
-		Name        string             `json:"name"`
-		Description string             `json:"description"`
-		Versions    []*SoftwareVersion `json:"versions"`
-	} `json:"software"`
-}
-
-type SoftwareVersion struct {
-	Version       string `json:"version"`
-	DownloadURL   string `json:"download_url"`
-	VersionName   string `json:"version_name"`
-	InstallConfig struct {
-		BasePath     string `json:"base_path"`
-		ConfigParams map[string][]struct {
-			Name        string      `json:"name"`
-			PName       string      `json:"p_name"`
-			Type        string      `json:"type"`
-			Default     interface{} `json:"default"`
-			Required    bool        `json:"required"`
-			Description string      `json:"description"`
-		} `json:"config_params"`
-		ConfigTemplates map[string]string `json:"config_templates"`
-		ServiceConfig   struct {
-			StartCmd        string `json:"start_cmd"`
-			StopCmd         string `json:"stop_cmd"`
-			SystemdTemplate string `json:"systemd_template"`
-		} `json:"service_config"`
-	} `json:"install_config"`
+	Software []*models.Softwaren `json:"software"`
 }
 
 // 加载软件配置
@@ -64,29 +38,7 @@ func InstallSoftware(softwareName, version string, params map[string]map[string]
 	if err != nil {
 		return err
 	}
-	var targetVersion *struct {
-		Version       string `json:"version"`
-		DownloadURL   string `json:"download_url"`
-		VersionName   string `json:"version_name"`
-		InstallConfig struct {
-			BasePath     string `json:"base_path"`
-			ConfigParams map[string][]struct {
-				Name        string      `json:"name"`
-				PName       string      `json:"p_name"`
-				Type        string      `json:"type"`
-				Default     interface{} `json:"default"`
-				Required    bool        `json:"required"`
-				Description string      `json:"description"`
-			} `json:"config_params"`
-			ConfigTemplates map[string]string `json:"config_templates"`
-			ServiceConfig   struct {
-				StartCmd        string `json:"start_cmd"`
-				StopCmd         string `json:"stop_cmd"`
-				SystemdTemplate string `json:"systemd_template"`
-			} `json:"service_config"`
-		} `json:"install_config"`
-	}
-
+	targetVersion := models.Version{}
 	found := false
 	versionName := ""
 	for _, s := range configs.Software {
@@ -94,7 +46,7 @@ func InstallSoftware(softwareName, version string, params map[string]map[string]
 			for _, v := range s.Versions {
 				versionName = v.VersionName
 				if v.Version == version {
-					targetVersion = &v
+					targetVersion = v
 					found = true
 					break
 				}
@@ -148,13 +100,13 @@ func InstallSoftware(softwareName, version string, params map[string]map[string]
 	}
 
 	// 生成配置文件
-	for confFile, templateStr := range targetVersion.InstallConfig.ConfigTemplates {
-		outputPath := filepath.Join(basePath, "conf", confFile)
+	for _, templateStr := range targetVersion.InstallConfig.ConfigTemplates {
+		outputPath := filepath.Join(basePath, "conf", templateStr.FileName)
 		targetParams := make(map[string]string)
-		for _, param := range targetVersion.InstallConfig.ConfigParams[confFile] {
-			targetParams[param.Name] = param.PName
+		for _, param := range targetVersion.InstallConfig.ConfigParams {
+			targetParams[param.Name] = param.Name
 		}
-		if err := generateConfig(templateStr, confFile, targetParams, params, outputPath); err != nil {
+		if err := generateConfig(templateStr.Content, templateStr.FileName, targetParams, params, outputPath); err != nil {
 			return err
 		}
 	}
