@@ -7,8 +7,7 @@ import (
 	"oneinstack/internal/models"
 	"oneinstack/utils"
 
-	_ "github.com/mattn/go-sqlite3"
-	"gorm.io/driver/sqlite"
+	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
