@@ -7,10 +7,10 @@ import (
 	"oneinstack/internal/models"
 	"oneinstack/utils"
 
-	_ "github.com/mattn/go-sqlite3"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
+	_ "modernc.org/sqlite"
 )
 
 func init() {
@@ -137,36 +137,29 @@ func initSoftware() error {
 		Description: "Java开发工具包",
 		Versions: []models.Version{
 			{
+				Version:     "7u80",
+				VersionName: "jdk",
+				DownloadURL: "https://bugo-1301111475.cos.ap-guangzhou.myqcloud.com/oneinstack/soft/jdk-7u80-linux-x64.tar.gz ",
+				InstallConfig: models.InstallConfig{
+					BasePath:     "{{.root}}/{{.name}}/v{{.version}}",
+					ConfigParams: nil,
+					ServiceConfig: models.ServiceConfig{
+						SystemdTemplate: "",
+					},
+					ConfigTemplates: nil,
+				},
+			},
+			{
 				Version:     "17.0.8",
 				VersionName: "jdk",
 				DownloadURL: "https://download.java.net/openjdk/jdk17/ri/openjdk-17+35_linux-x64_bin.tar.gz",
 				InstallConfig: models.InstallConfig{
-					BasePath: "{{.root}}/{{.name}}/v{{.version}}",
-					ConfigParams: []models.ConfigParam{
-						{
-							ConfigFile:  "java.env",
-							Name:        "JAVA_HOME",
-							Type:        "string",
-							Description: "Java安装路径",
-							Required:    true,
-						},
-						{
-							ConfigFile:   "java.env",
-							Name:         "JAVA_OPTS",
-							Type:         "string",
-							Description:  "JVM启动参数",
-							DefaultValue: "-Xms512m -Xmx1024m",
-						},
-					},
+					BasePath:     "{{.root}}/{{.name}}/v{{.version}}",
+					ConfigParams: nil,
 					ServiceConfig: models.ServiceConfig{
 						SystemdTemplate: "",
 					},
-					ConfigTemplates: []models.ConfigTemplate{
-						{
-							FileName: "java.env",
-							Content:  "export JAVA_HOME={{.params.JAVA_HOME}}\nexport PATH=$JAVA_HOME/bin:$PATH\nexport JAVA_OPTS=\"{{.params.JAVA_OPTS}}\"",
-						},
-					},
+					ConfigTemplates: nil,
 				},
 			},
 			{
@@ -174,32 +167,12 @@ func initSoftware() error {
 				VersionName: "jdk",
 				DownloadURL: "https://download.java.net/openjdk/jdk11/ri/openjdk-11+28_linux-x64_bin.tar.gz",
 				InstallConfig: models.InstallConfig{
-					BasePath: "{{.root}}/{{.name}}/v{{.version}}",
-					ConfigParams: []models.ConfigParam{
-						{
-							ConfigFile:  "java.env",
-							Name:        "JAVA_HOME",
-							Type:        "string",
-							Description: "Java安装路径",
-							Required:    true,
-						},
-						{
-							ConfigFile:   "java.env",
-							Name:         "JAVA_OPTS",
-							Type:         "string",
-							Description:  "JVM启动参数",
-							DefaultValue: "-Xms512m -Xmx1024m",
-						},
-					},
+					BasePath:     "{{.root}}/{{.name}}/v{{.version}}",
+					ConfigParams: nil,
 					ServiceConfig: models.ServiceConfig{
 						SystemdTemplate: "",
 					},
-					ConfigTemplates: []models.ConfigTemplate{
-						{
-							FileName: "java.env",
-							Content:  "export JAVA_HOME={{.params.JAVA_HOME}}\nexport PATH=$JAVA_HOME/bin:$PATH\nexport JAVA_OPTS=\"{{.params.JAVA_OPTS}}\"",
-						},
-					},
+					ConfigTemplates: nil,
 				},
 			},
 		},

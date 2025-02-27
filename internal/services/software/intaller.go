@@ -182,24 +182,74 @@ func installSoftware(soft *models.Softwaren, params map[string]map[string]string
 
 // 更新系统PATH环境变量
 func updateSystemPath(binPath string) error {
-	pathEntry := fmt.Sprintf("\nexport PATH=$PATH:%s\n", binPath)
-	profilePath := "/etc/profile.d/installer_path.sh"
+	binSubPath := filepath.Join(binPath, "bin")
+	envFile := "/etc/environment"
 
-	// 检查是否已存在该路径
-	if content, err := os.ReadFile(profilePath); err == nil {
-		if strings.Contains(string(content), binPath) {
-			return nil
+	// 读取现有环境配置
+	content, err := os.ReadFile(envFile)
+	if err != nil {
+		return fmt.Errorf("读取环境文件失败: %w", err)
+	}
+
+	// 解析现有PATH
+	pathValue, exists := parseEnvVar(string(content), "PATH")
+	newPaths := []string{binPath, binSubPath}
+
+	// 构建新PATH
+	var newPath string
+	if exists {
+		// 去重处理
+		existingPaths := strings.Split(pathValue, ":")
+		pathMap := make(map[string]struct{})
+		for _, p := range existingPaths {
+			pathMap[p] = struct{}{}
+		}
+
+		// 添加新路径（如果不存在）
+		var updatedPaths []string
+		for _, p := range append(existingPaths, newPaths...) {
+			if _, ok := pathMap[p]; ok {
+				continue
+			}
+			updatedPaths = append(updatedPaths, p)
+			pathMap[p] = struct{}{}
+		}
+		newPath = strings.Join(updatedPaths, ":")
+	} else {
+		newPath = strings.Join(append(newPaths, os.Getenv("PATH")), ":")
+	}
+
+	// 保留其他环境变量
+	var output strings.Builder
+	for _, line := range strings.Split(string(content), "\n") {
+		if strings.HasPrefix(line, "PATH=") {
+			continue
+		}
+		output.WriteString(line + "\n")
+	}
+
+	// 写入新PATH（带引号兼容不同格式）
+	output.WriteString(fmt.Sprintf("PATH=\"%s\"\n", newPath))
+
+	// 写回文件
+	if err := os.WriteFile(envFile, []byte(output.String()), 0644); err != nil {
+		return fmt.Errorf("写入环境文件失败: %w", err)
+	}
+
+	// 立即生效（需要用户重新登录）
+	return nil
+}
+
+// 解析环境变量值
+func parseEnvVar(content, key string) (string, bool) {
+	for _, line := range strings.Split(content, "\n") {
+		if strings.HasPrefix(line, key+"=") {
+			value := strings.TrimPrefix(line, key+"=")
+			// 去除可能存在的引号
+			return strings.Trim(value, `"`), true
 		}
 	}
-
-	f, err := os.OpenFile(profilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	_, err = f.WriteString(pathEntry)
-	return err
+	return "", false
 }
 
 // 模板渲染通用函数
