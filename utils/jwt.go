@@ -10,13 +10,15 @@ import (
 var jwtKey = []byte("my_secret_key") // 请在生产环境中安全管理你的密钥
 
 type Claims struct {
+	Id       int64  `json:"id"`
 	Username string `json:"username"`
 	jwt.StandardClaims
 }
 
-func GenerateJWT(username string) (string, error) {
+func GenerateJWT(username string, id int64) (string, error) {
 	expirationTime := time.Now().Add(24 * time.Hour)
 	claims := &Claims{
+		Id:       id,
 		Username: username,
 		StandardClaims: jwt.StandardClaims{
 			ExpiresAt: expirationTime.Unix(),

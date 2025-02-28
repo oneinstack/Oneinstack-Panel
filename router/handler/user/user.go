@@ -21,7 +21,7 @@ func LoginHandler(c *gin.Context) {
 		core.HandleError(c, http.StatusUnauthorized, core.ErrUnauthorizedAP, nil)
 		return
 	}
-	token, err := utils.GenerateJWT(user.Username)
+	token, err := utils.GenerateJWT(user.Username, user.ID)
 	if err != nil {
 		core.HandleError(c, http.StatusInternalServerError, core.ErrInternalServerError, gin.H{"error": "could not generate token"})
 		return
