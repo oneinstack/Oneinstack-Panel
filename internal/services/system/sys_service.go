@@ -386,7 +386,7 @@ func UpdateUser(user models.User) error {
 
 func ResetPassword(user input.ResetPasswordRequest) error {
 	u := models.User{}
-	tx := app.DB().Where("username = ? and password = ?", user.Username, user.Password).First(&u)
+	tx := app.DB().Where("id = ?", user.Id).First(&u)
 	if tx.Error != nil {
 		return tx.Error
 	}
