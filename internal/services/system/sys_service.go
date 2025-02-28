@@ -371,6 +371,7 @@ func UpdateUser(user models.User) error {
 	if user.Username == "" {
 		return fmt.Errorf("Username is empty")
 	}
+	u.Username = user.Username
 	tx = app.DB().Updates(u)
 	if tx.Error != nil {
 		return tx.Error
