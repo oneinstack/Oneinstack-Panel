@@ -430,19 +430,12 @@ func initSoftware() error {
 					BasePath:     "{{.root}}/{{.name}}/v{{.version}}",
 					ConfigParams: nil,
 					ServiceConfig: models.ServiceConfig{
-						StartCmd:        "{{.bin}}/nginx -c {{.conf}}/nginx.conf",
+						StartCmd:        "{{.bin}}/nginx -c {{.bin}}/nginx.conf",
 						ReloadCmd:       "{{.bin}}/nginx -s reload",
-						SystemdTemplate: "[Unit]\nDescription=NGINX Web Server\nAfter=network.target\n\n[Service]\nExecStart={{.start_cmd}}\nExecReload={{.reload_cmd}}\nRestart=on-failure\n\n[Install]\nWantedBy=multi-user.target",
+						SystemdTemplate: "[Unit]\nDescription=NGINX Web Server\nAfter=network.target\n\n[Service]\nExecStart={{.start_cmd}}\nRestart=on-failure\n\n[Install]\nWantedBy=multi-user.target",
 					},
 					ConfigTemplates: nil,
-					Cmd: `
-   ./configure
-    --sbin-path={{.bin}}/nginx
-    --conf-path={{.bin}}/nginx.conf
-    --pid-path={{.bin}}/nginx.pid
-    --with-http_ssl_module
-    --with-pcre=../pcre2-10.39
-    --with-zlib=../zlib-1.3`,
+					Cmd:             "",
 				},
 			},
 		},

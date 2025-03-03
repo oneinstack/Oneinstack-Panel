@@ -145,24 +145,37 @@ func installSoftware(soft *models.Softwaren, params map[string]map[string]string
 
 	if targetVersion.InstallConfig.ServiceConfig.SystemdTemplate != "" {
 		if err := updatesystemd(targetVersion, confPath, binPath, dataPath, params, logger); err != nil {
+			fmt.Println("更新systemd配置失败: %v", err)
 			logger.Write("更新systemd配置失败: %v", err)
 			return err
 		}
 	}
 
 	if targetVersion.InstallConfig.Cmd != "" {
-		cmds := strings.Split(targetVersion.InstallConfig.Cmd, ",")
-		for _, cmd := range cmds {
-			fmt.Println("执行", cmd)
-			cmd = renderTemplate(cmd, map[string]interface{}{
-				"conf":   confPath,
-				"bin":    binPath,
-				"params": params,
-			})
-			if err := exec.Command(cmd).Run(); err != nil {
-				logger.Write("服务cmd失败: %v", err)
-				return err
-			}
+		if err := execCmd(targetVersion.InstallConfig.Cmd, confPath, binPath, params, logger); err != nil {
+			fmt.Println("执行cmd失败: %v", err)
+			logger.Write("执行cmd失败: %v", err)
+			return err
+		}
+	}
+	return nil
+}
+
+func execCmd(cmd string, confPath string, binPath string, params map[string]map[string]string, logger *InstallLogger) error {
+	cmds := strings.Split(cmd, ",")
+	for _, cmd := range cmds {
+		cmd = renderTemplate(cmd, map[string]interface{}{
+			"conf":   confPath,
+			"bin":    binPath,
+			"params": params,
+		})
+		cmdObj := exec.Command("sh", "-c", cmd)
+		cmdObj.Dir = binPath
+		fmt.Println("执行binPath", binPath)
+		fmt.Println("执行", cmdObj.String())
+		if err := cmdObj.Run(); err != nil {
+			logger.Write("服务cmd失败: %v", err)
+			return err
 		}
 	}
 	return nil
@@ -190,7 +203,8 @@ func updatesystemd(targetVersion models.Version, confPath string, binPath string
 			"data":   dataPath,
 			"params": params,
 		})
-		servicePath := filepath.Join("./etc/systemd/system/", targetVersion.VersionName+".service")
+		servicePath := filepath.Join("/etc/systemd/system/", targetVersion.VersionName+".service")
+		fmt.Println("创建服务文件目录", servicePath)
 		if err := os.MkdirAll(filepath.Dir(servicePath), 0755); err != nil {
 			logger.Write("创建服务文件目录失败: %v", err)
 			fmt.Println("创建服务文件目录失败: %v", err)
@@ -207,16 +221,19 @@ func updatesystemd(targetVersion models.Version, confPath string, binPath string
 	logger.Write("重新加载systemd配置")
 	if err := exec.Command("systemctl", "daemon-reload").Run(); err != nil {
 		logger.Write("systemd配置重载失败: %v", err)
+		fmt.Println("systemd配置重载失败: %v", err)
 		return fmt.Errorf("failed to reload systemd configuration: %v", err)
 	}
 
 	logger.Write("启用并启动服务: %s", targetVersion.VersionName)
 	if err := exec.Command("systemctl", "enable", targetVersion.VersionName+".service").Run(); err != nil {
 		logger.Write("服务启用失败: %v", err)
+		fmt.Println("服务启用失败: %v", err)
 		return fmt.Errorf("failed to enable service: %v", err)
 	}
 	if err := exec.Command("systemctl", "start", targetVersion.VersionName+".service").Run(); err != nil {
 		logger.Write("服务启动失败: %v", err)
+		fmt.Println("服务启动失败: %v", err)
 		return fmt.Errorf("failed to start service: %v", err)
 	}
 	return nil
