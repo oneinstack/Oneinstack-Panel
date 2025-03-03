@@ -345,9 +345,9 @@ func initSoftware() error {
 		Description: "关系型数据库",
 		Versions: []models.Version{
 			{
-				Version:     "8.0.33",
+				Version:     "8.4.3",
 				VersionName: "mysql-server",
-				DownloadURL: "https://dev.mysql.com/get/Downloads/MySQL-8.0/mysql-8.0.33-linux-glibc2.28-x86_64.tar.gz",
+				DownloadURL: "https://bugo-1301111475.cos.ap-guangzhou.myqcloud.com/oneinstack/soft/mysql-8.4.3-linux-glibc2.28-x86_64.tar.xz",
 				InstallConfig: models.InstallConfig{
 					BasePath: "{{.root}}/{{.name}}/v{{.version}}",
 					ConfigParams: []models.ConfigParam{
@@ -380,9 +380,9 @@ func initSoftware() error {
 				},
 			},
 			{
-				Version:     "5.7.43",
+				Version:     "5.7.44",
 				VersionName: "mysql-server",
-				DownloadURL: "https://dev.mysql.com/get/Downloads/MySQL-5.7/mysql-5.7.43-linux-glibc2.28-x86_64.tar.gz",
+				DownloadURL: "https://bugo-1301111475.cos.ap-guangzhou.myqcloud.com/oneinstack/soft/mysql-5.7.44-linux-glibc2.12-x86_64.tar.gz",
 				InstallConfig: models.InstallConfig{
 					BasePath: "{{.root}}/{{.name}}/v{{.version}}",
 					ConfigParams: []models.ConfigParam{
@@ -423,9 +423,9 @@ func initSoftware() error {
 		Description: "高性能Web服务器",
 		Versions: []models.Version{
 			{
-				Version:     "1.25.3",
+				Version:     "1.24.0",
 				VersionName: "nginx",
-				DownloadURL: "https://nginx.org/download/nginx-1.25.3.tar.gz",
+				DownloadURL: "https://bugo-1301111475.cos.ap-guangzhou.myqcloud.com/oneinstack/soft/nginx-1.24.0.tar.gz",
 				InstallConfig: models.InstallConfig{
 					BasePath:     "{{.root}}/{{.name}}/v{{.version}}",
 					ConfigParams: nil,
@@ -435,6 +435,14 @@ func initSoftware() error {
 						SystemdTemplate: "[Unit]\nDescription=NGINX Web Server\nAfter=network.target\n\n[Service]\nExecStart={{.start_cmd}}\nExecReload={{.reload_cmd}}\nRestart=on-failure\n\n[Install]\nWantedBy=multi-user.target",
 					},
 					ConfigTemplates: nil,
+					Cmd: `
+   ./configure
+    --sbin-path={{.bin}}/nginx
+    --conf-path={{.bin}}/nginx.conf
+    --pid-path={{.bin}}/nginx.pid
+    --with-http_ssl_module
+    --with-pcre=../pcre2-10.39
+    --with-zlib=../zlib-1.3`,
 				},
 			},
 		},
