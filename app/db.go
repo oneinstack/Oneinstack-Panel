@@ -512,7 +512,7 @@ func initSoftware() error {
 					{
 						URL:     "https://bugo-1301111475.cos.ap-guangzhou.myqcloud.com/oneinstack/soft/nginx-1.24.0-ubuntu.tar.gz",
 						OS:      "ubuntu",
-						Version: 2004,
+						Version: 22,
 					},
 					{
 						URL:     "https://bugo-1301111475.cos.ap-guangzhou.myqcloud.com/oneinstack/soft/nginx-1.24.0-cent.tar.gz",
@@ -526,15 +526,7 @@ func initSoftware() error {
 						OS:  "ubuntu",
 					},
 					{
-						Cmd: ` yum -y install gcc gcc-c++ autoconf automake make`,
-						OS:  "centos",
-					},
-					{
-						Cmd: ` yum -y install gcc gcc-c++ autoconf automake make  `,
-						OS:  "centos",
-					},
-					{
-						Cmd: ` yum -y install pcre-devel openssl-devel  `,
+						Cmd: `sudo yum install -y gcc-c++ pcre-devel zlib-devel openssl-devel wget`,
 						OS:  "centos",
 					},
 				},

@@ -129,13 +129,10 @@ func installSoftware(soft *models.Softwaren, params map[string]map[string]string
 	logger.Write("解压完成到: %s", binPath)
 
 	//预执行命令
-	if len(targetVersion.PreCmd) > 0 {
-		for _, cmd := range targetVersion.PreCmd {
-			if err := execCmd(cmd.Cmd, confPath, binPath, params, logger); err != nil {
-				logger.Write("执行cmd失败: %v", err)
-				return err
-			}
-		}
+	if err := execPreCmd(targetVersion, confPath, binPath, params, logger); err != nil {
+		logger.Write("执行预执行命令失败: %v", err)
+		fmt.Println("执行预执行命令失败: %v", err)
+		return err
 	}
 
 	if err := updateSystemPath(binPath); err != nil {
@@ -477,6 +474,19 @@ func getDownloadURL(v models.Version) string {
 		}
 	}
 	return ""
+}
+
+func execPreCmd(targetVersion models.Version, confPath string, binPath string, params map[string]map[string]string, logger *InstallLogger) error {
+	os := getOS()
+	for _, cmd := range targetVersion.PreCmd {
+		if cmd.OS == os {
+			if err := execCmd(cmd.Cmd, confPath, binPath, params, logger); err != nil {
+				logger.Write("执行cmd失败: %v", err)
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // 新增获取操作系统版本的函数
