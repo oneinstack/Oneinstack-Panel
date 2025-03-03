@@ -113,6 +113,8 @@ func initSoftware() error {
 		&models.ServiceConfig{},
 		&models.ConfigParam{},
 		&models.ConfigTemplate{},
+		&models.PreCmd{},
+		&models.DownloadURL{},
 	}
 
 	for _, table := range tables {
@@ -508,12 +510,14 @@ func initSoftware() error {
 				VersionName: "nginx",
 				DownloadURL: []models.DownloadURL{
 					{
-						URL: "https://bugo-1301111475.cos.ap-guangzhou.myqcloud.com/oneinstack/soft/nginx-1.24.0.tar.gz",
-						OS:  "ubuntu",
+						URL:     "https://bugo-1301111475.cos.ap-guangzhou.myqcloud.com/oneinstack/soft/nginx-1.24.0-ubuntu.tar.gz",
+						OS:      "ubuntu",
+						Version: 2004,
 					},
 					{
-						URL: "https://bugo-1301111475.cos.ap-guangzhou.myqcloud.com/oneinstack/soft/nginx-1.24.0.tar.gz",
-						OS:  "centos",
+						URL:     "https://bugo-1301111475.cos.ap-guangzhou.myqcloud.com/oneinstack/soft/nginx-1.24.0.tar.gz",
+						OS:      "centos",
+						Version: 8,
 					},
 				},
 				PreCmd: []models.PreCmd{
@@ -522,11 +526,15 @@ func initSoftware() error {
 						OS:  "ubuntu",
 					},
 					{
-						Cmd: ` yum groupinstall -y "Development Tools"`,
+						Cmd: ` yum -y install gcc gcc-c++ autoconf automake make`,
 						OS:  "centos",
 					},
 					{
-						Cmd: ` yum install -y pcre pcre-devel openssl-devel zlib-devel wget`,
+						Cmd: ` yum -y install gcc gcc-c++ autoconf automake make  `,
+						OS:  "centos",
+					},
+					{
+						Cmd: ` yum -y install pcre-devel openssl-devel  `,
 						OS:  "centos",
 					},
 				},

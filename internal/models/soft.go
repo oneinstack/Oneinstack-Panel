@@ -39,6 +39,7 @@ type DownloadURL struct {
 	gorm.Model
 	URL       string `json:"url"`
 	OS        string `json:"os"`
+	Version   int    `json:"version"`
 	VersionID uint   `gorm:"index" json:"version_id"`
 }
 

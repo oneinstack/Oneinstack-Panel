@@ -16,7 +16,9 @@ func GetSoftwareList(param *input.SoftwareParam) (*services.PaginatedResult[mode
 	tx := app.DB().Preload("Versions").
 		Preload("Versions.InstallConfig.ServiceConfig").
 		Preload("Versions.InstallConfig.ConfigTemplates").
-		Preload("Versions.InstallConfig.ConfigParams")
+		Preload("Versions.InstallConfig.ConfigParams").
+		Preload("Versions.InstallConfig.PreCmd").
+		Preload("Versions.InstallConfig.DownloadURL")
 
 	if param.Id > 0 {
 		tx = tx.Where("id = ?", param.Id)
@@ -76,7 +78,9 @@ func InstallSoftwaren(param *input.InstallSoftwareParam) error {
 		return db.Where("id = ?", param.VersionId).
 			Preload("InstallConfig.ServiceConfig").
 			Preload("InstallConfig.ConfigTemplates").
-			Preload("InstallConfig.ConfigParams")
+			Preload("InstallConfig.ConfigParams").
+			Preload("InstallConfig.PreCmd").
+			Preload("InstallConfig.DownloadURL")
 	}).
 		Where("softwarens.id = ?", param.Id).
 		Joins("INNER JOIN versions ON versions.software_id = softwarens.id AND versions.id = ?", param.VersionId).

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"text/template"
 	"time"
@@ -460,12 +461,66 @@ func generateConfig(templateStr string, confFile string, targetParams map[string
 
 func getDownloadURL(v models.Version) string {
 	os := getOS()
+	osVersion, err := getOSVersion()
+	fmt.Println("osVersion: ", osVersion)
+	if err != nil || osVersion == 0 {
+		return ""
+	}
 	for _, url := range v.DownloadURL {
-		if url.OS == os {
+		if url.OS == os && osVersion == url.Version {
+			return url.URL
+		}
+	}
+	for _, url := range v.DownloadURL {
+		if url.OS == os && osVersion >= url.Version {
 			return url.URL
 		}
 	}
 	return ""
+}
+
+// 新增获取操作系统版本的函数
+func getOSVersion() (int, error) {
+	// 先获取操作系统类型
+	osType := getOS()
+
+	switch osType {
+	case "centos":
+		// 读取redhat-release文件
+		content, err := os.ReadFile("/etc/redhat-release")
+		if err != nil {
+			return 0, err
+		}
+
+		// 解析版本号，格式示例："CentOS Linux release 7.9.2009 (Core)"
+		parts := strings.Fields(string(content))
+		if len(parts) >= 4 {
+			versionParts := strings.Split(parts[3], ".")
+			if len(versionParts) > 0 {
+				return strconv.Atoi(versionParts[0])
+			}
+		}
+
+	case "ubuntu":
+		// 读取os-release文件
+		content, err := os.ReadFile("/etc/os-release")
+		if err != nil {
+			return 0, err
+		}
+
+		// 解析VERSION_ID字段
+		for _, line := range strings.Split(string(content), "\n") {
+			if strings.HasPrefix(line, "VERSION_ID=") {
+				version := strings.Trim(strings.Split(line, "=")[1], `"`)
+				versionParts := strings.Split(version, ".")
+				if len(versionParts) > 0 {
+					return strconv.Atoi(versionParts[0])
+				}
+			}
+		}
+	}
+
+	return 0, nil
 }
 
 // 判断当前系统是ubuntu还是centos
