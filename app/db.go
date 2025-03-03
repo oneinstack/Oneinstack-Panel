@@ -515,7 +515,7 @@ func initSoftware() error {
 						Version: 2004,
 					},
 					{
-						URL:     "https://bugo-1301111475.cos.ap-guangzhou.myqcloud.com/oneinstack/soft/nginx-1.24.0.tar.gz",
+						URL:     "https://bugo-1301111475.cos.ap-guangzhou.myqcloud.com/oneinstack/soft/nginx-1.24.0-cent.tar.gz",
 						OS:      "centos",
 						Version: 8,
 					},
