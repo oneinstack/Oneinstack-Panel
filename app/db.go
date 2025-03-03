@@ -417,9 +417,32 @@ func initSoftware() error {
 		},
 	}
 
+	// 创建Nginx
+	nginx := &models.Softwaren{
+		Name:        "nginx",
+		Description: "高性能Web服务器",
+		Versions: []models.Version{
+			{
+				Version:     "1.25.3",
+				VersionName: "nginx",
+				DownloadURL: "https://nginx.org/download/nginx-1.25.3.tar.gz",
+				InstallConfig: models.InstallConfig{
+					BasePath:     "{{.root}}/{{.name}}/v{{.version}}",
+					ConfigParams: nil,
+					ServiceConfig: models.ServiceConfig{
+						StartCmd:        "{{.bin}}/nginx -c {{.conf}}/nginx.conf",
+						ReloadCmd:       "{{.bin}}/nginx -s reload",
+						SystemdTemplate: "[Unit]\nDescription=NGINX Web Server\nAfter=network.target\n\n[Service]\nExecStart={{.start_cmd}}\nExecReload={{.reload_cmd}}\nRestart=on-failure\n\n[Install]\nWantedBy=multi-user.target",
+					},
+					ConfigTemplates: nil,
+				},
+			},
+		},
+	}
+
 	// 在事务中创建所有软件
 	tx := db.Begin()
-	softwareList := []*models.Softwaren{caddy, php, java, redis, mysql}
+	softwareList := []*models.Softwaren{caddy, php, java, redis, mysql, nginx}
 	for _, soft := range softwareList {
 		if err := tx.Create(soft).Error; err != nil {
 			tx.Rollback()

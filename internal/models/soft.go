@@ -41,6 +41,7 @@ type InstallConfig struct {
 	ConfigParams    []ConfigParam    `gorm:"foreignKey:InstallConfigID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;" json:"config_params"`
 	ServiceConfig   ServiceConfig    `gorm:"foreignKey:InstallConfigID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;" json:"service_config"`
 	ConfigTemplates []ConfigTemplate `gorm:"foreignKey:InstallConfigID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;" json:"config_templates"`
+	Cmd             string           `gorm:"size:100" json:"cmd"`
 }
 
 type ConfigParam struct {
