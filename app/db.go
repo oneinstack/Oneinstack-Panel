@@ -164,33 +164,11 @@ func initSoftware() error {
 				VersionName: "jdk",
 				DownloadURL: []models.DownloadURL{
 					{
-						URL: "https://download.java.net/openjdk/jdk17/ri/openjdk-17+35_linux-x64_bin.tar.gz",
+						URL: "https://bugo-1301111475.cos.ap-guangzhou.myqcloud.com/oneinstack/soft/jdk-17.0.12_linux-x64_bin.tar.gz",
 						OS:  "ubuntu",
 					},
 					{
-						URL: "https://download.java.net/openjdk/jdk17/ri/openjdk-17+35_linux-x64_bin.tar.gz",
-						OS:  "centos",
-					},
-				},
-				InstallConfig: models.InstallConfig{
-					BasePath:     "{{.root}}/{{.name}}/v{{.version}}",
-					ConfigParams: nil,
-					ServiceConfig: models.ServiceConfig{
-						SystemdTemplate: "",
-					},
-					ConfigTemplates: nil,
-				},
-			},
-			{
-				Version:     "11.0.20",
-				VersionName: "jdk",
-				DownloadURL: []models.DownloadURL{
-					{
-						URL: "https://download.java.net/openjdk/jdk11/ri/openjdk-11+28_linux-x64_bin.tar.gz",
-						OS:  "ubuntu",
-					},
-					{
-						URL: "https://download.java.net/openjdk/jdk11/ri/openjdk-11+28_linux-x64_bin.tar.gz",
+						URL: "https://bugo-1301111475.cos.ap-guangzhou.myqcloud.com/oneinstack/soft/jdk-17.0.12_linux-x64_bin.tar.gz",
 						OS:  "centos",
 					},
 				},
