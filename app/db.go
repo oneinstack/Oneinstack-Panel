@@ -138,7 +138,16 @@ func initSoftware() error {
 			{
 				Version:     "7u80",
 				VersionName: "jdk",
-				DownloadURL: "https://bugo-1301111475.cos.ap-guangzhou.myqcloud.com/oneinstack/soft/jdk-7u80-linux-x64.tar.gz",
+				DownloadURL: []models.DownloadURL{
+					{
+						URL: "https://bugo-1301111475.cos.ap-guangzhou.myqcloud.com/oneinstack/soft/jdk-7u80-linux-x64.tar.gz",
+						OS:  "ubuntu",
+					},
+					{
+						URL: "https://bugo-1301111475.cos.ap-guangzhou.myqcloud.com/oneinstack/soft/jdk-7u80-linux-x64.tar.gz",
+						OS:  "centos",
+					},
+				},
 				InstallConfig: models.InstallConfig{
 					BasePath:     "{{.root}}/{{.name}}/v{{.version}}",
 					ConfigParams: nil,
@@ -151,7 +160,16 @@ func initSoftware() error {
 			{
 				Version:     "17.0.8",
 				VersionName: "jdk",
-				DownloadURL: "https://download.java.net/openjdk/jdk17/ri/openjdk-17+35_linux-x64_bin.tar.gz",
+				DownloadURL: []models.DownloadURL{
+					{
+						URL: "https://download.java.net/openjdk/jdk17/ri/openjdk-17+35_linux-x64_bin.tar.gz",
+						OS:  "ubuntu",
+					},
+					{
+						URL: "https://download.java.net/openjdk/jdk17/ri/openjdk-17+35_linux-x64_bin.tar.gz",
+						OS:  "centos",
+					},
+				},
 				InstallConfig: models.InstallConfig{
 					BasePath:     "{{.root}}/{{.name}}/v{{.version}}",
 					ConfigParams: nil,
@@ -164,7 +182,16 @@ func initSoftware() error {
 			{
 				Version:     "11.0.20",
 				VersionName: "jdk",
-				DownloadURL: "https://download.java.net/openjdk/jdk11/ri/openjdk-11+28_linux-x64_bin.tar.gz",
+				DownloadURL: []models.DownloadURL{
+					{
+						URL: "https://download.java.net/openjdk/jdk11/ri/openjdk-11+28_linux-x64_bin.tar.gz",
+						OS:  "ubuntu",
+					},
+					{
+						URL: "https://download.java.net/openjdk/jdk11/ri/openjdk-11+28_linux-x64_bin.tar.gz",
+						OS:  "centos",
+					},
+				},
 				InstallConfig: models.InstallConfig{
 					BasePath:     "{{.root}}/{{.name}}/v{{.version}}",
 					ConfigParams: nil,
@@ -185,7 +212,16 @@ func initSoftware() error {
 			{
 				Version:     "2.9.1",
 				VersionName: "caddy",
-				DownloadURL: "https://bugo-1301111475.cos.ap-guangzhou.myqcloud.com/oneinstack/soft/caddy_2.9.1_linux_amd64.tar.gz",
+				DownloadURL: []models.DownloadURL{
+					{
+						URL: "https://bugo-1301111475.cos.ap-guangzhou.myqcloud.com/oneinstack/soft/caddy_2.9.1_linux_amd64.tar.gz",
+						OS:  "ubuntu",
+					},
+					{
+						URL: "https://bugo-1301111475.cos.ap-guangzhou.myqcloud.com/oneinstack/soft/caddy_2.9.1_linux_amd64.tar.gz",
+						OS:  "centos",
+					},
+				},
 				InstallConfig: models.InstallConfig{
 					BasePath: "{{.root}}/{{.name}}/v{{.version}}",
 					ConfigParams: []models.ConfigParam{
@@ -227,7 +263,16 @@ func initSoftware() error {
 			{
 				Version:     "8.2.20",
 				VersionName: "php-fpm",
-				DownloadURL: "https://www.php.net/distributions/php-8.2.20.tar.gz",
+				DownloadURL: []models.DownloadURL{
+					{
+						URL: "https://www.php.net/distributions/php-8.2.20.tar.gz",
+						OS:  "ubuntu",
+					},
+					{
+						URL: "https://www.php.net/distributions/php-8.2.20.tar.gz",
+						OS:  "centos",
+					},
+				},
 				InstallConfig: models.InstallConfig{
 					BasePath: "{{.root}}/{{.name}}/v{{.version}}",
 					ConfigParams: []models.ConfigParam{
@@ -269,7 +314,16 @@ func initSoftware() error {
 			{
 				Version:     "7.2.4",
 				VersionName: "redis-server",
-				DownloadURL: "https://download.redis.io/releases/redis-7.2.4.tar.gz",
+				DownloadURL: []models.DownloadURL{
+					{
+						URL: "https://download.redis.io/releases/redis-7.2.4.tar.gz",
+						OS:  "ubuntu",
+					},
+					{
+						URL: "https://download.redis.io/releases/redis-7.2.4.tar.gz",
+						OS:  "centos",
+					},
+				},
 				InstallConfig: models.InstallConfig{
 					BasePath: "{{.root}}/{{.name}}/v{{.version}}",
 					ConfigParams: []models.ConfigParam{
@@ -304,7 +358,16 @@ func initSoftware() error {
 			{
 				Version:     "6.2.14",
 				VersionName: "redis-server",
-				DownloadURL: "https://download.redis.io/releases/redis-6.2.14.tar.gz",
+				DownloadURL: []models.DownloadURL{
+					{
+						URL: "https://download.redis.io/releases/redis-7.2.4.tar.gz",
+						OS:  "ubuntu",
+					},
+					{
+						URL: "https://download.redis.io/releases/redis-7.2.4.tar.gz",
+						OS:  "centos",
+					},
+				},
 				InstallConfig: models.InstallConfig{
 					BasePath: "{{.root}}/{{.name}}/v{{.version}}",
 					ConfigParams: []models.ConfigParam{
@@ -347,7 +410,16 @@ func initSoftware() error {
 			{
 				Version:     "8.4.3",
 				VersionName: "mysql-server",
-				DownloadURL: "https://bugo-1301111475.cos.ap-guangzhou.myqcloud.com/oneinstack/soft/mysql-8.4.3-linux-glibc2.28-x86_64.tar.xz",
+				DownloadURL: []models.DownloadURL{
+					{
+						URL: "https://bugo-1301111475.cos.ap-guangzhou.myqcloud.com/oneinstack/soft/mysql-8.4.3-linux-glibc2.28-x86_64.tar.xz",
+						OS:  "ubuntu",
+					},
+					{
+						URL: "https://bugo-1301111475.cos.ap-guangzhou.myqcloud.com/oneinstack/soft/mysql-8.4.3-linux-glibc2.28-x86_64.tar.xz",
+						OS:  "centos",
+					},
+				},
 				InstallConfig: models.InstallConfig{
 					BasePath: "{{.root}}/{{.name}}/v{{.version}}",
 					ConfigParams: []models.ConfigParam{
@@ -382,7 +454,16 @@ func initSoftware() error {
 			{
 				Version:     "5.7.44",
 				VersionName: "mysql-server",
-				DownloadURL: "https://bugo-1301111475.cos.ap-guangzhou.myqcloud.com/oneinstack/soft/mysql-5.7.44-linux-glibc2.12-x86_64.tar.gz",
+				DownloadURL: []models.DownloadURL{
+					{
+						URL: "https://bugo-1301111475.cos.ap-guangzhou.myqcloud.com/oneinstack/soft/mysql-5.7.44-linux-glibc2.12-x86_64.tar.gz",
+						OS:  "ubuntu",
+					},
+					{
+						URL: "https://bugo-1301111475.cos.ap-guangzhou.myqcloud.com/oneinstack/soft/mysql-5.7.44-linux-glibc2.12-x86_64.tar.gz",
+						OS:  "centos",
+					},
+				},
 				InstallConfig: models.InstallConfig{
 					BasePath: "{{.root}}/{{.name}}/v{{.version}}",
 					ConfigParams: []models.ConfigParam{
@@ -425,14 +506,51 @@ func initSoftware() error {
 			{
 				Version:     "1.24.0",
 				VersionName: "nginx",
-				DownloadURL: "https://bugo-1301111475.cos.ap-guangzhou.myqcloud.com/oneinstack/soft/nginx-1.24.0.tar.gz",
+				DownloadURL: []models.DownloadURL{
+					{
+						URL: "https://bugo-1301111475.cos.ap-guangzhou.myqcloud.com/oneinstack/soft/nginx-1.24.0.tar.gz",
+						OS:  "ubuntu",
+					},
+					{
+						URL: "https://bugo-1301111475.cos.ap-guangzhou.myqcloud.com/oneinstack/soft/nginx-1.24.0.tar.gz",
+						OS:  "centos",
+					},
+				},
+				PreCmd: []models.PreCmd{
+					{
+						Cmd: " apt-get update && apt-get install -y build-essential libpcre3 libpcre3-dev libssl-dev zlib1g-dev wget",
+						OS:  "ubuntu",
+					},
+					{
+						Cmd: ` yum groupinstall -y "Development Tools"`,
+						OS:  "centos",
+					},
+					{
+						Cmd: ` yum install -y pcre pcre-devel openssl-devel zlib-devel wget`,
+						OS:  "centos",
+					},
+				},
 				InstallConfig: models.InstallConfig{
 					BasePath:     "{{.root}}/{{.name}}/v{{.version}}",
 					ConfigParams: nil,
 					ServiceConfig: models.ServiceConfig{
-						StartCmd:        "{{.bin}}/nginx -c {{.bin}}/nginx.conf",
-						ReloadCmd:       "{{.bin}}/nginx -s reload",
-						SystemdTemplate: "[Unit]\nDescription=NGINX Web Server\nAfter=network.target\n\n[Service]\nExecStart={{.start_cmd}}\nRestart=on-failure\n\n[Install]\nWantedBy=multi-user.target",
+						StartCmd:  "{{.bin}}/nginx -c {{.bin}}/nginx.conf",
+						ReloadCmd: "{{.bin}}/nginx -s reload",
+						SystemdTemplate: `
+[Unit]
+Description=NGINX Web Server
+After=network.target
+
+[Service]
+Type=forking
+ExecStartPre=/usr/local/onesoft/nginx/v1.24.0/bin/nginx -t
+ExecStart=/usr/local/onesoft/nginx/v1.24.0/bin/nginx
+PIDFile=/usr/local/onesoft/nginx/v1.24.0/bin/nginx.pid
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+						`,
 					},
 					ConfigTemplates: nil,
 					Cmd:             "",

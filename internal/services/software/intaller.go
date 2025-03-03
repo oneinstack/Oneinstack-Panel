@@ -81,7 +81,12 @@ func installSoftware(soft *models.Softwaren, params map[string]map[string]string
 	}
 
 	// 下载文件
-	downloadPath, err := downloadFile(targetVersion.DownloadURL, basePath)
+	url := getDownloadURL(targetVersion)
+	if url == "" {
+		logger.Write("下载地址为空")
+		return fmt.Errorf("下载地址为空")
+	}
+	downloadPath, err := downloadFile(url, basePath)
 	if err != nil {
 		logger.Write("下载失败: %v", err)
 		fmt.Println("下载失败", err.Error())
@@ -121,6 +126,16 @@ func installSoftware(soft *models.Softwaren, params map[string]map[string]string
 	}
 	fmt.Println("解压完成到: %s", binPath)
 	logger.Write("解压完成到: %s", binPath)
+
+	//预执行命令
+	if len(targetVersion.PreCmd) > 0 {
+		for _, cmd := range targetVersion.PreCmd {
+			if err := execCmd(cmd.Cmd, confPath, binPath, params, logger); err != nil {
+				logger.Write("执行cmd失败: %v", err)
+				return err
+			}
+		}
+	}
 
 	if err := updateSystemPath(binPath); err != nil {
 		fmt.Println("更新PATH失败: %v", err)
@@ -242,7 +257,7 @@ func updatesystemd(targetVersion models.Version, confPath string, binPath string
 // 更新系统PATH环境变量
 func updateSystemPath(binPath string) error {
 	binSubPath := filepath.Join(binPath, "bin")
-	envFile := "./profile"
+	envFile := "/etc/profile"
 	if _, err := os.Stat(envFile); os.IsNotExist(err) {
 		os.Create(envFile)
 	}
@@ -441,4 +456,24 @@ func generateConfig(templateStr string, confFile string, targetParams map[string
 	fmt.Println(templateStr)
 	fmt.Println(exParams)
 	return tmpl.Execute(file, exParams)
+}
+
+func getDownloadURL(v models.Version) string {
+	os := getOS()
+	for _, url := range v.DownloadURL {
+		if url.OS == os {
+			return url.URL
+		}
+	}
+	return ""
+}
+
+// 判断当前系统是ubuntu还是centos
+func getOS() string {
+	if _, err := os.Stat("/etc/redhat-release"); err == nil {
+		return "centos"
+	} else if _, err := os.Stat("/etc/lsb-release"); err == nil {
+		return "ubuntu"
+	}
+	return "unknown"
 }

@@ -878,7 +878,7 @@ install_dependencies() {
     echo "正在安装依赖..."
     case $OS in
         ubuntu | debian)
-            apt-get update && apt-get install -y build-essential libpcre3 libpcre3-dev libssl-dev zlib1g-dev wget
+           
             ;;
         centos | rhel | rocky | almalinux | fedora)
             yum groupinstall -y "Development Tools"

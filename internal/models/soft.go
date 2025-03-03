@@ -25,13 +25,28 @@ type Version struct {
 	SoftwareID    uint          `gorm:"index:idx_software_version,priority:1" json:"software_id"`
 	Version       string        `gorm:"index:idx_software_version,priority:2" json:"version"`
 	VersionName   string        `gorm:"size:100" json:"version_name"`
-	DownloadURL   string        `gorm:"type:text" json:"download_url"`
+	DownloadURL   []DownloadURL `gorm:"foreignKey:VersionID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;" json:"download_url"`
+	PreCmd        []PreCmd      `gorm:"foreignKey:VersionID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;" json:"pre_cmd"`
 	InstallConfig InstallConfig `gorm:"foreignKey:VersionID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;" json:"install_config"`
 	InstallTime   time.Time     `gorm:"" json:"install_time"`
 	IsInstalled   bool          `gorm:"" json:"is_installed"`
 	InstallPath   string        `gorm:"size:255" json:"install_path"`
 	InstallParams string        `gorm:"type:text" json:"install_params"`
 	InstallLog    string        `gorm:"type:text" json:"install_log"`
+}
+
+type DownloadURL struct {
+	gorm.Model
+	URL       string `json:"url"`
+	OS        string `json:"os"`
+	VersionID uint   `gorm:"index" json:"version_id"`
+}
+
+type PreCmd struct {
+	gorm.Model
+	VersionID uint   `gorm:"index" json:"version_id"`
+	Cmd       string `gorm:"type:text" json:"cmd"`
+	OS        string `json:"os"`
 }
 
 type InstallConfig struct {
