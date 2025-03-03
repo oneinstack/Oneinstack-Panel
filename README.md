@@ -1,11 +1,16 @@
 <h1 align="center">Oneinstack Server Management Panel</h1>
 
-[![GitHub forks](https://img.shields.io/github/forks/guangzhengli/oneinstack)](https://github.com/oneinstack/Oneinstack-Panel/network)
-[![GitHub stars](https://img.shields.io/github/stars/guangzhengli/oneinstack)](https://github.com/oneinstack/Oneinstack-Panel/stargazers)
-[![GitHub license](https://img.shields.io/github/license/guangzhengli/oneinstack)](https://github.com/oneinstack/Oneinstack-Panel/blob/main/LICENSE)
-![GitHub release](https://img.shields.io/github/v/release/guangzhengli/oneinstack)
+[![GitHub forks](https://img.shields.io/github/forks/oneinstack/Oneinstack-Panel)](https://github.com/oneinstack/Oneinstack-Panel/network)
+[![GitHub stars](https://img.shields.io/github/stars/oneinstack/Oneinstack-Panel)](https://github.com/oneinstack/Oneinstack-Panel/stargazers)
+[![GitHub license](https://img.shields.io/github/license/oneinstack/Oneinstack-Panel)](https://github.com/oneinstack/Oneinstack-Panel/blob/main/LICENSE)
+![GitHub release](https://img.shields.io/github/v/release/oneinstack/Oneinstack-Panel)
 
 > An open-source Linux server operation and maintenance management panel, making server management simpler, safer, and more efficient
+
+## Language
+
+- [English](README.md)
+- [简体中文](README-zh.md)
 
 ## 🚀 Features
 

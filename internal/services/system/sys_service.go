@@ -364,19 +364,14 @@ func UpdateSystemPort(port string) error {
 
 func UpdateUser(user models.User) error {
 	u := models.User{}
-	tx := app.DB().Where("username = ?", user.Username).First(&u)
+	tx := app.DB().Where("id = ?", user.ID).First(&u)
 	if tx.Error != nil {
 		return tx.Error
 	}
 	if user.Username == "" {
 		return fmt.Errorf("Username is empty")
 	}
-	if user.Password != "" {
-		u.Password = user.Password
-	}
-	if user.Username != "" {
-		u.Username = user.Username
-	}
+	u.Username = user.Username
 	tx = app.DB().Updates(u)
 	if tx.Error != nil {
 		return tx.Error
@@ -386,7 +381,7 @@ func UpdateUser(user models.User) error {
 
 func ResetPassword(user input.ResetPasswordRequest) error {
 	u := models.User{}
-	tx := app.DB().Where("username = ? and password = ?", user.Username, user.Password).First(&u)
+	tx := app.DB().Where("id = ?", user.Id).First(&u)
 	if tx.Error != nil {
 		return tx.Error
 	}

@@ -100,7 +100,7 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 	tx := app.DB().Select(
 		"MAX(id) as id," +
 			"`key`," +
-			"GROUP_CONCAT(DISTINCT version ORDER BY version DESC) as versions," +
+			"GROUP_CONCAT(DISTINCT version) as versions," +
 			"MAX(name) as name," +
 			"MAX(icon) as icon," +
 			"MAX(type) as type," +

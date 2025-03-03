@@ -1,13 +1,14 @@
 package system
 
 import (
+	"errors"
+	"github.com/gin-gonic/gin"
 	"net/http"
 	"oneinstack/core"
 	"oneinstack/internal/models"
 	"oneinstack/internal/services/system"
 	"oneinstack/router/input"
-
-	"github.com/gin-gonic/gin"
+	"oneinstack/utils"
 )
 
 func GetSystemInfo(c *gin.Context) {
@@ -61,6 +62,12 @@ func UpdateUser(c *gin.Context) {
 		core.HandleError(c, http.StatusBadRequest, err, nil)
 		return
 	}
+	id, exist := c.Get("id")
+	if exist != true {
+		core.HandleError(c, http.StatusInternalServerError, errors.New("not found"), nil)
+		return
+	}
+	user.ID = id.(int64)
 	err := system.UpdateUser(user)
 	if err != nil {
 		core.HandleError(c, http.StatusInternalServerError, err, nil)
@@ -71,10 +78,17 @@ func UpdateUser(c *gin.Context) {
 
 func ResetPassword(c *gin.Context) {
 	user := input.ResetPasswordRequest{}
+	id, exist := c.Get("id")
+	if exist != true {
+		core.HandleError(c, http.StatusInternalServerError, errors.New("not found"), nil)
+		return
+	}
 	if err := c.ShouldBindJSON(&user); err != nil {
 		core.HandleError(c, http.StatusBadRequest, err, nil)
 		return
 	}
+	user.Id = id.(int64)
+	user.NewPassword, _ = utils.HashPassword(user.Password)
 	err := system.ResetPassword(user)
 	if err != nil {
 		core.HandleError(c, http.StatusInternalServerError, err, nil)
