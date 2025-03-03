@@ -95,8 +95,8 @@ func InstallSoftwaren(param *input.InstallSoftwareParam) error {
 	jsonParams, _ := json.Marshal(softs)
 	fmt.Println(string(jsonParams))
 	// return nil
-	// _, err := InstallSoftwareAsync(soft, mapParams, "/usr/local/onesoft")
-	_, err := InstallSoftwareAsync(softs, mapParams, "./onesoft")
+	_, err := InstallSoftwareAsync(softs, mapParams, "/usr/local/onesoft")
+	// _, err := InstallSoftwareAsync(softs, mapParams, "./onesoft")
 	return err
 }
 
