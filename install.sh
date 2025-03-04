@@ -72,6 +72,14 @@ EOF
 }
 
 Install_One() {
+    # 新增服务清理步骤
+    echo "清理旧服务..."
+    systemctl stop one 2>/dev/null || true
+    systemctl disable one 2>/dev/null || true
+    rm -f /etc/systemd/system/one.service
+    rm -f /etc/logrotate.d/one
+    systemctl daemon-reload 2>/dev/null || true
+
     local url="https://bugo-1301111475.cos.ap-guangzhou.myqcloud.com/oneinstack/one"
     local tarfile="/tmp/one.tar"
     local timeout=30
