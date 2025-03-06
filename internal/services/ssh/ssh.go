@@ -1,6 +1,7 @@
 package ssh
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -14,6 +15,11 @@ import (
 	"github.com/creack/pty"
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
+)
+
+const (
+	pongWait   = 60 * time.Second
+	pingPeriod = (pongWait * 9) / 10
 )
 
 func OpenWebShell(c *gin.Context) {
@@ -63,7 +69,9 @@ func OpenWebShell(c *gin.Context) {
 				return
 			}
 
-			if err := conn.WriteMessage(websocket.TextMessage, buf[:n]); err != nil {
+			// 编码为base64发送
+			encoded := base64.StdEncoding.EncodeToString(buf[:n])
+			if err := conn.WriteMessage(websocket.TextMessage, []byte(encoded)); err != nil {
 				closeDone()
 				return
 			}
@@ -77,9 +85,15 @@ func OpenWebShell(c *gin.Context) {
 				log.Println("Read error:", err)
 			}
 		}()
+
+		// 设置初始读取超时
+		conn.SetReadDeadline(time.Now().Add(pongWait))
+		conn.SetPongHandler(func(string) error {
+			conn.SetReadDeadline(time.Now().Add(pongWait))
+			return nil
+		})
+
 		for {
-			// 设置30秒读取超时
-			conn.SetReadDeadline(time.Now().Add(10 * time.Minute))
 			messageType, data, err := conn.ReadMessage()
 			if err != nil {
 				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
@@ -90,14 +104,23 @@ func OpenWebShell(c *gin.Context) {
 			}
 
 			switch messageType {
-
+			case websocket.PingMessage:
+				// 自动回复Pong消息
+				conn.WriteMessage(websocket.PongMessage, nil)
 			case websocket.TextMessage:
+				// Base64解码输入
+				decodedData, err := base64.StdEncoding.DecodeString(string(data))
+				if err != nil {
+					log.Println("Base64 decode error:", err)
+					continue
+				}
+
 				// 先尝试解析窗口大小
 				var size struct {
 					Rows uint16 `json:"rows"`
 					Cols uint16 `json:"cols"`
 				}
-				if err := json.Unmarshal(data, &size); err == nil {
+				if err := json.Unmarshal(decodedData, &size); err == nil {
 					pty.Setsize(ptmx, &pty.Winsize{
 						Rows: size.Rows,
 						Cols: size.Cols,
@@ -106,20 +129,43 @@ func OpenWebShell(c *gin.Context) {
 				}
 
 				// 处理普通文本输入
-				if _, err := ptmx.Write(data); err != nil {
+				if _, err := ptmx.Write(decodedData); err != nil {
 					return
 				}
 
 			case websocket.BinaryMessage:
-				// 直接写入二进制数据
-				if _, err := ptmx.Write(data); err != nil {
+				// 解码二进制数据
+				decodedData, err := base64.StdEncoding.DecodeString(string(data))
+				if err != nil {
+					log.Println("Base64 decode error:", err)
+					continue
+				}
+				if _, err := ptmx.Write(decodedData); err != nil {
 					return
 				}
 			default:
 				closeDone()
 				return
 			}
+		}
+	}()
 
+	// 添加心跳goroutine
+	go func() {
+		ticker := time.NewTicker(pingPeriod)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				// 发送Ping消息
+				if err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(time.Second)); err != nil {
+					closeDone()
+					return
+				}
+			case <-done:
+				return
+			}
 		}
 	}()
 
