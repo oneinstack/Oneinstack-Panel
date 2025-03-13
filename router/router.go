@@ -71,6 +71,7 @@ func SetupRouter() *gin.Engine {
 		storageg.POST("/rklist", storage.GetRedisKeys)
 	}
 
+	//FTP相关
 	ftpg := g.Group("/ftp")
 	sys.Use(middleware.AuthMiddleware())
 	{
@@ -82,6 +83,7 @@ func SetupRouter() *gin.Engine {
 		ftpg.POST("/modify", ftp.ModifyFileOrDirAttributes)
 	}
 
+	//软件相关
 	softg := g.Group("/soft")
 	sys.Use(middleware.AuthMiddleware())
 	{
@@ -91,6 +93,7 @@ func SetupRouter() *gin.Engine {
 		softg.POST("/exploration", software.Exploration)
 	}
 
+	//网站相关
 	websiteg := g.Group("/website")
 	sys.Use(middleware.AuthMiddleware())
 	{
@@ -100,6 +103,7 @@ func SetupRouter() *gin.Engine {
 		websiteg.POST("/update", website.Update)
 	}
 
+	//安全相关
 	safeg := g.Group("/safe")
 	sys.Use(middleware.AuthMiddleware())
 	{
@@ -110,14 +114,17 @@ func SetupRouter() *gin.Engine {
 		safeg.POST("/del", safe.DeleteFirewallRule)
 		safeg.POST("/stop", safe.StopFirewall)
 		safeg.POST("/blockping", safe.BlockPing)
+		safeg.POST("/install", safe.InstallFirewall)
 	}
 
+	//SSH相关
 	sshg := g.Group("/ssh")
 	sys.Use()
 	{
 		sshg.GET("/open", ssh.OpenSSH)
 	}
 
+	//定时任务相关
 	crong := g.Group("/cron")
 	sys.Use(middleware.AuthMiddleware())
 	{

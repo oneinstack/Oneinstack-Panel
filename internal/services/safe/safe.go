@@ -8,6 +8,7 @@ import (
 	"oneinstack/internal/services"
 	"oneinstack/router/input"
 	"oneinstack/router/output"
+	"oneinstack/utils"
 	"os"
 	"os/exec"
 	"strings"
@@ -274,8 +275,104 @@ func addUfwRule(rule *models.IptablesRule) error {
 	return nil
 }
 
+// addIptablesRule 添加 iptables 规则
+func addIptablesRule(rule *models.IptablesRule) error {
+	// 验证协议
+	validProtocols := []string{"tcp", "udp", "icmp"}
+	if !contains(validProtocols, rule.Protocol) {
+		return fmt.Errorf("invalid protocol: %s. Valid options: tcp, udp, icmp", rule.Protocol)
+	}
+
+	// 验证策略 (iptables 用 ACCEPT/DROP 代替 allow/deny)
+	strategyMap := map[string]string{
+		"allow": "ACCEPT",
+		"deny":  "DROP",
+	}
+	strategy, exists := strategyMap[rule.Strategy]
+	if !exists {
+		return fmt.Errorf("invalid strategy: %s. Valid options: allow, deny", rule.Strategy)
+	}
+
+	// 验证方向 (iptables 用 INPUT/OUTPUT 代替 in/out)
+	directionMap := map[string]string{
+		"in":  "INPUT",
+		"out": "OUTPUT",
+	}
+	chain, exists := directionMap[rule.Direction]
+	if !exists {
+		return fmt.Errorf("invalid direction: %s. Valid options: in, out", rule.Direction)
+	}
+
+	// 处理 IP 列表
+	ipList := filterEmpty(strings.Split(rule.IPs, ","))
+	if len(ipList) == 0 {
+		ipList = []string{"0.0.0.0/0"} // 默认 "any"
+	}
+
+	// 处理端口列表
+	portList := filterEmpty(strings.Split(rule.Ports, ","))
+	if len(portList) == 0 {
+		portList = []string{"0"} // 默认 "0"
+	}
+
+	// ICMP 不能指定端口
+	if rule.Protocol == "icmp" {
+		for _, port := range portList {
+			if port != "0" {
+				return fmt.Errorf("ICMP protocol does not support port '%s'", port)
+			}
+		}
+	}
+
+	// 遍历所有 IP 和端口组合，生成规则
+	for _, ip := range ipList {
+		for _, port := range portList {
+			var cmdArgs []string
+
+			// 设定 iptables 规则：iptables -A CHAIN -p PROTOCOL -s IP --dport PORT -j ACTION
+			cmdArgs = append(cmdArgs, "-A", chain, "-p", rule.Protocol)
+
+			// 根据方向添加 IP 参数
+			if rule.Direction == "in" {
+				cmdArgs = append(cmdArgs, "-s", ip)
+			} else {
+				cmdArgs = append(cmdArgs, "-d", ip)
+			}
+
+			// 处理端口（非 ICMP 且端口非 0）
+			if rule.Protocol != "icmp" && port != "0" {
+				cmdArgs = append(cmdArgs, "--dport", port)
+			}
+
+			// 添加策略（ACCEPT / DROP）
+			cmdArgs = append(cmdArgs, "-j", strategy)
+
+			// 执行 iptables 命令
+			cmd := exec.Command("iptables", cmdArgs...)
+			output, err := cmd.CombinedOutput()
+			if err != nil {
+				return fmt.Errorf(
+					"failed to add iptables rule: %v\nCommand: iptables %s\nOutput: %s",
+					err,
+					strings.Join(cmdArgs, " "),
+					string(output),
+				)
+			}
+
+			fmt.Printf("Iptables rule added: iptables %s\n", strings.Join(cmdArgs, " "))
+		}
+	}
+
+	return nil
+}
+
 // ToggleUfw 切换 ufw 的启用和禁用状态
 func ToggleUfw() error {
+	//判断 ufw 是否存在
+	if !utils.CheckCommand("ufw") {
+		return fmt.Errorf("ufw not found")
+	}
+
 	// 获取 ufw 当前的状态
 	cmdStatus := exec.Command("ufw", "status")
 	output, err := cmdStatus.CombinedOutput()
@@ -423,4 +520,34 @@ func contains(slice []string, item string) bool {
 		}
 	}
 	return false
+}
+
+func AddFirewalldRule(m *models.IptablesRule) error {
+
+	return nil
+}
+
+func AddIptablesRule(param *models.IptablesRule) error {
+	if param.State == 0 {
+		return fmt.Errorf("状态不能为禁用")
+	}
+	err := addIptablesRule(param)
+	if err != nil {
+		return err
+	}
+	tx := app.DB().Create(param)
+	if tx.Error != nil {
+		return tx.Error
+	}
+	return nil
+	return nil
+}
+
+func InstallUfw() error {
+	cmd := exec.Command("apt", "install", "-y", "ufw")
+	_, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to install ufw: %v", err)
+	}
+	return nil
 }

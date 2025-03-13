@@ -77,7 +77,7 @@ func ChangePassword(username, newPassword string) error {
 	return tx.Error
 }
 
-func ResetUsername(username, newUsername string) error {
-	tx := app.DB().Model(&models.User{}).Where("username = ?", username).Update("username", newUsername)
+func ResetUsername(newUsername string) error {
+	tx := app.DB().Model(&models.User{}).Where("id = 1").Update("username", newUsername)
 	return tx.Error
 }

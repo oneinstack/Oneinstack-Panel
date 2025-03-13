@@ -193,10 +193,13 @@ var resetPwdCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		name, _ := cmd.Flags().GetString("name")
 		if name == "" {
+			log.Println("Use \n" +
+				"one resetpwd -n username -p password")
 			log.Fatalf("username not found")
 		}
 		pwd, _ := cmd.Flags().GetString("pwd")
 		if name == "" {
+			log.Println("Use one resetpwd -n username -p password")
 			log.Fatalf("password not found")
 		}
 		err := user.ChangePassword(name, pwd)
@@ -209,17 +212,15 @@ var resetPwdCmd = &cobra.Command{
 var resetUserCmd = &cobra.Command{
 	Use:     "resetUsername",
 	Short:   "reset user username",
-	Example: " resetUsername --oldn AHMPotFoxig --newn admin ",
+	Example: " resetUsername --newUser admin ",
 	Run: func(cmd *cobra.Command, args []string) {
-		on, _ := cmd.Flags().GetString("oldn")
-		if on == "" {
-			log.Fatalf("old username not found")
-		}
 		nn, _ := cmd.Flags().GetString("newn")
 		if nn == "" {
+			log.Println("Use \n" +
+				"one resetUsername --newUser username")
 			log.Fatalf("new username not found")
 		}
-		err := user.ResetUsername(on, nn)
+		err := user.ResetUsername(nn)
 		if err != nil {
 			log.Fatalf("Add user error: %v", err)
 		}
@@ -228,7 +229,7 @@ var resetUserCmd = &cobra.Command{
 
 var install = &cobra.Command{
 	Use:     "install",
-	Short:   "安装 php nginx  phpmyadmin",
+	Short:   "安装 php nginx phpmyadmin",
 	Example: "  install -s php",
 	Run: func(cmd *cobra.Command, args []string) {
 		ls := []*input.InstallParams{
@@ -260,12 +261,14 @@ var install = &cobra.Command{
 }
 
 var changePortCmd = &cobra.Command{
-	Use:     "changeport",
+	Use:     "changePort",
 	Short:   "修改端口,修改端口后,需要执行 server restart 才能生效",
-	Example: "changeport -p 8080",
+	Example: "changePort -p 8080",
 	Run: func(cmd *cobra.Command, args []string) {
 		port, _ := cmd.Flags().GetString("port")
 		if port == "" {
+			log.Println("Use \n" +
+				"one changePort -p 8080")
 			log.Fatalf("Port not provided")
 		}
 
@@ -303,7 +306,7 @@ var updateCmd = &cobra.Command{
 		// 下载更新脚本
 		fmt.Println("下载更新脚本...")
 		client := &http.Client{Timeout: 30 * time.Second}
-		resp, err := client.Get("https://cdn.bugotech.com/oneinstack/update.sh")
+		resp, err := client.Get("https://bugo-1301111475.cos.ap-guangzhou.myqcloud.com/oneinstack/update.sh")
 		if err != nil {
 			log.Fatalf("下载失败: %v", err)
 		}
