@@ -23,6 +23,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var userName string
+var password string
+var initialized bool // 记录是否已经初始化
+
 func main() {
 	server.Start()
 	//初始化服务
@@ -33,8 +37,18 @@ func main() {
 	resetUserCmd.Flags().StringP("newn", "", "", "new username")
 
 	changePortCmd.Flags().StringP("port", "p", "", "New port for the system")
+
+	// 绑定 --user 和 --password 参数到 init 命令
+	initCmd.Flags().StringVarP(&userName, "user", "u", "", "Specify the username")
+	initCmd.Flags().StringVarP(&password, "password", "p", "", "Specify the password")
+
+	// 确保用户名和密码参数是必填的
+	initCmd.MarkFlagRequired("user")
+	initCmd.MarkFlagRequired("password")
+
 	// 将命令添加到根命令
 	rootCmd.AddCommand(install)
+	rootCmd.AddCommand(initCmd)
 	rootCmd.AddCommand(resetPwdCmd)
 	rootCmd.AddCommand(resetUserCmd)
 	rootCmd.AddCommand(serverCmd)
@@ -54,6 +68,17 @@ var rootCmd = &cobra.Command{
 }
 
 const pidFile = "server.pid" // 存储 PID 的文件路径
+
+// 定义 initCmd 指令
+var initCmd = &cobra.Command{
+	Use:     "init",
+	Short:   "Initialize the system with a username and password",
+	Example: "go run main.go init --user=admin --password=123456",
+	Run: func(cmd *cobra.Command, args []string) {
+		// 初始化用户
+		app.InitUser(userName, password)
+	},
+}
 
 // serverStopCmd 定义启动和停止服务的命令
 var serverCmd = &cobra.Command{
@@ -94,7 +119,6 @@ func startServer() {
 	if app.ONE_CONFIG.System.Port == "" {
 		app.ONE_CONFIG.System.Port = "8089"
 	}
-	app.InitUser()
 	ip, err := utils.GetLinuxIP()
 	if err != nil {
 		log.Fatal(err)
@@ -204,7 +228,10 @@ var resetPwdCmd = &cobra.Command{
 		}
 		err := user.ChangePassword(name, pwd)
 		if err != nil {
-			log.Fatalf("Add user error: %v", err)
+			log.Fatalf("Reset Password Error: %v", err)
+		} else {
+			log.Println("Reset Password Success")
+			log.Println("New Password Is: " + pwd)
 		}
 	},
 }
@@ -212,9 +239,9 @@ var resetPwdCmd = &cobra.Command{
 var resetUserCmd = &cobra.Command{
 	Use:     "resetUsername",
 	Short:   "reset user username",
-	Example: " resetUsername --newUser admin ",
+	Example: " resetUsername --newUser admin",
 	Run: func(cmd *cobra.Command, args []string) {
-		nn, _ := cmd.Flags().GetString("newn")
+		nn, _ := cmd.Flags().GetString("newUser")
 		if nn == "" {
 			log.Println("Use \n" +
 				"one resetUsername --newUser username")
@@ -222,7 +249,10 @@ var resetUserCmd = &cobra.Command{
 		}
 		err := user.ResetUsername(nn)
 		if err != nil {
-			log.Fatalf("Add user error: %v", err)
+			log.Fatalf("Reset User Error: %v", err)
+		} else {
+			log.Println("Reset User Success")
+			log.Println("New Username: " + nn)
 		}
 	},
 }

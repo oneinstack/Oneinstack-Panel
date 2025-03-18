@@ -395,7 +395,7 @@ func initRemark() error {
 	return tx.Error
 }
 
-func InitUser() error {
+func InitUser(userName string, password string) error {
 	var count int64 = 0
 	tx := DB().Model(models.User{}).Count(&count)
 	if tx.Error != nil {
@@ -404,22 +404,20 @@ func InitUser() error {
 	if count > 0 {
 		return nil
 	}
-	err := setupAdminUser()
+	err := setupAdminUser(userName, password)
 	if err != nil {
 		return err
 	}
 	return nil
 }
 
-func setupAdminUser() error {
-	username := utils.GenerateRandomString(8, 12)
-	password := utils.GenerateRandomString(8, 12) // 生成 8-12 位随机密码
+func setupAdminUser(userName string, password string) error {
 	hashed, err := utils.HashPassword(password)
 	if err != nil {
 		return err
 	}
 	user := &models.User{
-		Username: username,
+		Username: userName,
 		Password: hashed,
 		IsAdmin:  true,
 	}
@@ -427,7 +425,7 @@ func setupAdminUser() error {
 	if tx.Error != nil {
 		return tx.Error
 	}
-	fmt.Printf("用户创建成功.\n用户名: %s\n用户密码: %s\n", username, password)
+	fmt.Printf("用户创建成功.\n用户名: %s\n用户密码: %s\n", userName, password)
 	return nil
 }
 

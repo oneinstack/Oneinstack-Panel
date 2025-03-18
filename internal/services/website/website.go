@@ -27,7 +27,7 @@ func List(param *input.WebsiteQueryParam) (*services.PaginatedResult[models.Webs
 
 func Add(param *models.Website) error {
 	w := &models.Website{}
-	app.DB().Where("domain  = ?", param.Domain).First(w)
+	app.DB().Where("domain = ?", param.Domain).First(w)
 	if w.ID > 0 {
 		return fmt.Errorf("已存在%v", w.Domain)
 	}
