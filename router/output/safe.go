@@ -2,6 +2,7 @@ package output
 
 // IptablesStatus 结构体表示iptables的状态
 type IptablesStatus struct {
+	Install     bool `json:"install"`     // ufw 是否安装
 	Enabled     bool `json:"enabled"`     // iptables 是否开启
 	PingBlocked bool `json:"pingBlocked"` // 是否禁ping
 }

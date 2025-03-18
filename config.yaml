@@ -2,3 +2,6 @@ system:
     port: 8089
     remote: 'http://localhost:8189/v1/sys/update'
     defaultPath: '/data/'
+    webPath: '/data/wwwroot'
+    logPath: '/data/wwwlog/'
+    dataPath: '/data/db/'

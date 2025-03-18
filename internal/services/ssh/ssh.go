@@ -1,6 +1,7 @@
 package ssh
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -63,7 +64,9 @@ func OpenWebShell(c *gin.Context) {
 				return
 			}
 
-			if err := conn.WriteMessage(websocket.TextMessage, buf[:n]); err != nil {
+			// 对数据进行base64编码
+			b64 := make([]byte, base64.StdEncoding.EncodedLen(n))
+			if err := conn.WriteMessage(websocket.TextMessage, b64); err != nil {
 				closeDone()
 				return
 			}

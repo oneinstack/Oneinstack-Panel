@@ -65,7 +65,7 @@ server {
     listen 80;
     server_name %s;
 
-    root %s;
+    root /data/wwwroot/%s;
     index index.html index.htm;
 
     location / {

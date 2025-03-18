@@ -15,6 +15,10 @@ import (
 )
 
 func GetUfwStatus() (*output.IptablesStatus, error) {
+	// 检查 UFW 是否安装
+	if !utils.CheckCommand("ufw") {
+		return &output.IptablesStatus{Install: false, Enabled: false, PingBlocked: false}, nil
+	}
 	// 获取 UFW 状态
 	cmd := exec.Command("ufw", "status", "verbose")
 	var out strings.Builder

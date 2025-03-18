@@ -214,7 +214,7 @@ func (ps InstallOP) executeShScript(scriptName string, sync bool, args ...string
 	if err != nil {
 		return "", err
 	}
-	tx := app.DB().Where("key = ? and version", ps.BashParams.Key, ps.BashParams.Version).Updates(&models.Software{Status: models.Soft_Status_Ing, Log: logFileName})
+	tx := app.DB().Where("key = ? and version = ?", ps.BashParams.Key, ps.BashParams.Version).Updates(&models.Software{Status: models.Soft_Status_Ing, Log: logFileName})
 	if tx.Error != nil {
 		fmt.Println(tx.Error.Error())
 	}
@@ -224,9 +224,9 @@ func (ps InstallOP) executeShScript(scriptName string, sync bool, args ...string
 		fmt.Println("cmd done" + scriptName)
 		if err != nil {
 			fmt.Println("cmd wait err:" + fmt.Sprintf("%v", err))
-			app.DB().Where("key = ? and version", ps.BashParams.Key, ps.BashParams.Version).Updates(&models.Software{Status: models.Soft_Status_Err})
+			app.DB().Where("key = ? and version = ?", ps.BashParams.Key, ps.BashParams.Version).Updates(&models.Software{Status: models.Soft_Status_Err})
 		}
-		app.DB().Where("key = ? and version", ps.BashParams.Key, ps.BashParams.Version).Updates(&models.Software{Status: models.Soft_Status_Suc})
+		app.DB().Where("key = ? and version = ?", ps.BashParams.Key, ps.BashParams.Version).Updates(&models.Software{Status: models.Soft_Status_Suc, Installed: true})
 		return logFileName, nil
 	}
 
@@ -242,10 +242,10 @@ func (ps InstallOP) executeShScript(scriptName string, sync bool, args ...string
 		defer func() {
 			if err != nil {
 				fmt.Println("cmd wait err:" + fmt.Sprintf("%v", err))
-				app.DB().Where("key = ? and version", ps.BashParams.Key, ps.BashParams.Version).Updates(&models.Software{Status: models.Soft_Status_Err})
+				app.DB().Where("key = ? and version = ?", ps.BashParams.Key, ps.BashParams.Version).Updates(&models.Software{Status: models.Soft_Status_Err})
 				return
 			}
-			app.DB().Where("key = ? and version", ps.BashParams.Key, ps.BashParams.Version).Updates(&models.Software{Status: models.Soft_Status_Suc})
+			app.DB().Where("key = ? and version = ?", ps.BashParams.Key, ps.BashParams.Version).Updates(&models.Software{Status: models.Soft_Status_Suc, Installed: true})
 		}()
 	}(ps.BashParams)
 	return logFileName, nil
