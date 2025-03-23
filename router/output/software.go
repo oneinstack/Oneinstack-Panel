@@ -3,6 +3,7 @@ package output
 type Software struct {
 	Id        int          `json:"id"`
 	Name      string       `json:"name"`
+	Describe  string       `json:"describe"`
 	Key       string       `json:"key"`
 	Icon      string       `json:"icon"`
 	Type      string       `json:"type"`

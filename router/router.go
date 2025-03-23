@@ -27,6 +27,7 @@ func SetupRouter() *gin.Engine {
 		g.POST("/login", user.LoginHandler)
 	}
 
+	//系统接口
 	sys := g.Group("/sys")
 	sys.Use(middleware.AuthMiddleware())
 	{
@@ -52,11 +53,13 @@ func SetupRouter() *gin.Engine {
 		sys.POST("/dic/del", system.DeleteDictionary)
 	}
 
+	//系统接口
 	sysNoAuth := g.Group("/sys")
 	{
 		sysNoAuth.GET("/getbaseinfo", system.GetInfo)
 	}
 
+	//数据库相关
 	storageg := g.Group("/storage")
 	sys.Use(middleware.AuthMiddleware())
 	{
@@ -69,6 +72,7 @@ func SetupRouter() *gin.Engine {
 		storageg.POST("/sync", storage.SyncStorage)
 		storageg.POST("/liblist", storage.GetLib)
 		storageg.POST("/rklist", storage.GetRedisKeys)
+		storageg.POST("/info", storage.Info)
 	}
 
 	//FTP相关
@@ -90,6 +94,7 @@ func SetupRouter() *gin.Engine {
 		softg.POST("/list", software.GetSoftware)
 		softg.GET("/getlog", software.GetLogContent)
 		softg.POST("/install", software.RunInstallation)
+		softg.POST("/remove", software.RemoveSoftware)
 		softg.POST("/exploration", software.Exploration)
 	}
 
@@ -101,6 +106,7 @@ func SetupRouter() *gin.Engine {
 		websiteg.POST("/add", website.Add)
 		websiteg.POST("/del", website.Delete)
 		websiteg.POST("/update", website.Update)
+		websiteg.POST("/info", website.Info)
 	}
 
 	//安全相关

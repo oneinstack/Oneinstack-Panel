@@ -125,3 +125,8 @@ func GetRedisKeys(c *gin.Context) {
 	}
 	core.HandleSuccess(c, data)
 }
+
+func Info(c *gin.Context) {
+	mysqlInstall, redisInstall := storage.CheckStorage()
+	core.HandleSuccess(c, map[string]interface{}{"mysql": mysqlInstall, "redis": redisInstall})
+}

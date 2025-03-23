@@ -63,3 +63,16 @@ func Exploration(c *gin.Context) {
 	ok := software.Exploration(&req)
 	core.HandleSuccess(c, ok)
 }
+
+func RemoveSoftware(c *gin.Context) {
+	var req input.RemoveParams
+	if err := c.ShouldBindJSON(&req); err != nil {
+		core.HandleError(c, http.StatusUnauthorized, core.ErrBadRequest, err)
+		return
+	}
+	ok, err := software.Remove(&req)
+	if err != nil {
+		core.HandleError(c, http.StatusInternalServerError, err, nil)
+	}
+	core.HandleSuccess(c, ok)
+}

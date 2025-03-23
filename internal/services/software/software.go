@@ -86,6 +86,7 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 	tx := app.DB().Select(
 		"MAX(id) as id," +
 			"`key`," +
+			"describe," +
 			"GROUP_CONCAT(DISTINCT version) as versions," +
 			"MAX(name) as name," +
 			"MAX(icon) as icon," +
@@ -152,6 +153,7 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 	for i, item := range paginated.Data {
 		groupedResults = append(groupedResults, output.Software{
 			Id:       item.Id,
+			Describe: item.Describe,
 			Name:     item.Name,
 			Key:      item.Key,
 			Icon:     item.Icon,
@@ -250,4 +252,17 @@ func Sync() {
 		}
 
 	}
+}
+
+// remove software
+func Remove(param *input.RemoveParams) (bool, error) {
+	// 将软件状态设置为 0 并且设置installed为false
+	tx := app.DB().Model(&models.Software{}).Where("key = ? AND version = ?", param.Key, param.Version).Updates(map[string]interface{}{
+		"status":    0,
+		"installed": 0,
+	})
+	if tx.Error != nil {
+		return false, tx.Error
+	}
+	return true, nil
 }

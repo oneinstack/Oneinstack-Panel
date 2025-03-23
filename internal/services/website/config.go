@@ -31,8 +31,8 @@ server {
     # 备注
     # %s
 
-    access_log /var/log/nginx/%s_access.log;
-    error_log /var/log/nginx/%s_error.log;
+    access_log /data/wwwlogs/%s_access.log;
+    error_log /data/wwwlogs/%s_error.log;
 }`,
 
 		"proxy": `
@@ -55,8 +55,8 @@ server {
     # 备注
     # %s
 
-    access_log /var/log/nginx/%s_access.log;
-    error_log /var/log/nginx/%s_error.log;
+    access_log /data/wwwlogs/%s_access.log;
+    error_log /data/wwwlogs/%s_error.log;
 
 }`,
 		"static": `
@@ -65,7 +65,7 @@ server {
     listen 80;
     server_name %s;
 
-    root /data/wwwroot/%s;
+    root %s;
     index index.html index.htm;
 
     location / {
@@ -75,8 +75,8 @@ server {
     # 备注
     # %s
 
-    access_log /var/log/nginx/%s_access.log;
-    error_log /var/log/nginx/%s_error.log;
+    access_log /data/wwwlogs/%s_access.log;
+    error_log /data/wwwlogs/%s_error.log;
 }
 `,
 	}
@@ -99,11 +99,11 @@ func GetNginxConfig(p *models.Website) (string, error) {
 	config := ""
 	switch p.Type {
 	case "php":
-		config = fmt.Sprintf(tps["php"], p.Name, p.Domain, p.RootDir, p.RootDir, p.Remark, p.Name, p.Name)
+		config = fmt.Sprintf(tps["php"], p.Name, p.Domain, "/data/wwwroot/"+p.RootDir, "/data/wwwroot/"+p.RootDir, p.Remark, p.Name, p.Name)
 	case "proxy":
 		config = fmt.Sprintf(tps["proxy"], p.Name, p.Domain, p.Pact, p.SendUrl, p.TarUrl, p.Remark, p.Name, p.Name)
 	case "static":
-		config = fmt.Sprintf(tps["static"], p.Name, p.Domain, p.RootDir, p.Remark, p.Name, p.Name)
+		config = fmt.Sprintf(tps["static"], p.Name, p.Domain, "/data/wwwroot/"+p.RootDir, p.Remark, p.Name, p.Name)
 	}
 	return config, nil
 }
@@ -155,29 +155,22 @@ func CreateSymlink(source, target string) error {
 // SaveConfigToFile 保存新的配置文件，并创建软链接
 func SaveConfigToFile(config string, p *models.Website) error {
 	// 定义目录路径
-	nginxSitesAvailableDir := "/etc/nginx/sites-available"
-	nginxSitesEnabledDir := "/etc/nginx/sites-enabled"
-	logDir := "/var/log/nginx"
+	nginxSitesAvailableDir := "/usr/local/nginx/conf/vhost"
+	logDir := "/usr/local/nginx/log"
 
 	// 检查并创建相关目录
-	directories := []string{nginxSitesAvailableDir, nginxSitesEnabledDir, logDir}
+	directories := []string{nginxSitesAvailableDir, logDir}
 	for _, dir := range directories {
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			return fmt.Errorf("failed to create directory %s: %v", dir, err)
 		}
 	}
 
-	// 创建一个文件路径，存储在 /etc/nginx/sites-available/ 目录
+	// 创建一个文件路径
 	filePath := fmt.Sprintf("%s/%s", nginxSitesAvailableDir, p.Name)
 
 	// 更新或创建配置文件
 	err := UpdateConfigIfExists(filePath, config)
-	if err != nil {
-		return err
-	}
-
-	// 创建软链接到 /etc/nginx/sites-enabled 目录
-	err = CreateSymlink(filePath, fmt.Sprintf("%s/%s", nginxSitesEnabledDir, p.Name))
 	if err != nil {
 		return err
 	}

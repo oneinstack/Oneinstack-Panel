@@ -8,6 +8,11 @@ type InstallParams struct {
 	Pwd      string `json:"pwd"`      //密码
 }
 
+type RemoveParams struct {
+	Key     string `json:"key"`     //安装的服务
+	Version string `json:"version"` //安装的版本
+}
+
 //
 //type InstallationParams struct {
 //	NginxOption      string   `json:"nginx_option,omitempty"`       // Nginx 版本选项 [1-3]

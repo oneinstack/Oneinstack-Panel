@@ -129,7 +129,7 @@ func SetExecPermissions(dir string) error {
 }
 
 func GetLogContent(logFilePath string) (string, error) {
-	file, err := os.Open(logFilePath)
+	file, err := os.Open("/data/wwwlogs/install/" + logFilePath)
 	if err != nil {
 		return "", fmt.Errorf("无法打开日志文件: %v", err)
 	}

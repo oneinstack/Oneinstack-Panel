@@ -66,3 +66,8 @@ func Delete(c *gin.Context) {
 	}
 	core.HandleSuccess(c, "删除成功")
 }
+
+func Info(context *gin.Context) {
+	check := website.Check()
+	core.HandleSuccess(context, check)
+}
