@@ -16,6 +16,15 @@ func GetRemarkByID(id int64) (*models.Remark, error) {
 	return r, nil
 }
 
+func GetRemarkList() ([]*models.Remark, error) {
+	var rs []*models.Remark
+	tx := app.DB().Find(&rs)
+	if tx.Error != nil && !errors.Is(tx.Error, gorm.ErrRecordNotFound) {
+		return nil, tx.Error
+	}
+	return rs, nil
+}
+
 func AddRemark(param *models.Remark) error {
 	tx := app.DB().Create(param)
 	return tx.Error

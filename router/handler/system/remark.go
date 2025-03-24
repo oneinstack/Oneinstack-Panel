@@ -11,18 +11,29 @@ import (
 
 // 列出目录内容
 func RemarkList(c *gin.Context) {
-	param := c.Param("id")
-	atoi, err := strconv.Atoi(param)
-	if err != nil {
-		core.HandleError(c, http.StatusInternalServerError, err, nil)
-		return
+	// 如果有参数id，则获取指定id的目录
+	if c.Param("id") != "" {
+		param := c.Param("id")
+		atoi, err := strconv.Atoi(param)
+		if err != nil {
+			core.HandleError(c, http.StatusInternalServerError, err, nil)
+			return
+		}
+		r, err := system.GetRemarkByID(int64(atoi))
+		if err != nil {
+			core.HandleError(c, http.StatusInternalServerError, err, nil)
+			return
+		}
+		core.HandleSuccess(c, r)
+	} else {
+		// 如果没有参数id，则获取所有目录
+		r, err := system.GetRemarkList()
+		if err != nil {
+			core.HandleError(c, http.StatusInternalServerError, err, nil)
+			return
+		}
+		core.HandleSuccess(c, r)
 	}
-	r, err := system.GetRemarkByID(int64(atoi))
-	if err != nil {
-		core.HandleError(c, http.StatusInternalServerError, err, nil)
-		return
-	}
-	core.HandleSuccess(c, r)
 }
 
 // 创建文件或目录

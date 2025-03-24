@@ -232,7 +232,7 @@ func (ps InstallOP) executeShScript(scriptName string, sync bool, args ...string
 			fmt.Println("cmd wait err:" + fmt.Sprintf("%v", err))
 			app.DB().Where("key = ? and version = ?", ps.BashParams.Key, ps.BashParams.Version).Updates(&models.Software{Status: models.Soft_Status_Err})
 		}
-		app.DB().Where("key = ? and version = ?", ps.BashParams.Key, ps.BashParams.Version).Updates(&models.Software{Status: models.Soft_Status_Suc, Installed: true})
+		app.DB().Where("key = ? and version = ?", ps.BashParams.Key, ps.BashParams.Version).Updates(&models.Software{Status: models.Soft_Status_Suc, Installed: true, InstallVersion: ps.BashParams.Version})
 		return logFileName, nil
 	}
 
@@ -251,7 +251,7 @@ func (ps InstallOP) executeShScript(scriptName string, sync bool, args ...string
 				app.DB().Where("key = ? and version = ?", ps.BashParams.Key, ps.BashParams.Version).Updates(&models.Software{Status: models.Soft_Status_Err})
 				return
 			}
-			app.DB().Where("key = ? and version = ?", ps.BashParams.Key, ps.BashParams.Version).Updates(&models.Software{Status: models.Soft_Status_Suc, Installed: true})
+			app.DB().Where("key = ? and version = ?", ps.BashParams.Key, ps.BashParams.Version).Updates(&models.Software{Status: models.Soft_Status_Suc, Installed: true, InstallVersion: ps.BashParams.Version})
 		}()
 	}(ps.BashParams)
 	return logFileName, nil

@@ -47,6 +47,16 @@ func GetWebSiteCount(c *gin.Context) {
 	core.HandleSuccess(c, count)
 }
 
+// 获取备忘录数量
+func GetRemarkCount(c *gin.Context) {
+	count, err := system.GetRemarkCount()
+	if err != nil {
+		core.HandleError(c, http.StatusInternalServerError, err, nil)
+		return
+	}
+	core.HandleSuccess(c, count)
+}
+
 func SystemInfo(c *gin.Context) {
 	info, err := system.SystemInfo()
 	if err != nil {

@@ -35,6 +35,7 @@ func SetupRouter() *gin.Engine {
 		sys.GET("/monitor", system.GetSystemMonitor)
 		sys.GET("/libcount", system.GetLibCount)
 		sys.GET("/websitecount", system.GetWebSiteCount)
+		sys.GET("/remarkcount", system.GetRemarkCount)
 		sys.GET("/systeminfo", system.SystemInfo)
 		sys.POST("/updateuser", system.UpdateUser)
 		sys.POST("/resetpassword", system.ResetPassword)
@@ -43,6 +44,7 @@ func SetupRouter() *gin.Engine {
 
 		//备注相关
 		sys.GET("/remark/:id", system.RemarkList)
+		sys.GET("/remark", system.RemarkList)
 		sys.POST("/remark/add", system.AddRemark)
 		sys.POST("/remark/update", system.UpdateRemark)
 		sys.POST("/remark/del", system.DeleteRemark)

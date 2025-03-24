@@ -94,7 +94,8 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 			"MAX(status) as status," +
 			"MAX(resource) as resource," +
 			"MAX(is_update) as is_update," +
-			"MAX(installed) as installed," +
+			"install_version as install_version," +
+			"installed as installed," +
 			"MAX(params) as params," +
 			"MAX(log) as log," +
 			"MAX(tags) as tags").
@@ -152,16 +153,18 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 	var groupedResults []output.Software
 	for i, item := range paginated.Data {
 		groupedResults = append(groupedResults, output.Software{
-			Id:       item.Id,
-			Describe: item.Describe,
-			Name:     item.Name,
-			Key:      item.Key,
-			Icon:     item.Icon,
-			Type:     item.Type,
-			Status:   item.Status,
-			Resource: item.Resource,
-			Log:      item.Log,
-			Versions: strings.Split(item.Versions, ","),
+			Id:             item.Id,
+			Describe:       item.Describe,
+			Installed:      item.Installed,
+			Name:           item.Name,
+			Key:            item.Key,
+			Icon:           item.Icon,
+			Type:           item.Type,
+			Status:         item.Status,
+			Resource:       item.Resource,
+			InstallVersion: item.InstallVersion,
+			Log:            item.Log,
+			Versions:       strings.Split(item.Versions, ","),
 		})
 		var params []*output.SoftParam
 		if item.Key == "db" {
@@ -257,10 +260,7 @@ func Sync() {
 // remove software
 func Remove(param *input.RemoveParams) (bool, error) {
 	// 将软件状态设置为 0 并且设置installed为false
-	tx := app.DB().Model(&models.Software{}).Where("key = ? AND version = ?", param.Key, param.Version).Updates(map[string]interface{}{
-		"status":    0,
-		"installed": 0,
-	})
+	tx := app.DB().Model(&models.Software{}).Where("key = ? AND version = ?", param.Key, param.Version).Updates(&models.Software{Status: models.Soft_Status_Default, Log: "", Installed: false, InstallVersion: ""})
 	if tx.Error != nil {
 		return false, tx.Error
 	}

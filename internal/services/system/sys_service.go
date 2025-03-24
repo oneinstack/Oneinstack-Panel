@@ -301,6 +301,17 @@ func GetLibCount() (int64, error) {
 	return count, nil
 }
 
+// 获取备忘录数量
+func GetRemarkCount() (int64, error) {
+	lib := models.Remark{}
+	var count int64
+	tx := app.DB().Model(&lib).Count(&count)
+	if tx.Error != nil {
+		return 0, tx.Error
+	}
+	return count, nil
+}
+
 func GetWebSiteCount() (int64, error) {
 	lib := models.Website{}
 	var count int64
