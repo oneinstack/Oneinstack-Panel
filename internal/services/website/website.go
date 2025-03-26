@@ -2,7 +2,6 @@ package website
 
 import (
 	"fmt"
-	"log"
 	"oneinstack/app"
 	"oneinstack/internal/models"
 	"oneinstack/internal/services"
@@ -33,13 +32,6 @@ func Add(param *models.Website) error {
 	if w.ID > 0 {
 		return fmt.Errorf("已存在%v", w.Name)
 	}
-	//报错只是删除文件夹
-	defer func(dir string) {
-		err := DelectDir(dir)
-		if err != nil {
-			log.Printf("无法删除目录: %s", err)
-		}
-	}(app.ONE_CONFIG.System.WebPath + param.Name)
 	// 创建网站目录文件
 	if param.Type != "proxy" {
 		err := CreateDir(app.ONE_CONFIG.System.WebPath + param.Name)
@@ -47,6 +39,8 @@ func Add(param *models.Website) error {
 			return err
 		}
 	}
+	param.RootDir = app.ONE_CONFIG.System.WebPath + param.Name
+	param.Dir = app.ONE_CONFIG.System.WebPath + param.Name
 	tx := app.DB().Create(param)
 	if tx.Error != nil {
 		return tx.Error
@@ -132,6 +126,8 @@ func Delete(id int64) error {
 	if err != nil {
 		return err
 	}
+	// 删除网站目录
+	err = DelectDir(app.ONE_CONFIG.System.WebPath + w.Name)
 	tx = app.DB().Where("id = ?", id).Delete(&models.Website{})
 	return tx.Error
 }

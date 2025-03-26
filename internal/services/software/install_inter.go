@@ -41,10 +41,15 @@ func (ps InstallOP) Install(sync ...bool) (string, error) {
 		sy = sync[0]
 	}
 	script, err := ps.getScript()
+	if ps.BashParams.Key == "db" {
+		script = fmt.Sprintf(script, "1", ps.BashParams.Pwd)
+	}
 	if err != nil {
 		return "", err
 	}
-	fn, err := ps.createShScript(script, ps.BashParams.Key+ps.BashParams.Version+".sh")
+	fn, err := ps.createShScript(script, app.ONE_CONFIG.System.DefaultPath+
+		ps.BashParams.Key+
+		ps.BashParams.Version+".sh")
 	if err != nil {
 		return "", err
 	}
@@ -55,7 +60,7 @@ func (ps InstallOP) Install(sync ...bool) (string, error) {
 		}
 		return ps.executeShScriptRemote(fn, sy, args...)
 	} else {
-		return ps.executeShScriptLocal(fn, sy)
+		return ps.executeShScriptLocal(fn, sy, *ps.BashParams)
 	}
 }
 
@@ -91,12 +96,12 @@ func (ps InstallOP) executeShScriptRemote(fn string, sy bool, args ...string) (s
 	return ps.executeShScript(fn, sy, args...)
 }
 
-func (ps InstallOP) executeShScriptLocal(fn string, sy bool) (string, error) {
+func (ps InstallOP) executeShScriptLocal(fn string, sy bool, parms input.InstallParams) (string, error) {
 	switch ps.BashParams.Key {
 	case "webserver":
 		return ps.executeShScript(fn, sy)
 	case "db":
-		return ps.executeShScript(fn, sy, "-p", "Bugo123456", "-P", "3306")
+		return ps.executeShScript(fn, sy, parms.Username, parms.Pwd)
 	case "redis":
 		if ps.BashParams.Version == "6.2.0" {
 			return ps.executeShScript(fn, sy, "6")
@@ -165,8 +170,22 @@ func (ps InstallOP) getScriptLocal() (string, error) {
 		bash = redis
 	case "php":
 		bash = php
+		if ps.BashParams.Version == "7.4" {
+			bash = mysql55
+		}
+		if ps.BashParams.Version == "8.4" {
+			bash = mysql55
+		}
+		if ps.BashParams.Version == "5.6" {
+			bash = mysql55
+		}
 	case "java":
-		bash = java
+		if ps.BashParams.Version == "openjdk-11" {
+			bash = openJDK11
+		}
+		if ps.BashParams.Version == "openjdk-17" {
+			bash = openJDK17
+		}
 	case "openresty":
 		bash = openresty
 	default:
@@ -202,7 +221,7 @@ func (ps InstallOP) executeShScript(scriptName string, sync bool, args ...string
 	cmdArgs := append([]string{scriptName}, args...)
 	cmd := exec.Command("bash", cmdArgs...)
 
-	logFileName := "install_" + scriptName + time.Now().Format("2006-01-02_15-04-05") + ".log"
+	logFileName := "install_" + time.Now().Format("2006-01-02_15-04-05") + ".log"
 	// 判断路径是否存在
 	if _, err := os.Stat("/data/wwwlogs/install"); os.IsNotExist(err) {
 		os.Mkdir("/data/wwwlogs/install", 0777)
@@ -220,40 +239,53 @@ func (ps InstallOP) executeShScript(scriptName string, sync bool, args ...string
 	if err != nil {
 		return "", err
 	}
-	tx := app.DB().Where("key = ? and version = ?", ps.BashParams.Key, ps.BashParams.Version).Updates(&models.Software{Status: models.Soft_Status_Ing, Log: logFileName})
-	if tx.Error != nil {
-		fmt.Println(tx.Error.Error())
-	}
-	if sync {
-		fmt.Println("cmd running" + scriptName)
-		err = cmd.Wait()
-		fmt.Println("cmd done" + scriptName)
-		if err != nil {
-			fmt.Println("cmd wait err:" + fmt.Sprintf("%v", err))
-			app.DB().Where("key = ? and version = ?", ps.BashParams.Key, ps.BashParams.Version).Updates(&models.Software{Status: models.Soft_Status_Err})
-		}
-		app.DB().Where("key = ? and version = ?", ps.BashParams.Key, ps.BashParams.Version).Updates(&models.Software{Status: models.Soft_Status_Suc, Installed: true, InstallVersion: ps.BashParams.Version})
-		return logFileName, nil
-	}
+	app.DB().Where("key = ? and version = ?", ps.BashParams.Key, ps.BashParams.Version).
+		Updates(&models.Software{Status: models.Soft_Status_Ing, Log: logFileName})
+
+	done := make(chan error, 1)
 
 	go func(bp *input.InstallParams) {
 		defer func() {
-			if err := recover(); err != nil {
-				log.Println("InstallParams panic error:", err)
+			if e := recover(); e != nil {
+				log.Println("InstallParams panic error:", e)
 			}
 		}()
-		fmt.Println("cmd running" + scriptName)
-		err = cmd.Wait()
-		fmt.Println("cmd done" + scriptName)
-		defer func() {
-			if err != nil {
-				fmt.Println("cmd wait err:" + fmt.Sprintf("%v", err))
-				app.DB().Where("key = ? and version = ?", ps.BashParams.Key, ps.BashParams.Version).Updates(&models.Software{Status: models.Soft_Status_Err})
-				return
-			}
-			app.DB().Where("key = ? and version = ?", ps.BashParams.Key, ps.BashParams.Version).Updates(&models.Software{Status: models.Soft_Status_Suc, Installed: true, InstallVersion: ps.BashParams.Version})
-		}()
+
+		fmt.Println("cmd running: " + scriptName)
+		errs := cmd.Wait() // 一定要用局部的 err，不要用外面的 err
+		fmt.Println("cmd done: " + scriptName)
+
+		done <- errs
 	}(ps.BashParams)
+
+	// 此处非阻塞执行后续逻辑
+	go func() {
+		errs := <-done // 此处会阻塞，等待脚本完成
+
+		var status int
+		var installed bool
+		var installVersion string
+
+		if errs != nil {
+			fmt.Println("脚本执行失败: ", errs)
+			status = models.Soft_Status_Default
+			installed = false
+			installVersion = ""
+		} else {
+			fmt.Println("脚本执行成功")
+			status = models.Soft_Status_Suc
+			installed = true
+			installVersion = ps.BashParams.Version
+		}
+
+		app.DB().Where("key = ? and version = ?", ps.BashParams.Key, ps.BashParams.Version).
+			Updates(&models.Software{
+				Status:         status,
+				Installed:      installed,
+				InstallVersion: installVersion,
+				Log:            logFileName,
+			})
+	}()
 	return logFileName, nil
 }
 
@@ -629,240 +661,167 @@ Main
 
 var mysql80 = `
 #!/bin/bash
+# MySQL 8.2 standalone installation script
 
-# 默认参数
-MYSQL_VERSION="8.0"
-MYSQL_ROOT_PASSWORD=""
-MYSQL_PORT=3306
+# Variables (you should customize these as needed)
+mysql82_ver="8.2.0"
+boost_ver="1.82.0"
+mysql_install_dir="/usr/local/mysql"
+mysql_data_dir="/data/mysql"
+dbinstallmethod=%s  # 1: binary installation, 2: compile from source
+dbrootpwd=%s
+Mem=$(free -m | awk '/Mem:/{print $2}')
 
-# 帮助信息
-usage() {
-  echo "Usage: $0 -p <root_password> -P <mysql_port>"
-  echo "  -p  设置 MySQL root 密码 (必需)"
-  echo "  -P  设置 MySQL 端口号 (默认: 3306)"
-  exit 1
-}
+# Ensure mysql user exists
+id -u mysql >/dev/null 2>&1 || useradd -M -s /sbin/nologin mysql
 
-# 解析参数
-while getopts "p:P:h" opt; do
-  case $opt in
-    p) MYSQL_ROOT_PASSWORD="$OPTARG" ;;
-    P) MYSQL_PORT="$OPTARG" ;;
-    h) usage ;;
-    *) usage ;;
-  esac
-done
+mkdir -p ${mysql_install_dir} ${mysql_data_dir}
+chown mysql:mysql -R ${mysql_data_dir}
 
-# 检查是否提供了 root 密码
-if [ -z "$MYSQL_ROOT_PASSWORD" ]; then
-  echo "错误: 必须提供 root 密码 (-p)"
-  usage
+# Download and install MySQL
+cd /usr/local/one/src
+
+if [ "${dbinstallmethod}" == "1" ]; then
+  wget https://mirrors.oneinstack.com/oneinstack/src/mysql-${mysql82_ver}-linux-glibc2.17-x86_64.tar.xz
+  tar xJf mysql-${mysql82_ver}-linux-glibc2.17-x86_64.tar.xz
+  mv mysql-${mysql82_ver}-linux-glibc2.17-x86_64/* ${mysql_install_dir}
+else
+  boostVersion2=$(echo ${boost_ver} | awk -F. '{print $1"_"$2"_"$3}')
+  wget https://mirrors.oneinstack.com/oneinstack/src/boost_${boostVersion2}.tar.gz
+  wget https://mirrors.oneinstack.com/oneinstack/src/mysql-${mysql82_ver}.tar.gz
+  tar xzf boost_${boostVersion2}.tar.gz
+  tar xzf mysql-${mysql82_ver}.tar.gz
+  cd mysql-${mysql82_ver}
+  cmake . -DCMAKE_INSTALL_PREFIX=${mysql_install_dir} \
+    -DMYSQL_DATADIR=${mysql_data_dir} \
+    -DDOWNLOAD_BOOST=1 \
+    -DWITH_BOOST=../boost_${boostVersion2} \
+    -DSYSCONFDIR=/etc \
+    -DWITH_INNOBASE_STORAGE_ENGINE=1 \
+    -DWITH_MYISAM_STORAGE_ENGINE=1 \
+    -DDEFAULT_CHARSET=utf8mb4
+  make -j $(nproc)
+  make install
 fi
 
-# 检查是否为 root 用户
-if [ "$(id -u)" != "0" ]; then
-  echo "请以 root 用户运行该脚本"
-  exit 1
-fi
+# MySQL configuration
+cat > /etc/my.cnf << EOF
+[client]
+port = 3306
+socket = /tmp/mysql.sock
+default-character-set = utf8mb4
 
-# 检测系统类型
-Detect_OS() {
-  if [ -f /etc/redhat-release ]; then
-    OS="CentOS"
-    PM="yum"
-  elif [ -f /etc/debian_version ]; then
-    OS="Debian"
-    PM="apt"
-  else
-    echo "不支持的操作系统"
-    exit 1
-  fi
-}
+[mysqld]
+user = mysql
+basedir = ${mysql_install_dir}
+datadir = ${mysql_data_dir}
+port = 3306
+socket = /tmp/mysql.sock
+default_authentication_plugin = mysql_native_password
+character-set-server = utf8mb4
+collation-server = utf8mb4_0900_ai_ci
+bind-address = 0.0.0.0
 
-# 安装依赖
-Install_Dependencies() {
-  echo "安装必要依赖包..."
-  if [ "$PM" == "yum" ]; then
-    yum -y install wget lsb-release gnupg
-  elif [ "$PM" == "apt" ]; then
-    apt update
-    apt -y install wget lsb-release gnupg
-  fi
-}
+log_error = ${mysql_data_dir}/mysql-error.log
+pid-file = ${mysql_data_dir}/mysql.pid
 
-# 导入 MySQL GPG 公钥
-Import_MySQL_GPG_Key() {
-  echo "导入 MySQL GPG 公钥..."
-  wget -q https://dev.mysql.com/get/mysql-apt-config_0.8.17-1_all.deb
-  dpkg -i mysql-apt-config_0.8.17-1_all.deb
-  wget -q http://repo.mysql.com/RPM-GPG-KEY-mysql-2022
-  apt-key adv --fetch-keys http://repo.mysql.com/RPM-GPG-KEY-mysql-2022
-  apt-get update
-}
+max_connections = $((Mem / 3))
+innodb_buffer_pool_size = $((Mem / 2))M
 
-# 安装 MySQL 8.0
-Install_MySQL() {
-  echo "安装 MySQL 8.0..."
-  if [ "$PM" == "yum" ]; then
-    yum -y install mysql-server
-  elif [ "$PM" == "apt" ]; then
-    apt -y install mysql-server
-  fi
-}
+EOF
 
-# 启动 MySQL 服务
-Start_MySQL() {
-  echo "启动 MySQL 服务..."
-  systemctl start mysql
-  systemctl enable mysql
-}
+${mysql_install_dir}/bin/mysqld --initialize-insecure --user=mysql --basedir=${mysql_install_dir} --datadir=${mysql_data_dir}
 
-# 修改 root 密码（无交互）
-Change_Root_Password() {
-  echo "修改 root 密码..."
-  mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '${MYSQL_ROOT_PASSWORD}';"
-}
+cp ${mysql_install_dir}/support-files/mysql.server /etc/init.d/mysqld
+sed -i "s@^basedir=.*@basedir=${mysql_install_dir}@" /etc/init.d/mysqld
+sed -i "s@^datadir=.*@datadir=${mysql_data_dir}@" /etc/init.d/mysqld
+chmod +x /etc/init.d/mysqld
 
-# 配置防火墙
-Configure_Firewall() {
-  echo "配置防火墙..."
-  if [ "$PM" == "yum" ]; then
-    firewall-cmd --zone=public --add-port=${MYSQL_PORT}/tcp --permanent &>/dev/null
-    firewall-cmd --reload &>/dev/null
-  elif [ "$PM" == "apt" ]; then
-    ufw allow ${MYSQL_PORT}/tcp &>/dev/null
-  fi
-}
+chkconfig --add mysqld
+chkconfig mysqld on
 
-# 配置 MySQL 安全设置（禁用匿名用户，删除测试数据库等）
-Secure_MySQL() {
-  echo "配置 MySQL 安全设置..."
-  mysql -e "DELETE FROM mysql.db WHERE Db='test' OR Db='test\_%';"
-  mysql -e "DROP USER IF EXISTS ''@'localhost';"
-  mysql -e "DROP USER IF EXISTS ''@'$(hostname)';"
-  mysql -e "FLUSH PRIVILEGES;"
-}
+service mysqld start
 
-# 主函数
-Main() {
-  Detect_OS
-  Install_Dependencies
-  Import_MySQL_GPG_Key
-  Install_MySQL
-  Start_MySQL
-  Change_Root_Password
-  Configure_Firewall
-  Secure_MySQL
-  echo "MySQL 8.0 安装完成，root 密码已设置为: ${MYSQL_ROOT_PASSWORD}, 端口: ${MYSQL_PORT}"
-}
+# Set root password
+${mysql_install_dir}/bin/mysql -uroot -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '${dbrootpwd}';"
+${mysql_install_dir}/bin/mysql -uroot -p${dbrootpwd} -e "RESET MASTER;"
 
-# 执行主函数
-Main
+# Update system PATH
+echo "export PATH=${mysql_install_dir}/bin:\$PATH" >> /etc/profile
+source /etc/profile
+
+# Final message
+echo "MySQL 8.2 installation completed successfully!"
+
 
 `
 
 var redis = `
 #!/bin/bash
+# Redis standalone installation script
 
-# 脚本名称：install_redis.sh
-# 用途：从源码安装 Redis 6 或 Redis 7，适配主流 Linux 发行版
+# Customizable variables
+redis_ver="7.2.3"
+redis_install_dir="/usr/local/redis"
+THREAD=$(nproc)
+Mem=$(free -m | awk '/Mem:/{print $2}')
 
-# 检查是否有 root 权限
-if [[ $EUID -ne 0 ]]; then
-   echo "请使用 root 权限运行此脚本" 
-   exit 1
-fi
+# Download Redis
+cd /usr/local/src
+wget https://download.redis.io/releases/redis-${redis_ver}.tar.gz
 
-# 检查参数是否传递正确
-if [ -z "$1" ]; then
-    echo "使用方法：$0 {6|7}"
-    echo "6: 安装 Redis 6"
-    echo "7: 安装 Redis 7"
-    exit 1
-fi
+tar xzf redis-${redis_ver}.tar.gz
+cd redis-${redis_ver}
 
-# 检测发行版
-if [[ -f /etc/os-release ]]; then
-    . /etc/os-release
-    OS=$ID
-else
-    echo "无法检测操作系统类型，脚本仅支持 Ubuntu/Debian 和 CentOS/RHEL"
-    exit 1
-fi
+# Compile Redis
+make -j ${THREAD}
 
-# 安装依赖
-echo "正在安装依赖..."
-if [[ "$OS" == "ubuntu" || "$OS" == "debian" ]]; then
-    apt-get update && apt-get install -y build-essential tcl wget
-elif [[ "$OS" == "centos" || "$OS" == "rhel" ]]; then
-    yum groupinstall -y "Development Tools"
-    yum install -y tcl wget
-else
-    echo "当前操作系统不受支持"
-    exit 1
-fi
+if [ -f "src/redis-server" ]; then
+  mkdir -p ${redis_install_dir}/{bin,etc,var}
+  cp src/{redis-benchmark,redis-check-aof,redis-check-rdb,redis-cli,redis-sentinel,redis-server} ${redis_install_dir}/bin/
+  cp redis.conf ${redis_install_dir}/etc/
+  ln -sf ${redis_install_dir}/bin/* /usr/local/bin/
 
-# 设置版本
-VERSION="$1"
+  sed -i 's@pidfile.*@pidfile /var/run/redis/redis.pid@' ${redis_install_dir}/etc/redis.conf
+  sed -i "s@logfile.*@logfile ${redis_install_dir}/var/redis.log@" ${redis_install_dir}/etc/redis.conf
+  sed -i "s@^dir.*@dir ${redis_install_dir}/var@" ${redis_install_dir}/etc/redis.conf
+  sed -i 's@daemonize no@daemonize yes@' ${redis_install_dir}/etc/redis.conf
+  sed -i "s@^# bind 127.0.0.1@bind 127.0.0.1@" ${redis_install_dir}/etc/redis.conf
 
-# 下载 Redis 源码
-if [ "$VERSION" == "6" ]; then
-    echo "正在下载 Redis 6.x 源码..."
-    wget https://mirrors.huaweicloud.com/redis/redis-6.2.0.tar.gz -O /tmp/redis-6.tar.gz
-    tar -zxvf /tmp/redis-6.tar.gz -C /tmp
-    cd /tmp/redis-6.2.0
-elif [ "$VERSION" == "7" ]; then
-    echo "正在下载 Redis 7.x 源码..."
-    wget https://mirrors.huaweicloud.com/redis/redis-7.0.5.tar.gz -O /tmp/redis-7.tar.gz
-    tar -zxvf /tmp/redis-7.tar.gz -C /tmp
-    cd /tmp/redis-7.0.5
-else
-    echo "无效的版本号：$VERSION。请指定 6 或 7"
-    exit 1
-fi
+  redis_maxmemory=$(($Mem / 8))000000
+  sed -i "/^maxmemory /d" ${redis_install_dir}/etc/redis.conf
+  echo "maxmemory ${redis_maxmemory}" >> ${redis_install_dir}/etc/redis.conf
 
-# 编译和安装 Redis
-echo "正在编译 Redis..."
-make
-make install
+  # Create redis user if not exists
+  id -u redis >/dev/null 2>&1 || useradd -M -s /sbin/nologin redis
+  chown -R redis:redis ${redis_install_dir}/{var,etc}
 
-# 配置 Redis
-echo "正在配置 Redis..."
-cp /tmp/redis-*/redis.conf /etc/redis.conf
-
-# 创建 Redis 用户和数据目录
-if ! id "redis" &>/dev/null; then
-    useradd -r -s /bin/false redis
-fi
-mkdir -p /var/lib/redis
-chown redis:redis /var/lib/redis
-
-# 创建 Redis 启动脚本
-cat > /etc/systemd/system/redis.service <<EOF
+  # Setup systemd service
+  cat > /lib/systemd/system/redis-server.service <<EOF
 [Unit]
 Description=Redis In-Memory Data Store
 After=network.target
 
 [Service]
-ExecStart=/usr/local/bin/redis-server /etc/redis.conf
-ExecStop=/usr/local/bin/redis-cli shutdown
 User=redis
 Group=redis
-WorkingDirectory=/var/lib/redis
+ExecStart=${redis_install_dir}/bin/redis-server ${redis_install_dir}/etc/redis.conf
+ExecStop=${redis_install_dir}/bin/redis-cli shutdown
 Restart=always
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-# 设置 Redis 服务为开机自启并启动
-systemctl enable redis
-systemctl start redis
+  systemctl daemon-reload
+  systemctl enable redis-server
+  systemctl start redis-server
 
-# 清理安装文件
-rm -rf /tmp/redis-*
-
-echo "Redis $VERSION 安装完成！"
+  echo "Redis ${redis_ver} installation completed successfully!"
+else
+  echo "Redis-server install failed. Please check the logs."
+  exit 1
+fi
 
 `
 
@@ -1400,6 +1359,150 @@ set_java_env
 
 # 验证安装
 verify_java_install
+
+`
+
+var openJDK11 = `
+#!/bin/bash
+
+# Detect OS type
+if [ -f /etc/redhat-release ]; then
+    OS_FAMILY='rhel'
+elif [ -f /etc/debian_version ]; then
+    if grep -iq ubuntu /etc/os-release; then
+        OS_FAMILY='ubuntu'
+        Ubuntu_ver=$(lsb_release -rs | cut -d. -f1)
+    else
+        OS_FAMILY='debian'
+    fi
+else
+    echo "Unsupported OS. Exiting."
+    exit 1
+fi
+
+SYS_ARCH=$(dpkg --print-architecture 2>/dev/null || uname -m)
+
+# Install OpenJDK 11
+if [ "${OS_FAMILY}" == 'rhel' ]; then
+    yum -y install java-11-openjdk-devel
+    JAVA_HOME=/usr/lib/jvm/java-11-openjdk
+elif [ "${OS_FAMILY}" == 'debian' ]; then
+    apt-get update
+    apt-get --no-install-recommends -y install openjdk-11-jdk
+    JAVA_HOME=/usr/lib/jvm/java-11-openjdk-${SYS_ARCH}
+elif [ "${OS_FAMILY}" == 'ubuntu' ]; then
+    if [[ "${Ubuntu_ver}" =~ ^16$ ]]; then
+        wget -qO - https://mirrors.tuna.tsinghua.edu.cn/Adoptium/deb/Release.key | apt-key add -
+        apt-add-repository --yes https://mirrors.tuna.tsinghua.edu.cn/Adoptium/deb
+        apt update
+        apt-get --no-install-recommends -y install temurin-11-jdk
+        JAVA_HOME=/usr/lib/jvm/temurin-11-jdk-${SYS_ARCH}
+    else
+        apt-get update
+        apt-get --no-install-recommends -y install openjdk-11-jdk
+        JAVA_HOME=/usr/lib/jvm/java-11-openjdk-${SYS_ARCH}
+    fi
+fi
+
+# Verify installation
+if [ -e "${JAVA_HOME}/bin/java" ]; then
+    cat > /etc/profile.d/openjdk.sh << EOF
+export JAVA_HOME=${JAVA_HOME}
+export CLASSPATH=\$JAVA_HOME/lib/tools.jar:\$JAVA_HOME/lib/dt.jar:\$JAVA_HOME/lib
+export PATH=\$JAVA_HOME/bin:\$PATH
+EOF
+
+    source /etc/profile.d/openjdk.sh
+    echo "OpenJDK 11 installation completed successfully."
+else
+    echo "OpenJDK 11 installation failed."
+    grep -Ew 'NAME|ID|ID_LIKE|VERSION_ID|PRETTY_NAME' /etc/os-release
+    exit 1
+fi
+
+`
+
+var openJDK17 = `
+#!/bin/bash
+
+# Detect OS type and version
+if [ -f /etc/redhat-release ]; then
+    OS_FAMILY='rhel'
+    RHEL_ver=$(rpm -q --queryformat '%{VERSION}' centos-release || rpm -q --queryformat '%{VERSION}' redhat-release-server)
+elif [ -f /etc/debian_version ]; then
+    if grep -iq ubuntu /etc/os-release; then
+        OS_FAMILY='ubuntu'
+        Ubuntu_ver=$(lsb_release -rs | cut -d. -f1)
+    else
+        OS_FAMILY='debian'
+        Debian_ver=$(lsb_release -rs | cut -d. -f1)
+    fi
+else
+    echo "Unsupported OS. Exiting."
+    exit 1
+fi
+
+SYS_ARCH=$(dpkg --print-architecture 2>/dev/null || uname -m)
+
+# Install OpenJDK 17
+if [ "${OS_FAMILY}" == 'rhel' ]; then
+    if [[ "${RHEL_ver}" =~ ^7$ ]]; then
+        cat > /etc/yum.repos.d/adoptium.repo << EOF
+[Adoptium]
+name=Adoptium
+baseurl=https://mirrors.tuna.tsinghua.edu.cn/Adoptium/rpm/rhel\$releasever-\$basearch/
+enabled=1
+gpgcheck=0
+EOF
+        yum -y install temurin-17-jdk
+        JAVA_HOME=/usr/lib/jvm/temurin-17-jdk
+    else
+        yum -y install java-17-openjdk-devel
+        JAVA_HOME=/usr/lib/jvm/java-17-openjdk
+    fi
+elif [ "${OS_FAMILY}" == 'debian' ]; then
+    apt-get update
+    if [[ "${Debian_ver}" =~ ^9$|^10$ ]]; then
+        wget -qO - https://mirrors.tuna.tsinghua.edu.cn/Adoptium/deb/Release.key | apt-key add -
+        apt-add-repository --yes https://mirrors.tuna.tsinghua.edu.cn/Adoptium/deb
+        apt update
+        apt-get --no-install-recommends -y install temurin-17-jdk
+        JAVA_HOME=/usr/lib/jvm/temurin-17-jdk-${SYS_ARCH}
+    else
+        apt-get --no-install-recommends -y install openjdk-17-jdk
+        JAVA_HOME=/usr/lib/jvm/java-17-openjdk-${SYS_ARCH}
+    fi
+elif [ "${OS_FAMILY}" == 'ubuntu' ]; then
+    apt-get update
+    if [[ "${Ubuntu_ver}" =~ ^16$ ]]; then
+        wget -qO - https://mirrors.tuna.tsinghua.edu.cn/Adoptium/deb/Release.key | apt-key add -
+        apt-add-repository --yes https://mirrors.tuna.tsinghua.edu.cn/Adoptium/deb
+        apt update
+        apt-get --no-install-recommends -y install temurin-17-jdk
+        JAVA_HOME=/usr/lib/jvm/temurin-17-jdk-${SYS_ARCH}
+    else
+        apt-get --no-install-recommends -y install openjdk-17-jdk
+        JAVA_HOME=/usr/lib/jvm/java-17-openjdk-${SYS_ARCH}
+    fi
+fi
+
+# Verify installation
+if [ -e "${JAVA_HOME}/bin/java" ]; then
+    cat > /etc/profile.d/openjdk.sh << EOF
+export JAVA_HOME=${JAVA_HOME}
+export CLASSPATH=\$JAVA_HOME/lib
+export PATH=\$JAVA_HOME/bin:\$PATH
+EOF
+
+    source /etc/profile.d/openjdk.sh
+    echo "OpenJDK 17 installation completed successfully."
+else
+    echo "OpenJDK 17 installation failed."
+    grep -Ew 'NAME|ID|ID_LIKE|VERSION_ID|PRETTY_NAME' /etc/os-release
+    exit 1
+fi
+
+
 
 `
 

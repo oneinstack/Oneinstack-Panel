@@ -21,9 +21,10 @@ func CreateUser(username, password string, isAdmin bool) error {
 		return err
 	}
 	user := &models.User{
-		Username: username,
-		Password: hashed,
-		IsAdmin:  isAdmin,
+		Username:  username,
+		Password:  hashed,
+		IsAdmin:   isAdmin,
+		FirstJoin: false,
 	}
 	tx := app.DB().Create(user)
 	if tx.Error != nil {

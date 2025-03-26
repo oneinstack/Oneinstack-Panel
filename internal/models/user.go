@@ -10,6 +10,7 @@ type User struct {
 	Username   string    `json:"username"`
 	Password   string    `json:"password"`
 	IsAdmin    bool      `json:"is_admin"`
+	FirstJoin  bool      `json:"first_join"`
 	CreateTime time.Time `json:"create_time"`
 }
 

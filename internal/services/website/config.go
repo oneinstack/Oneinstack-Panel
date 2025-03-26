@@ -99,11 +99,11 @@ func GetNginxConfig(p *models.Website) (string, error) {
 	config := ""
 	switch p.Type {
 	case "php":
-		config = fmt.Sprintf(tps["php"], p.Name, p.Domain, "/data/wwwroot/"+p.RootDir, "/data/wwwroot/"+p.RootDir, p.Remark, p.Name, p.Name)
+		config = fmt.Sprintf(tps["php"], p.Name, p.Name, "/data/wwwroot/"+p.Name, "/data/wwwroot/"+p.Name, p.Remark, p.Name, p.Name)
 	case "proxy":
-		config = fmt.Sprintf(tps["proxy"], p.Name, p.Domain, p.Pact, p.SendUrl, p.TarUrl, p.Remark, p.Name, p.Name)
+		config = fmt.Sprintf(tps["proxy"], p.Name, p.Name, p.Pact, p.SendUrl, p.TarUrl, p.Remark, p.Name, p.Name)
 	case "static":
-		config = fmt.Sprintf(tps["static"], p.Name, p.Domain, "/data/wwwroot/"+p.RootDir, p.Remark, p.Name, p.Name)
+		config = fmt.Sprintf(tps["static"], p.Name, p.Name, "/data/wwwroot/"+p.Dir, p.Remark, p.Name, p.Name)
 	}
 	return config, nil
 }
@@ -167,7 +167,7 @@ func SaveConfigToFile(config string, p *models.Website) error {
 	}
 
 	// 创建一个文件路径
-	filePath := fmt.Sprintf("%s/%s", nginxSitesAvailableDir, p.Name)
+	filePath := fmt.Sprintf("%s/%s", nginxSitesAvailableDir, p.Name+".conf")
 
 	// 更新或创建配置文件
 	err := UpdateConfigIfExists(filePath, config)
@@ -203,26 +203,15 @@ func ReloadNginxConfig() error {
 // DeleteNginxConfig 删除指定的 Nginx 配置文件及符号链接
 func DeleteNginxConfig(websiteName string) error {
 	// 配置文件路径
-	availablePath := fmt.Sprintf("/etc/nginx/sites-available/%s", websiteName)
-	enabledPath := fmt.Sprintf("/etc/nginx/sites-enabled/%s", websiteName)
+	availablePath := fmt.Sprintf("/usr/local/nginx/conf/vhost/%s", websiteName)
 
 	// 删除 sites-available 中的配置文件
-	err := os.Remove(availablePath)
+	err := os.Remove(availablePath + ".conf")
 	if err != nil {
 		if os.IsNotExist(err) {
 			return fmt.Errorf("config file %s not found in sites-available", availablePath)
 		}
 		return fmt.Errorf("failed to delete config file %s: %v", availablePath, err)
 	}
-
-	// 删除 sites-enabled 中的符号链接
-	err = os.Remove(enabledPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return fmt.Errorf("symlink %s not found in sites-enabled", enabledPath)
-		}
-		return fmt.Errorf("failed to delete symlink %s: %v", enabledPath, err)
-	}
-
 	return nil
 }
