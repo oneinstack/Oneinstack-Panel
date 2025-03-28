@@ -85,8 +85,11 @@ func SetupRouter() *gin.Engine {
 		ftpg.POST("/create", ftp.CreateFileOrDir)
 		ftpg.POST("/upload", ftp.UploadFile)
 		ftpg.POST("/download", ftp.DownloadFile)
+		ftpg.POST("/content", ftp.Content)
+		ftpg.POST("/tree", ftp.GetDirectoryTreeHandler)
 		ftpg.POST("/delete", ftp.DeleteFileOrDir)
 		ftpg.POST("/modify", ftp.ModifyFileOrDirAttributes)
+		ftpg.POST("/save", ftp.SaveFile)
 	}
 
 	//软件相关

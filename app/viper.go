@@ -19,6 +19,10 @@ func Viper(path ...string) *viper.Viper {
 system:
     port: 8089
     remote: 'http://localhost:8189/v1/sys/update'
+	defaultPath: '/data/'
+    webPath: '/data/wwwroot/'
+    logPath: '/data/wwwlogs/'
+    dataPath: '/data/db/'
 `
 		err := os.WriteFile(config, []byte(defaultConfig), 0644)
 		if err != nil {

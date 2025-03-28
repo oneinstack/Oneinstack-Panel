@@ -103,13 +103,7 @@ func (ps InstallOP) executeShScriptLocal(fn string, sy bool, parms input.Install
 	case "db":
 		return ps.executeShScript(fn, sy, parms.Username, parms.Pwd)
 	case "redis":
-		if ps.BashParams.Version == "6.2.0" {
-			return ps.executeShScript(fn, sy, "6")
-		}
-		if ps.BashParams.Version == "7.0.5" {
-			return ps.executeShScript(fn, sy, "7")
-		}
-		return "", fmt.Errorf("未知的redis类型")
+		return ps.executeShScript(fn, sy, "7")
 	case "php":
 		if ps.BashParams.Version == "5.6" {
 			return ps.executeShScript(fn, sy, "5")
@@ -223,8 +217,8 @@ func (ps InstallOP) executeShScript(scriptName string, sync bool, args ...string
 
 	logFileName := "install_" + time.Now().Format("2006-01-02_15-04-05") + ".log"
 	// 判断路径是否存在
-	if _, err := os.Stat("/data/wwwlogs/install"); os.IsNotExist(err) {
-		os.Mkdir("/data/wwwlogs/install", 0777)
+	if _, err := os.Stat("data/wwwlogs/install/"); os.IsNotExist(err) {
+		os.MkdirAll("data/wwwlogs/install/", 0777)
 	}
 	// 创建日志文件
 	logFile, err := os.Create("/data/wwwlogs/install/" + logFileName)

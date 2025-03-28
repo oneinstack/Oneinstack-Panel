@@ -7,6 +7,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"os/exec"
 	"sync"
 	"syscall"
@@ -33,17 +34,31 @@ func OpenWebShell(c *gin.Context) {
 	defer conn.Close()
 
 	// 创建带有伪终端的命令
-	cmd := exec.Command("bash")
+	cmd := exec.Command("bash", "-i") // 加 -i 更像交互式终端
+	cmd.Env = append(os.Environ(), "TERM=xterm")
+	fmt.Println(cmd.Args)
+	fmt.Println(cmd.String())
 	ptmx, err := pty.StartWithAttrs(cmd, &pty.Winsize{Rows: 24, Cols: 80}, &syscall.SysProcAttr{
 		Setsid:  true,
 		Setctty: true,
 	})
+	fmt.Println("ptmx:", ptmx)
 	if err != nil {
 		conn.WriteMessage(websocket.TextMessage, []byte("Failed to start shell: "+err.Error()))
 		return
 	}
 	defer ptmx.Close()
 	defer cmd.Process.Kill()
+
+	// 设置终端属性，关闭 echo
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		stty := exec.Command("stty", "-echo")
+		stty.Stdin = ptmx
+		stty.Stdout = ptmx
+		stty.Stderr = ptmx
+		stty.Run()
+	}()
 
 	done := make(chan struct{})
 	var once sync.Once
@@ -64,9 +79,7 @@ func OpenWebShell(c *gin.Context) {
 				return
 			}
 
-			// 对数据进行base64编码
-			b64 := make([]byte, base64.StdEncoding.EncodedLen(n))
-			if err := conn.WriteMessage(websocket.TextMessage, b64); err != nil {
+			if err := conn.WriteMessage(websocket.TextMessage, buf[:n]); err != nil {
 				closeDone()
 				return
 			}
@@ -107,15 +120,24 @@ func OpenWebShell(c *gin.Context) {
 					})
 					continue
 				}
-
+				// data 是base64编码的字符串 通过base64解码
+				ddata, err := base64.StdEncoding.DecodeString(string(data))
+				if err != nil {
+					return
+				}
 				// 处理普通文本输入
-				if _, err := ptmx.Write(data); err != nil {
+				if _, err := ptmx.Write(ddata); err != nil {
 					return
 				}
 
 			case websocket.BinaryMessage:
+				// data 是base64编码的字符串 通过base64解码
+				ddata, err := base64.StdEncoding.DecodeString(string(data))
+				if err != nil {
+					return
+				}
 				// 直接写入二进制数据
-				if _, err := ptmx.Write(data); err != nil {
+				if _, err := ptmx.Write(ddata); err != nil {
 					return
 				}
 			default:

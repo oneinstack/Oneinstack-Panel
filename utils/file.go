@@ -9,12 +9,16 @@ import (
 	"io"
 	"io/ioutil"
 	"net/http"
+	"oneinstack/router/input"
 	"os"
 	"os/user"
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"sync"
 )
+
+var logFileSizeCache sync.Map
 
 // DecompressTarGz 跨平台解压 tar.gz 文件
 func DecompressTarGz(src string, dest string) error {
@@ -128,10 +132,49 @@ func SetExecPermissions(dir string) error {
 	})
 }
 
-func GetLogContent(logFilePath string) (string, error) {
-	file, err := os.Open("/data/wwwlogs/install/" + logFilePath)
+//func GetLogContent(logFilePath string) (string, error) {
+//	file, err := os.Open("/data/wwwlogs/install/" + logFilePath)
+//	if err != nil {
+//		return "", fmt.Errorf("无法打开日志文件: %v", err)
+//	}
+//	defer file.Close()
+//
+//	var content []byte
+//	scanner := bufio.NewScanner(file)
+//	for scanner.Scan() {
+//		content = append(content, scanner.Bytes()...)
+//		content = append(content, '\n')
+//	}
+//
+//	if err := scanner.Err(); err != nil {
+//		return "", err
+//	}
+//
+//	return string(content), nil
+//}
+
+func GetLogContent(logFilePath string) (input.LogResult, error) {
+	fullPath := "/data/wwwlogs/install/" + logFilePath
+
+	fileInfo, err := os.Stat(fullPath)
 	if err != nil {
-		return "", fmt.Errorf("无法打开日志文件: %v", err)
+		return input.LogResult{}, fmt.Errorf("无法获取日志文件信息: %v", err)
+	}
+	currentSize := fileInfo.Size()
+
+	// 获取上次记录的大小
+	lastSizeAny, _ := logFileSizeCache.Load(fullPath)
+	lastSize, _ := lastSizeAny.(int64)
+
+	completed := lastSize == currentSize
+
+	// 更新缓存
+	logFileSizeCache.Store(fullPath, currentSize)
+
+	// 读取内容
+	file, err := os.Open(fullPath)
+	if err != nil {
+		return input.LogResult{}, fmt.Errorf("无法打开日志文件: %v", err)
 	}
 	defer file.Close()
 
@@ -141,12 +184,14 @@ func GetLogContent(logFilePath string) (string, error) {
 		content = append(content, scanner.Bytes()...)
 		content = append(content, '\n')
 	}
-
 	if err := scanner.Err(); err != nil {
-		return "", err
+		return input.LogResult{}, err
 	}
 
-	return string(content), nil
+	return input.LogResult{
+		Content:   string(content),
+		Completed: completed,
+	}, nil
 }
 
 func FormatBytes(bytes int64) string {

@@ -1,6 +1,7 @@
 package software
 
 import (
+	"embed"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,13 +10,21 @@ import (
 	"oneinstack/internal/services"
 	"oneinstack/router/input"
 	"oneinstack/router/output"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/imroc/req/v3"
 	"gorm.io/gorm"
 )
+
+//go:embed scripts/UninstallRedis.sh
+var UninstallRedis embed.FS
+
+//go:embed scripts/UninstallMySQL.sh
+var UninstallMySQL embed.FS
 
 func RunInstall(p *input.InstallParams) (string, error) {
 	op, err := NewInstallOP(p)
@@ -260,9 +269,61 @@ func Sync() {
 // remove software
 func Remove(param *input.RemoveParams) (bool, error) {
 	// 将软件状态设置为 0 并且设置installed为false
-	tx := app.DB().Model(&models.Software{}).Where("key = ? AND version = ?", param.Key, param.Version).Updates(&models.Software{Status: models.Soft_Status_Default, Log: "", Installed: false, InstallVersion: ""})
+	fmt.Println(param.Name + "|" + param.Version)
+	tx := app.DB().Model(&models.Software{}).Where("name = ? AND version = ?", param.Name, param.Version).Updates(map[string]interface{}{
+		"status":          models.Soft_Status_Default,
+		"log":             "",
+		"installed":       false,
+		"install_version": "",
+	})
+	err := RunUnInstallScript(param.Name)
+	if err != nil {
+		return false, err
+	}
 	if tx.Error != nil {
 		return false, tx.Error
 	}
 	return true, nil
+}
+
+func RunUnInstallScript(soft string) error {
+	// 读取脚本内容
+	if soft == "redis" {
+		data, err := UninstallRedis.ReadFile("scripts/UninstallRedis.sh")
+		if err != nil {
+			return err
+		}
+
+		// 创建临时文件保存脚本
+		tmpDir := os.TempDir()
+		scriptPath := filepath.Join(tmpDir, "UninstallRedis.sh")
+		if err := os.WriteFile(scriptPath, data, 0755); err != nil {
+			return err
+		}
+
+		// 执行脚本
+		cmd := exec.Command("/bin/bash", scriptPath)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		return cmd.Run()
+	} else if soft == "mysql" {
+		data, err := UninstallMySQL.ReadFile("scripts/UninstallMySQL.sh")
+		if err != nil {
+			return err
+		}
+
+		// 创建临时文件保存脚本
+		tmpDir := os.TempDir()
+		scriptPath := filepath.Join(tmpDir, "UninstallRedis.sh")
+		if err := os.WriteFile(scriptPath, data, 0755); err != nil {
+			return err
+		}
+
+		// 执行脚本
+		cmd := exec.Command("/bin/bash", scriptPath)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		return cmd.Run()
+	}
+	return nil
 }

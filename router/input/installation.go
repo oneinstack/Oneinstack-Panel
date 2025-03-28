@@ -9,8 +9,8 @@ type InstallParams struct {
 }
 
 type RemoveParams struct {
-	Key     string `json:"key"`     //安装的服务
-	Version string `json:"version"` //安装的版本
+	Name    string `json:"name" binding:"required"`    //安装的服务
+	Version string `json:"version" binding:"required"` //安装的版本
 }
 
 //

@@ -13,3 +13,8 @@ type SoftwareParam struct {
 	Tags      string `json:"tags"`
 	Page
 }
+
+type LogResult struct {
+	Content   string `json:"content"`
+	Completed bool   `json:"completed"`
+}
