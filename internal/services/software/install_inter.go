@@ -760,6 +760,13 @@ redis_install_dir="/usr/local/redis"
 THREAD=$(nproc)
 Mem=$(free -m | awk '/Mem:/{print $2}')
 
+# 创建 redis 用户和组
+if ! id -u redis &>/dev/null; then
+  echo "创建 redis 用户和组..."
+  groupadd redis
+  useradd -r -g redis -s /sbin/nologin redis
+fi
+
 # Download Redis
 cd /usr/local/src
 wget https://download.redis.io/releases/redis-${redis_ver}.tar.gz

@@ -99,7 +99,7 @@ func GetNginxConfig(p *models.Website) (string, error) {
 	config := ""
 	switch p.Type {
 	case "php":
-		config = fmt.Sprintf(tps["php"], p.Name, p.Name, "/data/wwwroot/"+p.Name, "/data/wwwroot/"+p.Name, p.Remark, p.Name, p.Name)
+		config = fmt.Sprintf(tps["php"], p.Name, p.Name, "/data/wwwroot/"+p.Dir, "/data/wwwroot/"+p.Dir, p.Remark, p.Name, p.Name)
 	case "proxy":
 		config = fmt.Sprintf(tps["proxy"], p.Name, p.Name, p.Pact, p.SendUrl, p.TarUrl, p.Remark, p.Name, p.Name)
 	case "static":

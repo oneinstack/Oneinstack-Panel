@@ -34,13 +34,12 @@ func Add(param *models.Website) error {
 	}
 	// 创建网站目录文件
 	if param.Type != "proxy" {
-		err := CreateDir(app.ONE_CONFIG.System.WebPath + param.Name)
+		err := CreateDir(app.ONE_CONFIG.System.WebPath + param.Dir)
 		if err != nil {
 			return err
 		}
 	}
-	param.RootDir = app.ONE_CONFIG.System.WebPath + param.Name
-	param.Dir = app.ONE_CONFIG.System.WebPath + param.Name
+	param.RootDir = app.ONE_CONFIG.System.WebPath + param.Dir
 	tx := app.DB().Create(param)
 	if tx.Error != nil {
 		return tx.Error

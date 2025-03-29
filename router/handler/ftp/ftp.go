@@ -296,6 +296,10 @@ func lookupGroupID(groupname string) (int, error) {
 	return gid, nil
 }
 
+func SearchFile(c *gin.Context) {
+
+}
+
 func Content(c *gin.Context) {
 	var input struct {
 		Path string `json:"path" binding:"required"`
@@ -505,4 +509,39 @@ func SaveFile(c *gin.Context) {
 	}
 
 	core.HandleSuccess(c, "保存成功")
+}
+
+func UrlDownloadFile(c *gin.Context) {
+	var input struct {
+		Path string `json:"path" binding:"required"`
+		Url  string `json:"url" binding:"required"`
+		Name string `json:"name" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		core.HandleError(c, http.StatusBadRequest, fmt.Errorf("参数错误"), nil)
+	}
+	core.HandleSuccess(c, DownloadUrlFile(input.Url, input.Path, input.Name))
+}
+
+func DownloadUrlFile(url string, path string, name string) bool {
+	resp, err := http.Get(url)
+	if err != nil {
+		fmt.Println(err)
+		return false
+	}
+	defer resp.Body.Close()
+
+	out, err := os.Create(filepath.Join(path, name))
+	if err != nil {
+		fmt.Println(err)
+		return false
+	}
+	defer out.Close()
+
+	_, err = io.Copy(out, resp.Body)
+	if err != nil {
+		fmt.Println(err)
+		return false
+	}
+	return true
 }

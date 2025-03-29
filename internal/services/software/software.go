@@ -26,6 +26,9 @@ var UninstallRedis embed.FS
 //go:embed scripts/UninstallMySQL.sh
 var UninstallMySQL embed.FS
 
+//go:embed scripts/UninstallNginx.sh
+var UninstallNginx embed.FS
+
 func RunInstall(p *input.InstallParams) (string, error) {
 	op, err := NewInstallOP(p)
 	if err != nil {
@@ -315,6 +318,24 @@ func RunUnInstallScript(soft string) error {
 		// 创建临时文件保存脚本
 		tmpDir := os.TempDir()
 		scriptPath := filepath.Join(tmpDir, "UninstallRedis.sh")
+		if err := os.WriteFile(scriptPath, data, 0755); err != nil {
+			return err
+		}
+
+		// 执行脚本
+		cmd := exec.Command("/bin/bash", scriptPath)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		return cmd.Run()
+	} else if soft == "nginx" {
+		data, err := UninstallNginx.ReadFile("scripts/UninstallNginx.sh")
+		if err != nil {
+			return err
+		}
+
+		// 创建临时文件保存脚本
+		tmpDir := os.TempDir()
+		scriptPath := filepath.Join(tmpDir, "UninstallNginx.sh")
 		if err := os.WriteFile(scriptPath, data, 0755); err != nil {
 			return err
 		}
