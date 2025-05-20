@@ -1,6 +1,7 @@
 package software
 
 import (
+	"embed"
 	"errors"
 	"fmt"
 	"log"
@@ -15,6 +16,15 @@ import (
 
 	"gorm.io/gorm"
 )
+
+//go:embed scripts/InstallJava11.sh
+var InstallJava11 embed.FS
+
+//go:embed scripts/InstallJava18.sh
+var InstallJava18 embed.FS
+
+//go:embed scripts/InstallPhp.sh
+var InstallPhp embed.FS
 
 type InstallOPI interface {
 	Install() (string, error)
@@ -163,22 +173,35 @@ func (ps InstallOP) getScriptLocal() (string, error) {
 	case "redis":
 		bash = redis
 	case "php":
-		bash = php
-		if ps.BashParams.Version == "7.4" {
-			bash = mysql55
+		data, err := InstallPhp.ReadFile("scripts/InstallPhp.sh")
+		if err != nil {
+			return "", err
+		}
+		bash = string(data)
+		/*if ps.BashParams.Version == "7.4" {
+			bash = php
 		}
 		if ps.BashParams.Version == "8.4" {
-			bash = mysql55
+			bash = php
 		}
 		if ps.BashParams.Version == "5.6" {
-			bash = mysql55
-		}
+			bash = php
+		}*/
 	case "java":
-		if ps.BashParams.Version == "openjdk-11" {
-			bash = openJDK11
+		if ps.BashParams.Version == "11" {
+			//bash = openJDK11
+			data, err := InstallJava11.ReadFile("scripts/InstallJava11.sh")
+			if err != nil {
+				return "", err
+			}
+			bash = string(data)
 		}
-		if ps.BashParams.Version == "openjdk-17" {
-			bash = openJDK17
+		if ps.BashParams.Version == "18" {
+			data, err := InstallJava18.ReadFile("scripts/InstallJava18.sh")
+			if err != nil {
+				return "", err
+			}
+			bash = string(data)
 		}
 	case "openresty":
 		bash = openresty
@@ -217,8 +240,8 @@ func (ps InstallOP) executeShScript(scriptName string, sync bool, args ...string
 
 	logFileName := "install_" + time.Now().Format("2006-01-02_15-04-05") + ".log"
 	// 判断路径是否存在
-	if _, err := os.Stat("data/wwwlogs/install/"); os.IsNotExist(err) {
-		os.MkdirAll("data/wwwlogs/install/", 0777)
+	if _, err := os.Stat("/data/wwwlogs/install/"); os.IsNotExist(err) {
+		os.MkdirAll("/data/wwwlogs/install/", 0777)
 	}
 	// 创建日志文件
 	logFile, err := os.Create("/data/wwwlogs/install/" + logFileName)
@@ -271,14 +294,15 @@ func (ps InstallOP) executeShScript(scriptName string, sync bool, args ...string
 			installed = true
 			installVersion = ps.BashParams.Version
 		}
+		um := map[string]interface{}{
+			"status":          status,
+			"installed":       installed,
+			"install_version": installVersion,
+			"log":             logFileName,
+		}
 
-		app.DB().Where("key = ? and version = ?", ps.BashParams.Key, ps.BashParams.Version).
-			Updates(&models.Software{
-				Status:         status,
-				Installed:      installed,
-				InstallVersion: installVersion,
-				Log:            logFileName,
-			})
+		app.DB().Model(&models.Software{}).Where("key = ? and version = ?", ps.BashParams.Key, ps.BashParams.Version).
+			Updates(um)
 	}()
 	return logFileName, nil
 }
