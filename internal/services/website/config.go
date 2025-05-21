@@ -205,8 +205,13 @@ func DeleteNginxConfig(websiteName string) error {
 	// 配置文件路径
 	availablePath := fmt.Sprintf("/usr/local/nginx/conf/vhost/%s", websiteName)
 
+	pathFile := availablePath + ".conf"
+	_, err := os.Stat(pathFile)
+	if os.IsNotExist(err) { // 文件不存在则不需要删除，直接返回
+		return nil
+	}
 	// 删除 sites-available 中的配置文件
-	err := os.Remove(availablePath + ".conf")
+	err = os.Remove(pathFile)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return fmt.Errorf("config file %s not found in sites-available", availablePath)
