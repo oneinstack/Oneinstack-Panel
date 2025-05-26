@@ -2,7 +2,6 @@ package ftp
 
 import (
 	"fmt"
-	"github.com/google/uuid"
 	"io"
 	"mime"
 	"net/http"
@@ -12,7 +11,6 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -52,19 +50,6 @@ type FileNode struct {
 	IsDir     bool        `json:"isDir"`
 	Extension string      `json:"extension"`
 	Children  []*FileNode `json:"children"`
-}
-
-type DirTreeRequest struct {
-	Path       string `json:"path" binding:"required"`
-	ContainSub bool   `json:"containSub"` // 是否包含子目录（第二层）
-	ShowHidden bool   `json:"showHidden"`
-	SortBy     string `json:"sortBy"`    // name, time, size（未实现）
-	SortOrder  string `json:"sortOrder"` // ascending, descending（未实现）
-	Page       int    `json:"page"`      // 预留分页字段
-	PageSize   int    `json:"pageSize"`
-	Expand     bool   `json:"expand"`
-	Search     string `json:"search"`
-	DirOnly    bool   `json:"dir"`
 }
 
 // 列出目录内容
@@ -175,18 +160,12 @@ func DownloadFile(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "file not found"})
 		return
 	}
+
 	defer file.Close()
-
-	stat, err := file.Stat()
-	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "file not found"})
-		return
-	}
-
-	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%s", url.QueryEscape(filepath.Base(filePath))))
-	c.Header("Content-Type", "application/octet-stream")
-	c.Header("Content-Length", fmt.Sprintf("%d", stat.Size()))
-	io.Copy(c.Writer, file)
+	info, _ := file.Stat()
+	c.Header("Content-Length", strconv.FormatInt(info.Size(), 10))
+	c.Header("Content-Disposition", "attachment; filename*=utf-8''"+url.PathEscape(info.Name()))
+	http.ServeContent(c.Writer, c.Request, info.Name(), info.ModTime(), file)
 }
 
 // 删除文件或目录
@@ -382,98 +361,18 @@ func Content(c *gin.Context) {
 }
 
 func GetDirectoryTreeHandler(c *gin.Context) {
-	var req DirTreeRequest
+	var req utils.DirTreeRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(400, gin.H{"error": "参数错误: " + err.Error()})
 		return
 	}
 
-	// 校验起始路径
-	stat, err := os.Stat(req.Path)
-	if err != nil || !stat.IsDir() {
-		c.JSON(400, gin.H{"error": fmt.Sprintf("路径不存在或不是目录: %s", req.Path)})
+	tree, err := utils.ScanDirectoryTree(req)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
-
-	root := &FileNode{
-		ID:        uuid.New().String(),
-		Name:      filepath.Base(req.Path),
-		Path:      req.Path,
-		IsDir:     true,
-		Extension: "",
-	}
-
-	children, err := scanDirectory(req.Path, req, 1)
-	if err != nil {
-		c.JSON(500, gin.H{"error": "读取目录失败: " + err.Error()})
-		return
-	}
-
-	root.Children = children
-
-	c.JSON(200, []FileNode{*root})
-}
-
-func scanDirectory(path string, req DirTreeRequest, level int) ([]*FileNode, error) {
-	if level > 2 {
-		return nil, nil
-	}
-
-	entries, err := os.ReadDir(path)
-	if err != nil {
-		return nil, err
-	}
-
-	var nodes []*FileNode
-	for _, entry := range entries {
-		name := entry.Name()
-
-		// 是否隐藏
-		if !req.ShowHidden && strings.HasPrefix(name, ".") {
-			continue
-		}
-
-		fullPath := filepath.Join(path, name)
-		//info, err := entry.Info()
-		//if err != nil {
-		//	continue
-		//}
-
-		isDir := entry.IsDir()
-		ext := ""
-		if !isDir {
-			ext = filepath.Ext(name)
-		}
-
-		node := &FileNode{
-			ID:        uuid.New().String(),
-			Name:      name,
-			Path:      fullPath,
-			IsDir:     isDir,
-			Extension: ext,
-		}
-
-		// 第二层递归
-		if isDir && req.ContainSub && level < 2 {
-			children, err := scanDirectory(fullPath, req, level+1)
-			if err == nil {
-				node.Children = children
-			}
-		}
-
-		if req.DirOnly && !isDir {
-			continue
-		}
-
-		nodes = append(nodes, node)
-	}
-
-	// 可添加排序逻辑 sortBy/sortOrder
-	sort.Slice(nodes, func(i, j int) bool {
-		return strings.ToLower(nodes[i].Name) < strings.ToLower(nodes[j].Name)
-	})
-
-	return nodes, nil
+	core.HandleSuccess(c, tree)
 }
 
 func getUserName(uid uint32) string {

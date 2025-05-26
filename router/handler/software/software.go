@@ -44,7 +44,8 @@ func GetSoftware(c *gin.Context) {
 
 func GetLogContent(c *gin.Context) {
 	param := c.Query("fn")
-	install, err := utils.GetLogContent(param)
+	softName := c.Query("name")
+	install, err := utils.GetLogContent(param, softName)
 	if err != nil {
 		core.HandleError(c, http.StatusInternalServerError, err, nil)
 		return

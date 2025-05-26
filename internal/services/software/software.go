@@ -291,7 +291,7 @@ func Remove(param *input.RemoveParams) (bool, error) {
 
 func RunUnInstallScript(soft string) error {
 	// 读取脚本内容
-	if soft == "redis" {
+	if soft == "Redis" {
 		data, err := UninstallRedis.ReadFile("scripts/UninstallRedis.sh")
 		if err != nil {
 			return err
@@ -309,7 +309,7 @@ func RunUnInstallScript(soft string) error {
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		return cmd.Run()
-	} else if soft == "mysql" {
+	} else if soft == "MySQL" {
 		data, err := UninstallMySQL.ReadFile("scripts/UninstallMySQL.sh")
 		if err != nil {
 			return err
@@ -327,7 +327,7 @@ func RunUnInstallScript(soft string) error {
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		return cmd.Run()
-	} else if soft == "nginx" {
+	} else if soft == "Nginx" {
 		data, err := UninstallNginx.ReadFile("scripts/UninstallNginx.sh")
 		if err != nil {
 			return err
