@@ -1,7 +1,6 @@
 package software
 
 import (
-	"embed"
 	"errors"
 	"fmt"
 	"log"
@@ -16,15 +15,6 @@ import (
 
 	"gorm.io/gorm"
 )
-
-//go:embed scripts/InstallJava11.sh
-var InstallJava11 embed.FS
-
-//go:embed scripts/InstallJava18.sh
-var InstallJava18 embed.FS
-
-//go:embed scripts/InstallPhp.sh
-var InstallPhp embed.FS
 
 type InstallOPI interface {
 	Install() (string, error)
