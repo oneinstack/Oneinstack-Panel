@@ -14,15 +14,15 @@ const (
 )
 
 type Software struct {
-	Id             int       `json:"id" gorm:"primaryKey;autoIncrement"`
-	Name           string    `json:"name" gorm:"index:idx_name_installed_type"`
-	Type           string    `json:"type" gorm:"index:idx_name_installed_type"`
-	Installed      bool      `json:"installed" gorm:"index:idx_name_installed_type"`
+	Id             int       `json:"id"`
+	Name           string    `json:"name"`
 	Key            string    `json:"key"`
 	Icon           string    `json:"icon"`
 	Describe       string    `json:"describe"`
+	Type           string    `json:"type"`
 	Status         int       `json:"status"` //0待安装,1安装中,2安装成功,3安装失败
 	Resource       string    `json:"resource"`
+	Installed      bool      `json:"installed"`
 	Tags           string    `json:"tags"`
 	Version        string    `json:"version"`
 	Params         string    `json:"params"`

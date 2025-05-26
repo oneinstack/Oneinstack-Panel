@@ -5,9 +5,7 @@ import (
 	"archive/zip"
 	"bufio"
 	"compress/gzip"
-	"errors"
 	"fmt"
-	"github.com/google/uuid"
 	"io"
 	"io/ioutil"
 	"net/http"
@@ -16,31 +14,11 @@ import (
 	"os/user"
 	"path/filepath"
 	"runtime"
-	"sort"
 	"strconv"
-	"strings"
 	"sync"
 )
 
 var logFileSizeCache sync.Map
-
-type DirTreeRequest struct {
-	Path         string // 起始目录
-	ShowHidden   bool   // 是否显示隐藏文件
-	DirOnly      bool   // 是否只显示目录
-	ContainSub   bool   // 是否包含子目录
-	MaxDepth     int    // 最大递归深度（建议不超过 3）
-	MaxPerFolder int    // 每层最大文件/目录数量（建议 500~1000）
-}
-
-type FileNode struct {
-	ID        string      `json:"id"`
-	Name      string      `json:"name"`
-	Path      string      `json:"path"`
-	IsDir     bool        `json:"isDir"`
-	Extension string      `json:"extension"`
-	Children  []*FileNode `json:"children,omitempty"`
-}
 
 // DecompressTarGz 跨平台解压 tar.gz 文件
 func DecompressTarGz(src string, dest string) error {
@@ -175,7 +153,7 @@ func SetExecPermissions(dir string) error {
 //	return string(content), nil
 //}
 
-func GetLogContent(logFilePath string, softName string) (input.LogResult, error) {
+func GetLogContent(logFilePath string) (input.LogResult, error) {
 	fullPath := "/data/wwwlogs/install/" + logFilePath
 
 	fileInfo, err := os.Stat(fullPath)
@@ -210,28 +188,10 @@ func GetLogContent(logFilePath string, softName string) (input.LogResult, error)
 		return input.LogResult{}, err
 	}
 
-	// 检查/usr/local/one/logs/softName-end.log文件是否存在
-	if completed {
-		endFilePath := filepath.Join("/usr/local/one/logs", softName+"-end.log")
-		// 如果文件存在 并且completed为true 则返回 completed为true 如果不存在则返回completed为false
-		_, err = os.Stat(endFilePath)
-		if err != nil {
-			if os.IsNotExist(err) {
-				completed = false
-			}
-		} else {
-			completed = true
-		}
-		return input.LogResult{
-			Content:   string(content),
-			Completed: completed,
-		}, nil
-	}
 	return input.LogResult{
 		Content:   string(content),
-		Completed: false,
+		Completed: completed,
 	}, nil
-
 }
 
 func FormatBytes(bytes int64) string {
@@ -393,106 +353,4 @@ func UnZip(zipPath string, targePath ...string) error {
 	}
 
 	return nil
-}
-
-func ScanDirectoryTree(req DirTreeRequest) ([]*FileNode, error) {
-	if req.Path == "" {
-		return nil, errors.New("路径不能为空")
-	}
-	if req.MaxDepth <= 0 {
-		req.MaxDepth = 2
-	}
-	if req.MaxPerFolder <= 0 {
-		req.MaxPerFolder = 1000
-	}
-
-	stat, err := os.Stat(req.Path)
-	if err != nil || !stat.IsDir() {
-		return nil, errors.New("路径无效或不是目录")
-	}
-
-	root := &FileNode{
-		ID:        uuid.New().String(),
-		Name:      filepath.Base(req.Path),
-		Path:      req.Path,
-		IsDir:     true,
-		Extension: "",
-	}
-
-	children, err := scan(req.Path, req, 1)
-	if err != nil {
-		return nil, err
-	}
-	r := []*FileNode{root}
-	root.Children = children
-	return r, nil
-}
-
-func scan(path string, req DirTreeRequest, level int) ([]*FileNode, error) {
-	if level > req.MaxDepth {
-		return nil, nil
-	}
-
-	entries, err := os.ReadDir(path)
-	if err != nil {
-		return nil, err
-	}
-
-	nodes := make([]*FileNode, 0, len(entries))
-	var mu sync.Mutex
-	var wg sync.WaitGroup
-	count := 0
-
-	for _, entry := range entries {
-		if count >= req.MaxPerFolder {
-			break
-		}
-		count++
-
-		name := entry.Name()
-		if !req.ShowHidden && strings.HasPrefix(name, ".") {
-			continue
-		}
-
-		fullPath := filepath.Join(path, name)
-		isDir := entry.IsDir()
-		ext := ""
-		if !isDir {
-			ext = filepath.Ext(name)
-		}
-		if req.DirOnly && !isDir {
-			continue
-		}
-
-		node := &FileNode{
-			ID:        uuid.New().String(),
-			Name:      name,
-			Path:      fullPath,
-			IsDir:     isDir,
-			Extension: ext,
-		}
-
-		if isDir && req.ContainSub && level < req.MaxDepth {
-			wg.Add(1)
-			go func(n *FileNode, subPath string) {
-				defer wg.Done()
-				children, err := scan(subPath, req, level+1)
-				if err == nil {
-					n.Children = children
-				}
-			}(node, fullPath)
-		}
-
-		mu.Lock()
-		nodes = append(nodes, node)
-		mu.Unlock()
-	}
-
-	wg.Wait()
-
-	sort.Slice(nodes, func(i, j int) bool {
-		return strings.ToLower(nodes[i].Name) < strings.ToLower(nodes[j].Name)
-	})
-
-	return nodes, nil
 }

@@ -189,15 +189,26 @@ func RedisKeyList(param *input.QueryParam) (*PaginatedKeysInfo, error) {
 }
 
 func CheckStorage() (bool, bool) {
+
 	// 检查是否安装了Mysql
 	mysql := &models.Software{}
-	mysqlTx := app.DB().Model(&models.Software{}).Where("name = ? AND installed = ?", "Mysql", 1).First(mysql)
-	mysqlInstalled := mysqlTx.Error == nil && mysqlTx.RowsAffected > 0
-
+	mysqlTx := app.DB().Model(&models.Software{}).Where("name = ? AND installed = 1", "Mysql").First(mysql)
+	if mysqlTx.Error != nil {
+		return false, false
+	}
 	// 检查是否安装了Redis
 	redis := &models.Software{}
-	redisTx := app.DB().Model(&models.Software{}).Where("name = ? AND installed = ?", "Redis", 1).First(redis)
-	redisInstalled := redisTx.Error == nil && redisTx.RowsAffected > 0
-
-	return mysqlInstalled, redisInstalled
+	redisTx := app.DB().Model(&models.Software{}).Where("name = ? AND installed = 1", "Redis").First(redis)
+	if redisTx.Error != nil {
+		return false, false
+	}
+	// 判断是否安装了Mysql 和 Redis
+	if mysql.Id > 0 && redis.Id > 0 {
+		return true, true
+	} else if mysql.Id > 0 && redis.Id <= 0 {
+		return true, false
+	} else if mysql.Id <= 0 && redis.Id > 0 {
+		return false, true
+	}
+	return false, false
 }
