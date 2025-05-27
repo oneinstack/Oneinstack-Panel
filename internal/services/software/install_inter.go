@@ -1,6 +1,7 @@
 package software
 
 import (
+	"embed"
 	"errors"
 	"fmt"
 	"log"
@@ -15,6 +16,18 @@ import (
 
 	"gorm.io/gorm"
 )
+
+//go:embed scripts/InstallNginx.sh
+var InstallNginx embed.FS
+
+//go:embed scripts/InstallPhpmyadmin.sh
+var InstallPhpmyadmin embed.FS
+
+//go:embed scripts/InstallMysql.sh
+var InstallMysql embed.FS
+
+//go:embed scripts/InstallRedis.sh
+var InstallRedis embed.FS
 
 type InstallOPI interface {
 	Install() (string, error)
@@ -101,7 +114,7 @@ func (ps InstallOP) executeShScriptLocal(fn string, sy bool, parms input.Install
 	case "webserver":
 		return ps.executeShScript(fn, sy)
 	case "db":
-		return ps.executeShScript(fn, sy, parms.Username, parms.Pwd)
+		return ps.executeShScript(fn, sy, parms.Username, parms.Pwd, parms.Version)
 	case "redis":
 		return ps.executeShScript(fn, sy, "7")
 	case "php":
@@ -147,21 +160,29 @@ func (ps InstallOP) getScriptLocal() (string, error) {
 	bash := ""
 	switch ps.BashParams.Key {
 	case "webserver":
-		bash = nginx
+		data, err := InstallNginx.ReadFile("scripts/InstallNginx.sh")
+		if err != nil {
+			return "", err
+		}
+		bash = string(data)
 	case "phpmyadmin":
-		bash = phpmyadmin
+		data, err := InstallPhpmyadmin.ReadFile("scripts/InstallPhpmyadmin.sh")
+		if err != nil {
+			return "", err
+		}
+		bash = string(data)
 	case "db":
-		if ps.BashParams.Version == "5.5" {
-			bash = mysql55
+		data, err := InstallMysql.ReadFile("scripts/InstallMysql.sh")
+		if err != nil {
+			return "", err
 		}
-		if ps.BashParams.Version == "5.7" {
-			bash = mysql57
-		}
-		if ps.BashParams.Version == "8.0" {
-			bash = mysql80
-		}
+		bash = string(data)
 	case "redis":
-		bash = redis
+		data, err := InstallRedis.ReadFile("scripts/InstallRedis.sh")
+		if err != nil {
+			return "", err
+		}
+		bash = string(data)
 	case "php":
 		/*data, err := InstallPhp.ReadFile("scripts/InstallPhp.sh")
 		if err != nil {
