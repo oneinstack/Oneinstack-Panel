@@ -1,5 +1,20 @@
 #!/bin/bash
 
+VERSION=""
+# 函数：显示帮助信息
+usage() {
+  echo "Usage: $0 -v <version>"
+  echo "  -v  设置 MySQL 版本"
+}
+
+# 解析命令行参数
+while getopts "v:" opt; do
+  case "$opt" in
+    v) VERSION="$OPTARG" ;;        # 必填版本参数
+    *) usage ;;  # 不支持的选项
+  esac
+done
+
 # Detect OS type
 if [ -f /etc/redhat-release ]; then
     OS_FAMILY='rhel'

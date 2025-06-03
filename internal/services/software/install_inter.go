@@ -29,6 +29,15 @@ var InstallMysql embed.FS
 //go:embed scripts/InstallRedis.sh
 var InstallRedis embed.FS
 
+//go:embed scripts/InstallPhp.sh
+var InstallPhp embed.FS
+
+//go:embed scripts/InstallJava.sh
+var InstallJava embed.FS
+
+//go:embed scripts/InstallOpenresty.sh
+var InstallOpenresty embed.FS
+
 type InstallOPI interface {
 	Install() (string, error)
 }
@@ -184,37 +193,24 @@ func (ps InstallOP) getScriptLocal() (string, error) {
 		}
 		bash = string(data)
 	case "php":
-		/*data, err := InstallPhp.ReadFile("scripts/InstallPhp.sh")
+		data, err := InstallPhp.ReadFile("scripts/InstallPhp.sh")
 		if err != nil {
 			return "", err
 		}
-		bash = string(data)*/
-		if ps.BashParams.Version == "7.4" {
-			bash = php
-		}
-		if ps.BashParams.Version == "8.4" {
-			bash = php
-		}
-		if ps.BashParams.Version == "5.6" {
-			bash = php
-		}
+		bash = string(data)
 	case "java":
-		if ps.BashParams.Version == "11" {
-			bash = openJDK11
-			/*data, err := InstallJava11.ReadFile("scripts/InstallJava11.sh")
-			if err != nil {
-				return "", err
-			}
-			bash = string(data)*/
+		data, err := InstallJava.ReadFile("scripts/InstallJava.sh")
+		if err != nil {
+			return "", err
 		}
-		if ps.BashParams.Version == "17" {
-			bash = openJDK17
-		}
-		if ps.BashParams.Version == "18" {
-			bash = openJDK18
-		}
+		bash = string(data)
 	case "openresty":
 		bash = openresty
+		data, err := InstallOpenresty.ReadFile("scripts/InstallOpenresty.sh")
+		if err != nil {
+			return "", err
+		}
+		bash = string(data)
 	default:
 		return "", fmt.Errorf("未知的软件类型")
 	}
@@ -1169,7 +1165,11 @@ case "$1" in
         PHP_VERSION="7.4"
         ;;
     8)
-        PHP_VERSION="8.1"
+        PHP_VERdata, err := InstallJava.ReadFile("scripts/InstallJava.sh")
+			if err != nil {
+				return "", err
+			}
+			bash = string(data)SION="8.1"
         ;;
     *)
         echo "请提供有效的 PHP 版本 (5, 7, 或 8)。例如: ./php.sh 5"

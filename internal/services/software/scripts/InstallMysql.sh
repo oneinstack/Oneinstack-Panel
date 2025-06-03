@@ -6,7 +6,7 @@ MYSQL_PORT=3306
 VERSION=""
 # 函数：显示帮助信息
 usage() {
-  echo "Usage: $0 -p <root_password> -P <mysql_port>"
+  echo "Usage: $0 -p <root_password> -P <mysql_port> -v <version>"
   echo "  -p  设置 MySQL root 密码 (必需)"
   echo "  -P  设置 MySQL 端口号 (默认: 3306)"
   echo "  -v  设置 MySQL 版本"
