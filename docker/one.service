@@ -1,0 +1,35 @@
+[Unit]
+Description=Oneinstack Panel Service
+Documentation=https://github.com/oneinstack/panel
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=oneinstack
+Group=oneinstack
+WorkingDirectory=/usr/local/one
+ExecStart=/usr/local/one/one server start
+ExecStop=/usr/local/one/one server stop
+ExecReload=/bin/kill -USR2 $MAINPID
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=5
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=one-panel
+
+# Security settings
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/usr/local/one /data /tmp
+PrivateTmp=true
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+
+[Install]
+WantedBy=multi-user.target

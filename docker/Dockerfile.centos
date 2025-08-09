@@ -1,0 +1,112 @@
+# Multi-stage build for CentOS
+FROM golang:1.21-alpine AS builder
+
+# Install build dependencies
+RUN apk add --no-cache git ca-certificates tzdata
+
+# Set working directory
+WORKDIR /app
+
+# Copy go mod and sum files
+COPY go.mod go.sum ./
+
+# Download dependencies
+RUN go mod download
+
+# Copy source code
+COPY . .
+
+# Build the application
+RUN CGO_ENABLED=0 GOOS=linux go build \
+    -ldflags="-s -w -X main.Version=${VERSION:-dev} -X main.BuildTime=$(date -u '+%Y-%m-%d_%H:%M:%S')" \
+    -o one ./cmd/main.go
+
+# Final stage - CentOS
+FROM centos:7
+
+# Install runtime dependencies
+RUN yum update -y && \
+    yum install -y \
+        curl \
+        wget \
+        unzip \
+        zip \
+        tar \
+        git \
+        jq \
+        dos2unix \
+        make \
+        sudo \
+        firewalld \
+        cronie \
+        logrotate \
+        openssl \
+        ca-certificates && \
+    yum clean all && \
+    rm -rf /var/cache/yum
+
+# Create application user
+RUN useradd -r -s /bin/false -d /usr/local/one oneinstack
+
+# Create necessary directories
+RUN mkdir -p /usr/local/one /data/wwwroot /data/wwwlogs /data/db && \
+    chown -R oneinstack:oneinstack /usr/local/one /data
+
+# Copy binary from builder
+COPY --from=builder /app/one /usr/local/one/one
+
+# Copy configuration files
+COPY config.yaml /usr/local/one/
+COPY install-centos.sh /usr/local/one/
+
+# Set permissions
+RUN chmod +x /usr/local/one/one /usr/local/one/install-centos.sh
+
+# Create systemd service (for compatibility)
+RUN mkdir -p /etc/systemd/system
+
+# Copy systemd service file
+COPY docker/one.service /etc/systemd/system/
+
+# Set timezone
+RUN ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime
+
+# Configure BBR (if kernel supports)
+RUN echo 'net.core.default_qdisc=fq' >> /etc/sysctl.conf && \
+    echo 'net.ipv4.tcp_congestion_control=bbr' >> /etc/sysctl.conf
+
+# Create log rotation config
+RUN echo '/usr/local/one/logs/*.log {' > /etc/logrotate.d/one && \
+    echo '    daily' >> /etc/logrotate.d/one && \
+    echo '    missingok' >> /etc/logrotate.d/one && \
+    echo '    rotate 30' >> /etc/logrotate.d/one && \
+    echo '    compress' >> /etc/logrotate.d/one && \
+    echo '    delaycompress' >> /etc/logrotate.d/one && \
+    echo '    notifempty' >> /etc/logrotate.d/one && \
+    echo '    create 644 oneinstack oneinstack' >> /etc/logrotate.d/one && \
+    echo '}' >> /etc/logrotate.d/one
+
+# Expose port
+EXPOSE 8089
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:8089/v1/sys/getbaseinfo || exit 1
+
+# Set working directory
+WORKDIR /usr/local/one
+
+# Labels for metadata
+LABEL maintainer="oneinstack@example.com" \
+      version="${VERSION:-dev}" \
+      description="Oneinstack Panel - CentOS Edition" \
+      org.opencontainers.image.title="Oneinstack Panel" \
+      org.opencontainers.image.description="Linux server management panel based on CentOS" \
+      org.opencontainers.image.vendor="oneinstack" \
+      org.opencontainers.image.licenses="Apache-2.0"
+
+# Switch to non-root user
+USER oneinstack
+
+# Start the application
+CMD ["./one", "server", "start"]
