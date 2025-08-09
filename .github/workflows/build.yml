@@ -250,15 +250,6 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Update install script download URLs
-        run: |
-          # Update the download URLs in install scripts to point to the latest release
-          sed -i 's|https://github.com/.*/releases/latest/download|https://github.com/${{ github.repository }}/releases/latest/download|g' install*.sh
-          
-          # Update version in scripts
-          VERSION=${GITHUB_REF#refs/tags/}
-          sed -i "s/SCRIPT_VERSION=.*/SCRIPT_VERSION=\"$VERSION\"/" install*.sh
-
       - name: Commit and push changes
         run: |
           git config --local user.email "action@github.com"
