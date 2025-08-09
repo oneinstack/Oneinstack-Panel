@@ -1,0 +1,359 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+    branches:
+      - main
+      - develop
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  GO_VERSION: '1.21'
+  NODE_VERSION: '18'
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Cache Go modules
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Run tests
+        run: go test -v ./...
+
+      - name: Run linter
+        uses: golangci/golangci-lint-action@v3
+        with:
+          version: latest
+          args: --timeout=5m
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    needs: test
+    strategy:
+      matrix:
+        goos: [linux]
+        goarch: [amd64, arm64]
+        include:
+          - goos: linux
+            goarch: amd64
+            target: linux-amd64
+          - goos: linux
+            goarch: arm64
+            target: linux-arm64
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Cache Go modules
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Get version
+        id: version
+        run: |
+          if [[ $GITHUB_REF == refs/tags/* ]]; then
+            VERSION=${GITHUB_REF#refs/tags/}
+          else
+            VERSION=$(git describe --tags --always --dirty)
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Building version: $VERSION"
+
+      - name: Build binary
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+        run: |
+          mkdir -p dist
+          go build -ldflags="-s -w -X main.Version=${{ steps.version.outputs.version }} -X main.BuildTime=$(date -u '+%Y-%m-%d_%H:%M:%S')" \
+            -o dist/one-${{ matrix.target }} ./cmd/main.go
+
+      - name: Create package structure
+        run: |
+          mkdir -p packages/one-${{ matrix.target }}
+          cp dist/one-${{ matrix.target }} packages/one-${{ matrix.target }}/one
+          chmod +x packages/one-${{ matrix.target }}/one
+          
+          # Copy configuration files
+          cp config.yaml packages/one-${{ matrix.target }}/
+          
+          # Copy installation scripts
+          cp install-*.sh packages/one-${{ matrix.target }}/
+          chmod +x packages/one-${{ matrix.target }}/*.sh
+          
+          # Copy documentation
+          cp README*.md packages/one-${{ matrix.target }}/
+          cp LICENSE packages/one-${{ matrix.target }}/
+
+      - name: Create archive
+        run: |
+          cd packages
+          tar -czf one-${{ matrix.target }}.tar.gz one-${{ matrix.target }}
+          
+          # Create checksum
+          sha256sum one-${{ matrix.target }}.tar.gz > one-${{ matrix.target }}.tar.gz.sha256
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: one-${{ matrix.target }}
+          path: |
+            packages/one-${{ matrix.target }}.tar.gz
+            packages/one-${{ matrix.target }}.tar.gz.sha256
+
+  build-docker:
+    name: Build Docker Images
+    runs-on: ubuntu-latest
+    needs: test
+    strategy:
+      matrix:
+        platform: [centos, ubuntu]
+        include:
+          - platform: centos
+            base_image: centos:7
+            package_manager: yum
+          - platform: ubuntu
+            base_image: ubuntu:20.04
+            package_manager: apt
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Login to GitHub Container Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            oneinstack/panel
+            ghcr.io/${{ github.repository }}
+          tags: |
+            type=ref,event=branch,suffix=-${{ matrix.platform }}
+            type=ref,event=pr,suffix=-${{ matrix.platform }}
+            type=semver,pattern={{version}},suffix=-${{ matrix.platform }}
+            type=semver,pattern={{major}}.{{minor}},suffix=-${{ matrix.platform }}
+            type=raw,value=latest,suffix=-${{ matrix.platform }},enable={{is_default_branch}}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./docker/Dockerfile.${{ matrix.platform }}
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            BASE_IMAGE=${{ matrix.base_image }}
+            PACKAGE_MANAGER=${{ matrix.package_manager }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    needs: [build, build-docker]
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v3
+        with:
+          path: artifacts
+
+      - name: Prepare release files
+        run: |
+          mkdir -p release
+          find artifacts -name "*.tar.gz" -exec cp {} release/ \;
+          find artifacts -name "*.sha256" -exec cp {} release/ \;
+          
+          # Create combined checksum file
+          cd release
+          cat *.sha256 > checksums.txt
+          
+          # List all files
+          ls -la
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          if git describe --tags --abbrev=0 HEAD^ >/dev/null 2>&1; then
+            PREVIOUS_TAG=$(git describe --tags --abbrev=0 HEAD^)
+            echo "Generating changelog from $PREVIOUS_TAG to $GITHUB_REF_NAME"
+            
+            CHANGELOG=$(git log --pretty=format:"- %s (%h)" $PREVIOUS_TAG..HEAD)
+            echo "changelog<<EOF" >> $GITHUB_OUTPUT
+            echo "$CHANGELOG" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+          else
+            echo "changelog=Initial release" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: release/*
+          body: |
+            ## 🚀 What's Changed
+            
+            ${{ steps.changelog.outputs.changelog }}
+            
+            ## 📦 Installation
+            
+            ### Quick Install (Recommended)
+            ```bash
+            curl -fsSL https://github.com/${{ github.repository }}/releases/latest/download/install.sh | bash
+            ```
+            
+            ### Manual Install
+            1. Download the appropriate package for your system:
+               - `one-linux-amd64.tar.gz` for x86_64 systems
+               - `one-linux-arm64.tar.gz` for ARM64 systems
+            
+            2. Extract and install:
+            ```bash
+            tar -xzf one-linux-amd64.tar.gz
+            cd one-linux-amd64
+            sudo ./install-ubuntu.sh  # or ./install-centos.sh
+            ```
+            
+            ### Docker Install
+            ```bash
+            # CentOS based
+            docker run -d --name oneinstack-panel \
+              -p 8089:8089 \
+              -v /data:/data \
+              oneinstack/panel:latest-centos
+            
+            # Ubuntu based  
+            docker run -d --name oneinstack-panel \
+              -p 8089:8089 \
+              -v /data:/data \
+              oneinstack/panel:latest-ubuntu
+            ```
+            
+            ## 🔐 Security
+            
+            All release files include SHA256 checksums for verification:
+            ```bash
+            sha256sum -c checksums.txt
+            ```
+            
+            ## 📋 System Requirements
+            
+            - **OS**: CentOS 7+, Ubuntu 18.04+, Debian 9+
+            - **Memory**: 512MB minimum, 1GB recommended
+            - **Disk**: 1GB free space minimum
+            - **Network**: Internet connection for installation
+            
+            ## 🆘 Support
+            
+            - 📖 [Documentation](https://github.com/${{ github.repository }}/wiki)
+            - 🐛 [Report Issues](https://github.com/${{ github.repository }}/issues)
+            - 💬 [Discussions](https://github.com/${{ github.repository }}/discussions)
+          draft: false
+          prerelease: ${{ contains(github.ref_name, 'rc') || contains(github.ref_name, 'beta') || contains(github.ref_name, 'alpha') }}
+          generate_release_notes: true
+
+  update-install-script:
+    name: Update Install Script
+    runs-on: ubuntu-latest
+    needs: release
+    if: startsWith(github.ref, 'refs/tags/')
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update install script download URLs
+        run: |
+          # Update the download URLs in install scripts to point to the latest release
+          sed -i 's|https://github.com/.*/releases/latest/download|https://github.com/${{ github.repository }}/releases/latest/download|g' install*.sh
+          
+          # Update version in scripts
+          VERSION=${GITHUB_REF#refs/tags/}
+          sed -i "s/SCRIPT_VERSION=.*/SCRIPT_VERSION=\"$VERSION\"/" install*.sh
+
+      - name: Commit and push changes
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          
+          if git diff --quiet; then
+            echo "No changes to commit"
+          else
+            git add install*.sh
+            git commit -m "Update install scripts for release ${GITHUB_REF#refs/tags/}"
+            git push origin HEAD:main
+          fi
