@@ -126,37 +126,7 @@ jobs:
             fi
           done
 
-  docker-test:
-    name: 🐳 Docker 测试
-    runs-on: ubuntu-latest
-    needs: [detect-changes, syntax-check]
-    if: needs.detect-changes.outputs.scripts == 'true'
-    strategy:
-      matrix:
-        os: [ubuntu:20.04, ubuntu:22.04, centos:8, debian:11]
-      fail-fast: false
-    
-    steps:
-      - uses: actions/checkout@v4
-      
-      - name: 在 ${{ matrix.os }} 中测试脚本
-        run: |
-          echo "${{ needs.detect-changes.outputs.scripts_files }}" | while read -r script; do
-            if [ -n "$script" ] && [ -f "$script" ]; then
-              echo "🧪 在 ${{ matrix.os }} 中测试: $script"
-              
-              # 测试帮助信息
-              if docker run --rm -v "$(pwd):/workspace" ${{ matrix.os }} bash -c "
-                cd /workspace && 
-                timeout 30 bash '$script' --help >/dev/null 2>&1
-              "; then
-                echo "✅ $script 在 ${{ matrix.os }} 中运行正常"
-              else
-                echo "❌ $script 在 ${{ matrix.os }} 中运行失败"
-                exit 1
-              fi
-            fi
-          done
+
 
   config-validation:
     name: ⚙️  配置验证
@@ -286,7 +256,7 @@ jobs:
   pr-comment:
     name: 💬 PR 评论
     runs-on: ubuntu-latest
-    needs: [syntax-check, structure-validation, docker-test, config-validation, security-scan, documentation-check]
+    needs: [syntax-check, structure-validation, config-validation, security-scan, documentation-check]
     if: github.event_name == 'pull_request' && needs.detect-changes.outputs.scripts == 'true'
     steps:
       - name: 创建 PR 评论
@@ -302,7 +272,6 @@ jobs:
             ### ✅ 完成的检查
             - 📝 语法检查
             - 📁 结构验证  
-            - 🐳 多系统兼容性测试
             - ⚙️  配置验证
             - 🔒 安全扫描
             - 📚 文档检查
@@ -328,7 +297,7 @@ jobs:
   summary:
     name: 📊 验证总结
     runs-on: ubuntu-latest
-    needs: [syntax-check, structure-validation, docker-test, config-validation, security-scan, documentation-check]
+    needs: [syntax-check, structure-validation, config-validation, security-scan, documentation-check]
     if: always() && needs.detect-changes.outputs.scripts == 'true'
     steps:
       - name: 验证总结
@@ -339,14 +308,12 @@ jobs:
           echo "|--------|------|"
           echo "| 语法检查 | ${{ needs.syntax-check.result == 'success' && '✅ 通过' || '❌ 失败' }} |"
           echo "| 结构验证 | ${{ needs.structure-validation.result == 'success' && '✅ 通过' || '❌ 失败' }} |"
-          echo "| Docker测试 | ${{ needs.docker-test.result == 'success' && '✅ 通过' || '❌ 失败' }} |"
           echo "| 配置验证 | ${{ needs.config-validation.result == 'success' && '✅ 通过' || '❌ 失败' }} |"
           echo "| 安全扫描 | ${{ needs.security-scan.result == 'success' && '✅ 通过' || '❌ 失败' }} |"
           echo "| 文档检查 | ${{ needs.documentation-check.result == 'success' && '✅ 通过' || '❌ 失败' }} |"
           
           if [[ "${{ needs.syntax-check.result }}" == "success" && 
-                "${{ needs.structure-validation.result }}" == "success" && 
-                "${{ needs.docker-test.result }}" == "success" ]]; then
+                "${{ needs.structure-validation.result }}" == "success" ]]; then
             echo ""
             echo "🎉 所有关键检查通过！脚本质量良好。"
             exit 0

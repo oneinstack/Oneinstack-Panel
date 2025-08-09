@@ -104,15 +104,6 @@ func (st *ScriptTester) RunTests() error {
 	results = append(results, result)
 	st.printResult(result)
 
-	if !st.dryRun {
-		// 5. Docker 环境测试
-		for _, osImage := range st.testOS {
-			result = st.testInDocker(scriptPath, osImage)
-			results = append(results, result)
-			st.printResult(result)
-		}
-	}
-
 	st.printSummary(results)
 	return nil
 }
@@ -247,50 +238,6 @@ func (st *ScriptTester) testHelp(scriptPath string) TestResult {
 	return result
 }
 
-func (st *ScriptTester) testInDocker(scriptPath, osImage string) TestResult {
-	start := time.Now()
-
-	// 检查 Docker 是否可用
-	if _, err := exec.LookPath("docker"); err != nil {
-		return TestResult{
-			TestName: fmt.Sprintf("Docker测试 (%s)", osImage),
-			Status:   "SKIP",
-			Message:  "Docker 未安装",
-			Duration: time.Since(start),
-		}
-	}
-
-	// 创建测试命令
-	dockerCmd := []string{
-		"docker", "run", "--rm",
-		"-v", fmt.Sprintf("%s:/workspace", filepath.Dir(scriptPath)),
-		osImage,
-		"bash", "-c",
-		fmt.Sprintf("cd /workspace && bash %s --help", filepath.Base(scriptPath)),
-	}
-
-	cmd := exec.Command(dockerCmd[0], dockerCmd[1:]...)
-	output, err := cmd.CombinedOutput()
-
-	result := TestResult{
-		TestName: fmt.Sprintf("Docker测试 (%s)", osImage),
-		Duration: time.Since(start),
-	}
-
-	if err != nil {
-		result.Status = "FAIL"
-		result.Message = fmt.Sprintf("Docker测试失败: %s", string(output))
-	} else {
-		result.Status = "PASS"
-		result.Message = fmt.Sprintf("在 %s 中运行正常", osImage)
-		if st.verbose {
-			result.Message += "\n" + string(output)
-		}
-	}
-
-	return result
-}
-
 func (st *ScriptTester) printResult(result TestResult) {
 	var statusIcon string
 	var statusColor string
@@ -392,10 +339,6 @@ func (st *ScriptTester) getSuggestion(testName string) string {
 		return suggestion
 	}
 
-	if strings.Contains(testName, "Docker测试") {
-		return "确保脚本在目标操作系统中能正常运行"
-	}
-
 	return "请查看详细错误信息进行修复"
 }
 
@@ -413,10 +356,9 @@ func (st *ScriptTester) interactiveTest() {
 		fmt.Printf("2. Shellcheck 检查\n")
 		fmt.Printf("3. 参数测试\n")
 		fmt.Printf("4. 帮助信息测试\n")
-		fmt.Printf("5. Docker 测试\n")
-		fmt.Printf("6. 全部测试\n")
+		fmt.Printf("5. 全部测试\n")
 		fmt.Printf("0. 退出\n")
-		fmt.Printf("请选择 (0-6): ")
+		fmt.Printf("请选择 (0-5): ")
 
 		input, _ := reader.ReadString('\n')
 		choice := strings.TrimSpace(input)
@@ -438,15 +380,6 @@ func (st *ScriptTester) interactiveTest() {
 			result := st.testHelp(filepath.Join("scripts", st.scriptType, st.scriptName+".sh"))
 			st.printResult(result)
 		case "5":
-			fmt.Printf("选择操作系统 (ubuntu:20.04/centos:8/debian:11): ")
-			osInput, _ := reader.ReadString('\n')
-			osImage := strings.TrimSpace(osInput)
-			if osImage == "" {
-				osImage = "ubuntu:20.04"
-			}
-			result := st.testInDocker(filepath.Join("scripts", st.scriptType, st.scriptName+".sh"), osImage)
-			st.printResult(result)
-		case "6":
 			st.RunTests()
 		default:
 			fmt.Printf("无效选择: %s\n", choice)

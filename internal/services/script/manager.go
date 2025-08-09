@@ -1,9 +1,7 @@
 package script
 
 import (
-	"embed"
 	"fmt"
-	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,22 +13,17 @@ import (
 	"oneinstack/router/input"
 )
 
-//go:embed ../../../scripts/*
-var scriptFS embed.FS
-
 // ScriptManager 脚本管理器
 type ScriptManager struct {
-	tempDir  string
-	logDir   string
-	scriptFS embed.FS
+	tempDir string
+	logDir  string
 }
 
 // NewScriptManager 创建新的脚本管理器
 func NewScriptManager() *ScriptManager {
 	return &ScriptManager{
-		tempDir:  "/tmp/oneinstack-scripts",
-		logDir:   "/data/wwwlogs/install",
-		scriptFS: scriptFS,
+		tempDir: "/tmp/oneinstack-scripts",
+		logDir:  "/data/wwwlogs/install",
 	}
 }
 
@@ -56,7 +49,7 @@ type ScriptInfo struct {
 func (sm *ScriptManager) GetScript(scriptType ScriptType, name string) (*ScriptInfo, error) {
 	scriptPath := fmt.Sprintf("scripts/%s/%s.sh", scriptType, name)
 
-	content, err := sm.scriptFS.ReadFile(scriptPath)
+	content, err := os.ReadFile(scriptPath)
 	if err != nil {
 		return nil, fmt.Errorf("script not found: %s", scriptPath)
 	}
@@ -73,7 +66,7 @@ func (sm *ScriptManager) GetScript(scriptType ScriptType, name string) (*ScriptI
 func (sm *ScriptManager) ListScripts(scriptType ScriptType) ([]string, error) {
 	dirPath := fmt.Sprintf("scripts/%s", scriptType)
 
-	entries, err := fs.ReadDir(sm.scriptFS, dirPath)
+	entries, err := os.ReadDir(dirPath)
 	if err != nil {
 		return nil, err
 	}
@@ -279,7 +272,7 @@ func (sm *ScriptManager) CleanupTempFiles(olderThan time.Duration) error {
 func (sm *ScriptManager) GetScriptTemplate(scriptType ScriptType) (string, error) {
 	templatePath := fmt.Sprintf("scripts/templates/%s.template", scriptType)
 
-	content, err := sm.scriptFS.ReadFile(templatePath)
+	content, err := os.ReadFile(templatePath)
 	if err != nil {
 		return "", fmt.Errorf("template not found: %s", templatePath)
 	}

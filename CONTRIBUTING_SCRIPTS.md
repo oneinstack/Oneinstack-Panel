@@ -24,7 +24,7 @@ cd Oneinstack-Panel
 ### 2. 创建新脚本
 ```bash
 # 使用脚本生成器创建新脚本
-go run tools/script-generator.go --name=postgresql --type=install --version=15
+go run cmd/script-generator/main.go --name=postgresql --type=install --version=15    
 
 # 或者手动创建
 cp scripts/templates/install.template scripts/install/postgresql.sh
@@ -45,7 +45,7 @@ vim scripts/config.yaml
 ### 5. 测试脚本
 ```bash
 # 运行测试
-go run tools/script-tester.go --script=postgresql --type=install
+go run cmd/script-tester/main.go --script=postgresql --type=install
 ```
 
 ### 6. 提交PR
@@ -481,21 +481,12 @@ shellcheck scripts/install/postgresql.sh
 bash -n scripts/install/postgresql.sh
 
 # 集成测试
-go run tools/script-tester.go --script=postgresql --type=install --dry-run
+go run cmd/script-tester/main.go --script=postgresql --type=install --dry-run
 ```
 
-### 2. Docker测试
 
-```bash
-# 在不同系统中测试
-docker run --rm -v $(pwd):/workspace ubuntu:20.04 \
-    bash /workspace/scripts/install/postgresql.sh --version=15 --password=test123
 
-docker run --rm -v $(pwd):/workspace centos:8 \
-    bash /workspace/scripts/install/postgresql.sh --version=15 --password=test123
-```
-
-### 3. 自动化测试
+### 2. 自动化测试
 
 我们提供了自动化测试工具：
 

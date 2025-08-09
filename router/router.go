@@ -3,6 +3,7 @@ package web
 import (
 	"oneinstack/router/handler/cron"
 	"oneinstack/router/handler/ftp"
+	logHandler "oneinstack/router/handler/log"
 	"oneinstack/router/handler/safe"
 	"oneinstack/router/handler/software"
 	"oneinstack/router/handler/ssh"
@@ -104,6 +105,15 @@ func SetupRouter() *gin.Engine {
 		softg.POST("/install", software.RunInstallation)
 		softg.POST("/remove", software.RemoveSoftware)
 		softg.POST("/exploration", software.Exploration)
+	}
+
+	//日志相关 - 实时日志支持
+	logg := g.Group("/log")
+	logg.Use(middleware.AuthMiddleware())
+	{
+		logg.GET("/ws", logHandler.WebSocketLogHandler)       // WebSocket实时日志
+		logg.GET("/history", logHandler.GetLogHistoryHandler) // 历史日志
+		logg.GET("/status", logHandler.GetLogStatusHandler)   // 日志状态
 	}
 
 	//网站相关

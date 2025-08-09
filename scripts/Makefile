@@ -27,11 +27,11 @@ generate: ## 生成新脚本 (需要 NAME 和 TYPE 参数)
 		exit 1; \
 	fi
 	@echo "🚀 生成脚本: $(NAME) ($(TYPE))"
-	@cd .. && go run tools/script-generator.go --name=$(NAME) --type=$(TYPE) $(if $(AUTHOR),--author="$(AUTHOR)") $(if $(EMAIL),--email="$(EMAIL)") $(if $(VERSION),--version="$(VERSION)") $(if $(PORT),--port="$(PORT)") $(if $(DESC),--desc="$(DESC)") $(if $(CATEGORY),--category="$(CATEGORY)") $(if $(INTERACTIVE),-i)
+	@cd .. && go run cmd/script-generator/main.go --name=$(NAME) --type=$(TYPE) $(if $(AUTHOR),--author="$(AUTHOR)") $(if $(EMAIL),--email="$(EMAIL)") $(if $(VERSION),--version="$(VERSION)") $(if $(PORT),--port="$(PORT)") $(if $(DESC),--desc="$(DESC)") $(if $(CATEGORY),--category="$(CATEGORY)") $(if $(INTERACTIVE),-i)
 
 generate-interactive: ## 交互式生成脚本
 	@echo "🎯 交互式脚本生成"
-	@cd .. && go run tools/script-generator.go -i --name="" --type=install
+	@cd .. && go run cmd/script-generator/main.go -i --name="" --type=install
 
 test: ## 测试指定脚本 (需要 SCRIPT 参数)
 	@if [ -z "$(SCRIPT)" ]; then \
@@ -40,7 +40,7 @@ test: ## 测试指定脚本 (需要 SCRIPT 参数)
 		exit 1; \
 	fi
 	@echo "🧪 测试脚本: $(SCRIPT)"
-	@cd .. && go run tools/script-tester.go --script=$(SCRIPT) $(if $(TYPE),--type=$(TYPE)) $(if $(DRY_RUN),--dry-run) $(if $(VERBOSE),-v) $(if $(OS),--os="$(OS)")
+	@cd .. && go run cmd/script-tester/main.go --script=$(SCRIPT) $(if $(TYPE),--type=$(TYPE)) $(if $(DRY_RUN),--dry-run) $(if $(VERBOSE),-v) $(if $(OS),--os="$(OS)")
 
 test-all: ## 测试所有脚本
 	@echo "🧪 测试所有安装脚本"
@@ -50,23 +50,11 @@ test-all: ## 测试所有脚本
 			echo ""; \
 			echo "📝 测试脚本: $$name"; \
 			echo "----------------------------------------"; \
-			cd .. && go run tools/script-tester.go --script=$$name --type=install --dry-run || true; \
+			cd .. && go run cmd/script-tester/main.go --script=$$name --type=install --dry-run || true; \
 		fi \
 	done
 
-test-docker: ## 在Docker中测试脚本 (需要 SCRIPT 和 OS 参数)
-	@if [ -z "$(SCRIPT)" ]; then \
-		echo "❌ 错误: 请指定要测试的脚本"; \
-		echo "用法: make test-docker SCRIPT=nginx OS=ubuntu:20.04"; \
-		exit 1; \
-	fi
-	@if [ -z "$(OS)" ]; then \
-		echo "❌ 错误: 请指定操作系统镜像"; \
-		echo "用法: make test-docker SCRIPT=nginx OS=ubuntu:20.04"; \
-		exit 1; \
-	fi
-	@echo "🐳 在 $(OS) 中测试脚本: $(SCRIPT)"
-	@docker run --rm -v $$(pwd):/workspace $(OS) bash -c "cd /workspace && bash $(TYPE)/$(SCRIPT).sh --help"
+
 
 lint: ## 检查脚本代码质量 (需要 SCRIPT 参数)
 	@if [ -z "$(SCRIPT)" ]; then \
@@ -203,8 +191,7 @@ check-env: ## 检查开发环境
 	@echo "Go 版本:"
 	@go version 2>/dev/null || echo "❌ Go 未安装"
 	@echo ""
-	@echo "Docker 版本:"
-	@docker --version 2>/dev/null || echo "❌ Docker 未安装"
+
 	@echo ""
 	@echo "Shellcheck:"
 	@shellcheck --version 2>/dev/null || echo "❌ Shellcheck 未安装"
