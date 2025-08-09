@@ -25,9 +25,23 @@ func getJWTKey() ([]byte, error) {
 		return []byte(key), nil
 	}
 
-	// 从配置文件获取
-	if jwtSecret := viper.GetString("system.jwtSecret"); jwtSecret != "" {
-		return []byte(jwtSecret), nil
+	// 创建一个新的viper实例来读取配置文件
+	v := viper.New()
+	v.SetConfigName("config")
+	v.SetConfigType("yaml")
+	v.AddConfigPath(".")
+	v.AddConfigPath("./")
+
+	// 尝试读取配置文件
+	if err := v.ReadInConfig(); err == nil {
+		if jwtSecret := v.GetString("system.jwtSecret"); jwtSecret != "" {
+			// 如果是hex编码的字符串，尝试解码
+			if decoded, err := hex.DecodeString(jwtSecret); err == nil && len(decoded) >= 32 {
+				return decoded, nil
+			}
+			// 如果不是hex编码或者解码失败，直接使用原字符串
+			return []byte(jwtSecret), nil
+		}
 	}
 
 	// 如果都没有，生成一个随机密钥并保存到配置
@@ -36,8 +50,17 @@ func getJWTKey() ([]byte, error) {
 		return nil, fmt.Errorf("failed to generate JWT key: %v", err)
 	}
 
-	// 这里可以选择保存到配置文件或提示用户设置环境变量
-	fmt.Printf("Warning: Using auto-generated JWT key. Please set JWT_SECRET_KEY environment variable for production use: %s\n", hex.EncodeToString(key))
+	// 将生成的密钥保存到配置文件
+	keyHex := hex.EncodeToString(key)
+	v.Set("system.jwtSecret", keyHex)
+
+	// 保存配置到文件
+	if err := v.WriteConfig(); err != nil {
+		fmt.Printf("Warning: Failed to save JWT key to config file: %v\n", err)
+		fmt.Printf("Please manually set JWT_SECRET_KEY environment variable: %s\n", keyHex)
+	} else {
+		fmt.Printf("Auto-generated JWT key saved to config file\n")
+	}
 
 	return key, nil
 }
