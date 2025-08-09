@@ -13,7 +13,6 @@ type ErrorCode string
 // 定义错误码常量
 const (
 	// 通用错误码
-	ErrSuccess           ErrorCode = "SUCCESS"
 	ErrInternalError     ErrorCode = "INTERNAL_ERROR"
 	ErrBadRequest        ErrorCode = "BAD_REQUEST"
 	ErrUnauthorized      ErrorCode = "UNAUTHORIZED"
@@ -86,7 +85,7 @@ func NewFieldError(code ErrorCode, message, field string) *AppError {
 // APIResponse 统一的API响应结构
 type APIResponse struct {
 	Success bool        `json:"success"`
-	Code    ErrorCode   `json:"code"`
+	Code    interface{} `json:"code"`
 	Message string      `json:"message"`
 	Data    interface{} `json:"data,omitempty"`
 	Error   *AppError   `json:"error,omitempty"`
@@ -96,7 +95,7 @@ type APIResponse struct {
 func SuccessResponse(data interface{}) *APIResponse {
 	return &APIResponse{
 		Success: true,
-		Code:    ErrSuccess,
+		Code:    0,
 		Message: "操作成功",
 		Data:    data,
 	}
