@@ -2,10 +2,10 @@ package utils
 
 import "math/rand"
 
-// GenerateRandomString 根据给定的最小长度和最大长度生成一个包含大小写字母的随机字符串
+// GenerateRandomString 根据给定的最小长度和最大长度生成一个包含大小写字母、数字和特殊字符的随机字符串
 func GenerateRandomString(minLen, maxLen int) string {
-	// 定义字符集，只包含大小写字母
-	charset := "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+	// 定义字符集，包含大小写字母、数字和特殊字符
+	charset := "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*"
 	// 设置随机长度
 	length := minLen
 	if maxLen > minLen {

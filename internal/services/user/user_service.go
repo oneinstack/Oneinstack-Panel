@@ -35,7 +35,7 @@ func CreateUser(username, password string, isAdmin bool) error {
 }
 
 func CreateAdminUser() (username, password string, err error) {
-	username = utils.GenerateRandomString(8, 12)
+	username = "admin"
 	password = utils.GenerateRandomString(12, 16)
 	err = CreateUser(username, password, true)
 	return
