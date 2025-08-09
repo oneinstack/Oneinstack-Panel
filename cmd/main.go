@@ -30,11 +30,10 @@ var initialized bool // 记录是否已经初始化
 func main() {
 	server.Start()
 	//初始化服务
-	resetPwdCmd.Flags().StringP("name", "n", "", "username")
-	resetPwdCmd.Flags().StringP("pwd", "p", "", "password")
+	resetPwdCmd.Flags().StringP("user", "u", "", "username")
+	resetPwdCmd.Flags().StringP("password", "p", "", "new password")
 
-	resetUserCmd.Flags().StringP("oldn", "", "", "old username")
-	resetUserCmd.Flags().StringP("newn", "", "", "new username")
+	resetUserCmd.Flags().StringP("user", "u", "", "new username")
 
 	changePortCmd.Flags().StringP("port", "p", "", "New port for the system")
 
@@ -212,48 +211,44 @@ func stopServer() {
 
 var resetPwdCmd = &cobra.Command{
 	Use:     "resetpwd",
-	Short:   "reset user password",
-	Example: " resetpwd -n admin -p 123123 ",
+	Short:   "Reset user password",
+	Example: "one resetpwd -u admin -p newpassword",
 	Run: func(cmd *cobra.Command, args []string) {
-		name, _ := cmd.Flags().GetString("name")
-		if name == "" {
-			log.Println("Use \n" +
-				"one resetpwd -n username -p password")
-			log.Fatalf("username not found")
+		username, _ := cmd.Flags().GetString("user")
+		if username == "" {
+			log.Fatalf("Username is required. Use: one resetpwd -u username -p password")
 		}
-		pwd, _ := cmd.Flags().GetString("pwd")
-		if name == "" {
-			log.Println("Use one resetpwd -n username -p password")
-			log.Fatalf("password not found")
+
+		password, _ := cmd.Flags().GetString("password")
+		if password == "" {
+			log.Fatalf("Password is required. Use: one resetpwd -u username -p password")
 		}
-		err := user.ChangePassword(name, pwd)
+
+		err := user.ChangePassword(username, password)
 		if err != nil {
-			log.Fatalf("Reset Password Error: %v", err)
-		} else {
-			log.Println("Reset Password Success")
-			log.Println("New Password Is: " + pwd)
+			log.Fatalf("Reset password failed: %v", err)
 		}
+
+		fmt.Printf("✅ Password reset successfully for user: %s\n", username)
 	},
 }
 
 var resetUserCmd = &cobra.Command{
-	Use:     "resetUsername",
-	Short:   "reset user username",
-	Example: " resetUsername --newUser admin",
+	Use:     "resetuser",
+	Short:   "Reset username",
+	Example: "one resetuser -u newusername",
 	Run: func(cmd *cobra.Command, args []string) {
-		nn, _ := cmd.Flags().GetString("newUser")
-		if nn == "" {
-			log.Println("Use \n" +
-				"one resetUsername --newUser username")
-			log.Fatalf("new username not found")
+		username, _ := cmd.Flags().GetString("user")
+		if username == "" {
+			log.Fatalf("Username is required. Use: one resetuser -u username")
 		}
-		err := user.ResetUsername(nn)
+
+		err := user.ResetUsername(username)
 		if err != nil {
-			log.Fatalf("Reset User Error: %v", err)
-		} else {
-			log.Println("Reset User Success")
-			log.Println("New Username: " + nn)
+			log.Fatalf("Reset username failed: %v", err)
 		}
+
+		fmt.Printf("✅ Username reset successfully to: %s\n", username)
 	},
 }
 
