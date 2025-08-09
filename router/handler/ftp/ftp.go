@@ -63,13 +63,15 @@ func ListDirectory(c *gin.Context) {
 	}
 	absPath := filepath.Join(filepath.Clean(input.Path))
 	if _, err := os.Stat(absPath); os.IsNotExist(err) {
-		core.HandleError(c, http.StatusInternalServerError, err, nil)
+		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		core.HandleError(c, appErr)
 		return
 	}
 
 	files, err := os.ReadDir(absPath)
 	if err != nil {
-		core.HandleError(c, http.StatusInternalServerError, err, nil)
+		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		core.HandleError(c, appErr)
 		return
 	}
 
@@ -106,13 +108,15 @@ func CreateFileOrDir(c *gin.Context) {
 	case "file":
 		f, err := os.Create(absPath)
 		if err != nil {
-			core.HandleError(c, http.StatusInternalServerError, err, nil)
+			appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+			core.HandleError(c, appErr)
 			return
 		}
 		defer f.Close()
 	case "dir":
 		if err := os.MkdirAll(absPath, 0755); err != nil {
-			core.HandleError(c, http.StatusInternalServerError, err, nil)
+			appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+			core.HandleError(c, appErr)
 			return
 		}
 	default:
@@ -128,7 +132,8 @@ func CreateFileOrDir(c *gin.Context) {
 func UploadFile(c *gin.Context) {
 	file, err := c.FormFile("file")
 	if err != nil {
-		core.HandleError(c, http.StatusInternalServerError, err, nil)
+		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		core.HandleError(c, appErr)
 		return
 	}
 
@@ -139,7 +144,8 @@ func UploadFile(c *gin.Context) {
 
 	absPath := filepath.Join(filepath.Clean(path), file.Filename)
 	if err := c.SaveUploadedFile(file, absPath); err != nil {
-		core.HandleError(c, http.StatusInternalServerError, err, nil)
+		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		core.HandleError(c, appErr)
 		return
 	}
 	core.HandleSuccess(c, "上传成功")
@@ -151,7 +157,8 @@ func DownloadFile(c *gin.Context) {
 		Path string `json:"path" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
-		core.HandleError(c, http.StatusInternalServerError, err, nil)
+		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		core.HandleError(c, appErr)
 		return
 	}
 	filePath := filepath.Join(filepath.Clean(input.Path))
@@ -179,7 +186,8 @@ func DeleteFileOrDir(c *gin.Context) {
 	}
 	absPath := filepath.Join(filepath.Clean(input.Path))
 	if err := os.RemoveAll(absPath); err != nil {
-		core.HandleError(c, http.StatusInternalServerError, err, nil)
+		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		core.HandleError(c, appErr)
 		return
 	}
 	core.HandleSuccess(c, "删除成功")
@@ -232,7 +240,8 @@ func ModifyFileOrDirAttributes(c *gin.Context) {
 	}
 
 	if err := modifyAttributes(absPath); err != nil {
-		core.HandleError(c, http.StatusInternalServerError, err, nil)
+		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		core.HandleError(c, appErr)
 		return
 	}
 
@@ -244,7 +253,8 @@ func ModifyFileOrDirAttributes(c *gin.Context) {
 			return modifyAttributes(path)
 		})
 		if err != nil {
-			core.HandleError(c, http.StatusInternalServerError, err, nil)
+			appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+			core.HandleError(c, appErr)
 			return
 		}
 	}
@@ -300,7 +310,8 @@ func Content(c *gin.Context) {
 	// 读取内容
 	data, err := os.ReadFile(fullPath)
 	if err != nil {
-		core.HandleError(c, http.StatusInternalServerError, err, nil)
+		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		core.HandleError(c, appErr)
 		return
 	}
 
@@ -403,7 +414,8 @@ func SaveFile(c *gin.Context) {
 
 	fullPath := filepath.Clean(input.Path)
 	if err := os.WriteFile(fullPath, []byte(input.Content), 0644); err != nil {
-		core.HandleError(c, http.StatusInternalServerError, err, nil)
+		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		core.HandleError(c, appErr)
 		return
 	}
 

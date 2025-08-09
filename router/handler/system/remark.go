@@ -2,7 +2,7 @@ package system
 
 import (
 	"github.com/gin-gonic/gin"
-	"net/http"
+
 	"oneinstack/core"
 	"oneinstack/internal/models"
 	"oneinstack/internal/services/system"
@@ -16,12 +16,14 @@ func RemarkList(c *gin.Context) {
 		param := c.Param("id")
 		atoi, err := strconv.Atoi(param)
 		if err != nil {
-			core.HandleError(c, http.StatusInternalServerError, err, nil)
+			appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+			core.HandleError(c, appErr)
 			return
 		}
 		r, err := system.GetRemarkByID(int64(atoi))
 		if err != nil {
-			core.HandleError(c, http.StatusInternalServerError, err, nil)
+			appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+			core.HandleError(c, appErr)
 			return
 		}
 		core.HandleSuccess(c, r)
@@ -29,7 +31,8 @@ func RemarkList(c *gin.Context) {
 		// 如果没有参数id，则获取所有目录
 		r, err := system.GetRemarkList()
 		if err != nil {
-			core.HandleError(c, http.StatusInternalServerError, err, nil)
+			appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+			core.HandleError(c, appErr)
 			return
 		}
 		core.HandleSuccess(c, r)
@@ -40,12 +43,14 @@ func RemarkList(c *gin.Context) {
 func AddRemark(c *gin.Context) {
 	input := &models.Remark{}
 	if err := c.ShouldBindJSON(&input); err != nil {
-		core.HandleError(c, http.StatusInternalServerError, err, nil)
+		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		core.HandleError(c, appErr)
 		return
 	}
 	err := system.AddRemark(input)
 	if err != nil {
-		core.HandleError(c, http.StatusInternalServerError, err, nil)
+		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		core.HandleError(c, appErr)
 		return
 	}
 	core.HandleSuccess(c, "创建成功")
@@ -55,12 +60,14 @@ func AddRemark(c *gin.Context) {
 func UpdateRemark(c *gin.Context) {
 	input := &models.Remark{}
 	if err := c.ShouldBindJSON(&input); err != nil {
-		core.HandleError(c, http.StatusInternalServerError, err, nil)
+		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		core.HandleError(c, appErr)
 		return
 	}
 	err := system.UpdateRemark(input)
 	if err != nil {
-		core.HandleError(c, http.StatusInternalServerError, err, nil)
+		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		core.HandleError(c, appErr)
 		return
 	}
 	core.HandleSuccess(c, "更新成功")
@@ -69,12 +76,14 @@ func UpdateRemark(c *gin.Context) {
 func DeleteRemark(c *gin.Context) {
 	input := &models.Remark{}
 	if err := c.ShouldBindJSON(&input); err != nil {
-		core.HandleError(c, http.StatusInternalServerError, err, nil)
+		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		core.HandleError(c, appErr)
 		return
 	}
 	err := system.DeleteRemark(input.ID)
 	if err != nil {
-		core.HandleError(c, http.StatusInternalServerError, err, nil)
+		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		core.HandleError(c, appErr)
 		return
 	}
 	core.HandleSuccess(c, "删除成功")

@@ -19,7 +19,8 @@ func RunInstallation(c *gin.Context) {
 	}
 	install, err := software.RunInstall(&req)
 	if err != nil {
-		core.HandleError(c, http.StatusInternalServerError, err, nil)
+		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		core.HandleError(c, appErr)
 		return
 	}
 	fmt.Println(install)
@@ -36,7 +37,8 @@ func GetSoftware(c *gin.Context) {
 	}
 	data, err := software.List(&req)
 	if err != nil {
-		core.HandleError(c, http.StatusInternalServerError, err, nil)
+		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		core.HandleError(c, appErr)
 		return
 	}
 	core.HandleSuccess(c, data)
@@ -47,7 +49,8 @@ func GetLogContent(c *gin.Context) {
 	softName := c.Query("name")
 	install, err := utils.GetLogContent(param, softName)
 	if err != nil {
-		core.HandleError(c, http.StatusInternalServerError, err, nil)
+		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		core.HandleError(c, appErr)
 		return
 	}
 	core.HandleSuccess(c, gin.H{
@@ -73,7 +76,8 @@ func RemoveSoftware(c *gin.Context) {
 	}
 	ok, err := software.Remove(&req)
 	if err != nil {
-		core.HandleError(c, http.StatusInternalServerError, err, nil)
+		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		core.HandleError(c, appErr)
 	}
 	core.HandleSuccess(c, ok)
 }

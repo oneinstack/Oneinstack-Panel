@@ -10,6 +10,7 @@ import (
 	"oneinstack/internal/services"
 	"oneinstack/router/input"
 	"oneinstack/router/output"
+	"oneinstack/utils"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -59,39 +60,35 @@ func Exploration(param *input.SoftwareParam) bool {
 }
 
 func checkMySQL(sf *models.Software) bool {
-	cmd := exec.Command("sh", "-c", "ps -ef | grep -w mysqld | grep -v grep >/dev/null")
-	err := cmd.Run()
+	output, err := utils.GetProcessList("mysqld")
 	if err != nil {
 		return false
 	}
-	return true
+	return len(strings.TrimSpace(string(output))) > 0
 }
 
 func checkNginx(sf *models.Software) bool {
-	cmd := exec.Command("sh", "-c", "ps -ef | grep -w nginx | grep -v grep >/dev/null")
-	err := cmd.Run()
+	output, err := utils.GetProcessList("nginx")
 	if err != nil {
 		return false
 	}
-	return true
+	return len(strings.TrimSpace(string(output))) > 0
 }
 
 func checkPhpMyAdmin(sf *models.Software) bool {
-	cmd := exec.Command("sh", "-c", "ps -ef | grep -w phpmyadmin | grep -v grep >/dev/null")
-	err := cmd.Run()
+	output, err := utils.GetProcessList("phpmyadmin")
 	if err != nil {
 		return false
 	}
-	return true
+	return len(strings.TrimSpace(string(output))) > 0
 }
 
 func checkRedis(sf *models.Software) bool {
-	cmd := exec.Command("sh", "-c", "ps -ef | grep -w redis-server | grep -v grep >/dev/null")
-	err := cmd.Run()
+	output, err := utils.GetProcessList("redis-server")
 	if err != nil {
 		return false
 	}
-	return true
+	return len(strings.TrimSpace(string(output))) > 0
 }
 
 func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software], error) {

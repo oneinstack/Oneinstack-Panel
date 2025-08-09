@@ -33,19 +33,6 @@
 - Disk Space: At least 20GB free space
 - Root privileges required
 
-### Installation Commands
-
-```bash
- wget -O install.sh https://.cos.ap-guangzhou.myqcloud.com/oneinstack/install.sh && chmod +x install.sh && ./install.sh
-
-```
-
-### Update
-
-```bash
-wget -O update.sh https://.cos.ap-guangzhou.myqcloud.com/oneinstack/update.sh && chmod +x update.sh && ./update.sh
-```
-
 After installation, visit: `http://your-server-ip:8089`
 
 ## 🖥️ Management Features

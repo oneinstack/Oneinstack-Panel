@@ -13,7 +13,8 @@ import (
 func GetFirewallInfo(c *gin.Context) {
 	info, err := safe.GetUfwStatus()
 	if err != nil {
-		core.HandleError(c, http.StatusInternalServerError, err, nil)
+		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		core.HandleError(c, appErr)
 		return
 	}
 	core.HandleSuccess(c, gin.H{"info": info})
@@ -22,12 +23,14 @@ func GetFirewallInfo(c *gin.Context) {
 func GetFirewallRules(c *gin.Context) {
 	var param input.IptablesRuleParam
 	if err := c.ShouldBindJSON(&param); err != nil {
-		core.HandleError(c, http.StatusBadRequest, err, nil)
+		appErr := core.WrapError(err, core.ErrBadRequest, "请求参数错误")
+		core.HandleError(c, appErr)
 		return
 	}
 	rules, err := safe.GetUfwRules(&param)
 	if err != nil {
-		core.HandleError(c, http.StatusInternalServerError, err, nil)
+		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		core.HandleError(c, appErr)
 		return
 	}
 	core.HandleSuccess(c, rules)
@@ -36,7 +39,8 @@ func GetFirewallRules(c *gin.Context) {
 func AddFirewallRule(c *gin.Context) {
 	var param models.IptablesRule
 	if err := c.ShouldBindJSON(&param); err != nil {
-		core.HandleError(c, http.StatusBadRequest, err, nil)
+		appErr := core.WrapError(err, core.ErrBadRequest, "请求参数错误")
+		core.HandleError(c, appErr)
 		return
 	}
 	firewall := utils.CheckFirewall()
@@ -44,7 +48,8 @@ func AddFirewallRule(c *gin.Context) {
 	if firewall == "firewalld" {
 		err := safe.AddFirewalldRule(&param)
 		if err != nil {
-			core.HandleError(c, http.StatusInternalServerError, err, nil)
+			appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+			core.HandleError(c, appErr)
 			return
 		}
 		core.HandleSuccess(c, nil)
@@ -52,7 +57,8 @@ func AddFirewallRule(c *gin.Context) {
 	} else if firewall == "iptables" {
 		err := safe.AddIptablesRule(&param)
 		if err != nil {
-			core.HandleError(c, http.StatusInternalServerError, err, nil)
+			appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+			core.HandleError(c, appErr)
 			return
 		}
 		core.HandleSuccess(c, nil)
@@ -60,7 +66,8 @@ func AddFirewallRule(c *gin.Context) {
 	} else {
 		err := safe.AddUfwRule(&param)
 		if err != nil {
-			core.HandleError(c, http.StatusInternalServerError, err, nil)
+			appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+			core.HandleError(c, appErr)
 			return
 		}
 		core.HandleSuccess(c, nil)
@@ -70,12 +77,14 @@ func AddFirewallRule(c *gin.Context) {
 func UpdateFirewallRule(c *gin.Context) {
 	var param models.IptablesRule
 	if err := c.ShouldBindJSON(&param); err != nil {
-		core.HandleError(c, http.StatusBadRequest, err, nil)
+		appErr := core.WrapError(err, core.ErrBadRequest, "请求参数错误")
+		core.HandleError(c, appErr)
 		return
 	}
 	err := safe.UpdateUfwRule(&param)
 	if err != nil {
-		core.HandleError(c, http.StatusInternalServerError, err, nil)
+		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		core.HandleError(c, appErr)
 		return
 	}
 	core.HandleSuccess(c, nil)
@@ -84,12 +93,14 @@ func UpdateFirewallRule(c *gin.Context) {
 func DeleteFirewallRule(c *gin.Context) {
 	var param models.IptablesRule
 	if err := c.ShouldBindJSON(&param); err != nil {
-		core.HandleError(c, http.StatusBadRequest, err, nil)
+		appErr := core.WrapError(err, core.ErrBadRequest, "请求参数错误")
+		core.HandleError(c, appErr)
 		return
 	}
 	err := safe.DeleteUfwRule(param.ID)
 	if err != nil {
-		core.HandleError(c, http.StatusInternalServerError, err, nil)
+		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		core.HandleError(c, appErr)
 		return
 	}
 	core.HandleSuccess(c, nil)
@@ -98,7 +109,8 @@ func DeleteFirewallRule(c *gin.Context) {
 func StopFirewall(c *gin.Context) {
 	err := safe.ToggleUfw()
 	if err != nil {
-		core.HandleError(c, http.StatusInternalServerError, err, nil)
+		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		core.HandleError(c, appErr)
 		return
 	}
 	core.HandleSuccess(c, true)
@@ -107,7 +119,8 @@ func StopFirewall(c *gin.Context) {
 func BlockPing(c *gin.Context) {
 	err := safe.ToggleICMP()
 	if err != nil {
-		core.HandleError(c, http.StatusInternalServerError, err, nil)
+		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		core.HandleError(c, appErr)
 		return
 	}
 	core.HandleSuccess(c, true)

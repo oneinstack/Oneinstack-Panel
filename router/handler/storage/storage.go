@@ -17,12 +17,14 @@ func ADDStorage(c *gin.Context) {
 	}
 	err := req.Validate()
 	if err != nil {
-		core.HandleError(c, http.StatusInternalServerError, err, nil)
+		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		core.HandleError(c, appErr)
 		return
 	}
 	err = storage.Add(&req)
 	if err != nil {
-		core.HandleError(c, http.StatusInternalServerError, err, nil)
+		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		core.HandleError(c, appErr)
 		return
 	}
 	core.HandleSuccess(c, "成功")
@@ -36,7 +38,8 @@ func ADDLib(c *gin.Context) {
 	}
 	err := storage.AddLibs(&req)
 	if err != nil {
-		core.HandleError(c, http.StatusInternalServerError, err, nil)
+		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		core.HandleError(c, appErr)
 		return
 	}
 	core.HandleSuccess(c, "成功")
@@ -46,7 +49,8 @@ func GetStorage(c *gin.Context) {
 	t := c.Query("type")
 	data, err := storage.List(t)
 	if err != nil {
-		core.HandleError(c, http.StatusInternalServerError, err, nil)
+		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		core.HandleError(c, appErr)
 		return
 	}
 	core.HandleSuccess(c, data)
@@ -60,12 +64,14 @@ func UpdateStorage(c *gin.Context) {
 	}
 	err := req.Validate()
 	if err != nil {
-		core.HandleError(c, http.StatusInternalServerError, err, nil)
+		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		core.HandleError(c, appErr)
 		return
 	}
 	err = storage.Update(&req)
 	if err != nil {
-		core.HandleError(c, http.StatusInternalServerError, err, nil)
+		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		core.HandleError(c, appErr)
 		return
 	}
 	core.HandleSuccess(c, "成功")
@@ -79,7 +85,8 @@ func DelStorage(c *gin.Context) {
 	}
 	err := storage.Del(&req)
 	if err != nil {
-		core.HandleError(c, http.StatusInternalServerError, err, nil)
+		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		core.HandleError(c, appErr)
 		return
 	}
 	core.HandleSuccess(c, nil)
@@ -93,7 +100,8 @@ func SyncStorage(c *gin.Context) {
 	}
 	err := storage.Sync(&req)
 	if err != nil {
-		core.HandleError(c, http.StatusInternalServerError, err, nil)
+		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		core.HandleError(c, appErr)
 		return
 	}
 	core.HandleSuccess(c, nil)
@@ -106,7 +114,8 @@ func GetLib(c *gin.Context) {
 	}
 	data, err := storage.LibList(&req)
 	if err != nil {
-		core.HandleError(c, http.StatusInternalServerError, err, nil)
+		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		core.HandleError(c, appErr)
 		return
 	}
 	core.HandleSuccess(c, data)
@@ -120,7 +129,8 @@ func GetRedisKeys(c *gin.Context) {
 	}
 	data, err := storage.RedisKeyList(&req)
 	if err != nil {
-		core.HandleError(c, http.StatusInternalServerError, err, nil)
+		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		core.HandleError(c, appErr)
 		return
 	}
 	core.HandleSuccess(c, data)

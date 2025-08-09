@@ -28,22 +28,6 @@
 - 磁盘空间：至少 20GB 可用空间
 - 需要 root 权限
 
-### 安装命令
-
-#### 安装脚本
-
-```bash
-wget -O install.sh https://bugo-1301111475.cos.ap-guangzhou.myqcloud.com/oneinstack/install.sh && chmod +x install.sh && ./install.sh
-```
-
-安装完成后访问：`http://你的服务器IP:8089`
-
-#### 更新脚本
-
-```bash
-wget -O update.sh https://bugo-1301111475.cos.ap-guangzhou.myqcloud.com/oneinstack/update.sh && chmod +x update.sh && ./update.sh
-```
-
 ## 🖥️ 管理功能
 
 ### 服务器管理

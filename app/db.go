@@ -4,16 +4,37 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"oneinstack/internal/crypto"
 	"oneinstack/internal/models"
-	"oneinstack/utils"
+	"os"
 
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
 
+func ensureOneDir() {
+	dirPath := "/usr/local/one"
+
+	// 检查目录是否存在
+	if _, err := os.Stat(dirPath); os.IsNotExist(err) {
+		log.Printf("目录 %s 不存在，正在创建...", dirPath)
+
+		// 递归创建目录
+		if err := os.MkdirAll(dirPath, 0755); err != nil {
+			log.Fatalf("创建目录失败: %v", err)
+		}
+
+		// 设置权限（可选）
+		if err := os.Chmod(dirPath, 0755); err != nil {
+			log.Printf("警告：无法设置目录权限: %v", err)
+		}
+		log.Println("目录创建成功")
+	}
+}
+
 func init() {
-	utils.EnsureOneDir() // 新增目录检查
+	ensureOneDir() // 新增目录检查
 	if err := InitDB(GetBasePath() + "myadmin.db"); err != nil {
 		log.Fatal("InitDB error:", err)
 	}
@@ -357,7 +378,7 @@ func InitUser(userName string, password string) error {
 }
 
 func setupAdminUser(userName string, password string) error {
-	hashed, err := utils.HashPassword(password)
+	hashed, err := crypto.HashPassword(password)
 	if err != nil {
 		return err
 	}

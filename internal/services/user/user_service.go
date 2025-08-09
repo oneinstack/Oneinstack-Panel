@@ -2,6 +2,7 @@ package user
 
 import (
 	"oneinstack/app"
+	"oneinstack/internal/crypto"
 	"oneinstack/internal/models"
 	"oneinstack/utils"
 )
@@ -16,7 +17,7 @@ func HasUser() (bool, error) {
 }
 
 func CreateUser(username, password string, isAdmin bool) error {
-	hashed, err := utils.HashPassword(password)
+	hashed, err := crypto.HashPassword(password)
 	if err != nil {
 		return err
 	}
@@ -54,7 +55,7 @@ func CheckUserPassword(username, password string) (*models.User, bool) {
 	if err != nil {
 		return nil, false
 	}
-	if utils.CheckPasswordHash(password, u.Password) {
+	if crypto.CheckPasswordHash(password, u.Password) {
 		return u, true
 	}
 	return nil, false
@@ -70,7 +71,7 @@ func ListUsers() ([]*models.User, error) {
 }
 
 func ChangePassword(username, newPassword string) error {
-	hashed, err := utils.HashPassword(newPassword)
+	hashed, err := crypto.HashPassword(newPassword)
 	if err != nil {
 		return err
 	}

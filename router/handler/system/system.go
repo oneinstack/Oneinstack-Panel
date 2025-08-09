@@ -2,19 +2,20 @@ package system
 
 import (
 	"errors"
-	"github.com/gin-gonic/gin"
 	"net/http"
 	"oneinstack/core"
 	"oneinstack/internal/models"
 	"oneinstack/internal/services/system"
 	"oneinstack/router/input"
-	"oneinstack/utils"
+
+	"github.com/gin-gonic/gin"
 )
 
 func GetSystemInfo(c *gin.Context) {
 	info, err := system.GetSystemInfo()
 	if err != nil {
-		core.HandleError(c, http.StatusInternalServerError, err, nil)
+		appErr := core.WrapError(err, core.ErrSystemError, "获取系统信息失败")
+		core.HandleError(c, appErr)
 		return
 	}
 	core.HandleSuccess(c, info)
@@ -23,7 +24,8 @@ func GetSystemInfo(c *gin.Context) {
 func GetSystemMonitor(c *gin.Context) {
 	monitor, err := system.GetSystemMonitor()
 	if err != nil {
-		core.HandleError(c, http.StatusInternalServerError, err, nil)
+		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		core.HandleError(c, appErr)
 		return
 	}
 	core.HandleSuccess(c, monitor)
@@ -32,7 +34,8 @@ func GetSystemMonitor(c *gin.Context) {
 func GetLibCount(c *gin.Context) {
 	count, err := system.GetLibCount()
 	if err != nil {
-		core.HandleError(c, http.StatusInternalServerError, err, nil)
+		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		core.HandleError(c, appErr)
 		return
 	}
 	core.HandleSuccess(c, count)
@@ -41,7 +44,8 @@ func GetLibCount(c *gin.Context) {
 func GetWebSiteCount(c *gin.Context) {
 	count, err := system.GetWebSiteCount()
 	if err != nil {
-		core.HandleError(c, http.StatusInternalServerError, err, nil)
+		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		core.HandleError(c, appErr)
 		return
 	}
 	core.HandleSuccess(c, count)
@@ -51,7 +55,8 @@ func GetWebSiteCount(c *gin.Context) {
 func GetRemarkCount(c *gin.Context) {
 	count, err := system.GetRemarkCount()
 	if err != nil {
-		core.HandleError(c, http.StatusInternalServerError, err, nil)
+		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		core.HandleError(c, appErr)
 		return
 	}
 	core.HandleSuccess(c, count)
@@ -60,7 +65,8 @@ func GetRemarkCount(c *gin.Context) {
 func SystemInfo(c *gin.Context) {
 	info, err := system.SystemInfo()
 	if err != nil {
-		core.HandleError(c, http.StatusInternalServerError, err, nil)
+		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		core.HandleError(c, appErr)
 		return
 	}
 	core.HandleSuccess(c, info)
@@ -69,7 +75,8 @@ func SystemInfo(c *gin.Context) {
 func UpdateUser(c *gin.Context) {
 	user := models.User{}
 	if err := c.ShouldBindJSON(&user); err != nil {
-		core.HandleError(c, http.StatusBadRequest, err, nil)
+		appErr := core.WrapError(err, core.ErrBadRequest, "请求参数错误")
+		core.HandleError(c, appErr)
 		return
 	}
 	id, exist := c.Get("id")
@@ -80,7 +87,8 @@ func UpdateUser(c *gin.Context) {
 	user.ID = id.(int64)
 	err := system.UpdateUser(user)
 	if err != nil {
-		core.HandleError(c, http.StatusInternalServerError, err, nil)
+		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		core.HandleError(c, appErr)
 		return
 	}
 	core.HandleSuccess(c, nil)
@@ -94,14 +102,16 @@ func ResetPassword(c *gin.Context) {
 		return
 	}
 	if err := c.ShouldBindJSON(&user); err != nil {
-		core.HandleError(c, http.StatusBadRequest, err, nil)
+		appErr := core.WrapError(err, core.ErrBadRequest, "请求参数错误")
+		core.HandleError(c, appErr)
 		return
 	}
 	user.Id = id.(int64)
-	user.NewPassword, _ = utils.HashPassword(user.Password)
+	user.NewPassword = user.Password
 	err := system.ResetPassword(user)
 	if err != nil {
-		core.HandleError(c, http.StatusInternalServerError, err, nil)
+		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		core.HandleError(c, appErr)
 		return
 	}
 	core.HandleSuccess(c, nil)
@@ -110,12 +120,14 @@ func ResetPassword(c *gin.Context) {
 func UpdatePort(c *gin.Context) {
 	param := input.UpdatePortRequest{}
 	if err := c.ShouldBindJSON(&param); err != nil {
-		core.HandleError(c, http.StatusBadRequest, err, nil)
+		appErr := core.WrapError(err, core.ErrBadRequest, "请求参数错误")
+		core.HandleError(c, appErr)
 		return
 	}
 	err := system.UpdateSystemPort(param.Port)
 	if err != nil {
-		core.HandleError(c, http.StatusInternalServerError, err, nil)
+		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		core.HandleError(c, appErr)
 		return
 	}
 	core.HandleSuccess(c, nil)
@@ -124,12 +136,14 @@ func UpdatePort(c *gin.Context) {
 func UpdateSystemTitle(c *gin.Context) {
 	param := input.UpdateSystemTitleRequest{}
 	if err := c.ShouldBindJSON(&param); err != nil {
-		core.HandleError(c, http.StatusBadRequest, err, nil)
+		appErr := core.WrapError(err, core.ErrBadRequest, "请求参数错误")
+		core.HandleError(c, appErr)
 		return
 	}
 	err := system.UpdateSystemTitle(param.Title)
 	if err != nil {
-		core.HandleError(c, http.StatusInternalServerError, err, nil)
+		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		core.HandleError(c, appErr)
 		return
 	}
 	core.HandleSuccess(c, nil)
@@ -138,7 +152,8 @@ func UpdateSystemTitle(c *gin.Context) {
 func GetInfo(c *gin.Context) {
 	info, err := system.GetInfo()
 	if err != nil {
-		core.HandleError(c, http.StatusInternalServerError, err, nil)
+		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		core.HandleError(c, appErr)
 		return
 	}
 	core.HandleSuccess(c, info)

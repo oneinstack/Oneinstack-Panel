@@ -3,8 +3,8 @@ package website
 import (
 	"fmt"
 	"oneinstack/internal/models"
+	"oneinstack/utils"
 	"os"
-	"os/exec"
 	"strings"
 )
 
@@ -181,18 +181,15 @@ func SaveConfigToFile(config string, p *models.Website) error {
 // ReloadNginxConfig 尝试重载 Nginx 配置
 func ReloadNginxConfig() error {
 	// 检查 Nginx 是否已安装
-	cmd := exec.Command("nginx", "-v")
-	err := cmd.Run()
+	safeCmd := utils.NewSafeCommand("nginx", "-v")
+	_, err := safeCmd.Execute()
 	if err != nil {
 		return fmt.Errorf("Nginx is not installed or not found in PATH")
 	}
 
 	// 重载 Nginx 配置
-	reloadCmd := exec.Command("nginx", "-s", "reload")
-	reloadCmd.Stdout = os.Stdout
-	reloadCmd.Stderr = os.Stderr
-
-	err = reloadCmd.Run()
+	reloadCmd := utils.NewSafeCommand("nginx", "-s", "reload")
+	_, err = reloadCmd.Execute()
 	if err != nil {
 		return fmt.Errorf("failed to reload Nginx config: %v", err)
 	}

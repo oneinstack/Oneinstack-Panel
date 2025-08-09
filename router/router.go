@@ -24,12 +24,14 @@ func SetupRouter() *gin.Engine {
 
 	// 公共路由
 	{
-		g.POST("/login", user.LoginHandler)
+		g.POST("/login", middleware.LoginRateLimitMiddleware(), user.LoginHandler)
 	}
 
 	//系统接口
 	sys := g.Group("/sys")
+	sys.Use(middleware.APIRateLimitMiddleware())
 	sys.Use(middleware.AuthMiddleware())
+	sys.Use(middleware.AuditLog())
 	{
 		sys.GET("/info", system.GetSystemInfo)
 		sys.GET("/monitor", system.GetSystemMonitor)

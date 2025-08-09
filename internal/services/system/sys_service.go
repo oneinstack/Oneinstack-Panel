@@ -3,11 +3,15 @@ package system
 import (
 	"fmt"
 	"oneinstack/app"
+	"oneinstack/internal/crypto"
 	"oneinstack/internal/models"
 	"oneinstack/router/input"
 	"oneinstack/router/output"
+
 	"os"
+	"regexp"
 	"time"
+	"unicode"
 
 	"github.com/shirou/gopsutil/v4/cpu"
 	"github.com/shirou/gopsutil/v4/disk"
@@ -396,7 +400,19 @@ func ResetPassword(user input.ResetPasswordRequest) error {
 	if tx.Error != nil {
 		return tx.Error
 	}
-	u.Password = user.NewPassword
+
+	// 验证密码强度
+	if err := validatePasswordStrength(user.NewPassword); err != nil {
+		return err
+	}
+
+	// 加密密码
+	hashedPassword, err := crypto.HashPassword(user.NewPassword)
+	if err != nil {
+		return fmt.Errorf("failed to hash password: %v", err)
+	}
+
+	u.Password = hashedPassword
 	tx = app.DB().Updates(u)
 	if tx.Error != nil {
 		return tx.Error
@@ -428,4 +444,62 @@ func GetInfo() (*models.System, error) {
 		return nil, tx.Error
 	}
 	return &s, nil
+}
+
+// validatePasswordStrength 验证密码强度
+func validatePasswordStrength(password string) error {
+	if len(password) < 8 {
+		return fmt.Errorf("password must be at least 8 characters long")
+	}
+
+	if len(password) > 128 {
+		return fmt.Errorf("password must be no more than 128 characters long")
+	}
+
+	var (
+		hasUpper   = false
+		hasLower   = false
+		hasNumber  = false
+		hasSpecial = false
+	)
+
+	for _, char := range password {
+		switch {
+		case unicode.IsUpper(char):
+			hasUpper = true
+		case unicode.IsLower(char):
+			hasLower = true
+		case unicode.IsNumber(char):
+			hasNumber = true
+		case unicode.IsPunct(char) || unicode.IsSymbol(char):
+			hasSpecial = true
+		}
+	}
+
+	if !hasUpper {
+		return fmt.Errorf("password must contain at least one uppercase letter")
+	}
+	if !hasLower {
+		return fmt.Errorf("password must contain at least one lowercase letter")
+	}
+	if !hasNumber {
+		return fmt.Errorf("password must contain at least one number")
+	}
+	if !hasSpecial {
+		return fmt.Errorf("password must contain at least one special character")
+	}
+
+	// 检查常见弱密码
+	commonPasswords := []string{
+		"password", "123456", "123456789", "12345678", "12345", "1234567",
+		"admin", "administrator", "root", "user", "test", "guest",
+	}
+
+	for _, common := range commonPasswords {
+		if matched, _ := regexp.MatchString("(?i)"+common, password); matched {
+			return fmt.Errorf("password contains common weak patterns")
+		}
+	}
+
+	return nil
 }
