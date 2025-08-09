@@ -1,8 +1,6 @@
 package system
 
 import (
-	"errors"
-	"net/http"
 	"oneinstack/core"
 	"oneinstack/internal/models"
 	"oneinstack/internal/services/system"
@@ -81,7 +79,8 @@ func UpdateUser(c *gin.Context) {
 	}
 	id, exist := c.Get("id")
 	if exist != true {
-		core.HandleError(c, http.StatusInternalServerError, errors.New("not found"), nil)
+		appErr := core.NewError(core.ErrNotFound, "资源未找到")
+		core.HandleError(c, appErr)
 		return
 	}
 	user.ID = id.(int64)
@@ -98,7 +97,8 @@ func ResetPassword(c *gin.Context) {
 	user := input.ResetPasswordRequest{}
 	id, exist := c.Get("id")
 	if exist != true {
-		core.HandleError(c, http.StatusInternalServerError, errors.New("not found"), nil)
+		appErr := core.NewError(core.ErrNotFound, "资源未找到")
+		core.HandleError(c, appErr)
 		return
 	}
 	if err := c.ShouldBindJSON(&user); err != nil {

@@ -1,7 +1,6 @@
 package storage
 
 import (
-	"net/http"
 	"oneinstack/core"
 	"oneinstack/internal/services/storage"
 	"oneinstack/router/input"
@@ -12,7 +11,8 @@ import (
 func ADDStorage(c *gin.Context) {
 	var req input.AddParam
 	if err := c.ShouldBindJSON(&req); err != nil {
-		core.HandleError(c, http.StatusUnauthorized, core.ErrBadRequest, err)
+		appErr := core.WrapError(err, core.ErrBadRequest, "请求参数错误")
+		core.HandleError(c, appErr)
 		return
 	}
 	err := req.Validate()
@@ -33,7 +33,8 @@ func ADDStorage(c *gin.Context) {
 func ADDLib(c *gin.Context) {
 	var req input.LibParam
 	if err := c.ShouldBindJSON(&req); err != nil {
-		core.HandleError(c, http.StatusUnauthorized, core.ErrBadRequest, err)
+		appErr := core.WrapError(err, core.ErrBadRequest, "请求参数错误")
+		core.HandleError(c, appErr)
 		return
 	}
 	err := storage.AddLibs(&req)
@@ -59,7 +60,8 @@ func GetStorage(c *gin.Context) {
 func UpdateStorage(c *gin.Context) {
 	var req input.AddParam
 	if err := c.ShouldBindJSON(&req); err != nil {
-		core.HandleError(c, http.StatusUnauthorized, core.ErrBadRequest, err)
+		appErr := core.WrapError(err, core.ErrBadRequest, "请求参数错误")
+		core.HandleError(c, appErr)
 		return
 	}
 	err := req.Validate()
@@ -80,7 +82,8 @@ func UpdateStorage(c *gin.Context) {
 func DelStorage(c *gin.Context) {
 	var req input.IDParam
 	if err := c.ShouldBindJSON(&req); err != nil {
-		core.HandleError(c, http.StatusUnauthorized, core.ErrBadRequest, err)
+		appErr := core.WrapError(err, core.ErrBadRequest, "请求参数错误")
+		core.HandleError(c, appErr)
 		return
 	}
 	err := storage.Del(&req)
@@ -95,7 +98,8 @@ func DelStorage(c *gin.Context) {
 func SyncStorage(c *gin.Context) {
 	var req input.IDParam
 	if err := c.ShouldBindJSON(&req); err != nil {
-		core.HandleError(c, http.StatusUnauthorized, core.ErrBadRequest, err)
+		appErr := core.WrapError(err, core.ErrBadRequest, "请求参数错误")
+		core.HandleError(c, appErr)
 		return
 	}
 	err := storage.Sync(&req)
@@ -109,7 +113,8 @@ func SyncStorage(c *gin.Context) {
 func GetLib(c *gin.Context) {
 	var req input.QueryParam
 	if err := c.ShouldBindJSON(&req); err != nil {
-		core.HandleError(c, http.StatusUnauthorized, core.ErrBadRequest, err)
+		appErr := core.WrapError(err, core.ErrBadRequest, "请求参数错误")
+		core.HandleError(c, appErr)
 		return
 	}
 	data, err := storage.LibList(&req)
@@ -124,7 +129,8 @@ func GetLib(c *gin.Context) {
 func GetRedisKeys(c *gin.Context) {
 	var req input.QueryParam
 	if err := c.ShouldBindJSON(&req); err != nil {
-		core.HandleError(c, http.StatusUnauthorized, core.ErrBadRequest, err)
+		appErr := core.WrapError(err, core.ErrBadRequest, "请求参数错误")
+		core.HandleError(c, appErr)
 		return
 	}
 	data, err := storage.RedisKeyList(&req)

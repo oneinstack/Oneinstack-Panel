@@ -2,7 +2,7 @@ package software
 
 import (
 	"fmt"
-	"net/http"
+
 	"oneinstack/core"
 	"oneinstack/internal/services/software"
 	"oneinstack/router/input"
@@ -14,7 +14,8 @@ import (
 func RunInstallation(c *gin.Context) {
 	var req input.InstallParams
 	if err := c.ShouldBindJSON(&req); err != nil {
-		core.HandleError(c, http.StatusUnauthorized, core.ErrBadRequest, err)
+		appErr := core.WrapError(err, core.ErrBadRequest, "请求参数错误")
+		core.HandleError(c, appErr)
 		return
 	}
 	install, err := software.RunInstall(&req)
@@ -32,7 +33,8 @@ func RunInstallation(c *gin.Context) {
 func GetSoftware(c *gin.Context) {
 	var req input.SoftwareParam
 	if err := c.ShouldBindJSON(&req); err != nil {
-		core.HandleError(c, http.StatusUnauthorized, core.ErrBadRequest, err)
+		appErr := core.WrapError(err, core.ErrBadRequest, "请求参数错误")
+		core.HandleError(c, appErr)
 		return
 	}
 	data, err := software.List(&req)
@@ -61,7 +63,8 @@ func GetLogContent(c *gin.Context) {
 func Exploration(c *gin.Context) {
 	var req input.SoftwareParam
 	if err := c.ShouldBindJSON(&req); err != nil {
-		core.HandleError(c, http.StatusUnauthorized, core.ErrBadRequest, err)
+		appErr := core.WrapError(err, core.ErrBadRequest, "请求参数错误")
+		core.HandleError(c, appErr)
 		return
 	}
 	ok := software.Exploration(&req)
@@ -71,7 +74,8 @@ func Exploration(c *gin.Context) {
 func RemoveSoftware(c *gin.Context) {
 	var req input.RemoveParams
 	if err := c.ShouldBindJSON(&req); err != nil {
-		core.HandleError(c, http.StatusUnauthorized, core.ErrBadRequest, err)
+		appErr := core.WrapError(err, core.ErrBadRequest, "请求参数错误")
+		core.HandleError(c, appErr)
 		return
 	}
 	ok, err := software.Remove(&req)

@@ -58,7 +58,8 @@ func ListDirectory(c *gin.Context) {
 		Path string `json:"path" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
-		core.HandleError(c, http.StatusInternalServerError, fmt.Errorf("参数错误"), nil)
+		appErr := core.WrapError(fmt.Errorf("参数错误"), core.ErrInternalError, "操作失败")
+		core.HandleError(c, appErr)
 		return
 	}
 	absPath := filepath.Join(filepath.Clean(input.Path))
@@ -99,7 +100,8 @@ func CreateFileOrDir(c *gin.Context) {
 	}
 
 	if err := c.ShouldBindJSON(&input); err != nil {
-		core.HandleError(c, http.StatusInternalServerError, fmt.Errorf("参数错误"), nil)
+		appErr := core.WrapError(fmt.Errorf("参数错误"), core.ErrInternalError, "操作失败")
+		core.HandleError(c, appErr)
 		return
 	}
 
@@ -120,7 +122,8 @@ func CreateFileOrDir(c *gin.Context) {
 			return
 		}
 	default:
-		core.HandleError(c, http.StatusInternalServerError, fmt.Errorf("无效类型"), nil)
+		appErr := core.WrapError(fmt.Errorf("无效类型"), core.ErrInternalError, "操作失败")
+		core.HandleError(c, appErr)
 		return
 	}
 
@@ -181,7 +184,8 @@ func DeleteFileOrDir(c *gin.Context) {
 		Path string `json:"path" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
-		core.HandleError(c, http.StatusInternalServerError, fmt.Errorf("参数错误"), nil)
+		appErr := core.WrapError(fmt.Errorf("参数错误"), core.ErrInternalError, "操作失败")
+		core.HandleError(c, appErr)
 		return
 	}
 	absPath := filepath.Join(filepath.Clean(input.Path))
@@ -203,7 +207,8 @@ func ModifyFileOrDirAttributes(c *gin.Context) {
 		Recursive bool   `json:"recursive"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
-		core.HandleError(c, http.StatusInternalServerError, fmt.Errorf("参数错误"), nil)
+		appErr := core.WrapError(fmt.Errorf("参数错误"), core.ErrInternalError, "操作失败")
+		core.HandleError(c, appErr)
 		return
 	}
 
@@ -211,7 +216,8 @@ func ModifyFileOrDirAttributes(c *gin.Context) {
 
 	// Check if the path exists to prevent nil pointer dereference
 	if _, err := os.Stat(absPath); os.IsNotExist(err) {
-		core.HandleError(c, http.StatusInternalServerError, fmt.Errorf("path does not exist"), nil)
+		appErr := core.WrapError(fmt.Errorf("path does not exist"), core.ErrInternalError, "操作失败")
+		core.HandleError(c, appErr)
 		return
 	}
 
@@ -294,7 +300,8 @@ func Content(c *gin.Context) {
 		Path string `json:"path" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
-		core.HandleError(c, http.StatusBadRequest, fmt.Errorf("参数错误"), nil)
+		appErr := core.WrapError(fmt.Errorf("参数错误"), core.ErrInternalError, "操作失败")
+		core.HandleError(c, appErr)
 		return
 	}
 
@@ -303,7 +310,8 @@ func Content(c *gin.Context) {
 	// 检查是否存在
 	stat, err := os.Stat(fullPath)
 	if err != nil {
-		core.HandleError(c, http.StatusNotFound, fmt.Errorf("文件不存在: %s", fullPath), nil)
+		appErr := core.NewError(core.ErrNotFound, fmt.Sprintf("文件不存在: %s", fullPath))
+		core.HandleError(c, appErr)
 		return
 	}
 
@@ -408,7 +416,8 @@ func SaveFile(c *gin.Context) {
 		Content string `json:"content" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
-		core.HandleError(c, http.StatusBadRequest, fmt.Errorf("参数错误"), nil)
+		appErr := core.WrapError(fmt.Errorf("参数错误"), core.ErrInternalError, "操作失败")
+		core.HandleError(c, appErr)
 		return
 	}
 
@@ -429,7 +438,8 @@ func UrlDownloadFile(c *gin.Context) {
 		Name string `json:"name" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
-		core.HandleError(c, http.StatusBadRequest, fmt.Errorf("参数错误"), nil)
+		appErr := core.WrapError(fmt.Errorf("参数错误"), core.ErrInternalError, "操作失败")
+		core.HandleError(c, appErr)
 	}
 	core.HandleSuccess(c, DownloadUrlFile(input.Url, input.Path, input.Name))
 }

@@ -2,7 +2,7 @@ package safe
 
 import (
 	"github.com/gin-gonic/gin"
-	"net/http"
+
 	"oneinstack/core"
 	"oneinstack/internal/models"
 	"oneinstack/internal/services/safe"
@@ -129,7 +129,8 @@ func BlockPing(c *gin.Context) {
 func InstallFirewall(context *gin.Context) {
 	err := safe.InstallUfw()
 	if err != nil {
-		core.HandleError(context, http.StatusInternalServerError, err, nil)
+		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		core.HandleError(context, appErr)
 		return
 	}
 	core.HandleSuccess(context, true)
