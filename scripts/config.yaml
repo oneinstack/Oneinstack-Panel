@@ -1,0 +1,97 @@
+# 脚本配置文件
+scripts:
+  install:
+    webserver:
+      - name: nginx
+        versions: ["1.24.0", "1.26.2"]
+        default_version: "1.26.2"
+        description: "Nginx Web服务器"
+        
+    db:
+      - name: mysql55
+        versions: ["5.5"]
+        default_version: "5.5"
+        description: "MySQL 5.5 数据库"
+      - name: mysql57
+        versions: ["5.7"]
+        default_version: "5.7"
+        description: "MySQL 5.7 数据库"
+      - name: mysql80
+        versions: ["8.0"]
+        default_version: "8.0"
+        description: "MySQL 8.0 数据库"
+        
+    cache:
+      - name: redis
+        versions: ["6.2", "7.0", "7.2"]
+        default_version: "7.2"
+        description: "Redis 缓存服务器"
+        
+    runtime:
+      - name: php
+        versions: ["7.4", "8.1", "8.2"]
+        default_version: "8.1"
+        description: "PHP 运行环境"
+      - name: openjdk11
+        versions: ["11"]
+        default_version: "11"
+        description: "OpenJDK 11"
+      - name: openjdk17
+        versions: ["17"]
+        default_version: "17"
+        description: "OpenJDK 17"
+      - name: openjdk18
+        versions: ["18"]
+        default_version: "18"
+        description: "OpenJDK 18"
+        
+    tools:
+      - name: phpmyadmin
+        versions: ["5.2.1"]
+        default_version: "5.2.1"
+        description: "phpMyAdmin 数据库管理工具"
+      - name: openresty
+        versions: ["1.21.4.1"]
+        default_version: "1.21.4.1"
+        description: "OpenResty Web平台"
+
+  uninstall:
+    - redis
+    - mysql
+    - nginx
+    - php
+    - java
+    - phpmyadmin
+    - openresty
+
+# 脚本参数模板
+parameters:
+  mysql:
+    - name: password
+      type: string
+      required: true
+      description: "MySQL root密码"
+    - name: port
+      type: int
+      default: 3306
+      description: "MySQL端口"
+      
+  redis:
+    - name: port
+      type: int
+      default: 6379
+      description: "Redis端口"
+    - name: password
+      type: string
+      required: false
+      description: "Redis密码"
+      
+  nginx:
+    - name: worker_processes
+      type: string
+      default: "auto"
+      description: "工作进程数"
+    - name: worker_connections
+      type: int
+      default: 65535
+      description: "每个进程的最大连接数"

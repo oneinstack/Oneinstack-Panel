@@ -40,28 +40,10 @@ func (ps InstallOP) Install(sync ...bool) (string, error) {
 	if len(sync) > 0 {
 		sy = sync[0]
 	}
-	script, err := ps.getScript()
-	if ps.BashParams.Key == "db" {
-		script = fmt.Sprintf(script, "1", ps.BashParams.Pwd)
-	}
-	if err != nil {
-		return "", err
-	}
-	fn, err := ps.createShScript(script, app.ONE_CONFIG.System.DefaultPath+
-		ps.BashParams.Key+
-		ps.BashParams.Version+".sh")
-	if err != nil {
-		return "", err
-	}
-	if ps.Remote {
-		args, err := ps.buildRemoteArgs()
-		if err != nil {
-			return "", err
-		}
-		return ps.executeShScriptRemote(fn, sy, args...)
-	} else {
-		return ps.executeShScriptLocal(fn, sy, *ps.BashParams)
-	}
+
+	// 使用新的安装器
+	installer := NewInstaller()
+	return installer.Install(ps.BashParams, !sy) // !sy 因为sync=true表示同步，async=false
 }
 
 func (ps InstallOP) updateSoft() error {
@@ -842,292 +824,675 @@ fi
 var nginx = `
 #!/bin/bash
 
-# 创建/usr/local/one/src目录
-if [ ! -d "/usr/local/one/src" ]; then
-  mkdir -p /usr/local/one/src
-fi
-oneinstack_dir=/usr/local/one
-nginx_install_dir=/usr/local/nginx
-www_root_dir=/data/wwwroot
-www_logs_dir=/data/wwwlogs
-THREAD=$(grep 'processor' /proc/cpuinfo | sort -u | wc -l)
-run_group='www'
-run_user='www'
+#=============================================================================
+# Nginx 安装脚本 - 优化版本
+# 版本: 2.0
+# 描述: 自动检测系统环境，编译安装最新稳定版Nginx
+#=============================================================================
 
-# 检查是否有 root 权限
-if [[ $EUID -ne 0 ]]; then
-   echo "请使用 root 权限运行此脚本" 
-   exit 1
-fi
+set -euo pipefail  # 严格模式：遇到错误立即退出
 
-# 判断安装oneinstack_dir目录是否存在 不存在则创建
-if [ ! -d ${nginx_install_dir} ]; then
-  mkdir -p ${nginx_install_dir}
-fi
+# 颜色定义
+readonly RED='\033[0;31m'
+readonly GREEN='\033[0;32m'
+readonly YELLOW='\033[1;33m'
+readonly NC='\033[0m'
 
-# 判断安装www_root_dir目录是否存在 不存在则创建
-if [ ! -d ${www_root_dir} ]; then
-  mkdir -p ${www_root_dir}
-fi
+# 配置变量
+readonly NGINX_VERSION="1.26.2"        # 最新稳定版
+readonly PCRE_VERSION="8.45"
+readonly OPENSSL_VERSION="3.0.12"      # 更新的OpenSSL版本
+readonly ZLIB_VERSION="1.3.1"
 
-# 判断安装www_logs_dir目录是否存在 不存在则创建
-if [ ! -d ${www_logs_dir} ]; then
-  mkdir -p ${www_logs_dir}
-fi
+# 目录配置
+readonly ONEINSTACK_DIR="/usr/local/one"
+readonly NGINX_INSTALL_DIR="/usr/local/nginx"
+readonly WWW_ROOT_DIR="/data/wwwroot"
+readonly WWW_LOGS_DIR="/data/wwwlogs"
+readonly SRC_DIR="${ONEINSTACK_DIR}/src"
 
-# 检测操作系统类型
-OS=$(awk -F= '/^ID=/{print $2}' /etc/os-release | tr -d '"')
-echo "检测到操作系统为 $OS"
+# 用户配置
+readonly RUN_USER="www"
+readonly RUN_GROUP="www"
 
-# 定义安装依赖的函数
+# 系统配置
+readonly THREAD=$(nproc)
+
+# 日志函数
+log() {
+    local level=$1
+    shift
+    local message="$*"
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    
+    case $level in
+        "INFO")  echo -e "${GREEN}[INFO]${NC} ${timestamp} - $message" ;;
+        "WARN")  echo -e "${YELLOW}[WARN]${NC} ${timestamp} - $message" ;;
+        "ERROR") echo -e "${RED}[ERROR]${NC} ${timestamp} - $message" ;;
+    esac
+}
+
+# 错误处理函数
+error_exit() {
+    log "ERROR" "$1"
+    exit 1
+}
+
+# 检查root权限
+check_root() {
+    if [[ $EUID -ne 0 ]]; then
+        error_exit "请使用root权限运行此脚本"
+    fi
+}
+
+# 检测操作系统
+detect_os() {
+    if [[ -f /etc/os-release ]]; then
+        . /etc/os-release
+        OS=$ID
+        log "INFO" "检测到操作系统: $PRETTY_NAME"
+    else
+        error_exit "无法检测操作系统类型"
+    fi
+}
+
+# 创建必要目录
+create_directories() {
+    log "INFO" "创建必要目录..."
+    
+    local dirs=(
+        "$ONEINSTACK_DIR"
+        "$SRC_DIR" 
+        "$NGINX_INSTALL_DIR"
+        "$WWW_ROOT_DIR"
+        "$WWW_LOGS_DIR"
+        "$WWW_ROOT_DIR/default"
+        "$NGINX_INSTALL_DIR/conf/vhost"
+    )
+    
+    for dir in "${dirs[@]}"; do
+        mkdir -p "$dir" || error_exit "无法创建目录: $dir"
+    done
+}
+
+# 创建用户和组
+create_user_group() {
+    log "INFO" "创建用户和组..."
+    
+    if ! getent group "$RUN_GROUP" >/dev/null 2>&1; then
+        groupadd "$RUN_GROUP" || error_exit "无法创建组: $RUN_GROUP"
+    fi
+    
+    if ! getent passwd "$RUN_USER" >/dev/null 2>&1; then
+        useradd -g "$RUN_GROUP" -M -s /sbin/nologin "$RUN_USER" || error_exit "无法创建用户: $RUN_USER"
+    fi
+    
+    if ! getent passwd "nginx" >/dev/null 2>&1; then
+        useradd -r -s /sbin/nologin nginx || error_exit "无法创建nginx用户"
+    fi
+}
+
+# 安装依赖包
 install_dependencies() {
-    echo "正在安装依赖..."
+    log "INFO" "安装编译依赖..."
+    
     case $OS in
-        ubuntu | debian)
-            apt-get update && apt-get install -y build-essential libpcre3 libpcre3-dev libssl-dev zlib1g-dev wget
+        ubuntu|debian)
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update || error_exit "更新软件包列表失败"
+            apt-get install -y \
+                build-essential \
+                libpcre3-dev \
+                libssl-dev \
+                zlib1g-dev \
+                wget \
+                curl \
+                unzip \
+                ca-certificates \
+                || error_exit "安装依赖包失败"
             ;;
-        centos | rhel | rocky | almalinux | fedora)
-            yum groupinstall -y "Development Tools"
-            yum install -y pcre pcre-devel openssl-devel zlib-devel wget
+        centos|rhel|rocky|almalinux)
+            yum groupinstall -y "Development Tools" || error_exit "安装开发工具失败"
+            yum install -y \
+                pcre-devel \
+                openssl-devel \
+                zlib-devel \
+                wget \
+                curl \
+                unzip \
+                ca-certificates \
+                || error_exit "安装依赖包失败"
+            ;;
+        fedora)
+            dnf groupinstall -y "Development Tools" || error_exit "安装开发工具失败"
+            dnf install -y \
+                pcre-devel \
+                openssl-devel \
+                zlib-devel \
+                wget \
+                curl \
+                unzip \
+                ca-certificates \
+                || error_exit "安装依赖包失败"
             ;;
         *)
-            echo "未支持的操作系统: $OS"
-            exit 1
+            error_exit "不支持的操作系统: $OS"
             ;;
     esac
 }
+
+# 下载源码
+download_sources() {
+    log "INFO" "下载源码包..."
     
-pushd ${oneinstack_dir}/src > /dev/null
-  id -g ${run_group} >/dev/null 2>&1
-  [ $? -ne 0 ] && groupadd ${run_group}
-  id -u ${run_user} >/dev/null 2>&1
-  [ $? -ne 0 ] && useradd -g ${run_group} -M -s /sbin/nologin ${run_user}
+    cd "$SRC_DIR" || error_exit "无法进入源码目录"
+    
+    # 下载函数
+    download_with_retry() {
+        local filename=$1
+        local url1=$2
+        local url2=$3
+        
+        log "INFO" "下载 $filename"
+        if ! wget -t 3 -T 30 -O "$filename" "$url1"; then
+            log "WARN" "主下载源失败，尝试备用源..."
+            wget -t 3 -T 30 -O "$filename" "$url2" || error_exit "无法下载 $filename"
+        fi
+        log "INFO" "$filename 下载成功"
+    }
+    
+    # 下载各个组件
+    download_with_retry "nginx-${NGINX_VERSION}.tar.gz" \
+        "https://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz" \
+        "https://mirrors.huaweicloud.com/nginx/nginx-${NGINX_VERSION}.tar.gz"
+    
+    download_with_retry "pcre-${PCRE_VERSION}.tar.gz" \
+        "https://sourceforge.net/projects/pcre/files/pcre/${PCRE_VERSION}/pcre-${PCRE_VERSION}.tar.gz/download" \
+        "https://mirrors.oneinstack.com/oneinstack/src/pcre-${PCRE_VERSION}.tar.gz"
+    
+    download_with_retry "openssl-${OPENSSL_VERSION}.tar.gz" \
+        "https://www.openssl.org/source/openssl-${OPENSSL_VERSION}.tar.gz" \
+        "https://mirrors.oneinstack.com/oneinstack/src/openssl-${OPENSSL_VERSION}.tar.gz"
+    
+    download_with_retry "zlib-${ZLIB_VERSION}.tar.gz" \
+        "https://www.zlib.net/zlib-${ZLIB_VERSION}.tar.gz" \
+        "https://mirrors.oneinstack.com/oneinstack/src/zlib-${ZLIB_VERSION}.tar.gz"
+}
 
-# 调用安装依赖函数
-install_dependencies
+# 解压源码
+extract_sources() {
+    log "INFO" "解压源码包..."
+    
+    cd "$SRC_DIR" || error_exit "无法进入源码目录"
+    
+    tar -zxf "nginx-${NGINX_VERSION}.tar.gz" || error_exit "解压Nginx源码失败"
+    tar -zxf "pcre-${PCRE_VERSION}.tar.gz" || error_exit "解压PCRE源码失败"
+    tar -zxf "openssl-${OPENSSL_VERSION}.tar.gz" || error_exit "解压OpenSSL源码失败"
+    tar -zxf "zlib-${ZLIB_VERSION}.tar.gz" || error_exit "解压zlib源码失败"
+}
 
-# 创建 nginx 用户和组
-echo "正在创建 nginx 用户和组..."
-id -u nginx &>/dev/null || useradd -r -s /sbin/nologin nginx
+# 编译安装Nginx
+compile_nginx() {
+    log "INFO" "开始编译Nginx..."
+    
+    cd "${SRC_DIR}/nginx-${NGINX_VERSION}" || error_exit "无法进入Nginx源码目录"
+    
+    # 关闭debug模式
+    sed -i 's@CFLAGS="$CFLAGS -g"@#CFLAGS="$CFLAGS -g"@' auto/cc/gcc
+    
+    # 配置编译选项
+    log "INFO" "配置编译参数..."
+    ./configure \
+        --prefix="$NGINX_INSTALL_DIR" \
+        --user="$RUN_USER" \
+        --group="$RUN_GROUP" \
+        --with-http_ssl_module \
+        --with-http_v2_module \
+        --with-http_realip_module \
+        --with-http_stub_status_module \
+        --with-http_gzip_static_module \
+        --with-http_sub_module \
+        --with-http_flv_module \
+        --with-http_mp4_module \
+        --with-http_gunzip_module \
+        --with-http_secure_link_module \
+        --with-http_auth_request_module \
+        --with-stream \
+        --with-stream_ssl_module \
+        --with-stream_ssl_preread_module \
+        --with-stream_realip_module \
+        --with-pcre="../pcre-${PCRE_VERSION}" \
+        --with-pcre-jit \
+        --with-openssl="../openssl-${OPENSSL_VERSION}" \
+        --with-zlib="../zlib-${ZLIB_VERSION}" \
+        --with-file-aio \
+        --with-http_addition_module \
+        --with-http_random_index_module \
+        || error_exit "配置编译参数失败"
+    
+    log "INFO" "开始编译（使用 $THREAD 个线程）..."
+    make -j "$THREAD" || error_exit "编译失败"
+    
+    log "INFO" "安装Nginx..."
+    make install || error_exit "安装失败"
+}
 
-# 下载 Nginx 源码
-NGINX_VERSION="1.24.0"
-PCRE_VERSION="8.45"
-OPENSSL_VERSION="1.1.1w"
-echo "正在从国内源下载 Nginx $NGINX_VERSION 源码..."
-wget https://mirrors.huaweicloud.com/nginx/nginx-$NGINX_VERSION.tar.gz
-tar -zxvf ./nginx-$NGINX_VERSION.tar.gz
-cd nginx-$NGINX_VERSION
-# 下载 PCRE 源码
-echo "正在下载 PCRE 源码..."
-wget https://mirrors.oneinstack.com/oneinstack/src/pcre-$PCRE_VERSION.tar.gz
-tar -zxvf ./pcre-$PCRE_VERSION.tar.gz
-# 下载 openssl 源码
-echo "正在下载 OpenSSL 源码..."
-wget https://mirrors.oneinstack.com/oneinstack/src/openssl-1.1.1w.tar.gz
-tar -zxvf ./openssl-1.1.1w.tar.gz
+# 验证安装
+verify_installation() {
+    if [[ ! -f "$NGINX_INSTALL_DIR/sbin/nginx" ]]; then
+        error_exit "Nginx可执行文件不存在"
+    fi
+    
+    if [[ ! -f "$NGINX_INSTALL_DIR/conf/nginx.conf" ]]; then
+        error_exit "Nginx配置文件不存在"
+    fi
+    
+    log "INFO" "Nginx安装验证成功"
+}
 
-# close debug
-sed -i 's@CFLAGS="$CFLAGS -g"@#CFLAGS="$CFLAGS -g"@' auto/cc/gcc
-
-# 编译和安装 Nginx
-echo "正在编译 Nginx..."
-./configure --prefix=${nginx_install_dir} --user=${run_user} --group=${run_group} --with-http_stub_status_module --with-http_sub_module --with-http_v2_module --with-http_ssl_module --with-stream --with-stream_ssl_preread_module --with-stream_ssl_module --with-http_gzip_static_module --with-http_realip_module --with-http_flv_module --with-http_mp4_module --with-openssl=./openssl-${OPENSSL_VERSION} --with-pcre=./pcre-${PCRE_VERSION} --with-pcre-jit 
-make -j ${THREAD} && make install
-
-if [ -e "${nginx_install_dir}/conf/nginx.conf" ]; then
-	popd > /dev/null
-    #rm -rf pcre-${PCRE_VERSION}* openssl-${OPENSSL_VERSION}* nginx-${NGINX_VERSION}* ${nginx_install_dir}*
-    echo "${CSUCCESS}Nginx installed successfully! ${CEND}"
-else
-    rm -rf pcre-${PCRE_VERSION}* openssl-${OPENSSL_VERSION}* nginx-${NGINX_VERSION}* ${nginx_install_dir}*
-    echo "${CFAILURE}Nginx install failed, Please Contact the author! ${CEND}"
-    kill -9 $$; exit 1;
-fi
-
-# 创建 Nginx 启动文件
-cat > /etc/systemd/system/nginx.service <<EOF
+# 创建systemd服务文件
+create_systemd_service() {
+    log "INFO" "创建systemd服务文件..."
+    
+    cat > /etc/systemd/system/nginx.service << 'EOF'
 [Unit]
-Description=Nginx - high performance web server
+Description=The nginx HTTP and reverse proxy server
 Documentation=http://nginx.org/en/docs/
-After=network.target
+After=network-online.target remote-fs.target nss-lookup.target
+Wants=network-online.target
 
 [Service]
 Type=forking
 PIDFile=/var/run/nginx.pid
-ExecStartPost=/bin/sleep 0.1
-ExecStartPre=/usr/local/nginx/sbin/nginx -t -c /usr/local/nginx/conf/nginx.conf
-ExecStart=/usr/local/nginx/sbin/nginx -c /usr/local/nginx/conf/nginx.conf
+ExecStartPre=/usr/bin/rm -f /var/run/nginx.pid
+ExecStartPre=/usr/local/nginx/sbin/nginx -t
+ExecStart=/usr/local/nginx/sbin/nginx
 ExecReload=/bin/kill -s HUP $MAINPID
-ExecStop=/bin/kill -s QUIT $MAINPID
-TimeoutStartSec=120
+KillSignal=SIGQUIT
+TimeoutStopSec=5
+KillMode=mixed
+PrivateTmp=true
+
+# Limits
 LimitNOFILE=1000000
 LimitNPROC=1000000
 LimitCORE=1000000
 
 [Install]
 WantedBy=multi-user.target
-
 EOF
 
-# 创建 Nginx Proxy 配置文件
-  cat > ${nginx_install_dir}/conf/proxy.conf << EOF
-proxy_connect_timeout 300s;
-proxy_send_timeout 900;
-proxy_read_timeout 900;
-proxy_buffer_size 32k;
-proxy_buffers 4 64k;
-proxy_busy_buffers_size 128k;
-proxy_redirect off;
-proxy_hide_header Vary;
-proxy_set_header Accept-Encoding '';
-proxy_set_header Referer \$http_referer;
-proxy_set_header Cookie \$http_cookie;
-proxy_set_header Host \$host;
-proxy_set_header X-Real-IP \$remote_addr;
-proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-proxy_set_header X-Forwarded-Proto \$scheme;
-EOF
+    systemctl daemon-reload || error_exit "重新加载systemd失败"
+}
 
-# 配置默认的 nginx.conf
-echo "正在创建 nginx 配置文件..."
-cat > ${nginx_install_dir}/conf/nginx.conf << 'EOF'
-user www www;
+# 创建Nginx配置文件
+create_nginx_config() {
+    log "INFO" "创建Nginx配置文件..."
+    
+    # 备份原配置文件
+    if [[ -f "$NGINX_INSTALL_DIR/conf/nginx.conf" ]]; then
+        cp "$NGINX_INSTALL_DIR/conf/nginx.conf" "$NGINX_INSTALL_DIR/conf/nginx.conf.bak"
+    fi
+    
+    # 创建优化的nginx.conf
+    cat > "$NGINX_INSTALL_DIR/conf/nginx.conf" << EOF
+# Nginx主配置文件 - 优化版本
+user $RUN_USER $RUN_GROUP;
 worker_processes auto;
+worker_cpu_affinity auto;
 
-error_log /data/wwwlogs/error_nginx.log crit;
+error_log $WWW_LOGS_DIR/error_nginx.log warn;
 pid /var/run/nginx.pid;
-worker_rlimit_nofile 51200;
+worker_rlimit_nofile 65535;
 
 events {
-  use epoll;
-  worker_connections 51200;
-  multi_accept on;
+    use epoll;
+    worker_connections 65535;
+    multi_accept on;
+    accept_mutex off;
 }
 
 http {
-  include mime.types;
-  default_type application/octet-stream;
-  server_names_hash_bucket_size 128;
-  client_header_buffer_size 32k;
-  large_client_header_buffers 4 32k;
-  client_max_body_size 1024m;
-  client_body_buffer_size 10m;
-  sendfile on;
-  tcp_nopush on;
-  keepalive_timeout 120;
-  server_tokens off;
-  tcp_nodelay on;
-
-  fastcgi_connect_timeout 300;
-  fastcgi_send_timeout 300;
-  fastcgi_read_timeout 300;
-  fastcgi_buffer_size 64k;
-  fastcgi_buffers 4 64k;
-  fastcgi_busy_buffers_size 128k;
-  fastcgi_temp_file_write_size 128k;
-  fastcgi_intercept_errors on;
-
-  #Gzip Compression
-  gzip on;
-  gzip_buffers 16 8k;
-  gzip_comp_level 6;
-  gzip_http_version 1.1;
-  gzip_min_length 256;
-  gzip_proxied any;
-  gzip_vary on;
-  gzip_types
-    text/xml application/xml application/atom+xml application/rss+xml application/xhtml+xml image/svg+xml
-    text/javascript application/javascript application/x-javascript
-    text/x-json application/json application/x-web-app-manifest+json
-    text/css text/plain text/x-component
-    font/opentype application/x-font-ttf application/vnd.ms-fontobject
-    image/x-icon;
-  gzip_disable "MSIE [1-6]\.(?!.*SV1)";
-
-  ##Brotli Compression
-  #brotli on;
-  #brotli_comp_level 6;
-  #brotli_types text/plain text/css application/json application/x-javascript text/xml application/xml application/xml+rss text/javascript application/javascript image/svg+xml;
-
-  ##If you have a lot of static files to serve through Nginx then caching of the files' metadata (not the actual files' contents) can save some latency.
-  #open_file_cache max=1000 inactive=20s;
-  #open_file_cache_valid 30s;
-  #open_file_cache_min_uses 2;
-  #open_file_cache_errors on;
-
-  log_format json escape=json '{"@timestamp":"$time_iso8601",'
-                      '"server_addr":"$server_addr",'
-                      '"remote_addr":"$remote_addr",'
-                      '"scheme":"$scheme",'
-                      '"request_method":"$request_method",'
-                      '"request_uri": "$request_uri",'
-                      '"request_length": "$request_length",'
-                      '"uri": "$uri", '
-                      '"request_time":$request_time,'
-                      '"body_bytes_sent":$body_bytes_sent,'
-                      '"bytes_sent":$bytes_sent,'
-                      '"status":"$status",'
-                      '"upstream_time":"$upstream_response_time",'
-                      '"upstream_host":"$upstream_addr",'
-                      '"upstream_status":"$upstream_status",'
-                      '"host":"$host",'
-                      '"http_referer":"$http_referer",'
-                      '"http_user_agent":"$http_user_agent"'
-                      '}';
-
-######################## default ############################
-  server {
-    listen 80;
-    server_name _;
-    access_log /data/wwwlogs/access_nginx.log combined;
-    root /data/wwwroot/default;
-    index index.html index.htm index.php;
-    #error_page 404 /404.html;
-    #error_page 502 /502.html;
-    location /nginx_status {
-      stub_status on;
-      access_log off;
-      allow 127.0.0.1;
-      deny all;
+    include       mime.types;
+    default_type  application/octet-stream;
+    
+    # 服务器标识
+    server_tokens off;
+    server_names_hash_bucket_size 128;
+    server_names_hash_max_size 512;
+    
+    # 客户端设置
+    client_header_buffer_size 32k;
+    large_client_header_buffers 4 32k;
+    client_max_body_size 50m;
+    client_body_buffer_size 128k;
+    client_header_timeout 30s;
+    client_body_timeout 30s;
+    
+    # 发送设置
+    sendfile on;
+    tcp_nopush on;
+    tcp_nodelay on;
+    keepalive_timeout 65;
+    keepalive_requests 100;
+    
+    # FastCGI设置
+    fastcgi_connect_timeout 300;
+    fastcgi_send_timeout 300;
+    fastcgi_read_timeout 300;
+    fastcgi_buffer_size 64k;
+    fastcgi_buffers 4 64k;
+    fastcgi_busy_buffers_size 128k;
+    fastcgi_temp_file_write_size 256k;
+    fastcgi_intercept_errors on;
+    
+    # Gzip压缩
+    gzip on;
+    gzip_vary on;
+    gzip_min_length 1k;
+    gzip_buffers 4 16k;
+    gzip_comp_level 6;
+    gzip_types
+        text/plain
+        text/css
+        text/xml
+        text/javascript
+        application/json
+        application/javascript
+        application/xml+rss
+        application/atom+xml
+        image/svg+xml;
+    gzip_disable "MSIE [1-6]\.";
+    
+    # 安全头设置
+    add_header X-Frame-Options SAMEORIGIN always;
+    add_header X-Content-Type-Options nosniff always;
+    add_header X-XSS-Protection "1; mode=block" always;
+    
+    # 日志格式
+    log_format main '\$remote_addr - \$remote_user [\$time_local] "\$request" '
+                   '\$status \$body_bytes_sent "\$http_referer" '
+                   '"\$http_user_agent" "\$http_x_forwarded_for"';
+                   
+    log_format json escape=json '{'
+                   '"@timestamp":"\$time_iso8601",'
+                   '"remote_addr":"\$remote_addr",'
+                   '"request_method":"\$request_method",'
+                   '"request_uri":"\$request_uri",'
+                   '"status":\$status,'
+                   '"body_bytes_sent":\$body_bytes_sent,'
+                   '"request_time":\$request_time,'
+                   '"upstream_response_time":"\$upstream_response_time",'
+                   '"http_referer":"\$http_referer",'
+                   '"http_user_agent":"\$http_user_agent"'
+                   '}';
+    
+    access_log $WWW_LOGS_DIR/access_nginx.log main;
+    
+    # 默认服务器配置
+    server {
+        listen 80 default_server;
+        listen [::]:80 default_server;
+        server_name _;
+        root $WWW_ROOT_DIR/default;
+        index index.html index.htm index.php;
+        
+        # 安全设置
+        location ~ /\. {
+            deny all;
+            access_log off;
+            log_not_found off;
+        }
+        
+        location ~ ^/(\.user.ini|\.ht|\.git|\.svn|\.project|LICENSE|README.md) {
+            deny all;
+            access_log off;
+            log_not_found off;
+        }
+        
+        # 状态页面
+        location /nginx_status {
+            stub_status on;
+            access_log off;
+            allow 127.0.0.1;
+            allow ::1;
+            deny all;
+        }
+        
+        # PHP处理
+        location ~ \.php$ {
+            try_files \$uri =404;
+            fastcgi_pass unix:/run/php/php-fpm.sock;
+            fastcgi_index index.php;
+            fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+            include fastcgi_params;
+        }
+        
+        # 静态资源缓存
+        location ~* \.(jpg|jpeg|gif|png|css|js|ico|xml)$ {
+            expires 30d;
+            add_header Cache-Control "public, immutable";
+            access_log off;
+        }
+        
+        # Let's Encrypt验证
+        location /.well-known/acme-challenge/ {
+            root $WWW_ROOT_DIR/default;
+            allow all;
+        }
+        
+        # 错误页面
+        error_page 404 /404.html;
+        error_page 500 502 503 504 /50x.html;
+        location = /50x.html {
+            root $WWW_ROOT_DIR/default;
+        }
     }
-    location ~ [^/]\.php(/|$) {
-      #fastcgi_pass remote_php_ip:9000;
-      fastcgi_pass unix:/dev/shm/php-cgi.sock;
-      fastcgi_index index.php;
-      include fastcgi.conf;
-    }
-    location ~ .*\.(gif|jpg|jpeg|png|bmp|swf|flv|mp4|ico)$ {
-      expires 30d;
-      access_log off;
-    }
-    location ~ .*\.(js|css)?$ {
-      expires 7d;
-      access_log off;
-    }
-    location ~ ^/(\.user.ini|\.ht|\.git|\.svn|\.project|LICENSE|README.md) {
-      deny all;
-    }
-    location /.well-known {
-      allow all;
-    }
-  }
-########################## vhost #############################
-  include vhost/*.conf;
+    
+    # 包含虚拟主机配置
+    include $NGINX_INSTALL_DIR/conf/vhost/*.conf;
 }
 EOF
+}
 
-# 启动 Nginx 服务
-echo "启动 Nginx 服务..."
-nginx
+# 创建代理配置文件
+create_proxy_config() {
+    log "INFO" "创建代理配置文件..."
+    
+    cat > "$NGINX_INSTALL_DIR/conf/proxy.conf" << 'EOF'
+# 代理配置文件
+proxy_connect_timeout 300s;
+proxy_send_timeout 900s;
+proxy_read_timeout 900s;
+proxy_buffer_size 32k;
+proxy_buffers 4 64k;
+proxy_busy_buffers_size 128k;
+proxy_temp_file_write_size 128k;
+proxy_redirect off;
+proxy_hide_header Vary;
+proxy_set_header Accept-Encoding '';
+proxy_set_header Referer $http_referer;
+proxy_set_header Cookie $http_cookie;
+proxy_set_header Host $host;
+proxy_set_header X-Real-IP $remote_addr;
+proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+proxy_set_header X-Forwarded-Proto $scheme;
+proxy_set_header X-Forwarded-Host $host;
+proxy_set_header X-Forwarded-Port $server_port;
 
-# 配置 nginx 环境变量
-echo "正在将 nginx 添加到环境变量中..."
-ln -sf /usr/local/nginx/sbin/nginx /usr/bin/nginx
+# 缓存设置
+proxy_cache_valid 200 302 10m;
+proxy_cache_valid 301 1h;
+proxy_cache_valid any 1m;
+EOF
+}
 
-# 输出安装信息
-echo "Nginx $NGINX_VERSION 安装完成！"
-echo "默认配置文件位于 /usr/local/nginx/conf/nginx.conf"
+# 创建默认网站
+create_default_site() {
+    log "INFO" "创建默认网站..."
+    
+    cat > "$WWW_ROOT_DIR/default/index.html" << 'EOF'
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nginx 安装成功</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background: #f5f5f5; }
+        .container { max-width: 800px; margin: 0 auto; background: white; padding: 40px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        h1 { color: #2c3e50; text-align: center; }
+        .success { color: #27ae60; text-align: center; font-size: 18px; }
+        .info { background: #ecf0f1; padding: 20px; border-radius: 5px; margin: 20px 0; }
+        .version { text-align: center; color: #7f8c8d; margin-top: 20px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎉 Nginx 安装成功！</h1>
+        <div class="success">
+            恭喜！您的 Nginx 服务器已成功安装并运行。
+        </div>
+        <div class="info">
+            <h3>服务器信息：</h3>
+            <ul>
+                <li>Nginx 版本：${NGINX_VERSION}</li>
+                <li>安装路径：/usr/local/nginx</li>
+                <li>配置文件：/usr/local/nginx/conf/nginx.conf</li>
+                <li>网站根目录：/data/wwwroot/default</li>
+                <li>日志目录：/data/wwwlogs</li>
+            </ul>
+        </div>
+        <div class="version">
+            OneInStack Panel - Nginx Installation Script v2.0
+        </div>
+    </div>
+</body>
+</html>
+EOF
+    
+    # 设置权限
+    chown -R "$RUN_USER:$RUN_GROUP" "$WWW_ROOT_DIR"
+    chown -R "$RUN_USER:$RUN_GROUP" "$WWW_LOGS_DIR"
+}
+
+# 设置环境变量
+setup_environment() {
+    log "INFO" "设置环境变量..."
+    
+    # 创建软链接
+    ln -sf "$NGINX_INSTALL_DIR/sbin/nginx" /usr/local/bin/nginx
+    ln -sf "$NGINX_INSTALL_DIR/sbin/nginx" /usr/bin/nginx
+}
+
+# 启动服务
+start_services() {
+    log "INFO" "启动Nginx服务..."
+    
+    # 测试配置文件
+    if ! "$NGINX_INSTALL_DIR/sbin/nginx" -t; then
+        error_exit "Nginx配置文件测试失败"
+    fi
+    
+    # 启用并启动服务
+    systemctl enable nginx || error_exit "启用Nginx服务失败"
+    systemctl start nginx || error_exit "启动Nginx服务失败"
+    
+    # 检查服务状态
+    if systemctl is-active --quiet nginx; then
+        log "INFO" "Nginx服务启动成功"
+    else
+        error_exit "Nginx服务启动失败"
+    fi
+}
+
+# 清理临时文件
+cleanup() {
+    log "INFO" "清理临时文件..."
+    
+    cd /
+    rm -rf "${SRC_DIR}/nginx-${NGINX_VERSION}"
+    rm -rf "${SRC_DIR}/pcre-${PCRE_VERSION}"
+    rm -rf "${SRC_DIR}/openssl-${OPENSSL_VERSION}"
+    rm -rf "${SRC_DIR}/zlib-${ZLIB_VERSION}"
+    rm -f "${SRC_DIR}/"*.tar.gz
+}
+
+# 显示安装信息
+show_installation_info() {
+    local nginx_version=$("$NGINX_INSTALL_DIR/sbin/nginx" -v 2>&1 | grep -o '[0-9]\+\.[0-9]\+\.[0-9]\+')
+    
+    cat << EOF
+
+${GREEN}=============================================================================
+🎉 Nginx ${nginx_version} 安装完成！
+=============================================================================${NC}
+
+${GREEN}📁 安装路径信息：${NC}
+   • Nginx 安装目录: ${NGINX_INSTALL_DIR}
+   • 网站根目录:     ${WWW_ROOT_DIR}
+   • 日志目录:       ${WWW_LOGS_DIR}
+   • 配置文件:       ${NGINX_INSTALL_DIR}/conf/nginx.conf
+
+${GREEN}🔧 服务管理命令：${NC}
+   • 启动服务:       systemctl start nginx
+   • 停止服务:       systemctl stop nginx
+   • 重启服务:       systemctl restart nginx
+   • 重载配置:       systemctl reload nginx
+   • 查看状态:       systemctl status nginx
+   • 测试配置:       nginx -t
+
+${GREEN}🌐 访问信息：${NC}
+   • 本地访问:       http://localhost
+   • 状态页面:       http://localhost/nginx_status
+
+${YELLOW}⚠️  重要提示：${NC}
+   • 请根据实际需求调整 ${NGINX_INSTALL_DIR}/conf/nginx.conf
+   • 虚拟主机配置请放在 ${NGINX_INSTALL_DIR}/conf/vhost/ 目录
+   • 建议配置 SSL 证书以启用 HTTPS
+
+${GREEN}安装完成！${NC}
+
+EOF
+}
+
+# 主函数
+main() {
+    echo -e "${GREEN}"
+    cat << 'EOF'
+=============================================================================
+                    Nginx 安装脚本 v2.0
+                    支持主流Linux发行版
+=============================================================================
+EOF
+    echo -e "${NC}"
+    
+    log "INFO" "开始安装 Nginx ${NGINX_VERSION}..."
+    
+    # 执行安装步骤
+    check_root
+    detect_os
+    create_directories
+    create_user_group
+    install_dependencies
+    download_sources
+    extract_sources
+    compile_nginx
+    verify_installation
+    create_systemd_service
+    create_nginx_config
+    create_proxy_config
+    create_default_site
+    setup_environment
+    start_services
+    cleanup
+    show_installation_info
+    
+    log "INFO" "Nginx 安装完成！"
+}
+
+# 执行主函数
+main "$@"
 
 `
 

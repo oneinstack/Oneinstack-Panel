@@ -1,0 +1,59 @@
+#!/bin/bash
+
+#=============================================================================
+# {{SOFTWARE_NAME}} 安装脚本
+# 版本: {{SOFTWARE_VERSION}}
+# 描述: 自动安装 {{SOFTWARE_NAME}}
+#=============================================================================
+
+set -euo pipefail  # 严格模式：遇到错误立即退出
+
+# 颜色定义
+readonly RED='\033[0;31m'
+readonly GREEN='\033[0;32m'
+readonly YELLOW='\033[1;33m'
+readonly NC='\033[0m'
+
+# 配置变量
+readonly SOFTWARE_VERSION="{{SOFTWARE_VERSION}}"
+readonly INSTALL_DIR="{{INSTALL_DIR}}"
+
+# 日志函数
+log() {
+    local level=$1
+    shift
+    local message="$*"
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    
+    case $level in
+        "INFO")  echo -e "${GREEN}[INFO]${NC} ${timestamp} - $message" ;;
+        "WARN")  echo -e "${YELLOW}[WARN]${NC} ${timestamp} - $message" ;;
+        "ERROR") echo -e "${RED}[ERROR]${NC} ${timestamp} - $message" ;;
+    esac
+}
+
+# 错误处理函数
+error_exit() {
+    log "ERROR" "$1"
+    exit 1
+}
+
+# 检查root权限
+check_root() {
+    if [[ $EUID -ne 0 ]]; then
+        error_exit "请使用root权限运行此脚本"
+    fi
+}
+
+# 主函数
+main() {
+    log "INFO" "开始安装 {{SOFTWARE_NAME}} ${SOFTWARE_VERSION}..."
+    
+    # 执行安装步骤
+    check_root
+    
+    log "INFO" "{{SOFTWARE_NAME}} 安装完成！"
+}
+
+# 执行主函数
+main "$@"
