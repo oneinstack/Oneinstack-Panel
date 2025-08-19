@@ -50,6 +50,19 @@ build:
 	CGO_ENABLED=$(CGO_ENABLED) GOOS=$(GOOS) GOARCH=$(GOARCH) \
 		go build -ldflags="$(LDFLAGS)" -o $(BUILD_DIR)/$(APP_NAME)-$(GOOS)-$(GOARCH) ./cmd/main.go
 
+.PHONY: build-ui
+build-ui:
+	@echo "Building UI with embed package..."
+	@if [ ! -d "dist" ]; then \
+		echo "Creating dist directory..."; \
+		mkdir -p dist; \
+	fi
+	@if [ ! -f "dist/index.html" ]; then \
+		echo "Creating sample index.html..."; \
+		echo '<!DOCTYPE html><html><head><title>Oneinstack Panel</title></head><body><h1>Welcome to Oneinstack Panel</h1></body></html>' > dist/index.html; \
+	fi
+	@echo "UI build completed! Files in dist/ directory will be embedded during compilation."
+
 .PHONY: build-all
 build-all:
 	@echo "Building for all platforms..."

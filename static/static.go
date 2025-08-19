@@ -1,63 +1,61 @@
-package middleware
+package static
 
 import (
+	"embed"
+	"io/fs"
 	"net/http"
-	"oneinstack/utils/httpex"
 	"path/filepath"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 )
 
-// 声明外部变量，由main.go中的embed提供
-var (
-	GetFile    func(path string) ([]byte, error)
-	FileExists func(path string) bool
-)
+//go:embed dist/*
+var distFS embed.FS
 
-func MidUiHandle(c *gin.Context) {
-	c.Next()
-	if c.Writer.Status() != http.StatusNotFound || c.Writer.Size() > 0 {
-		return
+// StaticFS 返回嵌入的静态文件系统
+func StaticFS() http.FileSystem {
+	// 获取dist子目录的文件系统
+	dist, err := fs.Sub(distFS, "dist")
+	if err != nil {
+		panic(err)
 	}
+	return http.FS(dist)
+}
 
-	path := c.Request.URL.Path
-	if path == "/" {
-		path = "/index.html"
-	}
-
-	// 移除开头的斜杠
-	filePath := strings.TrimPrefix(path, "/")
-	if filePath == "" {
-		filePath = "index.html"
+// StaticHandler 处理静态文件请求
+func StaticHandler(c *gin.Context) {
+	path := c.Param("filepath")
+	if path == "" {
+		path = "index.html"
 	}
 
 	// 清理路径
-	filePath = filepath.Clean(filePath)
-	if strings.HasPrefix(filePath, "..") {
-		httpex.ResMsgUrl(c, "路径错误", "/")
+	path = filepath.Clean(path)
+	if strings.HasPrefix(path, "..") {
+		c.Status(http.StatusForbidden)
 		return
 	}
 
 	// 设置缓存头
-	setCacheHeaders(c, filePath)
+	setCacheHeaders(c, path)
 
 	// 尝试从嵌入的文件系统读取文件
-	data, err := GetFile(filePath)
+	data, err := fs.ReadFile(distFS, "dist/"+path)
 	if err != nil {
 		// 如果文件不存在，返回index.html（SPA路由）
-		data, err = GetFile("index.html")
+		data, err = fs.ReadFile(distFS, "dist/index.html")
 		if err != nil {
-			httpex.ResMsgUrl(c, "未找到内容,跳转中...", "/")
+			c.Status(http.StatusNotFound)
 			return
 		}
 	}
 
 	// 设置Content-Type
-	setContentType(c, filePath)
+	setContentType(c, path)
 
 	// 返回文件内容
-	c.Data(http.StatusOK, getContentType(filePath), data)
+	c.Data(http.StatusOK, getContentType(path), data)
 }
 
 // setCacheHeaders 设置缓存头
@@ -153,4 +151,28 @@ func getContentType(path string) string {
 	default:
 		return "application/octet-stream"
 	}
+}
+
+// GetFile 获取嵌入的文件内容
+func GetFile(path string) ([]byte, error) {
+	file, err := distFS.Open("dist/" + path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	stat, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+
+	data := make([]byte, stat.Size())
+	_, err = file.Read(data)
+	return data, err
+}
+
+// FileExists 检查文件是否存在
+func FileExists(path string) bool {
+	_, err := distFS.Open("dist/" + path)
+	return err == nil
 }

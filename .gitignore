@@ -39,3 +39,4 @@ version
 .DS_Store
 
 mysql*
+/docs/

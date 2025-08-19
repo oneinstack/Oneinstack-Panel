@@ -36,6 +36,6 @@ func initializeDefaultUser() {
 		fmt.Printf("\n🎉 首次启动检测到无用户，已自动创建管理员账户：\n")
 		fmt.Printf("📝 用户名: %s\n", username)
 		fmt.Printf("🔐 密码: %s\n", password)
-		fmt.Printf("⚠️  请妥善保存上述信息！\n\n")
+		fmt.Printf("⚠️ 请妥善保存上述信息！\n\n")
 	}
 }

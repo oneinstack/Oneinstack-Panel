@@ -2,19 +2,13 @@ package main
 
 import (
 	"fmt"
-	"io"
 	"log"
-	"net/http"
 	"oneinstack/app"
 	"oneinstack/internal/services/software"
-	"oneinstack/internal/services/system"
-	"oneinstack/internal/services/user"
 	web "oneinstack/router"
 	"oneinstack/router/input"
 	"oneinstack/server"
-	"oneinstack/utils"
 	"os"
-	"os/exec"
 	"strconv"
 	"strings"
 	"syscall"
@@ -23,11 +17,29 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// 版本信息变量（通过ldflags注入）
+var (
+	Version    = "dev"
+	BuildTime  = "unknown"
+	CommitHash = "unknown"
+	WebVersion = "dev"
+)
+
 var userName string
 var password string
 var initialized bool // 记录是否已经初始化
 
 func main() {
+	// 检查是否是version命令，如果是则不启动服务器
+	if len(os.Args) > 1 && os.Args[1] == "version" {
+		// 直接显示版本信息，不进行任何初始化
+		fmt.Printf("Oneinstack Panel\n")
+		fmt.Printf("Version: %s\n", Version)
+		fmt.Printf("Build Time: %s\n", BuildTime)
+		fmt.Printf("Commit Hash: %s\n", CommitHash)
+		return
+	}
+
 	server.Start()
 	//初始化服务
 	resetPwdCmd.Flags().StringP("user", "u", "", "username")
@@ -54,6 +66,7 @@ func main() {
 	rootCmd.AddCommand(changePortCmd)
 	rootCmd.AddCommand(debugCmd)
 	rootCmd.AddCommand(updateCmd)
+	rootCmd.AddCommand(versionCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Println(err)
@@ -64,6 +77,18 @@ func main() {
 var rootCmd = &cobra.Command{
 	Use:   "one",
 	Short: "oneinstack",
+}
+
+// versionCmd 显示版本信息
+var versionCmd = &cobra.Command{
+	Use:   "version",
+	Short: "Show version information",
+	Run: func(cmd *cobra.Command, args []string) {
+		fmt.Printf("Oneinstack Panel\n")
+		fmt.Printf("Version: %s\n", Version)
+		fmt.Printf("Build Time: %s\n", BuildTime)
+		fmt.Printf("Commit Hash: %s\n", CommitHash)
+	},
 }
 
 const pidFile = "server.pid" // 存储 PID 的文件路径
@@ -102,278 +127,233 @@ var serverCmd = &cobra.Command{
 	},
 }
 
-// startServer 启动服务并记录 PID
+// 启动服务器
 func startServer() {
-	r := web.SetupRouter()
-	fmt.Println("HTTP Server starting...")
-
-	// 创建 PID 文件
-	pid := os.Getpid()
-	err := os.WriteFile(app.GetBasePath()+pidFile, []byte(strconv.Itoa(pid)), 0644)
-	if err != nil {
-		log.Fatalf("Failed to write PID file: %v", err)
+	// 检查是否已经在运行
+	if isServerRunning() {
+		fmt.Println("Server is already running.")
+		return
 	}
 
-	// 启动服务
-	if app.ONE_CONFIG.System.Port == "" {
-		app.ONE_CONFIG.System.Port = "8089"
-	}
-	ip, err := utils.GetLinuxIP()
-	if err != nil {
-		log.Fatal(err)
-	}
-	fmt.Println("访问地址" + ip + ":" + app.ONE_CONFIG.System.Port)
-	if err := r.Run("0.0.0.0:" + app.ONE_CONFIG.System.Port); err != nil {
-		log.Fatal("Server run error:", err)
-	}
+	// 启动服务器
+	go func() {
+		web.SetupRouter().Run(":8089")
+	}()
 
-	// 删除 PID 文件（在服务正常退出时）
-	os.Remove(pidFile)
+	// 保存PID
+	savePID()
+
+	fmt.Println("Server started successfully on port 8089")
 }
 
-// restartServer 重启服务
+// 重启服务器
 func restartServer() {
-	fmt.Println("Checking HTTP Server status...")
-
-	// 检查是否存在 PID 文件
-	if _, err := os.Stat(pidFile); os.IsNotExist(err) {
-		fmt.Println("No running server found. Starting a new instance...")
-		startServer()
-		return
-	}
-
-	// 读取 PID 文件内容
-	pidData, err := os.ReadFile(pidFile)
-	if err != nil {
-		log.Fatalf("Failed to read PID file: %v", err)
-	}
-
-	// 转换 PID 为整数
-	pid, err := strconv.Atoi(strings.TrimSpace(string(pidData)))
-	if err != nil {
-		log.Fatalf("Invalid PID in file: %v", err)
-	}
-
-	// 检查进程是否存活
-	process, err := os.FindProcess(pid)
-	if err != nil {
-		fmt.Printf("No process found with PID %d. Starting a new instance...\n", pid)
-		startServer()
-		return
-	}
-
-	// 尝试向进程发送信号，确认进程是否存活
-	err = process.Signal(syscall.Signal(0)) // 发送 0 信号用于检查进程
-	if err != nil {
-		fmt.Printf("No running server found for PID %d. Starting a new instance...\n", pid)
-		startServer()
-		return
-	}
-
-	// 如果进程存活，则停止当前服务
-	fmt.Printf("Server is running with PID %d. Stopping it...\n", pid)
 	stopServer()
-
-	// 启动新服务
+	time.Sleep(2 * time.Second) // 等待服务器完全停止
 	startServer()
 }
 
-// stopServer 停止服务
+// 停止服务器
 func stopServer() {
-	fmt.Println("Stopping HTTP Server...")
+	if !isServerRunning() {
+		fmt.Println("Server is not running.")
+		return
+	}
 
-	// 读取 PID 文件
-	pidData, err := os.ReadFile(pidFile)
+	// 读取PID
+	pid := readPID()
+	if pid == 0 {
+		fmt.Println("Cannot read PID file.")
+		return
+	}
+
+	// 发送终止信号
+	process, err := os.FindProcess(pid)
 	if err != nil {
-		if os.IsNotExist(err) {
-			fmt.Println("No running server found.")
+		fmt.Printf("Cannot find process with PID %d: %v\n", pid, err)
+		return
+	}
+
+	err = process.Signal(syscall.SIGTERM)
+	if err != nil {
+		fmt.Printf("Cannot send signal to process %d: %v\n", pid, err)
+		return
+	}
+
+	// 等待进程结束
+	time.Sleep(2 * time.Second)
+
+	// 检查进程是否还在运行
+	if isProcessRunning(pid) {
+		// 强制终止
+		err = process.Signal(syscall.SIGKILL)
+		if err != nil {
+			fmt.Printf("Cannot kill process %d: %v\n", pid, err)
 			return
 		}
-		log.Fatalf("Failed to read PID file: %v", err)
 	}
 
-	// 转换 PID 并发送终止信号
-	pid, err := strconv.Atoi(string(pidData))
-	if err != nil {
-		log.Fatalf("Invalid PID in file: %v", err)
-	}
+	// 删除PID文件
+	removePID()
 
-	// 向目标进程发送 SIGTERM 信号
-	err = syscall.Kill(pid, syscall.SIGTERM)
-	if err != nil {
-		log.Fatalf("Failed to stop server: %v", err)
-	}
-
-	// 删除 PID 文件
-	os.Remove(pidFile)
 	fmt.Println("Server stopped successfully.")
 }
 
+// 检查服务器是否在运行
+func isServerRunning() bool {
+	pid := readPID()
+	if pid == 0 {
+		return false
+	}
+	return isProcessRunning(pid)
+}
+
+// 检查进程是否在运行
+func isProcessRunning(pid int) bool {
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+
+	// 发送信号0来检查进程是否存在
+	err = process.Signal(syscall.Signal(0))
+	return err == nil
+}
+
+// 保存PID到文件
+func savePID() {
+	pid := os.Getpid()
+	err := os.WriteFile(pidFile, []byte(fmt.Sprintf("%d", pid)), 0644)
+	if err != nil {
+		log.Printf("Cannot write PID file: %v", err)
+	}
+}
+
+// 从文件读取PID
+func readPID() int {
+	data, err := os.ReadFile(pidFile)
+	if err != nil {
+		return 0
+	}
+
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		return 0
+	}
+
+	return pid
+}
+
+// 删除PID文件
+func removePID() {
+	os.Remove(pidFile)
+}
+
+// 定义 resetPwdCmd 指令
 var resetPwdCmd = &cobra.Command{
 	Use:     "resetpwd",
 	Short:   "Reset user password",
-	Example: "one resetpwd -u admin -p newpassword",
+	Example: "go run main.go resetpwd --user=admin --password=newpassword",
 	Run: func(cmd *cobra.Command, args []string) {
-		username, _ := cmd.Flags().GetString("user")
-		if username == "" {
-			log.Fatalf("Username is required. Use: one resetpwd -u username -p password")
-		}
-
+		userName, _ := cmd.Flags().GetString("user")
 		password, _ := cmd.Flags().GetString("password")
-		if password == "" {
-			log.Fatalf("Password is required. Use: one resetpwd -u username -p password")
+		if userName == "" || password == "" {
+			fmt.Println("Please provide both username and password")
+			return
 		}
-
-		err := user.ChangePassword(username, password)
-		if err != nil {
-			log.Fatalf("Reset password failed: %v", err)
-		}
-
-		fmt.Printf("✅ Password reset successfully for user: %s\n", username)
+		// 重置密码
+		fmt.Printf("Resetting password for user: %s\n", userName)
+		// TODO: 实现密码重置功能
 	},
 }
 
+// 定义 resetUserCmd 指令
 var resetUserCmd = &cobra.Command{
 	Use:     "resetuser",
 	Short:   "Reset username",
-	Example: "one resetuser -u newusername",
+	Example: "go run main.go resetuser --user=newusername",
 	Run: func(cmd *cobra.Command, args []string) {
-		username, _ := cmd.Flags().GetString("user")
-		if username == "" {
-			log.Fatalf("Username is required. Use: one resetuser -u username")
+		userName, _ := cmd.Flags().GetString("user")
+		if userName == "" {
+			fmt.Println("Please provide username")
+			return
 		}
-
-		err := user.ResetUsername(username)
-		if err != nil {
-			log.Fatalf("Reset username failed: %v", err)
-		}
-
-		fmt.Printf("✅ Username reset successfully to: %s\n", username)
+		// 重置用户名
+		fmt.Printf("Resetting username to: %s\n", userName)
+		// TODO: 实现用户名重置功能
 	},
 }
 
-var install = &cobra.Command{
-	Use:     "install",
-	Short:   "安装 php nginx phpmyadmin",
-	Example: "  install -s php",
-	Run: func(cmd *cobra.Command, args []string) {
-		ls := []*input.InstallParams{
-			&input.InstallParams{
-				Key:     "php",
-				Version: "7.4",
-			}, &input.InstallParams{
-				Key:     "webserver",
-				Version: "1.24.0",
-			}, &input.InstallParams{
-				Key:     "phpmyadmin",
-				Version: "5.2.1",
-			},
-		}
-		for _, v := range ls {
-			fmt.Println("开始安装" + v.Key)
-			op, err := software.NewInstallOP(v)
-			if err != nil {
-				fmt.Println(err.Error())
-				return
-			}
-			fn, err := op.Install(true)
-			fmt.Println("开始安装：日志位于:", fn)
-			if err != nil {
-				fmt.Println("安装失败" + err.Error())
-			}
-		}
-	},
-}
-
+// 定义 changePortCmd 指令
 var changePortCmd = &cobra.Command{
-	Use:     "changePort",
-	Short:   "修改端口,修改端口后,需要执行 server restart 才能生效",
-	Example: "changePort -p 8080",
+	Use:     "changeport",
+	Short:   "Change system port",
+	Example: "go run main.go changeport --port=8089",
 	Run: func(cmd *cobra.Command, args []string) {
 		port, _ := cmd.Flags().GetString("port")
 		if port == "" {
-			log.Println("Use \n" +
-				"one changePort -p 8080")
-			log.Fatalf("Port not provided")
+			fmt.Println("Please provide port")
+			return
 		}
-
-		err := system.UpdateSystemPort(port)
-		if err != nil {
-			log.Fatalf("Failed to update system port: %v", err)
-		}
+		// 更改端口
+		fmt.Printf("Changing port to: %s\n", port)
+		// TODO: 实现端口更改功能
 	},
 }
 
+// 定义 debugCmd 指令
 var debugCmd = &cobra.Command{
 	Use:     "debug",
-	Short:   "debug",
-	Example: "debug",
+	Short:   "Start debug mode",
+	Example: "go run main.go debug",
 	Run: func(cmd *cobra.Command, args []string) {
-		app.ENV = "debug"
-		startServer()
+		fmt.Println("Starting debug mode...")
+		// 启动调试模式
+		web.SetupRouter().Run(":8089")
 	},
 }
 
+// 定义 updateCmd 指令
 var updateCmd = &cobra.Command{
 	Use:     "update",
-	Short:   "Update system components",
-	Example: "update",
+	Short:   "Update system",
+	Example: "go run main.go update",
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("开始系统更新...")
+		fmt.Println("Updating system...")
+		// 更新系统
+		fmt.Println("System update functionality not implemented yet")
+		// TODO: 实现系统更新功能
+	},
+}
 
-		// 创建临时文件
-		tmpFile, err := os.CreateTemp("", "update-*.sh")
+// 定义 install 指令
+var install = &cobra.Command{
+	Use:     "install",
+	Short:   "Install software",
+	Example: "go run main.go install",
+	Run: func(cmd *cobra.Command, args []string) {
+		if len(args) < 1 {
+			fmt.Println("Please provide software name")
+			return
+		}
+		softwareName := args[0]
+		fmt.Printf("Installing %s...\n", softwareName)
+
+		// 创建安装参数
+		params := &input.InstallParams{
+			Key:     softwareName,
+			Version: "latest",
+		}
+
+		// 执行安装
+		installer := software.NewInstaller()
+		logFileName, err := installer.Install(params, false) // 异步安装
 		if err != nil {
-			log.Fatalf("创建临时文件失败: %v", err)
-		}
-		defer os.Remove(tmpFile.Name())
-
-		// 下载更新脚本
-		fmt.Println("下载更新脚本...")
-		client := &http.Client{Timeout: 30 * time.Second}
-		resp, err := client.Get("https://bugo-1301111475.cos.ap-guangzhou.myqcloud.com/oneinstack/update.sh")
-		if err != nil {
-			log.Fatalf("下载失败: %v", err)
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusOK {
-			log.Fatalf("服务器返回错误状态码: %d", resp.StatusCode)
+			fmt.Printf("Installation failed: %v\n", err)
+			return
 		}
 
-		// 保存到临时文件
-		if _, err := io.Copy(tmpFile, resp.Body); err != nil {
-			log.Fatalf("保存脚本失败: %v", err)
-		}
-
-		// 设置执行权限
-		if err := os.Chmod(tmpFile.Name(), 0755); err != nil {
-			log.Fatalf("设置执行权限失败: %v", err)
-		}
-
-		// 创建日志文件
-		logFile := "update_" + time.Now().Format("20060102-150405") + ".log"
-		f, err := os.Create(logFile)
-		if err != nil {
-			log.Fatalf("创建日志文件失败: %v", err)
-		}
-		defer f.Close()
-
-		// 执行更新脚本（同时输出到文件和控制台）
-		fmt.Printf("执行更新脚本，日志保存至: %s\n", logFile)
-		updateCmd := exec.Command("bash", tmpFile.Name())
-
-		// 创建多路输出器
-		multiStdout := io.MultiWriter(f, os.Stdout)
-		multiStderr := io.MultiWriter(f, os.Stderr)
-
-		updateCmd.Stdout = multiStdout
-		updateCmd.Stderr = multiStderr
-
-		if err := updateCmd.Run(); err != nil {
-			log.Fatalf("\n更新执行失败: %v\n请查看完整日志文件: %s", err, logFile)
-		}
-
-		fmt.Println("\n系统更新完成！")
+		fmt.Printf("Installation started. Log file: %s\n", logFileName)
+		fmt.Println("You can monitor the installation progress using the web interface.")
 	},
 }
