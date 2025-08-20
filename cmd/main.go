@@ -7,7 +7,7 @@ import (
 	"oneinstack/internal/services/software"
 	web "oneinstack/router"
 	"oneinstack/router/input"
-	"oneinstack/server"
+	"oneinstack/router/middleware"
 	"os"
 	"strconv"
 	"strings"
@@ -29,18 +29,17 @@ var userName string
 var password string
 var initialized bool // 记录是否已经初始化
 
-func main() {
-	// 检查是否是version命令，如果是则不启动服务器
-	if len(os.Args) > 1 && os.Args[1] == "version" {
-		// 直接显示版本信息，不进行任何初始化
-		fmt.Printf("Oneinstack Panel\n")
-		fmt.Printf("Version: %s\n", Version)
-		fmt.Printf("Build Time: %s\n", BuildTime)
-		fmt.Printf("Commit Hash: %s\n", CommitHash)
-		return
-	}
+// 声明外部变量，由static.go中的embed提供
+var (
+	GetFile    func(path string) ([]byte, error)
+	FileExists func(path string) bool
+)
 
-	server.Start()
+func main() {
+	// 初始化静态文件处理函数（这些函数在static.go中定义）
+	middleware.GetFile = GetFile
+	middleware.FileExists = FileExists
+
 	//初始化服务
 	resetPwdCmd.Flags().StringP("user", "u", "", "username")
 	resetPwdCmd.Flags().StringP("password", "p", "", "new password")
@@ -88,6 +87,7 @@ var versionCmd = &cobra.Command{
 		fmt.Printf("Version: %s\n", Version)
 		fmt.Printf("Build Time: %s\n", BuildTime)
 		fmt.Printf("Commit Hash: %s\n", CommitHash)
+		fmt.Printf("Web Version: %s\n", WebVersion)
 	},
 }
 
