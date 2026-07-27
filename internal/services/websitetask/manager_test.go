@@ -425,10 +425,10 @@ func TestWebsiteBackupCleanerRetainsBackupUsedByActiveRestore(t *testing.T) {
 	}
 	service := &website.Service{
 		DB: db, WebRoot: filepath.Join(root, "www"), LogRoot: filepath.Join(root, "logs"),
-		ChallengeRoot: filepath.Join(root, "challenge"),
+		ChallengeRoot:   filepath.Join(root, "challenge"),
 		CertificateRoot: filepath.Join(root, "certificates"),
 		Publisher: &website.Publisher{
-			ConfigDir: filepath.Join(root, "nginx"),
+			ConfigDir:   filepath.Join(root, "nginx"),
 			NginxBinary: "nginx", Runner: fakeCommandRunner{},
 		},
 	}
@@ -459,7 +459,7 @@ func TestWebsiteBackupCleanerRetainsBackupUsedByActiveRestore(t *testing.T) {
 	now := time.Now().UTC()
 	backup := &models.WebsiteBackup{
 		ID: backupID, WebsiteID: 7, WebsiteName: "expired.example.com",
-		Source: models.WebsiteBackupSourceManual,
+		Source:   models.WebsiteBackupSourceManual,
 		FileName: "expired.tar.gz", FilePath: path,
 		SizeBytes: size, SHA256: checksum, CreatedBy: 1,
 		CreatedAt: now.AddDate(0, 0, -40),

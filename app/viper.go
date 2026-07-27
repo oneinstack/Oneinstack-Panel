@@ -33,6 +33,7 @@ const defaultConfig = `scriptCenter:
     trustedKeys: {}
 updateCenter:
     enabled: false
+    centerUrl: ""
     manifestUrl: "https://updates.example.com/oneinstack/stable/manifest.json"
     channel: "stable"
     requestTimeoutSeconds: 20
@@ -171,6 +172,7 @@ func LoadConfig(path ...string) (*viper.Viper, error) {
 	v.SetDefault("scriptCenter.cachePath", filepath.Join(GetBasePath(), "script-registry", "cache"))
 	v.SetDefault("scriptCenter.bundledPath", filepath.Join(GetBasePath(), "script-registry", "bundled"))
 	v.SetDefault("updateCenter.enabled", false)
+	v.SetDefault("updateCenter.centerUrl", "")
 	v.SetDefault("updateCenter.channel", "stable")
 	v.SetDefault("updateCenter.requestTimeoutSeconds", 20)
 	v.SetDefault("updateCenter.maxPackageBytes", int64(256<<20))
@@ -229,6 +231,7 @@ func LoadConfig(path ...string) (*viper.Viper, error) {
 		"scriptCenter.cachePath":               "ONEINSTACK_SCRIPT_CENTER_CACHE_PATH",
 		"scriptCenter.bundledPath":             "ONEINSTACK_SCRIPT_CENTER_BUNDLED_PATH",
 		"updateCenter.enabled":                 "ONEINSTACK_UPDATE_CENTER_ENABLED",
+		"updateCenter.centerUrl":               "ONEINSTACK_UPDATE_CENTER_URL",
 		"updateCenter.manifestUrl":             "ONEINSTACK_UPDATE_CENTER_MANIFEST_URL",
 		"updateCenter.channel":                 "ONEINSTACK_UPDATE_CENTER_CHANNEL",
 		"updateCenter.requestTimeoutSeconds":   "ONEINSTACK_UPDATE_CENTER_REQUEST_TIMEOUT_SECONDS",
@@ -299,15 +302,26 @@ func validateUpdateCenterConfig() error {
 		return fmt.Errorf("validate config: updateCenter.backupRetention must be between 1 and 50")
 	}
 	if center.Enabled {
-		parsed, err := url.Parse(center.ManifestURL)
+		updateURL := strings.TrimSpace(center.CenterURL)
+		if updateURL == "" && ONE_CONFIG.ScriptCenter.Enabled {
+			updateURL = strings.TrimSpace(ONE_CONFIG.ScriptCenter.URL)
+		}
+		if updateURL == "" {
+			updateURL = strings.TrimSpace(center.ManifestURL)
+		}
+		parsed, err := url.Parse(updateURL)
 		if err != nil || parsed.Host == "" || parsed.User != nil || parsed.Fragment != "" ||
 			(parsed.Scheme != "https" && !(parsed.Scheme == "http" && isLoopbackHost(parsed.Hostname()))) {
-			return fmt.Errorf("validate config: enabled updateCenter.manifestUrl must use HTTPS (HTTP is allowed only for loopback development)")
+			return fmt.Errorf("validate config: enabled updateCenter.centerUrl/manifestUrl must use HTTPS (HTTP is allowed only for loopback development)")
 		}
-		if len(center.TrustedKeys) == 0 {
+		trustedKeys := center.TrustedKeys
+		if len(trustedKeys) == 0 {
+			trustedKeys = ONE_CONFIG.ScriptCenter.TrustedKeys
+		}
+		if len(trustedKeys) == 0 {
 			return fmt.Errorf("validate config: enabled updateCenter requires at least one trusted key")
 		}
-		for keyID, encoded := range center.TrustedKeys {
+		for keyID, encoded := range trustedKeys {
 			if strings.TrimSpace(keyID) == "" {
 				return fmt.Errorf("validate config: updateCenter trusted key ID must not be empty")
 			}

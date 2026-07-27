@@ -74,9 +74,9 @@ current configuration:
 sudo ./install.sh --force
 ```
 
-After configuring a trusted update public key and manifest URL, an
-administrator can also install signed releases from **Settings → Panel
-Update**, or use:
+After configuring the Center URL and a trusted update public key, an
+administrator can install the signed release assigned by Center from
+**Settings → Panel Update**, or use:
 
 ```bash
 sudo one update check
@@ -84,11 +84,13 @@ sudo one update apply --yes
 sudo one update status
 ```
 
-The updater verifies the Ed25519 manifest, artifact size, and SHA-256 before
-running a database migration preflight, atomically switching releases, and
-checking readiness. A failed update restores the previous binary, database,
-configuration, and bundled component scripts. See [BUILD.md](BUILD.md) for key
-configuration, manual recovery, and release operations.
+Center controls channels, percentage rollout, instance targeting, and
+revocation. Panel still verifies the pinned Ed25519 key, manifest, artifact
+size, and SHA-256 before running a database migration preflight, atomically
+switching releases, and checking readiness. A failed update restores the
+previous binary, database, configuration, and bundled component scripts. See
+[BUILD.md](BUILD.md) for key configuration, manual recovery, and release
+operations.
 
 Normal uninstall preserves configuration, database, logs, and backups:
 

@@ -2,6 +2,7 @@ package config
 
 type UpdateCenter struct {
 	Enabled               bool              `mapstructure:"enabled" json:"enabled" yaml:"enabled"`
+	CenterURL             string            `mapstructure:"centerUrl" json:"centerUrl" yaml:"centerUrl"`
 	ManifestURL           string            `mapstructure:"manifestUrl" json:"manifestUrl" yaml:"manifestUrl"`
 	Channel               string            `mapstructure:"channel" json:"channel" yaml:"channel"`
 	RequestTimeoutSeconds int               `mapstructure:"requestTimeoutSeconds" json:"requestTimeoutSeconds" yaml:"requestTimeoutSeconds"`

@@ -47,6 +47,10 @@ version
 .DS_Store
 
 mysql*
+# The legacy mysql* rule is only for local MySQL runtime files. Keep the
+# versioned backup/restore implementation and its tests visible to Git.
+!/internal/services/storage/mysql_backup.go
+!/internal/services/storage/mysql_backup_test.go
 /docs/
 
 # Versioned runtime sources must not be hidden by the legacy global *.sh and

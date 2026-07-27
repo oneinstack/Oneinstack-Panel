@@ -186,17 +186,105 @@ func FetchManifest(ctx context.Context, client *http.Client, manifestURL string)
 	return DecodeManifest(content)
 }
 
+type centerResolveRequest struct {
+	SchemaVersion  int    `json:"schemaVersion"`
+	CurrentVersion string `json:"currentVersion"`
+	Channel        string `json:"channel"`
+	OS             string `json:"os"`
+	Arch           string `json:"arch"`
+	InstanceID     string `json:"instanceId"`
+}
+
+func ResolveManifest(
+	ctx context.Context,
+	client *http.Client,
+	config Config,
+) (Manifest, bool, error) {
+	if err := validateRemoteURL(config.ResolveURL); err != nil {
+		return Manifest{}, false, fmt.Errorf("%w: Center resolve URL: %v", ErrInvalidManifest, err)
+	}
+	if !instanceIDPattern.MatchString(config.InstanceID) {
+		return Manifest{}, false, fmt.Errorf("%w: invalid panel instance ID", ErrInvalidManifest)
+	}
+	payload, err := json.Marshal(centerResolveRequest{
+		SchemaVersion: ManifestSchemaVersion, CurrentVersion: config.CurrentVersion,
+		Channel: config.Channel, OS: config.OS, Arch: config.Arch, InstanceID: config.InstanceID,
+	})
+	if err != nil {
+		return Manifest{}, false, fmt.Errorf("encode Center update request: %w", err)
+	}
+	if client == nil {
+		client = secureHTTPClient(20 * time.Second)
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, config.ResolveURL, bytes.NewReader(payload))
+	if err != nil {
+		return Manifest{}, false, err
+	}
+	request.Header.Set("Accept", "application/json")
+	request.Header.Set("Content-Type", "application/json")
+	response, err := client.Do(request)
+	if err != nil {
+		return Manifest{}, false, fmt.Errorf("resolve panel update from Center: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode == http.StatusNoContent {
+		return Manifest{}, false, nil
+	}
+	if response.StatusCode != http.StatusOK {
+		return Manifest{}, false, fmt.Errorf(
+			"resolve panel update from Center: unexpected HTTP status %d",
+			response.StatusCode,
+		)
+	}
+	content, err := io.ReadAll(io.LimitReader(response.Body, MaxManifestBytes+1))
+	if err != nil {
+		return Manifest{}, false, fmt.Errorf("read Center update manifest: %w", err)
+	}
+	if len(content) > MaxManifestBytes {
+		return Manifest{}, false, fmt.Errorf("%w: manifest exceeds %d bytes", ErrInvalidManifest, MaxManifestBytes)
+	}
+	manifest, err := DecodeManifest(content)
+	if err != nil {
+		return Manifest{}, false, err
+	}
+	return manifest, true, nil
+}
+
 func CheckUpdate(ctx context.Context, client *http.Client, config Config) (CheckResult, Manifest, Artifact, error) {
 	result := CheckResult{
 		Enabled: config.Enabled, CurrentVersion: config.CurrentVersion,
-		Channel: config.Channel, Compatible: true,
+		Channel: config.Channel, Compatible: true, InstanceID: config.InstanceID,
 	}
 	if !config.Enabled {
 		return result, Manifest{}, Artifact{}, ErrDisabled
 	}
-	manifest, err := FetchManifest(ctx, client, config.ManifestURL)
+	current := canonicalVersion(config.CurrentVersion)
+	if current == "" {
+		result.Compatible = false
+		return result, Manifest{}, Artifact{}, fmt.Errorf(
+			"%w: current build version %q is not a release version",
+			ErrInvalidManifest,
+			config.CurrentVersion,
+		)
+	}
+	var (
+		manifest Manifest
+		found    = true
+		err      error
+	)
+	if strings.TrimSpace(config.ResolveURL) != "" {
+		result.Source = "center"
+		manifest, found, err = ResolveManifest(ctx, client, config)
+	} else {
+		result.Source = "manifest"
+		manifest, err = FetchManifest(ctx, client, config.ManifestURL)
+	}
 	if err != nil {
 		return result, Manifest{}, Artifact{}, err
+	}
+	if !found {
+		result.LatestVersion = config.CurrentVersion
+		return result, Manifest{}, Artifact{}, nil
 	}
 	artifact, err := VerifyManifest(manifest, config)
 	if err != nil {
@@ -207,11 +295,6 @@ func CheckUpdate(ctx context.Context, client *http.Client, config Config) (Check
 	result.ReleaseNotes = manifest.ReleaseNotes
 	result.MinimumVersion = manifest.MinimumVersion
 	result.ArtifactSize = artifact.Size
-	current := canonicalVersion(config.CurrentVersion)
-	if current == "" {
-		result.Compatible = false
-		return result, manifest, artifact, fmt.Errorf("%w: current build version %q is not a release version", ErrInvalidManifest, config.CurrentVersion)
-	}
 	if manifest.MinimumVersion != "" && semver.Compare(current, canonicalVersion(manifest.MinimumVersion)) < 0 {
 		result.Compatible = false
 		return result, manifest, artifact, fmt.Errorf("%w: current version is below minimum upgrade version %s", ErrInvalidManifest, manifest.MinimumVersion)

@@ -170,18 +170,15 @@ jobs:
 
       - name: Generate signed update manifest
         shell: bash
+        continue-on-error: false
         env:
           UPDATE_SIGNING_PRIVATE_KEY: ${{ secrets.UPDATE_SIGNING_PRIVATE_KEY }}
           UPDATE_SIGNING_KEY_ID: ${{ secrets.UPDATE_SIGNING_KEY_ID }}
         run: |
-          [[ -n "${UPDATE_SIGNING_PRIVATE_KEY}" ]] || {
-            echo "UPDATE_SIGNING_PRIVATE_KEY is required" >&2
-            exit 1
-          }
-          [[ -n "${UPDATE_SIGNING_KEY_ID}" ]] || {
-            echo "UPDATE_SIGNING_KEY_ID is required" >&2
-            exit 1
-          }
+          if [[ -z "${UPDATE_SIGNING_PRIVATE_KEY}" || -z "${UPDATE_SIGNING_KEY_ID}" ]]; then
+            echo "Legacy static manifest signing is not configured; Center will sign the release."
+            exit 0
+          fi
           signing_key="${RUNNER_TEMP}/one-update-signing-key"
           release_channel="stable"
           case "${GITHUB_REF_NAME}" in
@@ -220,3 +217,28 @@ jobs:
               --title "OneinStack Panel ${GITHUB_REF_NAME}" \
               "${prerelease_args[@]}"
           fi
+
+      - name: Publish release to OneinStack Center
+        shell: bash
+        env:
+          CENTER_RELEASE_URL: ${{ secrets.CENTER_RELEASE_URL }}
+          CENTER_RELEASE_TOKEN: ${{ secrets.CENTER_RELEASE_TOKEN }}
+          CENTER_RELEASE_ROLLOUT_PERCENTAGE: ${{ vars.CENTER_RELEASE_ROLLOUT_PERCENTAGE }}
+          CENTER_RELEASE_NOTES: See the GitHub release notes for ${{ github.ref_name }}.
+        run: |
+          if [[ -z "${CENTER_RELEASE_URL}" || -z "${CENTER_RELEASE_TOKEN}" ]]; then
+            echo "Center publishing is not configured; set CENTER_RELEASE_URL and CENTER_RELEASE_TOKEN." >&2
+            exit 1
+          fi
+          release_channel="stable"
+          case "${GITHUB_REF_NAME}" in
+            *-alpha*|*-beta*|*-rc*) release_channel="beta" ;;
+          esac
+          rollout_percentage="${CENTER_RELEASE_ROLLOUT_PERCENTAGE:-0}"
+          ./scripts/publish-release-to-center.sh \
+            "${CENTER_RELEASE_URL}" \
+            "${GITHUB_REF_NAME}" \
+            "${release_channel}" \
+            "release/one-linux-amd64-${GITHUB_REF_NAME}.tar.gz" \
+            "release/one-linux-arm64-${GITHUB_REF_NAME}.tar.gz" \
+            "${rollout_percentage}"

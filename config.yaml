@@ -65,6 +65,7 @@ scriptCenter:
     trustedKeys: {}
 updateCenter:
     enabled: false
+    centerUrl: ''
     manifestUrl: 'https://updates.example.com/oneinstack/stable/manifest.json'
     channel: 'stable'
     requestTimeoutSeconds: 20

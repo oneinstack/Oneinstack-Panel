@@ -169,6 +169,8 @@ func TestLoadConfigSupportsEnvironmentOverrides(t *testing.T) {
 	t.Setenv("ONEINSTACK_SYSTEM_AUDIT_RETENTION_DAYS", "730")
 	t.Setenv("ONEINSTACK_SYSTEM_AUDIT_EXPORT_MAX_ROWS", "25000")
 	t.Setenv("ONEINSTACK_UPDATE_CENTER_BACKUP_RETENTION", "7")
+	t.Setenv("ONEINSTACK_UPDATE_CENTER_ENABLED", "true")
+	t.Setenv("ONEINSTACK_UPDATE_CENTER_URL", "http://127.0.0.1:8189")
 	t.Setenv("ONEINSTACK_SCRIPT_CENTER_ENABLED", "true")
 	t.Setenv("ONEINSTACK_SCRIPT_CENTER_ALLOW_INSECURE_HTTP", "true")
 	t.Setenv("ONEINSTACK_SCRIPT_CENTER_URL", "http://center.internal:8189")
@@ -190,8 +192,10 @@ func TestLoadConfigSupportsEnvironmentOverrides(t *testing.T) {
 	if ONE_CONFIG.System.AuditRetentionDays != 730 || ONE_CONFIG.System.AuditExportMaxRows != 25000 {
 		t.Fatalf("unexpected environment audit policy: %+v", ONE_CONFIG.System)
 	}
-	if ONE_CONFIG.UpdateCenter.BackupRetention != 7 {
-		t.Fatalf("expected environment update backup retention, got %d", ONE_CONFIG.UpdateCenter.BackupRetention)
+	if ONE_CONFIG.UpdateCenter.BackupRetention != 7 ||
+		!ONE_CONFIG.UpdateCenter.Enabled ||
+		ONE_CONFIG.UpdateCenter.CenterURL != "http://127.0.0.1:8189" {
+		t.Fatalf("unexpected environment update center config: %+v", ONE_CONFIG.UpdateCenter)
 	}
 	if !ONE_CONFIG.ScriptCenter.Enabled || !ONE_CONFIG.ScriptCenter.AllowInsecureHTTP ||
 		ONE_CONFIG.ScriptCenter.URL != "http://center.internal:8189" ||

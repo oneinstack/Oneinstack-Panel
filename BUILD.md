@@ -139,50 +139,36 @@ system:
 
 每条记录通过实例凭据密钥派生的 HMAC 密钥形成只追加链；自动清理前会校验整条链并写入签名检查点。链异常时追加和清理都会停止。该机制可检测数据库内容篡改、链断裂和常规尾部删除；需要防御整套数据库快照回滚时，应把周期性链头签名额外发送到独立不可变存储。
 
-## 签名更新与回滚
+## Center 托管的签名更新与回滚
 
 安装器同时写入 `one.service` 和独立的 `one-update.service`。后者运行旧版本内存中的更新进程，因此主面板停服、替换磁盘上的 `one` 链接时不会终止更新事务。
 
-首次建立发布密钥：
+生产环境由 Oneinstack-Center 统一管理 Panel 版本、制品、发布渠道、灰度范围和撤回。Panel 使用固定实例标识向 Center 查询版本，Center 返回当前实例被分配到的 Ed25519 签名清单；没有合适版本时返回 `204`，Panel 保持当前版本。
 
-```bash
-go run ./cmd/update-keygen \
-  --key-id release-2026 \
-  --private-output /secure/offline/update-signing.seed \
-  --public-output update-signing.pub
-```
-
-- 私钥文件为 Base64 Ed25519 seed，工具强制以 `0600` 创建且拒绝覆盖；只应保存到发布密钥系统或 GitHub Secret，不得提交到仓库或复制到 Panel 主机。
-- 公钥文件可公开。把其中的一行 Base64 内容预置到每台 Panel 的 `config.yaml`：
+把 Center `GET /v1/keys` 返回的 Ed25519 公钥预置到每台 Panel 的 `config.yaml`：
 
 ```yaml
+scriptCenter:
+  enabled: true
+  url: "https://center.example.com"
+  trustedKeys:
+    center-2026: "BASE64_ED25519_PUBLIC_KEY"
+
 updateCenter:
   enabled: true
-  manifestUrl: "https://updates.example.com/oneinstack/stable/manifest.json"
+  centerUrl: "https://center.example.com"
   channel: "stable"
   requestTimeoutSeconds: 20
   maxPackageBytes: 268435456
   maxExpandedBytes: 536870912
   healthTimeoutSeconds: 60
   backupRetention: 5
-  trustedKeys:
-    release-2026: "BASE64_ED25519_PUBLIC_KEY"
+  trustedKeys: {}
 ```
 
-本地生成清单示例：
+`updateCenter.trustedKeys` 为空时会复用 `scriptCenter.trustedKeys`。也可以单独配置更新公钥。生产地址强制 HTTPS；只有回环地址允许 HTTP 联调。
 
-```bash
-go run ./cmd/update-manifest \
-  --version v0.4.0 \
-  --channel stable \
-  --minimum-version v0.3.0 \
-  --base-url https://updates.example.com/oneinstack/v0.4.0 \
-  --key-id release-2026 \
-  --private-key-file /secure/offline/update-signing.seed \
-  --artifact linux-amd64=packages/one-linux-amd64-v0.4.0.tar.gz \
-  --artifact linux-arm64=packages/one-linux-arm64-v0.4.0.tar.gz \
-  --output packages/manifest.json
-```
+静态 `manifestUrl` 和 `cmd/update-keygen`、`cmd/update-manifest` 继续保留为离线/兼容模式。当 `centerUrl` 已配置时，日常版本分配由 Center 控制。
 
 更新器会校验清单签名、目标平台、制品大小和 SHA-256，使用数据库副本执行迁移预检，再切换双版本指针。新服务未通过 `/health/ready` 时会恢复旧二进制、数据库、配置和内置脚本。常用命令：
 
@@ -197,17 +183,20 @@ sudo one update rollback --yes
 
 标签 Release 工作流要求配置：
 
-- `UPDATE_SIGNING_PRIVATE_KEY`：私钥种子文件的完整 Base64 内容。
-- `UPDATE_SIGNING_KEY_ID`：与 `updateCenter.trustedKeys` 一致的标识。
+- `CENTER_RELEASE_URL`：可从 GitHub Runner 访问的 Center HTTPS 地址。
+- `CENTER_RELEASE_TOKEN`：Center 中角色为 `publisher` 的独立 CI Token。
+- 仓库变量 `CENTER_RELEASE_ROLLOUT_PERCENTAGE`：首次发布的灰度百分比，未配置时为 `0`。
 
-密钥轮换必须先把新公钥加入 Panel 配置，再用新私钥发布清单；确认受管主机均信任新公钥后才能删除旧公钥。自动撤销清单和离线根密钥签发体系仍属于发布运维待验收项。
+工作流把 Linux amd64/arm64 两个制品上传到 Center，发布后由 Center 管理百分比和实例白名单。建议保持初始 `0%`，先加入测试实例，依次提升到 `5%`、`20%`、`50%`、`100%`。Center 操作手册见同级 `Oneinstack-Center/docs/PANEL_RELEASES.md`。
+
+兼容模式仍可配置可选的 `UPDATE_SIGNING_PRIVATE_KEY` 和 `UPDATE_SIGNING_KEY_ID`，生成 GitHub Release 静态清单。Center 模式下签名私钥只保存在 Center，不复制到 Panel 或普通构建机。密钥轮换必须先把新公钥加入受管 Panel，再切换 Center 在线密钥。
 
 ## GitHub 质量与发布流程
 
 - `CI`：对 `main`、`develop` 和 Pull Request 执行格式、vet、竞态测试、ShellCheck、Secret Scan、双架构编译，以及 Ubuntu 22.04/24.04 安装生命周期矩阵。
 - `CodeQL`：对 Go 代码执行代码安全分析，并每周定时复查。
 - `Dependabot`：每周检查 Go 模块和 GitHub Actions 依赖并生成升级 PR。
-- `Release`：仅在 `v*` 标签或手动触发时运行；生成双架构包、SHA-256、Ed25519 签名更新清单、CycloneDX 1.6 SBOM、Go 模块清单和许可证证据表，标签发布会创建或更新 GitHub Release。
+- `Release`：仅在 `v*` 标签或手动触发时运行；生成双架构包、SHA-256、可选兼容签名清单、CycloneDX 1.6 SBOM、Go 模块清单和许可证证据表，标签发布会创建或更新 GitHub Release，并把双架构制品发布到 Center。
 - 前端 CI 独立生成 npm CycloneDX SBOM、依赖树、许可证表和校验和制品。
 - 推送普通分支不会自动创建 Beta Release，也不会自动修改或推送仓库文件。
 

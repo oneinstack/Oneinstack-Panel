@@ -78,6 +78,12 @@ func validateConfig(config Config) error {
 	if config.BackupRetention < 1 {
 		return fmt.Errorf("backup retention must be positive")
 	}
+	if config.Enabled && strings.TrimSpace(config.ManifestURL) == "" && strings.TrimSpace(config.ResolveURL) == "" {
+		return fmt.Errorf("update manifest URL or Center resolve URL is required")
+	}
+	if strings.TrimSpace(config.ResolveURL) != "" && !instanceIDPattern.MatchString(config.InstanceID) {
+		return fmt.Errorf("valid panel instance ID is required for Center-managed updates")
+	}
 	return nil
 }
 

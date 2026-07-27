@@ -34,6 +34,8 @@ var (
 type Config struct {
 	Enabled          bool
 	ManifestURL      string
+	ResolveURL       string
+	InstanceID       string
 	Channel          string
 	TrustedKeys      map[string]string
 	RequestTimeout   time.Duration
@@ -75,6 +77,8 @@ type ManifestSignature struct {
 
 type CheckResult struct {
 	Enabled         bool      `json:"enabled"`
+	Source          string    `json:"source,omitempty"`
+	InstanceID      string    `json:"instanceId,omitempty"`
 	CurrentVersion  string    `json:"currentVersion"`
 	LatestVersion   string    `json:"latestVersion,omitempty"`
 	UpdateAvailable bool      `json:"updateAvailable"`
