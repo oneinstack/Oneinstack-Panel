@@ -1,7 +1,6 @@
 package software
 
 import (
-	"embed"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,24 +10,12 @@ import (
 	"oneinstack/router/input"
 	"oneinstack/router/output"
 	"oneinstack/utils"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/imroc/req/v3"
 	"gorm.io/gorm"
 )
-
-//go:embed scripts/UninstallRedis.sh
-var UninstallRedis embed.FS
-
-//go:embed scripts/UninstallMySQL.sh
-var UninstallMySQL embed.FS
-
-//go:embed scripts/UninstallNginx.sh
-var UninstallNginx embed.FS
 
 func RunInstall(p *input.InstallParams) (string, error) {
 	op, err := NewInstallOP(p)
@@ -95,7 +82,7 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 	tx := app.DB().Select(
 		"MAX(id) as id," +
 			"`key`," +
-			"describe," +
+			"MAX(describe) as describe," +
 			"GROUP_CONCAT(DISTINCT version) as versions," +
 			"MAX(name) as name," +
 			"MAX(icon) as icon," +
@@ -103,8 +90,8 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 			"MAX(status) as status," +
 			"MAX(resource) as resource," +
 			"MAX(is_update) as is_update," +
-			"install_version as install_version," +
-			"installed as installed," +
+			"MAX(CASE WHEN installed = 1 THEN install_version ELSE '' END) as install_version," +
+			"MAX(CASE WHEN installed = 1 THEN 1 ELSE 0 END) as installed," +
 			"MAX(params) as params," +
 			"MAX(log) as log," +
 			"MAX(tags) as tags").
@@ -146,7 +133,10 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 		if *param.Installed {
 			isi = 1
 		}
-		tx = tx.Where("installed = ?", isi)
+		tx = tx.Having(
+			"MAX(CASE WHEN installed = 1 THEN 1 ELSE 0 END) = ?",
+			isi,
+		)
 	}
 
 	if param.Tags != "" {
@@ -176,9 +166,6 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 			Versions:       strings.Split(item.Versions, ","),
 		})
 		var params []*output.SoftParam
-		if item.Key == "db" {
-			continue
-		}
 		_ = json.Unmarshal([]byte(item.Params), &params)
 		groupedResults[i].Params = params
 	}
@@ -268,80 +255,26 @@ func Sync() {
 
 // remove software
 func Remove(param *input.RemoveParams) (bool, error) {
-	// 将软件状态设置为 0 并且设置installed为false
-	fmt.Println(param.Name + "|" + param.Version)
-	tx := app.DB().Model(&models.Software{}).Where("name = ? AND version = ?", param.Name, param.Version).Updates(map[string]interface{}{
-		"status":          models.Soft_Status_Default,
-		"log":             "",
-		"installed":       false,
-		"install_version": "",
-	})
-	err := RunUnInstallScript(param.Name)
+	_, softwareKey, err := componentForRemove(param.Name)
 	if err != nil {
 		return false, err
 	}
+	installer := NewInstaller()
+	logFile, err := installer.Uninstall(param, false)
+	if err != nil {
+		app.DB().Model(&models.Software{}).
+			Where("`key` = ? AND version = ?", softwareKey, param.Version).
+			Updates(map[string]interface{}{"status": models.Soft_Status_Err, "log": logFile})
+		return false, err
+	}
+	tx := app.DB().Model(&models.Software{}).Where("`key` = ? AND version = ?", softwareKey, param.Version).Updates(map[string]interface{}{
+		"status":          models.Soft_Status_Default,
+		"log":             logFile,
+		"installed":       false,
+		"install_version": "",
+	})
 	if tx.Error != nil {
 		return false, tx.Error
 	}
 	return true, nil
-}
-
-func RunUnInstallScript(soft string) error {
-	// 读取脚本内容
-	if soft == "Redis" {
-		data, err := UninstallRedis.ReadFile("scripts/UninstallRedis.sh")
-		if err != nil {
-			return err
-		}
-
-		// 创建临时文件保存脚本
-		tmpDir := os.TempDir()
-		scriptPath := filepath.Join(tmpDir, "UninstallRedis.sh")
-		if err := os.WriteFile(scriptPath, data, 0755); err != nil {
-			return err
-		}
-
-		// 执行脚本
-		cmd := exec.Command("/bin/bash", scriptPath)
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		return cmd.Run()
-	} else if soft == "MySQL" {
-		data, err := UninstallMySQL.ReadFile("scripts/UninstallMySQL.sh")
-		if err != nil {
-			return err
-		}
-
-		// 创建临时文件保存脚本
-		tmpDir := os.TempDir()
-		scriptPath := filepath.Join(tmpDir, "UninstallRedis.sh")
-		if err := os.WriteFile(scriptPath, data, 0755); err != nil {
-			return err
-		}
-
-		// 执行脚本
-		cmd := exec.Command("/bin/bash", scriptPath)
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		return cmd.Run()
-	} else if soft == "Nginx" {
-		data, err := UninstallNginx.ReadFile("scripts/UninstallNginx.sh")
-		if err != nil {
-			return err
-		}
-
-		// 创建临时文件保存脚本
-		tmpDir := os.TempDir()
-		scriptPath := filepath.Join(tmpDir, "UninstallNginx.sh")
-		if err := os.WriteFile(scriptPath, data, 0755); err != nil {
-			return err
-		}
-
-		// 执行脚本
-		cmd := exec.Command("/bin/bash", scriptPath)
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		return cmd.Run()
-	}
-	return nil
 }

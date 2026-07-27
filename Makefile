@@ -1,235 +1,156 @@
-# Oneinstack Panel Makefile
+# OneinStack Panel reproducible build entry points.
 
-# Variables
 APP_NAME := one
-VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
-BUILD_TIME := $(shell date -u '+%Y-%m-%d_%H:%M:%S')
-COMMIT_HASH := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+WEB_DIR ?= ../Oneinstack-Panel-Web
+WEB_ARCHIVE ?= $(WEB_DIR)/version/app-1.0.0.zip
 
-# Go build variables
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+BUILD_TIME ?= $(shell date -u '+%Y-%m-%dT%H:%M:%SZ')
+COMMIT_HASH ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+WEB_VERSION ?= 1.0.0
+
 GOOS ?= linux
 GOARCH ?= amd64
 CGO_ENABLED ?= 0
 
-# Directories
 BUILD_DIR := dist
 PACKAGE_DIR := packages
-DOCKER_DIR := docker
-
-# Ldflags
 LDFLAGS := -s -w \
-	-X main.Version=$(VERSION) \
-	-X main.BuildTime=$(BUILD_TIME) \
-	-X main.CommitHash=$(COMMIT_HASH)
+	-X oneinstack/internal/buildinfo.Version=$(VERSION) \
+	-X oneinstack/internal/buildinfo.BuildTime=$(BUILD_TIME) \
+	-X oneinstack/internal/buildinfo.CommitHash=$(COMMIT_HASH) \
+	-X oneinstack/internal/buildinfo.WebVersion=$(WEB_VERSION)
 
-# Default target
 .PHONY: all
-all: clean test build package
+all: quality package verify-release
 
-# Help
 .PHONY: help
 help:
-	@echo "Available targets:"
-	@echo "  build          - Build binary for current platform"
-	@echo "  build-all      - Build binaries for all platforms"
-	@echo "  test           - Run tests"
-	@echo "  lint           - Run linter"
-	@echo "  clean          - Clean build artifacts"
-	@echo "  package        - Create distribution packages"
-	@echo "  docker-build   - Build Docker images"
-	@echo "  docker-run     - Run Docker containers"
-	@echo "  release        - Create release packages"
-	@echo "  install        - Install to local system"
-	@echo "  uninstall      - Uninstall from local system"
+	@echo "OneinStack Panel build targets:"
+	@echo "  quality          Run formatting, vet, tests and shell syntax checks"
+	@echo "  secret-scan      Scan tracked source for high-confidence credential patterns"
+	@echo "  install-test     Run isolated Bats installer contract tests"
+	@echo "  build            Build one GOOS/GOARCH target (defaults to linux/amd64)"
+	@echo "  build-all        Build supported linux/amd64 and linux/arm64 binaries"
+	@echo "  build-ui         Build the sibling frontend and refresh webui/app.zip"
+	@echo "  package          Build and package both supported Linux targets"
+	@echo "  verify-release   Verify package checksums and required contents"
+	@echo "  release          Run all release gates and create local packages"
+	@echo "  dev              Start the backend development server"
+	@echo "  clean            Remove generated local build and package output"
 
-# Build targets
-.PHONY: build
-build:
-	@echo "Building $(APP_NAME) $(VERSION) for $(GOOS)/$(GOARCH)..."
-	@mkdir -p $(BUILD_DIR)
-	CGO_ENABLED=$(CGO_ENABLED) GOOS=$(GOOS) GOARCH=$(GOARCH) \
-		go build -ldflags="$(LDFLAGS)" -o $(BUILD_DIR)/$(APP_NAME)-$(GOOS)-$(GOARCH) ./cmd/main.go
-
-.PHONY: build-ui
-build-ui:
-	@echo "Building UI with embed package..."
-	@if [ ! -d "dist" ]; then \
-		echo "Creating dist directory..."; \
-		mkdir -p dist; \
+.PHONY: format-check
+format-check:
+	@files="$$(gofmt -l $$(find . -path './.git' -prune -o -type f -name '*.go' -print))"; \
+	if [ -n "$$files" ]; then \
+		echo "The following files need gofmt:"; \
+		echo "$$files"; \
+		exit 1; \
 	fi
-	@if [ ! -f "dist/index.html" ]; then \
-		echo "Creating sample index.html..."; \
-		echo '<!DOCTYPE html><html><head><title>Oneinstack Panel</title></head><body><h1>Welcome to Oneinstack Panel</h1></body></html>' > dist/index.html; \
-	fi
-	@echo "UI build completed! Files in dist/ directory will be embedded during compilation."
-
-.PHONY: build-all
-build-all:
-	@echo "Building for all platforms..."
-	@$(MAKE) build GOOS=linux GOARCH=amd64
-	@$(MAKE) build GOOS=linux GOARCH=arm64
-	@$(MAKE) build GOOS=darwin GOARCH=amd64
-	@$(MAKE) build GOOS=darwin GOARCH=arm64
-	@$(MAKE) build GOOS=windows GOARCH=amd64
-
-# Test targets
-.PHONY: test
-test:
-	@echo "Running tests..."
-	go test -v -race -coverprofile=coverage.out ./...
-
-.PHONY: test-coverage
-test-coverage: test
-	@echo "Generating coverage report..."
-	go tool cover -html=coverage.out -o coverage.html
-	@echo "Coverage report: coverage.html"
 
 .PHONY: lint
 lint:
-	@echo "Running linter..."
-	@if command -v golangci-lint >/dev/null 2>&1; then \
-		golangci-lint run --timeout=5m; \
-	else \
-		echo "golangci-lint not installed, skipping..."; \
-	fi
+	go vet ./...
 
-# Package targets
+.PHONY: test
+test:
+	go test -count=1 ./...
+
+.PHONY: test-race
+test-race:
+	go test -race -count=1 ./...
+
+.PHONY: shell-check
+shell-check:
+	find . -maxdepth 2 -type f -name '*.sh' -print0 | xargs -0 -n1 bash -n
+
+.PHONY: secret-scan
+secret-scan:
+	./scripts/secret-scan.sh
+
+.PHONY: install-test
+install-test:
+	@command -v bats >/dev/null 2>&1 || \
+		(echo "bats is required for installer tests" && exit 1)
+	bats tests/install.bats
+
+.PHONY: quality
+quality: format-check lint test shell-check secret-scan
+
+.PHONY: build
+build:
+	@echo "Building $(APP_NAME) $(VERSION) for $(GOOS)/$(GOARCH)"
+	@mkdir -p $(BUILD_DIR)
+	CGO_ENABLED=$(CGO_ENABLED) GOOS=$(GOOS) GOARCH=$(GOARCH) \
+		go build -trimpath -ldflags="$(LDFLAGS)" \
+		-o $(BUILD_DIR)/$(APP_NAME)-$(GOOS)-$(GOARCH) ./cmd
+
+.PHONY: build-all
+build-all:
+	@$(MAKE) build GOOS=linux GOARCH=amd64 \
+		VERSION="$(VERSION)" BUILD_TIME="$(BUILD_TIME)" \
+		COMMIT_HASH="$(COMMIT_HASH)" WEB_VERSION="$(WEB_VERSION)"
+	@$(MAKE) build GOOS=linux GOARCH=arm64 \
+		VERSION="$(VERSION)" BUILD_TIME="$(BUILD_TIME)" \
+		COMMIT_HASH="$(COMMIT_HASH)" WEB_VERSION="$(WEB_VERSION)"
+
+.PHONY: build-ui
+build-ui:
+	@echo "Building production UI from $(WEB_DIR)"
+	cd $(WEB_DIR) && npm run build
+	./scripts/sync-webui.sh $(WEB_ARCHIVE)
+	go test ./webui
+
 .PHONY: package
 package: build-all
-	@echo "Creating packages..."
-	@mkdir -p $(PACKAGE_DIR)
-	@for target in linux-amd64 linux-arm64; do \
-		echo "Packaging $$target..."; \
-		mkdir -p $(PACKAGE_DIR)/$(APP_NAME)-$$target; \
-		cp $(BUILD_DIR)/$(APP_NAME)-$$target $(PACKAGE_DIR)/$(APP_NAME)-$$target/$(APP_NAME); \
-		chmod +x $(PACKAGE_DIR)/$(APP_NAME)-$$target/$(APP_NAME); \
-		cp config.yaml $(PACKAGE_DIR)/$(APP_NAME)-$$target/; \
-		cp install*.sh $(PACKAGE_DIR)/$(APP_NAME)-$$target/; \
-		chmod +x $(PACKAGE_DIR)/$(APP_NAME)-$$target/*.sh; \
-		cp README*.md LICENSE $(PACKAGE_DIR)/$(APP_NAME)-$$target/; \
-		cd $(PACKAGE_DIR) && tar -czf $(APP_NAME)-$$target.tar.gz $(APP_NAME)-$$target/; \
-		cd $(PACKAGE_DIR) && sha256sum $(APP_NAME)-$$target.tar.gz > $(APP_NAME)-$$target.tar.gz.sha256; \
-	done
+	./scripts/package-release.sh "$(VERSION)" "$(PACKAGE_DIR)"
 
-# Docker targets
-.PHONY: docker-build
-docker-build:
-	@echo "Building Docker images..."
-	docker build -f $(DOCKER_DIR)/Dockerfile.centos -t oneinstack/panel:centos .
-	docker build -f $(DOCKER_DIR)/Dockerfile.ubuntu -t oneinstack/panel:ubuntu .
-	docker tag oneinstack/panel:centos oneinstack/panel:latest-centos
-	docker tag oneinstack/panel:ubuntu oneinstack/panel:latest-ubuntu
+.PHONY: verify-release
+verify-release:
+	@set -- $(PACKAGE_DIR)/*.tar.gz; \
+	if [ ! -e "$$1" ]; then \
+		echo "No release archives found; run make package first"; \
+		exit 1; \
+	fi; \
+	./scripts/verify-release.sh "$$@"
 
-.PHONY: docker-run-centos
-docker-run-centos:
-	@echo "Running CentOS container..."
-	docker-compose --profile centos up -d
-
-.PHONY: docker-run-ubuntu
-docker-run-ubuntu:
-	@echo "Running Ubuntu container..."
-	docker-compose --profile ubuntu up -d
-
-.PHONY: docker-run
-docker-run: docker-run-centos
-
-.PHONY: docker-stop
-docker-stop:
-	@echo "Stopping containers..."
-	docker-compose down
-
-.PHONY: docker-logs
-docker-logs:
-	docker-compose logs -f
-
-# Release targets
 .PHONY: release
-release: clean test lint package
-	@echo "Creating release $(VERSION)..."
-	@mkdir -p releases/$(VERSION)
-	@cp $(PACKAGE_DIR)/*.tar.gz $(PACKAGE_DIR)/*.sha256 releases/$(VERSION)/
-	@cd releases/$(VERSION) && cat *.sha256 > checksums.txt
-	@echo "Release $(VERSION) created in releases/$(VERSION)/"
+release: quality package verify-release
+	@echo "Release packages are ready in $(PACKAGE_DIR)/"
 
-# Install targets
-.PHONY: install
-install: build
-	@echo "Installing $(APP_NAME)..."
-	@sudo mkdir -p /usr/local/one
-	@sudo cp $(BUILD_DIR)/$(APP_NAME)-$(GOOS)-$(GOARCH) /usr/local/one/$(APP_NAME)
-	@sudo chmod +x /usr/local/one/$(APP_NAME)
-	@sudo ln -sf /usr/local/one/$(APP_NAME) /usr/local/bin/$(APP_NAME)
-	@echo "Installation completed!"
+.PHONY: test-coverage
+test-coverage:
+	go test -coverprofile=coverage.out ./...
+	go tool cover -html=coverage.out -o coverage.html
+	@echo "Coverage report: coverage.html"
 
-.PHONY: uninstall
-uninstall:
-	@echo "Uninstalling $(APP_NAME)..."
-	@sudo rm -f /usr/local/bin/$(APP_NAME)
-	@sudo systemctl stop one 2>/dev/null || true
-	@sudo systemctl disable one 2>/dev/null || true
-	@sudo rm -f /etc/systemd/system/one.service
-	@sudo systemctl daemon-reload
-	@echo "Uninstallation completed!"
-
-# Development targets
 .PHONY: dev
 dev:
-	@echo "Starting development server..."
-	@go run ./cmd/main.go server start
+	go run ./cmd server start
 
 .PHONY: dev-debug
 dev-debug:
-	@echo "Starting development server in debug mode..."
-	@go run ./cmd/main.go debug
+	go run ./cmd debug
 
-# Clean targets
-.PHONY: clean
-clean:
-	@echo "Cleaning build artifacts..."
-	@rm -rf $(BUILD_DIR) $(PACKAGE_DIR) releases coverage.out coverage.html
-
-.PHONY: clean-all
-clean-all: clean
-	@echo "Cleaning Docker images..."
-	@docker rmi oneinstack/panel:centos oneinstack/panel:ubuntu 2>/dev/null || true
-	@docker system prune -f
-
-# Dependency management
 .PHONY: deps
 deps:
-	@echo "Downloading dependencies..."
 	go mod download
-	go mod tidy
 
-.PHONY: deps-update
-deps-update:
-	@echo "Updating dependencies..."
-	go get -u ./...
-	go mod tidy
-
-# Version info
 .PHONY: version
 version:
 	@echo "Version: $(VERSION)"
-	@echo "Build Time: $(BUILD_TIME)"
-	@echo "Commit Hash: $(COMMIT_HASH)"
+	@echo "Build time: $(BUILD_TIME)"
+	@echo "Commit: $(COMMIT_HASH)"
+	@echo "Web version: $(WEB_VERSION)"
 
-# Check if required tools are installed
 .PHONY: check-tools
 check-tools:
-	@echo "Checking required tools..."
-	@command -v go >/dev/null 2>&1 || (echo "Go is not installed" && exit 1)
-	@command -v docker >/dev/null 2>&1 || echo "Docker is not installed (optional)"
-	@command -v docker-compose >/dev/null 2>&1 || echo "Docker Compose is not installed (optional)"
-	@echo "All required tools are available!"
+	@command -v go >/dev/null 2>&1 || (echo "Go is required" && exit 1)
+	@command -v tar >/dev/null 2>&1 || (echo "tar is required" && exit 1)
+	@command -v sha256sum >/dev/null 2>&1 || \
+		command -v shasum >/dev/null 2>&1 || \
+		(echo "sha256sum or shasum is required" && exit 1)
 
-# Generate build info
-.PHONY: build-info
-build-info:
-	@echo "package main" > buildinfo.go
-	@echo "" >> buildinfo.go
-	@echo "const (" >> buildinfo.go
-	@echo "    Version = \"$(VERSION)\"" >> buildinfo.go
-	@echo "    BuildTime = \"$(BUILD_TIME)\"" >> buildinfo.go
-	@echo "    CommitHash = \"$(COMMIT_HASH)\"" >> buildinfo.go
-	@echo ")" >> buildinfo.go
+.PHONY: clean
+clean:
+	rm -rf $(BUILD_DIR) $(PACKAGE_DIR) coverage.out coverage.html

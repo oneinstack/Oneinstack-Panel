@@ -1,8 +1,11 @@
 package middleware
 
 import (
-	"fmt"
+	"log"
 	"net/http"
+	"oneinstack/app"
+	"oneinstack/internal/models"
+	auditservice "oneinstack/internal/services/audit"
 	"oneinstack/utils"
 	"strings"
 	"time"
@@ -34,7 +37,7 @@ const (
 func RequirePermission(requiredPermission Permission) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// 获取token信息
-		tokenClaims, exists := c.Get("tokenClaims")
+		tokenClaims, exists := c.Get(ContextTokenClaims)
 		if !exists {
 			c.JSON(http.StatusUnauthorized, gin.H{
 				"error": "Authentication required",
@@ -72,8 +75,8 @@ func RequirePermission(requiredPermission Permission) gin.HandlerFunc {
 // RequireAdmin 需要管理员权限的中间件
 func RequireAdmin() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		userId, exists := c.Get("userId")
-		if !exists {
+		userID, ok := AuthenticatedUserID(c)
+		if !ok {
 			c.JSON(http.StatusUnauthorized, gin.H{
 				"error": "Authentication required",
 				"code":  "AUTH_REQUIRED",
@@ -82,9 +85,18 @@ func RequireAdmin() gin.HandlerFunc {
 			return
 		}
 
-		// 这里应该从数据库查询用户角色，简化处理假设用户ID为1的是管理员
-		userIdInt, ok := userId.(int64)
-		if !ok || userIdInt != 1 {
+		database := app.DB()
+		if database == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{
+				"error": "Permission service is unavailable",
+				"code":  "PERMISSION_UNAVAILABLE",
+			})
+			c.Abort()
+			return
+		}
+
+		var user models.User
+		if err := database.Select("id", "is_admin").First(&user, userID).Error; err != nil || !user.IsAdmin {
 			c.JSON(http.StatusForbidden, gin.H{
 				"error": "Administrator access required",
 				"code":  "ADMIN_REQUIRED",
@@ -116,57 +128,209 @@ func hasPermission(claims *utils.Claims, permission Permission) bool {
 // AuditLog 审计日志中间件
 func AuditLog() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// 记录请求开始时间
 		start := time.Now()
-
-		// 获取用户信息
-		username, _ := c.Get("username")
-		userId, _ := c.Get("userId")
-
-		// 处理请求
+		requestID := auditservice.NewRequestID()
+		c.Set(ContextRequestID, requestID)
+		c.Header("X-Request-ID", requestID)
 		c.Next()
 
-		// 记录审计日志
-		duration := time.Since(start)
-
-		logEntry := map[string]interface{}{
-			"timestamp":   start.Format(time.RFC3339),
-			"method":      c.Request.Method,
-			"path":        c.Request.URL.Path,
-			"status":      c.Writer.Status(),
-			"duration_ms": duration.Milliseconds(),
-			"ip":          c.ClientIP(),
-			"user_agent":  c.GetHeader("User-Agent"),
-			"username":    username,
-			"user_id":     userId,
+		status := c.Writer.Status()
+		path := c.Request.URL.Path
+		sensitive := isSensitiveOperation(c.Request.Method, path)
+		if !shouldPersistAudit(c.Request.Method, path, status, sensitive) {
+			return
 		}
-
-		// 记录敏感操作
-		if isSensitiveOperation(c.Request.Method, c.Request.URL.Path) {
-			logEntry["sensitive"] = true
-			logEntry["request_body_size"] = c.Request.ContentLength
+		manager := auditservice.Default()
+		if manager == nil {
+			return
 		}
+		route := c.FullPath()
+		if route == "" {
+			route = path
+		}
+		username, _ := c.Get(ContextUsername)
+		userID, _ := AuthenticatedUserID(c)
+		authMode, _ := c.Get(ContextAuthMode)
+		outcome := "success"
+		message := ""
+		if status >= http.StatusBadRequest {
+			outcome = "failure"
+			message = http.StatusText(status)
+		}
+		_, err := manager.Append(auditservice.EventInput{
+			RequestID: requestID, EventType: "http",
+			Action: strings.ToLower(c.Request.Method) + " " + route,
+			Method: c.Request.Method, Route: route, Path: path,
+			Status: status, Outcome: outcome, Sensitive: sensitive,
+			UserID: userID, Username: valueString(username), AuthMode: valueString(authMode),
+			RemoteIP: auditservice.RemoteIP(c.Request), UserAgent: c.GetHeader("User-Agent"),
+			ContentLength: c.Request.ContentLength,
+			DurationMS:    time.Since(start).Milliseconds(),
+			Message:       message,
+			CreatedAt:     start,
+		})
+		if err != nil {
+			log.Printf("persist audit event %s: %v", requestID, err)
+		}
+	}
+}
 
-		// 这里应该将日志写入到日志系统或数据库
-		// 简化处理，输出到控制台
-		fmt.Printf("AUDIT: %+v\n", logEntry)
+func valueString(value interface{}) string {
+	text, _ := value.(string)
+	return text
+}
+
+func shouldPersistAudit(method, path string, status int, sensitive bool) bool {
+	if sensitive || status >= http.StatusBadRequest {
+		return true
+	}
+	if method == http.MethodPost && isReadOnlyPost(path) {
+		return false
+	}
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		return false
+	default:
+		return true
+	}
+}
+
+func isReadOnlyPost(path string) bool {
+	switch path {
+	case "/v1/sys/dic/list",
+		"/v1/storage/liblist",
+		"/v1/storage/rklist",
+		"/v1/storage/info",
+		"/v1/ftp/list",
+		"/v1/ftp/content",
+		"/v1/ftp/tree",
+		"/v1/soft/list",
+		"/v1/soft/exploration",
+		"/v1/website/list",
+		"/v1/website/info",
+		"/v1/safe/rules",
+		"/v1/cron/list",
+		"/v1/cron/log":
+		return true
+	default:
+		return false
 	}
 }
 
 // isSensitiveOperation 判断是否为敏感操作
 func isSensitiveOperation(method, path string) bool {
+	if method != http.MethodGet && strings.HasPrefix(path, "/v1/monitor/") {
+		return true
+	}
+	if method != http.MethodGet && strings.HasPrefix(path, "/v1/soft/services/") {
+		return true
+	}
+	if method == http.MethodPost &&
+		strings.HasPrefix(path, "/v1/storage/backups/") &&
+		strings.HasSuffix(path, "/delete") {
+		return true
+	}
+	if method == http.MethodPost &&
+		strings.HasPrefix(path, "/v1/storage/tasks/") &&
+		strings.HasSuffix(path, "/cancel") {
+		return true
+	}
+	if method == http.MethodPost &&
+		strings.HasPrefix(path, "/v1/website/certificates/") {
+		return true
+	}
+	if method == http.MethodPost &&
+		strings.HasPrefix(path, "/v1/website/certificate-tasks/") &&
+		strings.HasSuffix(path, "/cancel") {
+		return true
+	}
+	if method == http.MethodPost &&
+		strings.HasPrefix(path, "/v1/website/backups/") &&
+		strings.HasSuffix(path, "/delete") {
+		return true
+	}
+	if method == http.MethodPost &&
+		strings.HasPrefix(path, "/v1/website/tasks/") &&
+		strings.HasSuffix(path, "/cancel") {
+		return true
+	}
+	if method == http.MethodPost &&
+		strings.HasPrefix(path, "/v1/sessions/") &&
+		strings.HasSuffix(path, "/revoke") {
+		return true
+	}
+	if method == http.MethodPost &&
+		strings.HasPrefix(path, "/v1/cron/executions/") &&
+		strings.HasSuffix(path, "/cancel") {
+		return true
+	}
+	if method == http.MethodGet &&
+		strings.HasPrefix(path, "/v1/storage/backups/") &&
+		strings.HasSuffix(path, "/download") {
+		return true
+	}
+	if method == http.MethodGet &&
+		strings.HasPrefix(path, "/v1/website/backups/") &&
+		strings.HasSuffix(path, "/download") {
+		return true
+	}
+	if method == http.MethodGet &&
+		strings.HasPrefix(path, "/v1/soft/tasks/") &&
+		strings.HasSuffix(path, "/log/download") {
+		return true
+	}
+	if method == http.MethodGet &&
+		strings.HasPrefix(path, "/v1/cron/") &&
+		strings.HasSuffix(path, "/log/export") {
+		return true
+	}
 	sensitiveOperations := map[string][]string{
 		"POST": {
 			"/v1/login",
+			"/v1/logout",
+			"/v1/sessions/revoke-others",
+			"/v1/security/totp/setup",
+			"/v1/security/totp/confirm",
+			"/v1/security/totp/disable",
+			"/v1/security/totp/recovery-codes/regenerate",
 			"/v1/sys/updateuser",
 			"/v1/sys/resetpassword",
 			"/v1/sys/updateport",
+			"/v1/sys/update/check",
+			"/v1/sys/update/apply",
 			"/v1/soft/install",
 			"/v1/soft/remove",
+			"/v1/storage/addconn",
+			"/v1/storage/updateconn",
+			"/v1/storage/delconn",
+			"/v1/storage/addlib",
+			"/v1/storage/dellib",
+			"/v1/storage/backups",
+			"/v1/storage/restores",
+			"/v1/cron/add",
+			"/v1/cron/update",
+			"/v1/cron/del",
+			"/v1/cron/disable",
+			"/v1/cron/enable",
+			"/v1/cron/run",
+			"/v1/cron/log/cleanup",
 			"/v1/safe/add",
+			"/v1/safe/update",
 			"/v1/safe/del",
+			"/v1/safe/stop",
+			"/v1/safe/blockping",
+			"/v1/safe/install",
 			"/v1/website/add",
 			"/v1/website/del",
+			"/v1/website/backups",
+			"/v1/website/restores",
+			"/v1/website/certificates/acme",
+			"/v1/ssh/ticket",
+			"/v1/audit/verify",
+		},
+		"GET": {
+			"/v1/ssh/open",
+			"/v1/audit/export",
 		},
 		"DELETE": {
 			"/v1/sys/remark/del",

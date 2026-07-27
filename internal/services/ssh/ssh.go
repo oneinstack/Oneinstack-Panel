@@ -1,12 +1,12 @@
 package ssh
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
-	"fmt"
-	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"sync"
@@ -18,136 +18,147 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-func OpenWebShell(c *gin.Context) {
-	var upgrader = websocket.Upgrader{
-		ReadBufferSize:  1024,
-		WriteBufferSize: 1024,
-		CheckOrigin: func(r *http.Request) bool {
-			return true
-		},
+const terminalIdleTimeout = 10 * time.Minute
+
+func OpenWebShell(c *gin.Context, maxDuration time.Duration) {
+	upgrader := websocket.Upgrader{
+		ReadBufferSize:  4096,
+		WriteBufferSize: 4096,
+		CheckOrigin:     sameOrigin,
 	}
-	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
+	connection, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
-		fmt.Println("WebSocket upgrade failed:", err)
 		return
 	}
-	defer conn.Close()
+	defer connection.Close()
+	connection.SetReadLimit(64 << 10)
+	_ = connection.SetReadDeadline(time.Now().Add(terminalIdleTimeout))
+	connection.SetPongHandler(func(string) error {
+		return connection.SetReadDeadline(time.Now().Add(terminalIdleTimeout))
+	})
 
-	// 创建带有伪终端的命令
-	cmd := exec.Command("bash", "-i") // 加 -i 更像交互式终端
-	cmd.Env = append(os.Environ(), "TERM=xterm")
-	fmt.Println(cmd.Args)
-	fmt.Println(cmd.String())
-	ptmx, err := pty.StartWithAttrs(cmd, &pty.Winsize{Rows: 24, Cols: 80}, &syscall.SysProcAttr{
+	sessionContext, cancel := context.WithTimeout(c.Request.Context(), maxDuration)
+	defer cancel()
+	command := exec.CommandContext(sessionContext, "/bin/bash", "--noprofile", "--norc", "-i")
+	command.Env = append(os.Environ(), "TERM=xterm-256color")
+	terminal, err := pty.StartWithAttrs(command, &pty.Winsize{Rows: 30, Cols: 100}, &syscall.SysProcAttr{
 		Setsid:  true,
 		Setctty: true,
 	})
-	fmt.Println("ptmx:", ptmx)
 	if err != nil {
-		conn.WriteMessage(websocket.TextMessage, []byte("Failed to start shell: "+err.Error()))
+		_ = connection.WriteMessage(websocket.TextMessage, []byte(base64.StdEncoding.EncodeToString([]byte("无法启动终端会话\r\n"))))
 		return
 	}
-	defer ptmx.Close()
-	defer cmd.Process.Kill()
-
-	// 设置终端属性，关闭 echo
-	go func() {
-		time.Sleep(100 * time.Millisecond)
-		stty := exec.Command("stty", "-echo")
-		stty.Stdin = ptmx
-		stty.Stdout = ptmx
-		stty.Stderr = ptmx
-		stty.Run()
+	defer terminal.Close()
+	defer func() {
+		if command.Process != nil {
+			_ = command.Process.Kill()
+		}
+		_ = command.Wait()
 	}()
+
+	disableEcho := exec.Command("stty", "-echo")
+	disableEcho.Stdin = terminal
+	disableEcho.Stdout = terminal
+	disableEcho.Stderr = terminal
+	_ = disableEcho.Run()
 
 	done := make(chan struct{})
-	var once sync.Once
-	closeDone := func() { once.Do(func() { close(done) }) }
+	var doneOnce sync.Once
+	finish := func() {
+		doneOnce.Do(func() {
+			close(done)
+			_ = connection.Close()
+		})
+	}
 
-	// 优化输出处理
 	go func() {
-		defer func() {
-			if err := recover(); err != nil {
-				log.Println("Read error:", err)
-			}
-		}()
-		buf := make([]byte, 4096)
+		defer finish()
+		buffer := make([]byte, 4096)
 		for {
-			n, err := ptmx.Read(buf)
-			if err != nil {
-				closeDone()
-				return
+			count, readErr := terminal.Read(buffer)
+			if count > 0 {
+				encoded := base64.StdEncoding.EncodeToString(buffer[:count])
+				if writeErr := connection.WriteMessage(websocket.TextMessage, []byte(encoded)); writeErr != nil {
+					return
+				}
 			}
-
-			if err := conn.WriteMessage(websocket.TextMessage, buf[:n]); err != nil {
-				closeDone()
+			if readErr != nil {
 				return
 			}
 		}
 	}()
 
-	// 优化输入处理
 	go func() {
-		defer func() {
-			if err := recover(); err != nil {
-				log.Println("Read error:", err)
-			}
-		}()
-		for {
-			// 设置30秒读取超时
-			conn.SetReadDeadline(time.Now().Add(10 * time.Minute))
-			messageType, data, err := conn.ReadMessage()
-			if err != nil {
-				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-					log.Println("Connection closed due to inactivity timeout")
-				}
-				closeDone()
-				return
-			}
-
-			switch messageType {
-
-			case websocket.TextMessage:
-				// 先尝试解析窗口大小
-				var size struct {
-					Rows uint16 `json:"rows"`
-					Cols uint16 `json:"cols"`
-				}
-				if err := json.Unmarshal(data, &size); err == nil {
-					pty.Setsize(ptmx, &pty.Winsize{
-						Rows: size.Rows,
-						Cols: size.Cols,
-					})
-					continue
-				}
-				// data 是base64编码的字符串 通过base64解码
-				ddata, err := base64.StdEncoding.DecodeString(string(data))
-				if err != nil {
-					return
-				}
-				// 处理普通文本输入
-				if _, err := ptmx.Write(ddata); err != nil {
-					return
-				}
-
-			case websocket.BinaryMessage:
-				// data 是base64编码的字符串 通过base64解码
-				ddata, err := base64.StdEncoding.DecodeString(string(data))
-				if err != nil {
-					return
-				}
-				// 直接写入二进制数据
-				if _, err := ptmx.Write(ddata); err != nil {
-					return
-				}
-			default:
-				closeDone()
-				return
-			}
-
-		}
+		<-sessionContext.Done()
+		finish()
 	}()
 
-	// 等待关闭信号
+	for {
+		messageType, data, readErr := connection.ReadMessage()
+		if readErr != nil {
+			if networkError, ok := readErr.(net.Error); ok && networkError.Timeout() {
+				finish()
+			}
+			break
+		}
+		_ = connection.SetReadDeadline(time.Now().Add(terminalIdleTimeout))
+
+		switch messageType {
+		case websocket.TextMessage:
+			if handleResizeMessage(terminal, data) {
+				continue
+			}
+			decoded, decodeErr := base64.StdEncoding.DecodeString(string(data))
+			if decodeErr != nil {
+				finish()
+				break
+			}
+			if _, writeErr := terminal.Write(decoded); writeErr != nil {
+				finish()
+				break
+			}
+		case websocket.BinaryMessage:
+			if _, writeErr := terminal.Write(data); writeErr != nil {
+				finish()
+				break
+			}
+		default:
+			finish()
+		}
+		select {
+		case <-done:
+			return
+		default:
+		}
+	}
+	finish()
 	<-done
+}
+
+func handleResizeMessage(terminal *os.File, data []byte) bool {
+	var size struct {
+		Rows uint16 `json:"rows"`
+		Cols uint16 `json:"cols"`
+	}
+	if err := json.Unmarshal(data, &size); err != nil {
+		return false
+	}
+	if size.Rows < 1 || size.Rows > 500 || size.Cols < 1 || size.Cols > 500 {
+		return true
+	}
+	_ = pty.Setsize(terminal, &pty.Winsize{Rows: size.Rows, Cols: size.Cols})
+	return true
+}
+
+func sameOrigin(request *http.Request) bool {
+	origin := request.Header.Get("Origin")
+	if origin == "" {
+		return false
+	}
+	parsed, err := url.Parse(origin)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return false
+	}
+	return parsed.Host == request.Host
 }

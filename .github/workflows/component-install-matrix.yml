@@ -1,0 +1,114 @@
+name: Component installation matrix
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: component-install-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  install:
+    name: ${{ matrix.component }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+        component: [nginx, mysql, php, redis]
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Execute production component lifecycle
+        id: lifecycle
+        shell: bash
+        env:
+          COMPONENT: ${{ matrix.component }}
+        run: |
+          set -Eeuo pipefail
+          case "${COMPONENT}" in
+            nginx) software_version="1.28.2" ;;
+            mysql) software_version="8.0" ;;
+            php) software_version="8.3" ;;
+            redis) software_version="7.4.8" ;;
+            *) echo "Unsupported matrix component: ${COMPONENT}" >&2; exit 1 ;;
+          esac
+
+          package_root="script-registry/bundled/${COMPONENT}/1.0.0"
+          progress_file="${RUNNER_TEMP}/${COMPONENT}-progress.jsonl"
+          lifecycle_log="${RUNNER_TEMP}/${COMPONENT}-lifecycle.log"
+          mysql_password="Ci$(openssl rand -hex 12)!A"
+          redis_password="Ci$(openssl rand -hex 12)!A"
+          touch "${progress_file}" "${lifecycle_log}"
+
+          run_action() {
+            local action="$1"
+            echo "::group::${COMPONENT} ${action}"
+            sudo env \
+              SOFTWARE_VERSION="${software_version}" \
+              MYSQL_PASSWORD="${mysql_password}" \
+              MYSQL_PORT="33306" \
+              REDIS_PASSWORD="${redis_password}" \
+              REDIS_PORT="36379" \
+              bash -c '
+                set -Eeuo pipefail
+                exec 3>>"$1"
+                export ONEINSTACK_PROGRESS_FD=3
+                exec bash "$2"
+              ' _ "${progress_file}" "${package_root}/scripts/${action}.sh" \
+              2>&1 | tee -a "${lifecycle_log}"
+            echo "::endgroup::"
+          }
+
+          lifecycle_completed=false
+          recover_on_exit() {
+            status=$?
+            trap - EXIT
+            if [[ "${lifecycle_completed}" != true ]]; then
+              echo "Lifecycle failed; invoking package rollback." | tee -a "${lifecycle_log}"
+              run_action rollback || true
+            fi
+            exit "${status}"
+          }
+          trap recover_on_exit EXIT
+
+          (
+            cd "${package_root}"
+            sha256sum --check files.sha256
+          )
+          run_action precheck
+          run_action install
+          run_action configure
+          run_action verify
+          lifecycle_completed=true
+
+          while IFS= read -r event; do
+            jq -e '
+              .type == "progress" and
+              (.percent | type == "number") and
+              .percent >= 0 and .percent <= 100 and
+              (.code | type == "string") and
+              (.message | type == "string")
+            ' <<<"${event}" >/dev/null
+          done <"${progress_file}"
+          [[ -s "${progress_file}" ]]
+
+          run_action uninstall
+          trap - EXIT
+
+      - name: Upload installation evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: component-${{ matrix.component }}-${{ matrix.os }}-${{ github.run_id }}
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            ${{ runner.temp }}/${{ matrix.component }}-progress.jsonl
+            ${{ runner.temp }}/${{ matrix.component }}-lifecycle.log

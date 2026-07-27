@@ -1,97 +1,90 @@
 package utils
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/spf13/viper"
 )
 
 type Claims struct {
-	Id       int64  `json:"id"`
-	Username string `json:"username"`
+	Id              int64  `json:"id"`
+	Username        string `json:"username"`
+	SessionID       string `json:"sid,omitempty"`
+	SecurityVersion uint64 `json:"sv,omitempty"`
 	jwt.RegisteredClaims
 }
 
-// getJWTKey 安全获取JWT密钥
+var configuredJWTKey struct {
+	sync.RWMutex
+	value []byte
+}
+
+func ConfigureJWTKey(key []byte) error {
+	if len(key) < 32 {
+		return errors.New("JWT key must contain at least 32 bytes")
+	}
+	configuredJWTKey.Lock()
+	configuredJWTKey.value = append(configuredJWTKey.value[:0], key...)
+	configuredJWTKey.Unlock()
+	return nil
+}
+
 func getJWTKey() ([]byte, error) {
-	// 优先从环境变量获取
 	if key := os.Getenv("JWT_SECRET_KEY"); key != "" {
+		if len(key) < 32 {
+			return nil, errors.New("JWT_SECRET_KEY must contain at least 32 bytes")
+		}
 		return []byte(key), nil
 	}
 
-	// 创建一个新的viper实例来读取配置文件
-	v := viper.New()
-	v.SetConfigName("config")
-	v.SetConfigType("yaml")
-	v.AddConfigPath(".")
-	v.AddConfigPath("./")
-
-	// 尝试读取配置文件
-	if err := v.ReadInConfig(); err == nil {
-		if jwtSecret := v.GetString("system.jwtSecret"); jwtSecret != "" {
-			// 如果是hex编码的字符串，尝试解码
-			if decoded, err := hex.DecodeString(jwtSecret); err == nil && len(decoded) >= 32 {
-				return decoded, nil
-			}
-			// 如果不是hex编码或者解码失败，直接使用原字符串
-			return []byte(jwtSecret), nil
-		}
+	configuredJWTKey.RLock()
+	defer configuredJWTKey.RUnlock()
+	if len(configuredJWTKey.value) < 32 {
+		return nil, errors.New("JWT key is not initialized")
 	}
-
-	// 如果都没有，生成一个随机密钥并保存到配置
-	key, err := generateRandomKey(32)
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate JWT key: %v", err)
-	}
-
-	// 将生成的密钥保存到配置文件
-	keyHex := hex.EncodeToString(key)
-	v.Set("system.jwtSecret", keyHex)
-
-	// 保存配置到文件
-	if err := v.WriteConfig(); err != nil {
-		fmt.Printf("Warning: Failed to save JWT key to config file: %v\n", err)
-		fmt.Printf("Please manually set JWT_SECRET_KEY environment variable: %s\n", keyHex)
-	} else {
-		fmt.Printf("Auto-generated JWT key saved to config file\n")
-	}
-
-	return key, nil
-}
-
-// generateRandomKey 生成随机密钥
-func generateRandomKey(length int) ([]byte, error) {
-	key := make([]byte, length)
-	if _, err := rand.Read(key); err != nil {
-		return nil, err
-	}
-	return key, nil
+	return append([]byte(nil), configuredJWTKey.value...), nil
 }
 
 func GenerateJWT(username string, id int64) (string, error) {
+	token, _, err := generateJWT(username, id, "", 0)
+	return token, err
+}
+
+// GenerateSessionJWT creates a JWT bound to a persistent, revocable session.
+func GenerateSessionJWT(username string, id int64, sessionID string, securityVersion uint64) (string, time.Time, error) {
+	if sessionID == "" {
+		return "", time.Time{}, errors.New("session id is required")
+	}
+	if securityVersion == 0 {
+		securityVersion = 1
+	}
+	return generateJWT(username, id, sessionID, securityVersion)
+}
+
+func generateJWT(username string, id int64, sessionID string, securityVersion uint64) (string, time.Time, error) {
 	jwtKey, err := getJWTKey()
 	if err != nil {
-		return "", err
+		return "", time.Time{}, err
 	}
 
-	expirationTime := time.Now().Add(24 * time.Hour)
+	now := time.Now()
+	expirationTime := now.Add(24 * time.Hour)
 	claims := &Claims{
-		Id:       id,
-		Username: username,
+		Id: id, Username: username, SessionID: sessionID,
+		SecurityVersion: securityVersion,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(expirationTime),
-			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			IssuedAt:  jwt.NewNumericDate(now),
 			Issuer:    "oneinstack-panel",
 		},
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return token.SignedString(jwtKey)
+	signed, err := token.SignedString(jwtKey)
+	return signed, expirationTime, err
 }
 
 func ValidateJWT(tokenStr string) (*Claims, error) {
@@ -101,13 +94,18 @@ func ValidateJWT(tokenStr string) (*Claims, error) {
 	}
 
 	claims := &Claims{}
-	tkn, err := jwt.ParseWithClaims(tokenStr, claims, func(token *jwt.Token) (interface{}, error) {
-		// 验证签名方法
-		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-		}
-		return jwtKey, nil
-	})
+	tkn, err := jwt.ParseWithClaims(
+		tokenStr,
+		claims,
+		func(token *jwt.Token) (interface{}, error) {
+			if token.Method != jwt.SigningMethodHS256 {
+				return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+			}
+			return jwtKey, nil
+		},
+		jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}),
+		jwt.WithIssuer("oneinstack-panel"),
+	)
 	if err != nil {
 		return nil, err
 	}

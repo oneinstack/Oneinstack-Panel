@@ -2,17 +2,19 @@ package cron
 
 import (
 	"errors"
+	"github.com/gin-gonic/gin"
 	"oneinstack/app"
 	"oneinstack/internal/models"
 	"oneinstack/internal/services"
 	"oneinstack/router/input"
 	"strings"
+	"time"
 
-	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 func GetCronList(c *gin.Context, param *input.CronParam) (*services.PaginatedResult[models.CronJob], error) {
-	tx := app.DB().Model(&models.CronJob{})
+	tx := app.DB().Model(&models.CronJob{}).Order("created_at DESC")
 	if param.Name != "" {
 		tx = tx.Where("name LIKE ?", "%"+param.Name+"%")
 	}
@@ -22,76 +24,75 @@ func GetCronList(c *gin.Context, param *input.CronParam) (*services.PaginatedRes
 	})
 }
 
-func AddCron(c *gin.Context, param *input.AddCronParam) error {
-	if param.Command == "" {
-		return errors.New("command is required")
-	}
-	if len(param.Schedule) == 0 {
-		return errors.New("schedule is required")
-	}
-	tx := app.DB().Create(&models.CronJob{
-		Command:     param.Command,
-		Schedule:    strings.Join(param.Schedule, ","),
-		Description: param.Description,
-		Enabled:     true,
-	})
-
-	return tx.Error
-}
-
-func UpdateCron(c *gin.Context, param *input.AddCronParam) error {
-	tx := app.DB().Model(&models.CronJob{}).Where("id = ?", param.ID).Updates(&models.CronJob{
-		Command:     param.Command,
-		Schedule:    strings.Join(param.Schedule, ","),
-		Description: param.Description,
-		Enabled:     true,
-	})
-	return tx.Error
-}
-
-func DeleteCron(c *gin.Context, id int) error {
-	// 获取要删除的任务
-	var cron models.CronJob
-	if err := app.DB().First(&cron, id).Error; err != nil {
-		return err
-	}
-
-	// 从数据库删除
-	if err := app.DB().Delete(&cron).Error; err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func DisableCron(c *gin.Context, ids []int) error {
-	// 更新状态为禁用
-	if err := app.DB().Model(&models.CronJob{}).Where("id IN ?", ids).Update("enabled", false).Error; err != nil {
-		return err
-	}
-	return nil
-}
-
-func EnableCron(c *gin.Context, ids []int) error {
-	// 更新状态为启用
-	if err := app.DB().Model(&models.CronJob{}).Where("id IN ?", ids).Update("enabled", true).Error; err != nil {
-		return err
-	}
-	return nil
-}
-
-func GetCronByIDs(c *gin.Context, ids []int) ([]*models.CronJob, error) {
-	var crons []*models.CronJob
-	if err := app.DB().Where("id IN ?", ids).Find(&crons).Error; err != nil {
+func GetCronLogList(c *gin.Context, param *input.CronParam) (*services.PaginatedResult[models.JobExecution], error) {
+	tx, err := filteredExecutions(param, 0)
+	if err != nil {
 		return nil, err
 	}
-	return crons, nil
-}
-
-func GetCronLogList(c *gin.Context, param *input.CronParam) (*services.PaginatedResult[models.JobExecution], error) {
-	tx := app.DB().Model(&models.JobExecution{}).Where("cron_job_id = ?", param.ID).Order("start_time DESC")
 	return services.Paginate[models.JobExecution](tx, &models.JobExecution{}, &input.Page{
 		Page:     param.Page.Page,
 		PageSize: param.Page.PageSize,
 	})
+}
+
+func GetCronExecutionsForExport(param *input.CronParam) ([]models.JobExecution, error) {
+	tx, err := filteredExecutions(param, 500)
+	if err != nil {
+		return nil, err
+	}
+	var executions []models.JobExecution
+	err = tx.Find(&executions).Error
+	return executions, err
+}
+
+func filteredExecutions(param *input.CronParam, limit int) (*gorm.DB, error) {
+	if param == nil || param.ID <= 0 {
+		return nil, errors.New("task id is required")
+	}
+	tx := app.DB().Model(&models.JobExecution{}).
+		Where("cron_job_id = ?", param.ID).
+		Order("start_time DESC")
+	status := strings.ToLower(strings.TrimSpace(param.Status))
+	if status != "" {
+		switch status {
+		case "running", "success", "failed", "timeout", "canceled", "skipped":
+		default:
+			return nil, errors.New("invalid execution status")
+		}
+		tx = tx.Where("status = ?", status)
+	}
+	startAt, err := parseExecutionTime(param.StartAt)
+	if err != nil {
+		return nil, err
+	}
+	endAt, err := parseExecutionTime(param.EndAt)
+	if err != nil {
+		return nil, err
+	}
+	if !startAt.IsZero() {
+		tx = tx.Where("start_time >= ?", startAt)
+	}
+	if !endAt.IsZero() {
+		tx = tx.Where("start_time <= ?", endAt)
+	}
+	if !startAt.IsZero() && !endAt.IsZero() {
+		if endAt.Before(startAt) || endAt.Sub(startAt) > 366*24*time.Hour {
+			return nil, errors.New("execution time range must be between 0 and 366 days")
+		}
+	}
+	if limit > 0 {
+		tx = tx.Limit(limit)
+	}
+	return tx, nil
+}
+
+func parseExecutionTime(value string) (time.Time, error) {
+	if strings.TrimSpace(value) == "" {
+		return time.Time{}, nil
+	}
+	parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(value))
+	if err != nil {
+		return time.Time{}, errors.New("execution time must use RFC3339")
+	}
+	return parsed.UTC(), nil
 }

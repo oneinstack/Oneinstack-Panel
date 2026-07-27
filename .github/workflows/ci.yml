@@ -1,0 +1,144 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Format, vet, test and scripts
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Download Go modules
+        run: go mod download
+
+      - name: Check Go formatting
+        shell: bash
+        run: |
+          unformatted="$(gofmt -l $(find . -type f -name '*.go'))"
+          if [ -n "$unformatted" ]; then
+            echo "The following files need gofmt:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Vet Go packages
+        run: go vet ./...
+
+      - name: Run race-enabled tests
+        run: go test -race -count=1 ./...
+
+      - name: Validate shell syntax
+        shell: bash
+        run: find . -type f -name '*.sh' -not -path './.git/*' -print0 | xargs -0 -n1 bash -n
+
+      - name: Install ShellCheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes shellcheck
+
+      - name: Run ShellCheck error gate
+        shell: bash
+        run: find . -type f -name '*.sh' -not -path './.git/*' -print0 | xargs -0 shellcheck --severity=error --external-sources
+
+      - name: Scan tracked source for secrets
+        run: ./scripts/secret-scan.sh
+
+  build:
+    name: Build Linux ${{ matrix.arch }}
+    needs: quality
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Build binary
+        shell: bash
+        env:
+          CGO_ENABLED: 0
+          GOOS: linux
+          GOARCH: ${{ matrix.arch }}
+        run: |
+          mkdir -p dist
+          build_time="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+          go build \
+            -trimpath \
+            -ldflags="-s -w \
+              -X oneinstack/internal/buildinfo.Version=${GITHUB_REF_NAME} \
+              -X oneinstack/internal/buildinfo.BuildTime=${build_time} \
+              -X oneinstack/internal/buildinfo.CommitHash=${GITHUB_SHA} \
+              -X oneinstack/internal/buildinfo.WebVersion=1.0.0" \
+            -o "dist/one-linux-${GOARCH}" ./cmd
+
+      - name: Verify executable metadata
+        if: matrix.arch == 'amd64'
+        run: ./dist/one-linux-amd64 version
+
+  install-matrix:
+    name: Install smoke (${{ matrix.os }})
+    needs: quality
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Install Bats
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes bats jq
+
+      - name: Run installer contract tests
+        run: bats tests/install.bats
+
+      - name: Run component fault and progress contracts
+        run: sudo --preserve-env=GITHUB_ACTIONS,CI bats tests/component-scripts.bats
+
+      - name: Build and package Linux amd64
+        run: |
+          make build GOOS=linux GOARCH=amd64 VERSION=ci
+          ./scripts/package-release.sh ci packages linux-amd64
+          ./scripts/verify-release.sh packages/one-linux-amd64-ci.tar.gz
+
+      - name: Run release lifecycle smoke test
+        run: ./scripts/ci-install-smoke.sh packages/one-linux-amd64-ci.tar.gz

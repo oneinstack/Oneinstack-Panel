@@ -3,11 +3,14 @@ package input
 type LoginRequest struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
+	TOTPCode string `json:"totpCode"`
+}
+
+type UpdateUserRequest struct {
+	Username string `json:"username"`
 }
 
 type ResetPasswordRequest struct {
-	Id          int64  `json:"id"`
-	Username    string `json:"username"`
-	Password    string `json:"password"`
-	NewPassword string `json:"new_password"`
+	CurrentPassword string `json:"currentPassword"`
+	Password        string `json:"password"`
 }

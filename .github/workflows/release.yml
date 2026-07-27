@@ -1,0 +1,222 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  component-install-matrix:
+    name: Verify production component installers
+    uses: ./.github/workflows/component-install-matrix.yml
+
+  verify:
+    name: Verify release source
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Run quality gate
+        run: make quality
+
+  package:
+    name: Package Linux ${{ matrix.arch }}
+    needs: [verify, component-install-matrix]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Build release binary
+        shell: bash
+        env:
+          CGO_ENABLED: 0
+          GOOS: linux
+          GOARCH: ${{ matrix.arch }}
+        run: |
+          build_time="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+          go build \
+            -trimpath \
+            -ldflags="-s -w \
+              -X oneinstack/internal/buildinfo.Version=${GITHUB_REF_NAME} \
+              -X oneinstack/internal/buildinfo.BuildTime=${build_time} \
+              -X oneinstack/internal/buildinfo.CommitHash=${GITHUB_SHA} \
+              -X oneinstack/internal/buildinfo.WebVersion=1.0.0" \
+            -o "dist/one-linux-${GOARCH}" ./cmd
+
+      - name: Check release metadata
+        if: matrix.arch == 'amd64'
+        run: ./dist/one-linux-amd64 version
+
+      - name: Create and verify package
+        run: |
+          ./scripts/package-release.sh "${GITHUB_REF_NAME}" packages "linux-${{ matrix.arch }}"
+          ./scripts/verify-release.sh "packages/one-linux-${{ matrix.arch }}-${GITHUB_REF_NAME}.tar.gz"
+
+      - name: Run release lifecycle smoke test
+        if: matrix.arch == 'amd64'
+        run: ./scripts/ci-install-smoke.sh "packages/one-linux-amd64-${GITHUB_REF_NAME}.tar.gz"
+
+      - name: Upload package
+        uses: actions/upload-artifact@v7
+        with:
+          name: one-linux-${{ matrix.arch }}-${{ github.ref_name }}
+          if-no-files-found: error
+          path: |
+            packages/one-linux-${{ matrix.arch }}-${{ github.ref_name }}.tar.gz
+            packages/one-linux-${{ matrix.arch }}-${{ github.ref_name }}.tar.gz.sha256
+
+  supply-chain:
+    name: Generate SBOM and license inventory
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Scan tracked source for secrets
+        run: ./scripts/secret-scan.sh
+
+      - name: Install pinned CycloneDX generator
+        env:
+          GOBIN: ${{ runner.temp }}/bin
+        run: |
+          mkdir -p "${GOBIN}"
+          go install github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@v1.9.0
+
+      - name: Generate SBOM, module, and license files
+        env:
+          PATH: ${{ runner.temp }}/bin:/usr/local/bin:/usr/bin:/bin
+        run: |
+          ./scripts/generate-go-sbom.sh release
+          cd release
+          sha256sum one-go.cdx.json one-go-licenses.tsv one-go-modules.txt > one-supply-chain.sha256
+
+      - name: Upload supply-chain evidence
+        uses: actions/upload-artifact@v7
+        with:
+          name: one-supply-chain-${{ github.ref_name }}
+          if-no-files-found: error
+          path: |
+            release/one-go.cdx.json
+            release/one-go-licenses.tsv
+            release/one-go-modules.txt
+            release/one-supply-chain.sha256
+
+  publish:
+    name: Publish GitHub release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [package, supply-chain]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Download packages
+        uses: actions/download-artifact@v8
+        with:
+          path: release
+          merge-multiple: true
+
+      - name: Create combined checksums
+        shell: bash
+        run: |
+          cd release
+          for checksum in *.sha256; do
+            sha256sum -c "${checksum}"
+          done
+          cat ./*.sha256 > checksums.txt
+
+      - name: Generate signed update manifest
+        shell: bash
+        env:
+          UPDATE_SIGNING_PRIVATE_KEY: ${{ secrets.UPDATE_SIGNING_PRIVATE_KEY }}
+          UPDATE_SIGNING_KEY_ID: ${{ secrets.UPDATE_SIGNING_KEY_ID }}
+        run: |
+          [[ -n "${UPDATE_SIGNING_PRIVATE_KEY}" ]] || {
+            echo "UPDATE_SIGNING_PRIVATE_KEY is required" >&2
+            exit 1
+          }
+          [[ -n "${UPDATE_SIGNING_KEY_ID}" ]] || {
+            echo "UPDATE_SIGNING_KEY_ID is required" >&2
+            exit 1
+          }
+          signing_key="${RUNNER_TEMP}/one-update-signing-key"
+          release_channel="stable"
+          case "${GITHUB_REF_NAME}" in
+            *-alpha*|*-beta*|*-rc*) release_channel="beta" ;;
+          esac
+          umask 077
+          printf '%s' "${UPDATE_SIGNING_PRIVATE_KEY}" >"${signing_key}"
+          go run ./cmd/update-manifest \
+            --version "${GITHUB_REF_NAME}" \
+            --channel "${release_channel}" \
+            --base-url "https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}" \
+            --key-id "${UPDATE_SIGNING_KEY_ID}" \
+            --private-key-file "${signing_key}" \
+            --release-notes "See the signed GitHub release notes for ${GITHUB_REF_NAME}." \
+            --artifact "linux-amd64=release/one-linux-amd64-${GITHUB_REF_NAME}.tar.gz" \
+            --artifact "linux-arm64=release/one-linux-arm64-${GITHUB_REF_NAME}.tar.gz" \
+            --output release/manifest.json
+          rm -f -- "${signing_key}"
+
+      - name: Create or update release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prerelease_args=()
+          case "${GITHUB_REF_NAME}" in
+            *-alpha*|*-beta*|*-rc*) prerelease_args+=(--prerelease) ;;
+          esac
+
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release upload "${GITHUB_REF_NAME}" release/* --clobber
+          else
+            gh release create "${GITHUB_REF_NAME}" release/* \
+              --verify-tag \
+              --generate-notes \
+              --title "OneinStack Panel ${GITHUB_REF_NAME}" \
+              "${prerelease_args[@]}"
+          fi

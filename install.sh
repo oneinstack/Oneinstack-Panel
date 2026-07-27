@@ -1,737 +1,580 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
-# Oneinstack Panel 安装脚本 - 优化版本
-# Copyright © 2024 oneinstack All rights reserved.
+set -euo pipefail
 
-set -euo pipefail  # 严格模式：遇到错误立即退出，未定义变量报错，管道错误传递
+readonly SCRIPT_VERSION="3.0.0"
+readonly MANAGED_MARKER="# Managed by OneinStack Panel installer"
 
-# 全局变量
-readonly SCRIPT_VERSION="2.0.0"
-readonly INSTALL_DIR="/usr/local/one"
-readonly LOG_FILE="/tmp/one_install.log"
-readonly BACKUP_DIR="/tmp/one_backup_$(date +%Y%m%d_%H%M%S)"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+action="install"
+root_prefix="${ONEINSTACK_INSTALL_ROOT:-}"
+install_dir_runtime="/usr/local/one"
+service_file_runtime="/etc/systemd/system/one.service"
+update_service_file_runtime="/etc/systemd/system/one-update.service"
+link_path_runtime="/usr/local/bin/one"
+binary_source="${script_dir}/one"
+config_source="${script_dir}/config.yaml"
+bundled_scripts_source="${script_dir}/script-registry/bundled"
+admin_user="admin"
+admin_password_file=""
+health_url="http://127.0.0.1:8089/health/ready"
+health_timeout=30
+force=false
+replace_config=false
+skip_init=false
+no_start=false
+no_enable=false
+no_health_check=false
+allow_unsupported=false
+purge=false
+assume_yes=false
+temporary_password_file=""
 
-# 颜色定义
-readonly RED='\033[31m'
-readonly GREEN='\033[32m'
-readonly YELLOW='\033[33m'
-readonly BLUE='\033[34m'
-readonly NC='\033[0m' # No Color
+usage() {
+  cat <<'EOF'
+OneinStack Panel 安装与卸载工具
 
-# 日志函数
-log() {
-    local level="$1"
-    shift
-    local message="$*"
-    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
-    echo -e "[$timestamp] [$level] $message" | tee -a "$LOG_FILE"
+用法:
+  ./install.sh [install] [选项]
+  ./install.sh uninstall [选项]
+
+安装选项:
+  --binary PATH              发布包内的 one 二进制文件
+  --config PATH              配置模板
+  --install-dir PATH         安装目录，默认 /usr/local/one
+  --admin-user USER          初始管理员用户名，默认 admin
+  --admin-password-file PATH 从权限受控的文件读取初始密码
+  --force                    更新已安装的程序文件
+  --replace-config           同时使用模板替换现有配置
+  --skip-init                跳过初始管理员创建
+  --no-enable                不启用 systemd 开机启动
+  --no-start                 不启动服务
+  --no-health-check          不检查 /health/ready
+  --health-url URL           自定义就绪检查地址
+  --health-timeout SECONDS   就绪检查超时，默认 30 秒
+  --allow-unsupported        允许在未验证的 Linux 发行版安装
+
+卸载选项:
+  --purge                    同时删除配置、数据库、日志和备份
+  --yes                      与 --purge 一起使用，确认不可恢复删除
+
+测试选项:
+  --root PATH                将所有文件写入测试根目录，不调用 systemd
+
+说明:
+  安装脚本不会修改软件源、防火墙、内核参数或执行系统全量升级。
+  普通卸载会保留安装目录内的配置、数据库、日志与备份。
+EOF
 }
 
-info() {
-    log "INFO" "${BLUE}$*${NC}"
+log() {
+  printf '[OneinStack] %s\n' "$*"
 }
 
 warn() {
-    log "WARN" "${YELLOW}$*${NC}"
+  printf '[OneinStack] 警告: %s\n' "$*" >&2
 }
 
-error() {
-    log "ERROR" "${RED}$*${NC}"
-    exit 1
+die() {
+  printf '[OneinStack] 错误: %s\n' "$*" >&2
+  exit 1
 }
 
-success() {
-    log "SUCCESS" "${GREEN}$*${NC}"
+cleanup() {
+  if [[ -n "$temporary_password_file" && -f "$temporary_password_file" ]]; then
+    rm -f -- "$temporary_password_file"
+  fi
+}
+trap cleanup EXIT
+
+require_value() {
+  local option="$1"
+  local value="${2:-}"
+  [[ -n "$value" ]] || die "${option} 需要参数"
 }
 
-# Logo显示
-show_logo() {
-    cat << 'EOF'
-+----------------------------------------------------
-| Oneinstack Panel 安装脚本 v2.0.0
-| 安全优化版本
-+----------------------------------------------------
-| Copyright © 2024 oneinstack All rights reserved.
-+----------------------------------------------------
-EOF
+validate_absolute_path() {
+  local label="$1"
+  local value="$2"
+  [[ "$value" == /* ]] || die "${label} 必须是绝对路径: ${value}"
+  [[ "$value" =~ ^/[A-Za-z0-9._/-]+$ ]] || die "${label} 包含不支持的字符: ${value}"
+  [[ "$value" != *"/../"* && "$value" != */.. && "$value" != *"/./"* ]] ||
+    die "${label} 不能包含 . 或 .. 路径段"
 }
 
-# 检查系统要求
-check_system_requirements() {
-    info "检查系统要求..."
-    
-    # 检查root权限
-    if [[ $EUID -ne 0 ]]; then
-        error "请使用root用户运行此脚本"
-    fi
-    
-    # 检查系统架构
-    local arch=$(uname -m)
-    case $arch in
-        x86_64|amd64)
-            info "系统架构: $arch ✓"
-            ;;
-        *)
-            error "不支持的系统架构: $arch"
-            ;;
+validate_install_dir() {
+  validate_absolute_path "安装目录" "$install_dir_runtime"
+  case "${install_dir_runtime%/}" in
+    ""|/|/bin|/boot|/data|/dev|/etc|/home|/lib|/lib64|/opt|/root|/run|/sbin|/srv|/tmp|/usr|/usr/local|/var)
+      die "拒绝使用过宽的安装目录: ${install_dir_runtime}"
+      ;;
+  esac
+}
+
+rooted_path() {
+  local runtime_path="$1"
+  printf '%s%s' "$root_prefix" "$runtime_path"
+}
+
+parse_arguments() {
+  if [[ $# -gt 0 ]]; then
+    case "$1" in
+      install|uninstall)
+        action="$1"
+        shift
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
     esac
-    
-    # 检查内存
-    local mem_total=$(free -m | awk 'NR==2{printf "%.0f", $2}')
-    if [[ $mem_total -lt 512 ]]; then
-        error "系统内存不足，至少需要512MB，当前: ${mem_total}MB"
-    fi
-    info "系统内存: ${mem_total}MB ✓"
-    
-    # 检查磁盘空间
-    local disk_free=$(df / | awk 'NR==2{printf "%.0f", $4/1024}')
-    if [[ $disk_free -lt 1024 ]]; then
-        error "磁盘空间不足，至少需要1GB，当前可用: ${disk_free}MB"
-    fi
-    info "磁盘空间: ${disk_free}MB ✓"
-    
-    # 检查是否已安装
-    if [[ -f "$INSTALL_DIR/one" ]]; then
-        warn "检测到面板已安装"
-        read -p "是否要重新安装？这将覆盖现有安装 [y/N]: " reinstall
-        if [[ ! "$reinstall" =~ ^[Yy]$ ]]; then
-            info "安装已取消"
-            exit 0
-        fi
-        backup_existing_installation
-    fi
-}
+  fi
 
-# 检测操作系统
-detect_os() {
-    info "检测操作系统..."
-    
-    if [[ -f /etc/os-release ]]; then
-        source /etc/os-release
-        OS_ID="$ID"
-        OS_VERSION="$VERSION_ID"
-    elif [[ -f /etc/redhat-release ]]; then
-        OS_ID="centos"
-        OS_VERSION=$(grep -oE '[0-9]+\.[0-9]+' /etc/redhat-release | head -1)
-    elif [[ -f /etc/debian_version ]]; then
-        OS_ID="debian"
-        OS_VERSION=$(cat /etc/debian_version)
-    else
-        error "无法检测操作系统类型"
-    fi
-    
-    case $OS_ID in
-        centos|rhel|rocky|almalinux)
-            OS_FAMILY="rhel"
-            PACKAGE_MANAGER="yum"
-            if command -v dnf >/dev/null 2>&1; then
-                PACKAGE_MANAGER="dnf"
-            fi
-            ;;
-        ubuntu|debian)
-            OS_FAMILY="debian"
-            PACKAGE_MANAGER="apt"
-            ;;
-        *)
-            error "不支持的操作系统: $OS_ID"
-            ;;
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --binary)
+        require_value "$1" "${2:-}"
+        binary_source="$2"
+        shift 2
+        ;;
+      --config)
+        require_value "$1" "${2:-}"
+        config_source="$2"
+        shift 2
+        ;;
+      --install-dir)
+        require_value "$1" "${2:-}"
+        install_dir_runtime="${2%/}"
+        shift 2
+        ;;
+      --admin-user)
+        require_value "$1" "${2:-}"
+        admin_user="$2"
+        shift 2
+        ;;
+      --admin-password-file)
+        require_value "$1" "${2:-}"
+        admin_password_file="$2"
+        shift 2
+        ;;
+      --health-url)
+        require_value "$1" "${2:-}"
+        health_url="$2"
+        shift 2
+        ;;
+      --health-timeout)
+        require_value "$1" "${2:-}"
+        health_timeout="$2"
+        shift 2
+        ;;
+      --root)
+        require_value "$1" "${2:-}"
+        root_prefix="${2%/}"
+        shift 2
+        ;;
+      --force)
+        force=true
+        shift
+        ;;
+      --replace-config)
+        replace_config=true
+        shift
+        ;;
+      --skip-init)
+        skip_init=true
+        shift
+        ;;
+      --no-start)
+        no_start=true
+        shift
+        ;;
+      --no-enable)
+        no_enable=true
+        shift
+        ;;
+      --no-health-check)
+        no_health_check=true
+        shift
+        ;;
+      --allow-unsupported)
+        allow_unsupported=true
+        shift
+        ;;
+      --purge)
+        purge=true
+        shift
+        ;;
+      --yes)
+        assume_yes=true
+        shift
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      *)
+        die "未知参数: $1"
+        ;;
     esac
-    
-    info "操作系统: $OS_ID $OS_VERSION ✓"
-    info "包管理器: $PACKAGE_MANAGER ✓"
+  done
 }
 
-# 检测网络环境
-detect_network_environment() {
-    info "检测网络环境..."
-    
-    # 检查网络连接
-    if ! ping -c 1 -W 5 8.8.8.8 >/dev/null 2>&1; then
-        error "网络连接失败，请检查网络设置"
-    fi
-    
-    # 检测是否在中国
-    local china_check=$(curl --retry 2 -m 10 -s https://httpbin.org/ip 2>/dev/null | grep -E '"origin".*"(1[0-9]{2}\.|2[0-4][0-9]\.|25[0-5]\.)"' || echo "false")
-    if [[ "$china_check" != "false" ]] || curl --retry 2 -m 5 -s https://www.baidu.com >/dev/null 2>&1; then
-        IN_CHINA=true
-        info "检测到中国网络环境，将使用国内镜像源"
-    else
-        IN_CHINA=false
-        info "检测到海外网络环境"
-    fi
+prepare_paths() {
+  validate_install_dir
+  [[ "$health_timeout" =~ ^[1-9][0-9]*$ ]] || die "健康检查超时必须是正整数"
+
+  if [[ -n "$root_prefix" ]]; then
+    validate_absolute_path "测试根目录" "$root_prefix"
+    [[ "$root_prefix" != "/" ]] || die "测试根目录不能是 /"
+    mkdir -p -- "$root_prefix"
+    root_prefix="$(cd "$root_prefix" && pwd -P)"
+    no_start=true
+    no_enable=true
+    no_health_check=true
+    skip_init=true
+  fi
+
+  install_dir="$(rooted_path "$install_dir_runtime")"
+  service_file="$(rooted_path "$service_file_runtime")"
+  update_service_file="$(rooted_path "$update_service_file_runtime")"
+  link_path="$(rooted_path "$link_path_runtime")"
 }
 
-# 备份现有安装
-backup_existing_installation() {
-    info "备份现有安装..."
-    
-    if [[ -d "$INSTALL_DIR" ]]; then
-        mkdir -p "$BACKUP_DIR"
-        cp -r "$INSTALL_DIR" "$BACKUP_DIR/" 2>/dev/null || true
-        info "备份保存至: $BACKUP_DIR"
-    fi
+check_host() {
+  if [[ -n "$root_prefix" ]]; then
+    return
+  fi
+  [[ "${EUID}" -eq 0 ]] || die "请使用 root 用户安装或卸载"
+  [[ "$(uname -s)" == "Linux" ]] || die "生产安装仅支持 Linux"
+  [[ -r /etc/os-release ]] || {
+    [[ "$allow_unsupported" == true ]] || die "无法识别 Linux 发行版，可使用 --allow-unsupported"
+    return
+  }
+
+  # shellcheck disable=SC1091
+  source /etc/os-release
+  case "${ID:-}" in
+    ubuntu|debian|centos|rhel|rocky|almalinux|opencloudos|anolis) ;;
+    *)
+      [[ "$allow_unsupported" == true ]] ||
+        die "尚未验证当前发行版 ${ID:-unknown}，可使用 --allow-unsupported"
+      warn "正在未验证的发行版 ${ID:-unknown} 上安装"
+      ;;
+  esac
+
+  command -v systemctl >/dev/null 2>&1 || die "系统缺少 systemctl"
 }
 
-# 配置系统环境
-configure_system() {
-    info "配置系统环境..."
-    
-    # 设置时区
-    if command -v timedatectl >/dev/null 2>&1; then
-        timedatectl set-timezone Asia/Shanghai
-        info "时区设置为: Asia/Shanghai"
-    fi
-    
-    # 配置镜像源（仅在中国环境）
-    if [[ "$IN_CHINA" == true ]]; then
-        configure_mirrors
-    fi
-    
-    # 创建安装目录
-    mkdir -p "$INSTALL_DIR"
-    chmod 755 "$INSTALL_DIR"
-    
-    # 优化系统参数
-    configure_system_parameters
+check_install_sources() {
+  [[ -f "$binary_source" ]] || die "找不到二进制文件: ${binary_source}"
+  [[ -x "$binary_source" ]] || die "二进制文件不可执行: ${binary_source}"
+  [[ -f "$config_source" ]] || die "找不到配置模板: ${config_source}"
+  [[ -d "$bundled_scripts_source" ]] || die "找不到内置组件包目录: ${bundled_scripts_source}"
+  "$binary_source" version >/dev/null 2>&1 ||
+    die "二进制文件无法在当前系统运行，请确认操作系统和 CPU 架构"
 }
 
-# 配置镜像源
-configure_mirrors() {
-    info "配置镜像源..."
-    
-    case $OS_FAMILY in
-        rhel)
-            configure_rhel_mirrors
-            ;;
-        debian)
-            configure_debian_mirrors
-            ;;
-    esac
+check_managed_service() {
+  if [[ -e "$service_file" ]] && ! grep -Fq "$MANAGED_MARKER" "$service_file"; then
+    die "服务文件不属于 OneinStack 安装器，拒绝覆盖: ${service_file_runtime}"
+  fi
+  if [[ -e "$update_service_file" ]] && ! grep -Fq "$MANAGED_MARKER" "$update_service_file"; then
+    die "更新服务文件不属于 OneinStack 安装器，拒绝覆盖: ${update_service_file_runtime}"
+  fi
 }
 
-# 配置RHEL系列镜像源
-configure_rhel_mirrors() {
-    local backup_dir="/etc/yum.repos.d/backup_$(date +%Y%m%d)"
-    mkdir -p "$backup_dir"
-    cp /etc/yum.repos.d/*.repo "$backup_dir/" 2>/dev/null || true
-    
-    case $OS_ID in
-        centos)
-            if [[ "${OS_VERSION%%.*}" -eq 7 ]]; then
-                configure_centos7_mirrors
-            elif [[ "${OS_VERSION%%.*}" -eq 8 ]]; then
-                configure_centos8_mirrors
-            fi
-            ;;
-        rocky|almalinux)
-            configure_el8_mirrors
-            ;;
-    esac
+check_managed_link() {
+  if [[ -L "$link_path" ]]; then
+    local target
+    target="$(readlink "$link_path")"
+    [[ "$target" == "${install_dir_runtime}/one" ]] ||
+      die "命令链接指向其他程序，拒绝覆盖: ${link_path_runtime} -> ${target}"
+  elif [[ -e "$link_path" ]]; then
+    die "命令路径已被普通文件占用，拒绝覆盖: ${link_path_runtime}"
+  fi
 }
 
-# 配置CentOS 7镜像源
-configure_centos7_mirrors() {
-    cat > /etc/yum.repos.d/CentOS-Base.repo << 'EOF'
-[base]
-name=CentOS-$releasever - Base - mirrors.aliyun.com
-baseurl=https://mirrors.aliyun.com/centos/$releasever/os/$basearch/
-gpgcheck=1
-gpgkey=https://mirrors.aliyun.com/centos/RPM-GPG-KEY-CentOS-7
+backup_existing() {
+  [[ -e "${install_dir}/one" || -e "${install_dir}/config.yaml" || -e "$service_file" ]] || return 0
 
-[updates]
-name=CentOS-$releasever - Updates - mirrors.aliyun.com
-baseurl=https://mirrors.aliyun.com/centos/$releasever/updates/$basearch/
-gpgcheck=1
-gpgkey=https://mirrors.aliyun.com/centos/RPM-GPG-KEY-CentOS-7
-
-[extras]
-name=CentOS-$releasever - Extras - mirrors.aliyun.com
-baseurl=https://mirrors.aliyun.com/centos/$releasever/extras/$basearch/
-gpgcheck=1
-gpgkey=https://mirrors.aliyun.com/centos/RPM-GPG-KEY-CentOS-7
-EOF
+  local backup_dir="${install_dir}/backups/$(date -u '+%Y%m%dT%H%M%SZ')-$$"
+  mkdir -p -- "$backup_dir"
+  chmod 0700 "$backup_dir"
+  [[ -f "${install_dir}/one" ]] && cp -p -- "${install_dir}/one" "${backup_dir}/one"
+  [[ -f "${install_dir}/config.yaml" ]] &&
+    cp -p -- "${install_dir}/config.yaml" "${backup_dir}/config.yaml"
+  [[ -f "$service_file" ]] && cp -p -- "$service_file" "${backup_dir}/one.service"
+  [[ -f "$update_service_file" ]] &&
+    cp -p -- "$update_service_file" "${backup_dir}/one-update.service"
+  log "现有安装已备份到 ${backup_dir}"
 }
 
-# 配置Debian系列镜像源
-configure_debian_mirrors() {
-    local sources_backup="/etc/apt/sources.list.backup_$(date +%Y%m%d)"
-    cp /etc/apt/sources.list "$sources_backup" 2>/dev/null || true
-    
-    case $OS_ID in
-        ubuntu)
-            configure_ubuntu_mirrors
-            ;;
-        debian)
-            configure_debian_official_mirrors
-            ;;
-    esac
-}
-
-# 配置Ubuntu镜像源
-configure_ubuntu_mirrors() {
-    local codename=$(lsb_release -cs 2>/dev/null || echo "jammy")
-    cat > /etc/apt/sources.list << EOF
-deb https://mirrors.aliyun.com/ubuntu/ $codename main restricted universe multiverse
-deb https://mirrors.aliyun.com/ubuntu/ $codename-security main restricted universe multiverse
-deb https://mirrors.aliyun.com/ubuntu/ $codename-updates main restricted universe multiverse
-deb https://mirrors.aliyun.com/ubuntu/ $codename-backports main restricted universe multiverse
-EOF
-}
-
-# 安装系统依赖
-install_dependencies() {
-    info "安装系统依赖..."
-    
-    case $OS_FAMILY in
-        rhel)
-            install_rhel_dependencies
-            ;;
-        debian)
-            install_debian_dependencies
-            ;;
-    esac
-}
-
-# 安装RHEL系列依赖
-install_rhel_dependencies() {
-    local packages=(
-        "curl" "wget" "unzip" "zip" "tar"
-        "git" "jq" "dos2unix" "make" "sudo"
-        "firewalld" "cronie" "logrotate"
-        "glibc" "libgcc" "openssl"
-    )
-    
-    $PACKAGE_MANAGER update -y || warn "软件包更新失败，继续安装"
-    
-    for package in "${packages[@]}"; do
-        if ! rpm -q "$package" >/dev/null 2>&1; then
-            info "安装: $package"
-            $PACKAGE_MANAGER install -y "$package" || warn "安装 $package 失败"
-        fi
-    done
-}
-
-# 安装Debian系列依赖
-install_debian_dependencies() {
-    local packages=(
-        "curl" "wget" "unzip" "zip" "tar"
-        "git" "jq" "dos2unix" "make" "sudo"
-        "ufw" "cron" "logrotate"
-        "libc6" "libgcc-s1" "openssl"
-        "ca-certificates"
-    )
-    
-    export DEBIAN_FRONTEND=noninteractive
-    apt update -y || warn "软件包更新失败，继续安装"
-    
-    for package in "${packages[@]}"; do
-        if ! dpkg -l "$package" >/dev/null 2>&1; then
-            info "安装: $package"
-            apt install -y "$package" || warn "安装 $package 失败"
-        fi
-    done
-}
-
-# 配置系统参数
-configure_system_parameters() {
-    info "配置系统参数..."
-    
-    # BBR拥塞控制算法
-    if [[ $(uname -r | cut -d. -f1) -ge 4 ]] && [[ $(uname -r | cut -d. -f2) -ge 9 ]]; then
-        echo 'net.core.default_qdisc=fq' >> /etc/sysctl.conf
-        echo 'net.ipv4.tcp_congestion_control=bbr' >> /etc/sysctl.conf
-        sysctl -p >/dev/null 2>&1 || warn "BBR配置失败"
-        info "BBR拥塞控制已启用"
-    fi
-    
-    # 优化文件描述符限制
-    cat >> /etc/security/limits.conf << 'EOF'
-* soft nofile 65535
-* hard nofile 65535
-root soft nofile 65535
-root hard nofile 65535
-EOF
-    
-    # 禁用防火墙（临时）
-    case $OS_FAMILY in
-        rhel)
-            systemctl disable firewalld >/dev/null 2>&1 || true
-            systemctl stop firewalld >/dev/null 2>&1 || true
-            ;;
-        debian)
-            ufw --force disable >/dev/null 2>&1 || true
-            ;;
-    esac
-}
-
-# 验证下载文件
-verify_download() {
-    local file="$1"
-    local expected_type="$2"
-    
-    if [[ ! -f "$file" ]]; then
-        error "下载文件不存在: $file"
-    fi
-    
-    local file_size=$(stat -c%s "$file" 2>/dev/null || stat -f%z "$file" 2>/dev/null)
-    if [[ $file_size -lt 1024 ]]; then
-        error "下载文件太小，可能下载失败: $file (${file_size} bytes)"
-    fi
-    
-    local file_type=$(file "$file" 2>/dev/null | tr '[:upper:]' '[:lower:]')
-    if [[ ! "$file_type" =~ $expected_type ]]; then
-        error "下载文件类型错误: $file_type，期望: $expected_type"
-    fi
-    
-    info "文件验证通过: $file (${file_size} bytes)"
-}
-
-# 下载安装包
-download_package() {
-    info "下载安装包..."
-    
-    local base_url="https://github.com/oneinstack/panel/releases/latest/download"
-    local backup_url="https://bugo-1301111475.cos.ap-guangzhou.myqcloud.com/oneinstack"
-    
-    # 如果在中国，优先使用备用地址
-    if [[ "$IN_CHINA" == true ]]; then
-        local temp_url="$base_url"
-        base_url="$backup_url"
-        backup_url="$temp_url"
-    fi
-    
-    local tarfile="/tmp/one_$(date +%Y%m%d_%H%M%S).tar"
-    local download_success=false
-    
-    # 尝试主要下载地址
-    info "尝试从主要地址下载..."
-    if curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 10 --max-time 300 \
-           -o "$tarfile" "${base_url}/one.tar"; then
-        verify_download "$tarfile" "tar"
-        download_success=true
-    else
-        warn "主要地址下载失败，尝试备用地址..."
-        
-        # 尝试备用下载地址
-        if curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 10 --max-time 300 \
-               -o "$tarfile" "${backup_url}/one.tar"; then
-            verify_download "$tarfile" "tar"
-            download_success=true
-        fi
-    fi
-    
-    if [[ "$download_success" != true ]]; then
-        error "所有下载地址均失败，请检查网络连接"
-    fi
-    
-    echo "$tarfile"
-}
-
-# 安装面板程序
-install_panel() {
-    info "安装面板程序..."
-    
-    local tarfile
-    tarfile=$(download_package)
-    
-    # 解压安装包
-    info "解压安装包..."
-    if ! tar -xf "$tarfile" -C "$INSTALL_DIR" --strip-components=1; then
-        error "解压安装包失败"
-    fi
-    
-    # 清理临时文件
-    rm -f "$tarfile"
-    
-    # 验证核心文件
-    local required_files=("one")
-    for file in "${required_files[@]}"; do
-        if [[ ! -f "$INSTALL_DIR/$file" ]]; then
-            error "核心文件缺失: $file"
-        fi
-    done
-    
-    # 设置权限
-    chmod 755 "$INSTALL_DIR/one"
-    chown -R root:root "$INSTALL_DIR"
-    
-    # 创建符号链接
-    ln -sf "$INSTALL_DIR/one" /usr/local/bin/one
-    
-    success "面板程序安装完成"
-}
-
-# 创建系统服务
-create_systemd_service() {
-    info "创建系统服务..."
-    
-    cat > /etc/systemd/system/one.service << EOF
+write_service_file() {
+  local temporary_service="${service_file}.new.$$"
+  local temporary_update_service="${update_service_file}.new.$$"
+  mkdir -p -- "$(dirname "$service_file")"
+  cat >"$temporary_service" <<EOF
+${MANAGED_MARKER}
 [Unit]
-Description=Oneinstack Panel Service
-Documentation=https://github.com/oneinstack/panel
-After=network.target
-Wants=network.target
+Description=OneinStack Panel
+Documentation=https://github.com/oneinstack/Oneinstack-Panel
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
-User=root
-Group=root
-WorkingDirectory=$INSTALL_DIR
-ExecStart=$INSTALL_DIR/one server start
-ExecStop=$INSTALL_DIR/one server stop
-ExecReload=/bin/kill -USR2 \$MAINPID
-KillMode=mixed
+WorkingDirectory=${install_dir_runtime}
+Environment=ONEINSTACK_BASE_PATH=${install_dir_runtime}
+Environment=ONEINSTACK_CONFIG_PATH=${install_dir_runtime}/config.yaml
+ExecStart=${install_dir_runtime}/one server start
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=15s
 KillSignal=SIGTERM
-TimeoutStopSec=5
-Restart=always
-RestartSec=10
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=one-panel
-
-# 安全设置
-NoNewPrivileges=true
-ProtectSystem=strict
-ReadWritePaths=$INSTALL_DIR /data /tmp /var/log
+UMask=0027
 PrivateTmp=true
-ProtectHome=true
-ProtectKernelTunables=true
-ProtectKernelModules=true
-ProtectControlGroups=true
 
 [Install]
 WantedBy=multi-user.target
 EOF
-    
-    # 重载systemd配置
-    systemctl daemon-reload
-    systemctl enable one
-    
-    success "系统服务创建完成"
-}
+  chmod 0644 "$temporary_service"
+  mv -f -- "$temporary_service" "$service_file"
 
-# 配置日志轮转
-configure_log_rotation() {
-    info "配置日志轮转..."
-    
-    cat > /etc/logrotate.d/one << 'EOF'
-/usr/local/one/logs/*.log {
-    daily
-    missingok
-    rotate 30
-    compress
-    delaycompress
-    notifempty
-    create 644 root root
-    sharedscripts
-    postrotate
-        systemctl reload one >/dev/null 2>&1 || true
-    endscript
-}
+  cat >"$temporary_update_service" <<EOF
+${MANAGED_MARKER}
+[Unit]
+Description=OneinStack Panel signed update transaction
+Documentation=https://github.com/oneinstack/Oneinstack-Panel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=${install_dir_runtime}
+Environment=ONEINSTACK_BASE_PATH=${install_dir_runtime}
+Environment=ONEINSTACK_CONFIG_PATH=${install_dir_runtime}/config.yaml
+ExecStart=${install_dir_runtime}/one update apply --yes
+TimeoutStartSec=30min
+UMask=0077
+PrivateTmp=true
 EOF
-    
-    # 创建日志目录
-    mkdir -p "$INSTALL_DIR/logs"
-    chmod 755 "$INSTALL_DIR/logs"
+  chmod 0644 "$temporary_update_service"
+  mv -f -- "$temporary_update_service" "$update_service_file"
 }
 
-# 配置环境变量
-configure_environment() {
-    info "配置环境变量..."
-    
-    # 添加到PATH
-    if ! grep -q "$INSTALL_DIR" /etc/profile; then
-        echo "export PATH=\$PATH:$INSTALL_DIR" >> /etc/profile
-    fi
-    
-    # 创建配置目录
-    mkdir -p /etc/one
-    chmod 755 /etc/one
+install_files() {
+  local temporary_binary="${install_dir}/.one.new.$$"
+  local temporary_config="${install_dir}/.config.yaml.new.$$"
+
+  mkdir -p -- "$install_dir"
+  chmod 0750 "$install_dir"
+  mkdir -p -- "$(rooted_path "/data/wwwroot")" \
+    "$(rooted_path "/data/wwwlogs")" \
+    "$(rooted_path "/data/db")"
+
+  install -m 0755 "$binary_source" "$temporary_binary"
+  mv -f -- "$temporary_binary" "${install_dir}/one"
+
+  if [[ ! -e "${install_dir}/config.yaml" || "$replace_config" == true ]]; then
+    install -m 0640 "$config_source" "$temporary_config"
+    mv -f -- "$temporary_config" "${install_dir}/config.yaml"
+  else
+    log "保留现有配置 ${install_dir_runtime}/config.yaml"
+  fi
+
+  mkdir -p -- "${install_dir}/script-registry/cache" "${install_dir}/script-registry/bundled"
+  chmod 0750 "${install_dir}/script-registry" "${install_dir}/script-registry/cache" "${install_dir}/script-registry/bundled"
+  cp -R -- "${bundled_scripts_source}/." "${install_dir}/script-registry/bundled/"
+  mkdir -p -- "${install_dir}/certificates" "${install_dir}/acme-webroot/.well-known/acme-challenge"
+  chmod 0700 "${install_dir}/certificates"
+  chmod 0755 "${install_dir}/acme-webroot" \
+    "${install_dir}/acme-webroot/.well-known" \
+    "${install_dir}/acme-webroot/.well-known/acme-challenge"
+
+  write_service_file
+  mkdir -p -- "$(dirname "$link_path")"
+  if [[ ! -L "$link_path" ]]; then
+    ln -s -- "${install_dir_runtime}/one" "$link_path"
+  fi
 }
 
-# 初始化面板
-initialize_panel() {
-    info "初始化面板配置..."
-    
-    # 生成随机密码
-    local admin_password
-    admin_password=$(openssl rand -base64 12 | tr -d "=+/" | cut -c1-12)
-    
-    # 初始化面板
-    if ! "$INSTALL_DIR/one" init --user=admin --password="$admin_password" >/dev/null 2>&1; then
-        warn "面板初始化失败，请手动初始化"
-        return 1
-    fi
-    
-    # 保存初始化信息
-    cat > "$INSTALL_DIR/init_info.txt" << EOF
-管理员账号: admin
-管理员密码: $admin_password
-安装时间: $(date '+%Y-%m-%d %H:%M:%S')
-安装版本: $SCRIPT_VERSION
-EOF
-    
-    chmod 600 "$INSTALL_DIR/init_info.txt"
-    
-    info "面板初始化完成"
-    echo "$admin_password"
+password_file_mode_is_safe() {
+  local file="$1"
+  local mode
+  mode="$(stat -c '%a' "$file" 2>/dev/null || true)"
+  [[ "$mode" =~ ^[0-7]?[0-7]00$ ]]
 }
 
-# 启动服务
-start_services() {
-    info "启动面板服务..."
-    
-    if systemctl start one; then
-        success "面板服务启动成功"
+prompt_for_password() {
+  [[ -t 0 && -t 1 ]] ||
+    die "非交互安装必须通过 --admin-password-file 提供初始密码"
+
+  local first=""
+  local second=""
+  read -r -s -p "请输入初始管理员密码: " first
+  printf '\n'
+  read -r -s -p "请再次输入初始管理员密码: " second
+  printf '\n'
+  [[ "$first" == "$second" ]] || die "两次输入的密码不一致"
+  [[ -n "$first" ]] || die "管理员密码不能为空"
+
+  temporary_password_file="${install_dir}/.admin-password.$$"
+  (umask 077 && printf '%s\n' "$first" >"$temporary_password_file")
+  first=""
+  second=""
+  admin_password_file="$temporary_password_file"
+}
+
+initialize_admin() {
+  [[ "$skip_init" == false ]] || return 0
+
+  if ONEINSTACK_BASE_PATH="$install_dir_runtime" \
+    ONEINSTACK_CONFIG_PATH="${install_dir_runtime}/config.yaml" \
+    "${install_dir}/one" init --user "$admin_user" >/dev/null 2>&1; then
+    log "管理员用户已经存在，跳过初始化"
+    return
+  fi
+
+  if [[ -z "$admin_password_file" ]]; then
+    prompt_for_password
+  fi
+  [[ -r "$admin_password_file" ]] || die "无法读取管理员密码文件"
+  password_file_mode_is_safe "$admin_password_file" ||
+    die "管理员密码文件不能允许组或其他用户读取，请使用 chmod 600"
+
+  ONEINSTACK_BASE_PATH="$install_dir_runtime" \
+    ONEINSTACK_CONFIG_PATH="${install_dir_runtime}/config.yaml" \
+    "${install_dir}/one" init \
+    --user "$admin_user" \
+    --password-file "$admin_password_file"
+}
+
+start_service() {
+  [[ -z "$root_prefix" ]] || return 0
+  systemctl daemon-reload
+  if [[ "$no_enable" == false ]]; then
+    systemctl enable one.service
+  fi
+  if [[ "$no_start" == false ]]; then
+    systemctl restart one.service
+  fi
+}
+
+check_health() {
+  [[ "$no_start" == false && "$no_health_check" == false ]] || return 0
+
+  local started_at
+  started_at="$(date +%s)"
+  while true; do
+    if command -v curl >/dev/null 2>&1; then
+      if curl --fail --silent --show-error --max-time 3 "$health_url" >/dev/null; then
+        log "服务就绪检查通过: ${health_url}"
+        return
+      fi
+    elif command -v wget >/dev/null 2>&1; then
+      if wget -q -T 3 -O /dev/null "$health_url"; then
+        log "服务就绪检查通过: ${health_url}"
+        return
+      fi
     else
-        error "面板服务启动失败，请检查日志: journalctl -u one -f"
+      die "缺少 curl 或 wget；安装后请自行检查服务，或使用 --no-health-check"
     fi
-    
-    # 等待服务启动
-    local retry=0
-    while [[ $retry -lt 30 ]]; do
-        if systemctl is-active one >/dev/null 2>&1; then
-            break
-        fi
-        sleep 1
-        ((retry++))
-    done
-    
-    if [[ $retry -ge 30 ]]; then
-        warn "服务启动超时，请检查状态"
+
+    if (( $(date +%s) - started_at >= health_timeout )); then
+      systemctl status one.service --no-pager || true
+      die "服务在 ${health_timeout} 秒内未通过就绪检查: ${health_url}"
     fi
+    sleep 1
+  done
 }
 
-# 获取访问信息
-get_access_info() {
-    local server_ip
-    server_ip=$(curl -s --connect-timeout 5 --max-time 10 https://httpbin.org/ip 2>/dev/null | grep -o '"[0-9.]*"' | tr -d '"' || echo "localhost")
-    
-    if [[ -z "$server_ip" ]] || [[ "$server_ip" == "localhost" ]]; then
-        server_ip=$(ip route get 8.8.8.8 2>/dev/null | grep -oP 'src \K[^ ]+' | head -1 || echo "localhost")
+run_install() {
+  check_install_sources
+  check_managed_service
+  check_managed_link
+
+  if [[ -x "${install_dir}/one" && "$force" == false ]]; then
+    die "面板已经安装；如需更新，请显式使用 --force"
+  fi
+  if [[ "$replace_config" == true && "$force" == false && -e "${install_dir}/config.yaml" ]]; then
+    die "替换现有配置必须同时使用 --force"
+  fi
+
+  if [[ "$force" == true ]]; then
+    backup_existing
+  fi
+  install_files
+  initialize_admin
+  start_service
+  check_health
+
+  log "安装完成"
+  log "安装目录: ${install_dir_runtime}"
+  if [[ -z "$root_prefix" && "$no_start" == false ]]; then
+    log "面板地址: ${health_url%/health/ready}"
+  fi
+}
+
+remove_managed_service_and_link() {
+  if [[ -f "$service_file" ]]; then
+    grep -Fq "$MANAGED_MARKER" "$service_file" ||
+      die "服务文件不属于 OneinStack 安装器，拒绝删除: ${service_file_runtime}"
+    rm -f -- "$service_file"
+  fi
+  if [[ -f "$update_service_file" ]]; then
+    grep -Fq "$MANAGED_MARKER" "$update_service_file" ||
+      die "更新服务文件不属于 OneinStack 安装器，拒绝删除: ${update_service_file_runtime}"
+    rm -f -- "$update_service_file"
+  fi
+
+  if [[ -L "$link_path" ]]; then
+    local target
+    target="$(readlink "$link_path")"
+    [[ "$target" == "${install_dir_runtime}/one" ]] ||
+      die "命令链接指向其他程序，拒绝删除: ${link_path_runtime}"
+    rm -f -- "$link_path"
+  fi
+}
+
+run_uninstall() {
+  if [[ "$purge" == true && "$assume_yes" == false ]]; then
+    die "--purge 会永久删除配置和数据库，必须同时使用 --yes"
+  fi
+
+  if [[ -z "$root_prefix" ]] && command -v systemctl >/dev/null 2>&1; then
+    systemctl stop one-update.service >/dev/null 2>&1 || true
+    systemctl disable --now one.service >/dev/null 2>&1 || true
+  fi
+  remove_managed_service_and_link
+
+  if [[ "$purge" == true ]]; then
+    validate_install_dir
+    [[ "$install_dir" == "$(rooted_path "$install_dir_runtime")" ]] ||
+      die "卸载目录校验失败"
+    if [[ -d "$install_dir" ]]; then
+      rm -rf -- "$install_dir"
     fi
-    
-    local port="8089"  # 默认端口
-    
-    echo "$server_ip:$port"
+    log "面板程序、配置、数据库、日志和备份已永久删除"
+  else
+    rm -f -- "${install_dir}/one"
+    log "面板程序已卸载，配置和数据保留在 ${install_dir_runtime}"
+  fi
+
+  if [[ -z "$root_prefix" ]] && command -v systemctl >/dev/null 2>&1; then
+    systemctl daemon-reload
+  fi
 }
 
-# 显示安装结果
-show_result() {
-    local admin_password="$1"
-    local access_url
-    access_url="http://$(get_access_info)"
-    
-    clear
-    show_logo
-    
-    cat << EOF
-
-${GREEN}✅ 安装完成！${NC}
-
-+----------------------------------------------------
-| 📋 访问信息
-+----------------------------------------------------
-| 访问地址: ${BLUE}$access_url${NC}
-| 管理账号: ${BLUE}admin${NC}
-| 管理密码: ${BLUE}$admin_password${NC}
-+----------------------------------------------------
-| 📋 管理命令
-+----------------------------------------------------
-| 启动面板: ${YELLOW}systemctl start one${NC}
-| 停止面板: ${YELLOW}systemctl stop one${NC}
-| 重启面板: ${YELLOW}systemctl restart one${NC}
-| 面板状态: ${YELLOW}systemctl status one${NC}
-| 查看日志: ${YELLOW}journalctl -u one -f${NC}
-+----------------------------------------------------
-| 📋 配置文件
-+----------------------------------------------------
-| 安装目录: ${YELLOW}$INSTALL_DIR${NC}
-| 配置文件: ${YELLOW}$INSTALL_DIR/config.yaml${NC}
-| 日志目录: ${YELLOW}$INSTALL_DIR/logs${NC}
-+----------------------------------------------------
-
-${YELLOW}⚠️  重要提示：${NC}
-1. 请及时修改默认密码
-2. 建议配置SSL证书
-3. 定期备份配置文件
-4. 查看完整文档: https://github.com/oneinstack/panel
-
-EOF
-
-    # 保存安装信息到日志
-    {
-        echo "=========================="
-        echo "安装完成时间: $(date)"
-        echo "访问地址: $access_url"
-        echo "管理账号: admin"
-        echo "管理密码: $admin_password"
-        echo "=========================="
-    } >> "$LOG_FILE"
-}
-
-# 清理函数
-cleanup() {
-    local exit_code=$?
-    
-    if [[ $exit_code -ne 0 ]]; then
-        error "安装过程中发生错误，退出码: $exit_code"
-        
-        if [[ -d "$BACKUP_DIR" ]]; then
-            info "如需恢复，备份位置: $BACKUP_DIR"
-        fi
-        
-        info "详细日志: $LOG_FILE"
-    fi
-    
-    # 清理临时文件
-    rm -f /tmp/one_*.tar 2>/dev/null || true
-}
-
-# 主安装流程
 main() {
-    # 设置错误处理
-    trap cleanup EXIT
-    
-    # 创建日志文件
-    touch "$LOG_FILE"
-    chmod 644 "$LOG_FILE"
-    
-    # 显示Logo
-    clear
-    show_logo
-    
-    # 安装确认
-    echo
-    read -p "面板将安装到 $INSTALL_DIR 目录，是否继续？[y/N]: " -r confirm
-    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
-        info "安装已取消"
-        exit 0
-    fi
-    
-    # 执行安装步骤
-    info "开始安装 Oneinstack Panel..."
-    
-    check_system_requirements
-    detect_os
-    detect_network_environment
-    configure_system
-    install_dependencies
-    install_panel
-    create_systemd_service
-    configure_log_rotation
-    configure_environment
-    
-    local admin_password
-    admin_password=$(initialize_panel)
-    
-    start_services
-    show_result "$admin_password"
-    
-    success "安装完成！"
+  parse_arguments "$@"
+  prepare_paths
+  check_host
+
+  case "$action" in
+    install) run_install ;;
+    uninstall) run_uninstall ;;
+    *) die "不支持的操作: ${action}" ;;
+  esac
 }
 
-# 检查是否直接执行
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-    main "$@"
-fi
+main "$@"

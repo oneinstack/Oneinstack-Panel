@@ -10,7 +10,7 @@ type Storage struct {
 	Addr       string    `json:"addr"`
 	Port       string    `json:"port"`
 	Root       string    `json:"root"`
-	Password   string    `json:"password"`
+	Password   string    `json:"-"`
 	Remark     string    `json:"remark"`
 	Type       string    `json:"type"`
 	CreateTime time.Time `json:"create_time"`

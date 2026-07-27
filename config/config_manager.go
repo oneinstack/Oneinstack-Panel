@@ -123,10 +123,47 @@ func NewConfigManager(configPath string) (*ConfigManager, error) {
 func (cm *ConfigManager) setDefaults() {
 	// 系统默认配置
 	cm.viper.SetDefault("system.port", "8089")
+	cm.viper.SetDefault("system.bindAddress", "0.0.0.0")
+	cm.viper.SetDefault("system.httpsEnabled", false)
+	cm.viper.SetDefault("system.httpsPort", "8443")
+	cm.viper.SetDefault("system.httpsCertificateFile", "")
+	cm.viper.SetDefault("system.httpsPrivateKeyFile", "")
+	cm.viper.SetDefault("system.trustedProxies", []string{})
 	cm.viper.SetDefault("system.defaultPath", "/data/")
 	cm.viper.SetDefault("system.webPath", "/data/wwwroot/")
 	cm.viper.SetDefault("system.logPath", "/data/wwwlogs/")
 	cm.viper.SetDefault("system.dataPath", "/data/db/")
+	cm.viper.SetDefault("system.fileUploadMaxBytes", int64(100<<20))
+	cm.viper.SetDefault("system.fileEditMaxBytes", int64(10<<20))
+	cm.viper.SetDefault("system.fileRootQuotaBytes", int64(0))
+	cm.viper.SetDefault("system.fileMinFreeBytes", int64(1<<30))
+	cm.viper.SetDefault("system.trashRetentionDays", 30)
+	cm.viper.SetDefault("system.trashCleanupSchedule", "0 3 * * *")
+	cm.viper.SetDefault("system.softwareTaskRetentionDays", 90)
+	cm.viper.SetDefault("system.softwareTaskLogRetentionDays", 30)
+	cm.viper.SetDefault("system.softwareTaskCleanupSchedule", "30 3 * * *")
+	cm.viper.SetDefault("system.databaseBackupRetentionDays", 30)
+	cm.viper.SetDefault("system.databaseBackupCleanupSchedule", "0 4 * * *")
+	cm.viper.SetDefault("system.websiteBackupRetentionDays", 30)
+	cm.viper.SetDefault("system.websiteBackupCleanupSchedule", "15 4 * * *")
+	cm.viper.SetDefault("system.websiteBackupMaxBytes", int64(20<<30))
+	cm.viper.SetDefault("system.websiteBackupMaxFiles", 200000)
+	cm.viper.SetDefault("system.auditRetentionDays", 365)
+	cm.viper.SetDefault("system.auditCleanupSchedule", "45 4 * * *")
+	cm.viper.SetDefault("system.auditExportMaxRows", 10000)
+	cm.viper.SetDefault("system.runtimeLogRetentionDays", 30)
+	cm.viper.SetDefault("system.runtimeLogCleanupSchedule", "10 5 * * *")
+	cm.viper.SetDefault("system.cronExecutionRetentionDays", 30)
+	cm.viper.SetDefault("system.cronExecutionCleanupSchedule", "25 5 * * *")
+	cm.viper.SetDefault("system.certificatePath", "/usr/local/one/certificates")
+	cm.viper.SetDefault("system.acmeChallengePath", "/usr/local/one/acme-webroot")
+	cm.viper.SetDefault("system.acmeDirectoryUrl", "https://acme-v02.api.letsencrypt.org/directory")
+	cm.viper.SetDefault("system.acmeRenewSchedule", "15 3 * * *")
+	cm.viper.SetDefault("system.acmeRenewBeforeDays", 30)
+	cm.viper.SetDefault("system.certificateExpiryWarningDays", 30)
+	cm.viper.SetDefault("system.acmeIssueTimeoutMinutes", 15)
+	cm.viper.SetDefault("system.terminalEnabled", false)
+	cm.viper.SetDefault("system.terminalSessionMinutes", 15)
 
 	// 数据库默认配置
 	cm.viper.SetDefault("database.type", "sqlite")
@@ -203,12 +240,50 @@ func (cm *ConfigManager) createDefaultConfig(configPath string) error {
 	defaultConfig := `# Oneinstack Panel Configuration
 system:
   port: "8089"
+  bindAddress: "0.0.0.0"
+  httpsEnabled: false
+  httpsPort: "8443"
+  httpsCertificateFile: ""
+  httpsPrivateKeyFile: ""
+  trustedProxies: []
   remote: "http://localhost:8189/v1/sys/update"
   defaultPath: "/data/"
   webPath: "/data/wwwroot/"
   logPath: "/data/wwwlogs/"
   dataPath: "/data/db/"
   jwtSecret: ""  # Will be auto-generated if empty
+  credentialKey: ""  # Will be auto-generated if empty
+  fileUploadMaxBytes: 104857600
+  fileEditMaxBytes: 10485760
+  fileRootQuotaBytes: 0
+  fileMinFreeBytes: 1073741824
+  trashRetentionDays: 30
+  trashCleanupSchedule: "0 3 * * *"
+  softwareTaskRetentionDays: 90
+  softwareTaskLogRetentionDays: 30
+  softwareTaskCleanupSchedule: "30 3 * * *"
+  databaseBackupRetentionDays: 30
+  databaseBackupCleanupSchedule: "0 4 * * *"
+  websiteBackupRetentionDays: 30
+  websiteBackupCleanupSchedule: "15 4 * * *"
+  websiteBackupMaxBytes: 21474836480
+  websiteBackupMaxFiles: 200000
+  auditRetentionDays: 365
+  auditCleanupSchedule: "45 4 * * *"
+  auditExportMaxRows: 10000
+  runtimeLogRetentionDays: 30
+  runtimeLogCleanupSchedule: "10 5 * * *"
+  cronExecutionRetentionDays: 30
+  cronExecutionCleanupSchedule: "25 5 * * *"
+  certificatePath: "/usr/local/one/certificates"
+  acmeChallengePath: "/usr/local/one/acme-webroot"
+  acmeDirectoryUrl: "https://acme-v02.api.letsencrypt.org/directory"
+  acmeRenewSchedule: "15 3 * * *"
+  acmeRenewBeforeDays: 30
+  certificateExpiryWarningDays: 30
+  acmeIssueTimeoutMinutes: 15
+  terminalEnabled: false
+  terminalSessionMinutes: 15
 
 database:
   type: "sqlite"
@@ -238,7 +313,7 @@ logging:
   compress: true
 `
 
-	return os.WriteFile(configPath, []byte(defaultConfig), 0644)
+	return os.WriteFile(configPath, []byte(defaultConfig), 0600)
 }
 
 // GetConfig 获取当前配置

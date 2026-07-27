@@ -1,9 +1,16 @@
 package software
 
 import (
+	"context"
 	"fmt"
+	"oneinstack/app"
+	"oneinstack/internal/models"
 	"oneinstack/internal/services/script"
+	"oneinstack/internal/services/scriptregistry"
 	"oneinstack/router/input"
+	"path/filepath"
+	"strings"
+	"time"
 )
 
 // Installer 软件安装器
@@ -20,8 +27,21 @@ func NewInstaller() *Installer {
 
 // Install 安装软件
 func (installer *Installer) Install(params *input.InstallParams, async bool) (string, error) {
-	// 获取安装脚本
-	scriptInfo, err := installer.getInstallScript(params)
+	return installer.install(context.Background(), params, async)
+}
+
+func (installer *Installer) install(ctx context.Context, params *input.InstallParams, async bool) (string, error) {
+	actionName := "install"
+	if app.DB() != nil {
+		var installed int64
+		app.DB().Model(&models.Software{}).
+			Where("`key` = ? AND installed = ?", params.Key, true).
+			Count(&installed)
+		if installed > 0 {
+			actionName = "upgrade"
+		}
+	}
+	scriptInfo, err := installer.getInstallScript(ctx, params, actionName)
 	if err != nil {
 		return "", err
 	}
@@ -33,65 +53,319 @@ func (installer *Installer) Install(params *input.InstallParams, async bool) (st
 	return installer.scriptManager.ExecuteScript(scriptInfo, params, async)
 }
 
-// Uninstall 卸载软件
-func (installer *Installer) Uninstall(params *input.RemoveParams, async bool) (string, error) {
-	// 获取卸载脚本
-	scriptInfo, err := installer.scriptManager.GetScript(script.ScriptTypeUninstall, params.Name)
+// InstallTask executes an installation synchronously under the durable task
+// runner. Progress is emitted at action boundaries and through the component
+// script's optional FD 3 JSON stream.
+func (installer *Installer) InstallTask(
+	ctx context.Context,
+	params *input.InstallParams,
+	logPath string,
+	observer script.ExecutionObserver,
+) (string, error) {
+	actionName := "install"
+	if app.DB() != nil {
+		var installed int64
+		if err := app.DB().Model(&models.Software{}).
+			Where("`key` = ? AND installed = ?", params.Key, true).
+			Count(&installed).Error; err != nil {
+			return "", err
+		}
+		if installed > 0 {
+			actionName = "upgrade"
+		}
+	}
+	scriptInfo, err := installer.getInstallScript(ctx, params, actionName)
 	if err != nil {
 		return "", err
 	}
+	installer.setScriptParams(scriptInfo, params)
+	return installer.scriptManager.ExecuteScriptTask(ctx, scriptInfo, params, logPath, observer)
+}
 
-	// 执行脚本
-	installParams := &input.InstallParams{
-		Key:     params.Name,
-		Version: params.Version,
+// Uninstall 卸载软件
+func (installer *Installer) Uninstall(params *input.RemoveParams, async bool) (string, error) {
+	scriptInfo, installParams, err := installer.getUninstallScript(context.Background(), params)
+	if err != nil {
+		return "", err
 	}
-
 	return installer.scriptManager.ExecuteScript(scriptInfo, installParams, async)
 }
 
+// UninstallTask executes a component uninstall under the durable task runner.
+// Component uninstall scripts preserve application data by default; a failed
+// or canceled action therefore leaves the installed database flag unchanged.
+func (installer *Installer) UninstallTask(
+	ctx context.Context,
+	params *input.RemoveParams,
+	logPath string,
+	observer script.ExecutionObserver,
+) (string, error) {
+	scriptInfo, installParams, err := installer.getUninstallScript(ctx, params)
+	if err != nil {
+		return "", err
+	}
+	return installer.scriptManager.ExecuteScriptTask(
+		ctx,
+		scriptInfo,
+		installParams,
+		logPath,
+		observer,
+	)
+}
+
+// ServiceActionTask executes a fixed service lifecycle action from the
+// verified component package. It never changes the software installation row.
+func (installer *Installer) ServiceActionTask(
+	ctx context.Context,
+	component string,
+	version string,
+	action string,
+	logPath string,
+	observer script.ExecutionObserver,
+) (string, error) {
+	definition, err := NormalizeServiceComponent(component)
+	if err != nil {
+		return "", err
+	}
+	action = strings.ToLower(strings.TrimSpace(action))
+	if !IsServiceAction(action) {
+		return "", fmt.Errorf("unsupported service action: %s", action)
+	}
+	registry, err := scriptregistry.New(app.ONE_CONFIG.ScriptCenter)
+	if err != nil {
+		return "", err
+	}
+	componentPackage, err := registry.Resolve(ctx, definition.Component, strings.TrimSpace(version))
+	if err != nil {
+		return "", fmt.Errorf("resolve %s %s package: %w", definition.Component, action, err)
+	}
+	scriptInfo, err := scriptInfoFromPackage(componentPackage, action)
+	if err != nil {
+		return "", err
+	}
+	params := (&serviceInstallParams{
+		key:     definition.SoftwareKey,
+		version: strings.TrimSpace(version),
+	}).input()
+	installer.setScriptParams(scriptInfo, params)
+	return installer.scriptManager.ExecuteScriptTask(ctx, scriptInfo, params, logPath, observer)
+}
+
+func (installer *Installer) getUninstallScript(
+	ctx context.Context,
+	params *input.RemoveParams,
+) (*script.ScriptInfo, *input.InstallParams, error) {
+	componentName, softwareKey, err := componentForRemove(params.Name)
+	if err != nil {
+		return nil, nil, err
+	}
+	registry, err := scriptregistry.New(app.ONE_CONFIG.ScriptCenter)
+	if err != nil {
+		return nil, nil, err
+	}
+	componentPackage, err := registry.Resolve(ctx, componentName, params.Version)
+	if err != nil {
+		return nil, nil, fmt.Errorf("resolve %s uninstall package: %w", componentName, err)
+	}
+	scriptInfo, err := scriptInfoFromPackage(componentPackage, "uninstall")
+	if err != nil {
+		return nil, nil, err
+	}
+	installParams := &input.InstallParams{
+		Key:     softwareKey,
+		Version: params.Version,
+	}
+	installer.setScriptParams(scriptInfo, installParams)
+	return scriptInfo, installParams, nil
+}
+
 // getInstallScript 获取安装脚本
-func (installer *Installer) getInstallScript(params *input.InstallParams) (*script.ScriptInfo, error) {
-	var scriptName string
+func (installer *Installer) getInstallScript(ctx context.Context, params *input.InstallParams, actionName string) (*script.ScriptInfo, error) {
+	var componentName string
+	var legacyScriptName string
 
 	switch params.Key {
 	case "webserver":
-		scriptName = "nginx"
+		componentName = "nginx"
+		legacyScriptName = "nginx"
 	case "db":
+		componentName = "mysql"
 		switch params.Version {
 		case "5.5":
-			scriptName = "mysql55"
+			legacyScriptName = "mysql55"
 		case "5.7":
-			scriptName = "mysql57"
+			legacyScriptName = "mysql57"
 		case "8.0":
-			scriptName = "mysql80"
+			legacyScriptName = "mysql80"
 		default:
 			return nil, fmt.Errorf("unsupported MySQL version: %s", params.Version)
 		}
 	case "redis":
-		scriptName = "redis"
+		componentName = "redis"
+		legacyScriptName = "redis"
 	case "php":
-		scriptName = "php"
+		componentName = "php"
+		legacyScriptName = "php"
 	case "java":
+		componentName = "java"
 		switch params.Version {
 		case "11":
-			scriptName = "openjdk11"
+			legacyScriptName = "openjdk11"
 		case "17":
-			scriptName = "openjdk17"
+			legacyScriptName = "openjdk17"
 		case "18":
-			scriptName = "openjdk18"
+			legacyScriptName = "openjdk18"
 		default:
 			return nil, fmt.Errorf("unsupported Java version: %s", params.Version)
 		}
 	case "openresty":
-		scriptName = "openresty"
+		componentName = "openresty"
+		legacyScriptName = "openresty"
 	case "phpmyadmin":
-		scriptName = "phpmyadmin"
+		componentName = "phpmyadmin"
+		legacyScriptName = "phpmyadmin"
+	case "firewalld":
+		componentName = "firewalld"
 	default:
 		return nil, fmt.Errorf("unsupported software: %s", params.Key)
 	}
 
-	return installer.scriptManager.GetScript(script.ScriptTypeInstall, scriptName)
+	registry, registryErr := scriptregistry.New(app.ONE_CONFIG.ScriptCenter)
+	if registryErr == nil {
+		componentPackage, resolveErr := registry.Resolve(ctx, componentName, params.Version)
+		if resolveErr == nil {
+			if actionName == "upgrade" && componentPackage.Manifest.Actions.Upgrade == "" {
+				actionName = "install"
+			}
+			return scriptInfoFromPackage(componentPackage, actionName)
+		}
+		registryErr = resolveErr
+	}
+
+	if legacyScriptName == "" {
+		return nil, fmt.Errorf("resolve %s installer: %v", componentName, registryErr)
+	}
+	legacyScript, fileErr := installer.scriptManager.GetScript(script.ScriptTypeInstall, legacyScriptName)
+	if fileErr == nil {
+		legacyScript.Source = "legacy-file"
+		return legacyScript, nil
+	}
+	if content, exists := bundledLegacyScript(legacyScriptName); exists {
+		return &script.ScriptInfo{
+			Name:       legacyScriptName,
+			Type:       script.ScriptTypeInstall,
+			Content:    content,
+			Params:     make(map[string]string),
+			Source:     "legacy-embedded",
+			ActionName: "install",
+		}, nil
+	}
+	return nil, fmt.Errorf("resolve %s installer: %v; legacy fallback: %w", componentName, registryErr, fileErr)
+}
+
+func scriptInfoFromPackage(componentPackage scriptregistry.Package, actionName string) (*script.ScriptInfo, error) {
+	actionPath, err := componentPackage.Action(actionName)
+	if err != nil {
+		return nil, err
+	}
+	manifest := componentPackage.Manifest
+	result := &script.ScriptInfo{
+		Name:       manifest.Component.ID,
+		Type:       script.ScriptType(actionName),
+		Path:       actionPath,
+		WorkingDir: componentPackage.Root,
+		Source:     componentPackage.Source,
+		Params:     make(map[string]string),
+		ActionName: actionName,
+		Timeouts: map[string]time.Duration{
+			"precheck":    time.Duration(manifest.Timeouts.Precheck) * time.Second,
+			"install":     time.Duration(manifest.Timeouts.Install) * time.Second,
+			"configure":   time.Duration(manifest.Timeouts.Configure) * time.Second,
+			"verify":      time.Duration(manifest.Timeouts.Verify) * time.Second,
+			"upgrade":     time.Duration(manifest.Timeouts.Upgrade) * time.Second,
+			"rollback":    time.Duration(manifest.Timeouts.Rollback) * time.Second,
+			"uninstall":   time.Duration(manifest.Timeouts.Uninstall) * time.Second,
+			"status":      time.Duration(manifest.Timeouts.Status) * time.Second,
+			"start":       time.Duration(manifest.Timeouts.Start) * time.Second,
+			"stop":        time.Duration(manifest.Timeouts.Stop) * time.Second,
+			"restart":     time.Duration(manifest.Timeouts.Restart) * time.Second,
+			"reload":      time.Duration(manifest.Timeouts.Reload) * time.Second,
+			"configGet":   time.Duration(manifest.Timeouts.ConfigGet) * time.Second,
+			"configApply": time.Duration(manifest.Timeouts.ConfigApply) * time.Second,
+		},
+	}
+	for _, parameter := range manifest.Parameters {
+		result.ParameterSpecs = append(result.ParameterSpecs, script.ParameterSpec{
+			Name:     parameter.Name,
+			Type:     parameter.Type,
+			Required: parameter.Required,
+			Secret:   parameter.Secret,
+			Default:  parameter.Default,
+		})
+		if parameter.Default != "" {
+			result.Params[parameter.Name] = parameter.Default
+		}
+	}
+	if actionName != "uninstall" && !IsServiceAction(actionName) &&
+		actionName != "status" && actionName != "configGet" &&
+		actionName != "configApply" {
+		result.PrecheckPath = optionalActionPath(componentPackage.Root, manifest.Actions.Precheck)
+		result.ConfigurePath = optionalActionPath(componentPackage.Root, manifest.Actions.Configure)
+		result.VerifyPath = optionalActionPath(componentPackage.Root, manifest.Actions.Verify)
+		result.RollbackPath = optionalActionPath(componentPackage.Root, manifest.Actions.Rollback)
+	}
+	return result, nil
+}
+
+type serviceInstallParams struct {
+	key     string
+	version string
+}
+
+func (params *serviceInstallParams) input() *input.InstallParams {
+	return &input.InstallParams{Key: params.key, Version: params.version}
+}
+
+func optionalActionPath(root, relative string) string {
+	if strings.TrimSpace(relative) == "" {
+		return ""
+	}
+	return filepath.Join(root, filepath.FromSlash(relative))
+}
+
+func bundledLegacyScript(name string) (string, bool) {
+	scripts := map[string]string{
+		"mysql55":    mysql55,
+		"mysql57":    mysql57,
+		"mysql80":    mysql80,
+		"redis":      redis,
+		"nginx":      nginx,
+		"php":        php,
+		"phpmyadmin": phpmyadmin,
+		"openjdk11":  openJDK11,
+		"openjdk17":  openJDK17,
+		"openjdk18":  openJDK18,
+		"openresty":  openresty,
+	}
+	content, exists := scripts[name]
+	return content, exists
+}
+
+func componentForRemove(value string) (component string, softwareKey string, err error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "nginx", "webserver":
+		return "nginx", "webserver", nil
+	case "mysql", "db":
+		return "mysql", "db", nil
+	case "redis":
+		return "redis", "redis", nil
+	case "php":
+		return "php", "php", nil
+	case "firewalld":
+		return "firewalld", "firewalld", nil
+	default:
+		return "", "", fmt.Errorf("unsupported software for uninstall: %s", value)
+	}
 }
 
 // setScriptParams 设置脚本参数
@@ -110,6 +384,9 @@ func (installer *Installer) setScriptParams(scriptInfo *script.ScriptInfo, param
 	case "redis":
 		if params.Port != "" {
 			scriptInfo.Params["REDIS_PORT"] = params.Port
+		}
+		if params.Pwd != "" {
+			scriptInfo.Params["REDIS_PASSWORD"] = params.Pwd
 		}
 	case "php":
 		scriptInfo.Params["PHP_VERSION"] = params.Version

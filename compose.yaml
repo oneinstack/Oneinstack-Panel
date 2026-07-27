@@ -1,0 +1,62 @@
+name: oneinstack-panel-test
+
+services:
+  panel:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VERSION: ${ONEINSTACK_IMAGE_VERSION:-docker-local}
+        BUILD_TIME: ${ONEINSTACK_BUILD_TIME:-unknown}
+        COMMIT_HASH: ${ONEINSTACK_COMMIT_HASH:-unknown}
+        WEB_VERSION: ${ONEINSTACK_WEB_VERSION:-1.0.0}
+    image: oneinstack-panel:local
+    container_name: oneinstack-panel-test
+    restart: unless-stopped
+    ports:
+      - "${ONEINSTACK_PANEL_PORT:-18089}:8089"
+    environment:
+      ONEINSTACK_ADMIN_USER: "${ONEINSTACK_ADMIN_USER:-admin}"
+      ONEINSTACK_ADMIN_PASSWORD_FILE: /run/secrets/one_admin_password
+      ONEINSTACK_BASE_PATH: /var/lib/oneinstack-panel
+      ONEINSTACK_CONFIG_PATH: /var/lib/oneinstack-panel/config.yaml
+      ONEINSTACK_SYSTEM_BIND_ADDRESS: 0.0.0.0
+      ONEINSTACK_SYSTEM_PORT: "8089"
+      ONEINSTACK_SYSTEM_HTTPS_ENABLED: "false"
+      ONEINSTACK_SYSTEM_CERTIFICATE_PATH: /var/lib/oneinstack-panel/certificates
+      ONEINSTACK_SYSTEM_ACME_CHALLENGE_PATH: /var/lib/oneinstack-panel/acme-webroot
+      ONEINSTACK_SCRIPT_CENTER_ENABLED: "true"
+      ONEINSTACK_SCRIPT_CENTER_ALLOW_INSECURE_HTTP: "true"
+      ONEINSTACK_SCRIPT_CENTER_URL: http://host.docker.internal:8189
+      ONEINSTACK_SCRIPT_CENTER_CHANNEL: stable
+      ONEINSTACK_SCRIPT_CENTER_TRUSTED_KEYS: '{"a386a5664aaaaca0":"emRWTpCtx2AyS28X2CxVxhWsJd74pPZ5gMOm7cL6Rm0="}'
+      ONEINSTACK_SCRIPT_CENTER_CACHE_PATH: /var/lib/oneinstack-panel/script-registry/cache
+      ONEINSTACK_SCRIPT_CENTER_BUNDLED_PATH: /opt/oneinstack/script-registry/bundled
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    secrets:
+      - one_admin_password
+    volumes:
+      - panel_state:/var/lib/oneinstack-panel
+      - panel_data:/data
+    healthcheck:
+      test:
+        - CMD
+        - curl
+        - --fail
+        - --silent
+        - --show-error
+        - http://127.0.0.1:8089/health/ready
+      interval: 10s
+      timeout: 3s
+      start_period: 30s
+      retries: 6
+    stop_grace_period: 45s
+
+secrets:
+  one_admin_password:
+    file: ./docker/secrets/one-admin-password.txt
+
+volumes:
+  panel_state:
+  panel_data:

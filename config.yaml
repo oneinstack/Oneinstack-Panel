@@ -1,8 +1,76 @@
 system:
     port: 8089
+    # HTTP is the default management entry point. 0.0.0.0 allows access through
+    # any reachable server IPv4 address.
+    bindAddress: '0.0.0.0'
+    # HTTPS is optional and uses an independent listener; HTTP remains enabled.
+    httpsEnabled: false
+    httpsPort: 8443
+    httpsCertificateFile: ''
+    httpsPrivateKeyFile: ''
+    # Keep empty for direct IP access. Add only controlled reverse-proxy IP/CIDR values.
+    trustedProxies: []
     remote: 'http://localhost:8189/v1/sys/update'
     defaultPath: '/data/'
     webPath: '/data/wwwroot/'
     logPath: '/data/wwwlogs/'
     dataPath: '/data/db/'
-    jwtSecret: 'a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456'
+    credentialKey: ''
+    fileUploadMaxBytes: 104857600
+    fileEditMaxBytes: 10485760
+    fileRootQuotaBytes: 0
+    fileMinFreeBytes: 1073741824
+    trashRetentionDays: 30
+    trashCleanupSchedule: '0 3 * * *'
+    softwareTaskRetentionDays: 90
+    softwareTaskLogRetentionDays: 30
+    softwareTaskCleanupSchedule: '30 3 * * *'
+    databaseBackupRetentionDays: 30
+    databaseBackupCleanupSchedule: '0 4 * * *'
+    websiteBackupRetentionDays: 30
+    websiteBackupCleanupSchedule: '15 4 * * *'
+    websiteBackupMaxBytes: 21474836480
+    websiteBackupMaxFiles: 200000
+    auditRetentionDays: 365
+    auditCleanupSchedule: '45 4 * * *'
+    auditExportMaxRows: 10000
+    monitorSampleSchedule: '*/1 * * * *'
+    monitorRetentionDays: 30
+    monitorAlertRetentionDays: 365
+    monitorCleanupSchedule: '20 4 * * *'
+    runtimeLogRetentionDays: 30
+    runtimeLogCleanupSchedule: '10 5 * * *'
+    cronExecutionRetentionDays: 30
+    cronExecutionCleanupSchedule: '25 5 * * *'
+    certificatePath: '/usr/local/one/certificates'
+    acmeChallengePath: '/usr/local/one/acme-webroot'
+    acmeDirectoryUrl: 'https://acme-v02.api.letsencrypt.org/directory'
+    acmeRenewSchedule: '15 3 * * *'
+    acmeRenewBeforeDays: 30
+    certificateExpiryWarningDays: 30
+    acmeIssueTimeoutMinutes: 15
+    terminalEnabled: false
+    terminalSessionMinutes: 15
+scriptCenter:
+    enabled: false
+    allowInsecureHTTP: false
+    url: 'https://scripts.example.com'
+    channel: 'stable'
+    requestTimeoutSeconds: 10
+    maxPackageBytes: 67108864
+    maxExpandedBytes: 268435456
+    cachePath: '/usr/local/one/script-registry/cache'
+    bundledPath: '/usr/local/one/script-registry/bundled'
+    # keyId: Base64-encoded Ed25519 public key. Keep empty until Center is deployed.
+    trustedKeys: {}
+updateCenter:
+    enabled: false
+    manifestUrl: 'https://updates.example.com/oneinstack/stable/manifest.json'
+    channel: 'stable'
+    requestTimeoutSeconds: 20
+    maxPackageBytes: 268435456
+    maxExpandedBytes: 536870912
+    healthTimeoutSeconds: 60
+    backupRetention: 5
+    # keyId: Base64-encoded Ed25519 public key. Required before enabling updates.
+    trustedKeys: {}

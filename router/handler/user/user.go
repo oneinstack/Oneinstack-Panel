@@ -1,12 +1,19 @@
 package user
 
 import (
+	"errors"
+	"oneinstack/app"
 	"oneinstack/core"
 	"oneinstack/internal/models"
+	auditservice "oneinstack/internal/services/audit"
 	"oneinstack/internal/services/log"
+	securityservice "oneinstack/internal/services/security"
 	"oneinstack/internal/services/user"
 	"oneinstack/router/input"
+	"oneinstack/router/middleware"
+	"oneinstack/router/session"
 	"oneinstack/utils"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -26,6 +33,7 @@ func LoginHandler(c *gin.Context) {
 		})
 		return
 	}
+	c.Set(middleware.ContextUsername, req.Username)
 
 	// 验证用户名格式
 	if err := utils.ValidateUsername(req.Username); err != nil {
@@ -56,7 +64,7 @@ func LoginHandler(c *gin.Context) {
 		return
 	}
 
-	user, ok := user.CheckUserPassword(req.Username, req.Password)
+	account, ok := user.CheckUserPassword(req.Username, req.Password)
 	if !ok {
 		appErr := core.NewError(core.ErrInvalidPassword, "用户名或密码错误")
 		core.HandleError(c, appErr)
@@ -71,9 +79,52 @@ func LoginHandler(c *gin.Context) {
 		return
 	}
 
-	// 生成JWT令牌
-	token, err := utils.GenerateJWT(user.Username, user.ID)
+	totpManager := securityservice.NewTOTPManager(app.DB())
+	totpEnabled, err := totpManager.IsEnabled(account.ID)
 	if err != nil {
+		core.HandleError(c, core.WrapError(err, core.ErrInternalError, "读取二次认证状态失败"))
+		return
+	}
+	if totpEnabled && req.TOTPCode == "" {
+		core.HandleSuccess(c, gin.H{
+			"authenticated":     false,
+			"requiresTwoFactor": true,
+		})
+		return
+	}
+	if totpEnabled {
+		if err := totpManager.VerifyLoginCode(account.ID, req.TOTPCode); err != nil {
+			appErr := core.NewError(core.ErrInvalidPassword, "动态口令或恢复码无效")
+			if !errors.Is(err, securityservice.ErrInvalidSecondFactor) {
+				appErr = core.WrapError(err, core.ErrInternalError, "校验二次认证失败")
+			}
+			core.HandleError(c, appErr)
+			log.CreateLog(&models.SystemLog{
+				LogType: models.Login_Type, Content: "登录失败-二次认证错误",
+				LogInfo: 0, IP: c.ClientIP(), Agent: c.GetHeader("User-Agent"),
+				UserName: req.Username,
+			})
+			return
+		}
+	}
+
+	sessionManager := securityservice.NewSessionManager(app.DB())
+	sessionRecord, err := sessionManager.Create(securityservice.NewSession{
+		UserID: account.ID, Username: account.Username,
+		RemoteIP: auditservice.RemoteIP(c.Request), UserAgent: c.GetHeader("User-Agent"),
+		SecurityVersion: account.EffectiveSecurityVersion(),
+		ExpiresAt:       time.Now().Add(session.MaxAge),
+	})
+	if err != nil {
+		core.HandleError(c, core.WrapError(err, core.ErrInternalError, "创建登录会话失败"))
+		return
+	}
+	// JWT 只写入 HttpOnly Cookie，不再暴露给前端脚本。
+	token, _, err := utils.GenerateSessionJWT(
+		account.Username, account.ID, sessionRecord.ID, account.EffectiveSecurityVersion(),
+	)
+	if err != nil {
+		_, _ = sessionManager.Revoke(account.ID, sessionRecord.ID, "token_generation_failed")
 		appErr := core.WrapError(err, core.ErrInternalError, "生成访问令牌失败")
 		core.HandleError(c, appErr)
 		log.CreateLog(&models.SystemLog{
@@ -86,6 +137,10 @@ func LoginHandler(c *gin.Context) {
 		})
 		return
 	}
+	session.Write(c, token)
+	c.Set(middleware.ContextUserID, account.ID)
+	c.Set(middleware.ContextAuthMode, middleware.AuthModeCookie)
+	c.Set(middleware.ContextSessionID, sessionRecord.ID)
 
 	// 记录成功登录日志
 	log.CreateLog(&models.SystemLog{
@@ -99,12 +154,26 @@ func LoginHandler(c *gin.Context) {
 
 	// 返回成功响应
 	core.HandleSuccess(c, gin.H{
-		"token":      token,
-		"firstLogin": log.IsFirstLogin(req.Username),
+		"authenticated":      true,
+		"firstLogin":         account.MustChangePassword,
+		"mustChangePassword": account.MustChangePassword,
+		"requiresTwoFactor":  false,
 		"user": gin.H{
-			"id":       user.ID,
-			"username": user.Username,
-			"isAdmin":  user.IsAdmin,
+			"id":          account.ID,
+			"username":    account.Username,
+			"isAdmin":     account.IsAdmin,
+			"totpEnabled": totpEnabled,
 		},
 	})
+}
+
+func LogoutHandler(c *gin.Context) {
+	if userID, ok := middleware.AuthenticatedUserID(c); ok {
+		if sessionID, ok := middleware.AuthenticatedSessionID(c); ok {
+			_, _ = securityservice.NewSessionManager(app.DB()).
+				Revoke(userID, sessionID, "logout")
+		}
+	}
+	session.Clear(c)
+	core.HandleSuccess(c, gin.H{"authenticated": false})
 }

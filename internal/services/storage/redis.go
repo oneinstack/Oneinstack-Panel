@@ -3,9 +3,9 @@ package storage
 import (
 	"context"
 	"fmt"
-	"log"
 	"math"
 	"oneinstack/internal/models"
+	"sort"
 	"strconv"
 	"time"
 
@@ -34,18 +34,31 @@ func NewRedisOP(p *models.Storage) *RedisOP {
 	}
 }
 
-func (s *RedisOP) Connet() error {
+func (s *RedisOP) Connect() error {
 	rdb := redis.NewClient(&redis.Options{
-		Addr:     fmt.Sprintf("%v:%v", s.Addr, s.Port),
-		Password: s.Password, // no password set
-		DB:       0,          // use default DB
+		Addr:         fmt.Sprintf("%v:%v", s.Addr, s.Port),
+		Password:     s.Password,
+		DB:           0,
+		DialTimeout:  5 * time.Second,
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 10 * time.Second,
 	})
-	_, err := rdb.SetNX(context.Background(), "test_key", "value", 10*time.Second).Result()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := rdb.Ping(ctx).Result()
 	if err != nil {
+		_ = rdb.Close()
 		return err
 	}
 	s.DB = rdb
 	return nil
+}
+
+func (s *RedisOP) Close() error {
+	if s.DB == nil {
+		return nil
+	}
+	return s.DB.Close()
 }
 
 func (s *RedisOP) Sync() error {
@@ -61,7 +74,7 @@ func (s *RedisOP) GetLibs() ([]models.Library, error) {
 	// 获取配置中的数据库数量
 	config, err := s.DB.ConfigGet(ctx, "databases").Result()
 	if err != nil {
-		log.Fatalf("获取配置失败: %v\n", err)
+		return nil, fmt.Errorf("read Redis database count: %w", err)
 	}
 
 	// 输出数据库数量
@@ -76,22 +89,20 @@ func (s *RedisOP) GetLibs() ([]models.Library, error) {
 	ls := []models.Library{}
 	// 遍历数据库，检查是否有数据
 	for db := 0; db < int(parseInt); db++ { // 假设最多 16 个数据库
-		// 切换到指定数据库
-		s.DB.Options().DB = db // 使用 SetDB 选择数据库
-
-		// 获取当前数据库的键数量
-		//keyCount, err := s.DB.DBSize(ctx).Result()
-		//if err != nil {
-		//	return err
-		//}
+		client := s.clientForDB(db)
+		keyCount, err := client.DBSize(ctx).Result()
+		_ = client.Close()
+		if err != nil {
+			return nil, fmt.Errorf("read Redis DB%d size: %w", db, err)
+		}
 		l := models.Library{
 			PID:      s.ID,
 			Name:     fmt.Sprintf("%v", db),
 			User:     "",
 			Password: "",
-			//Capacity: fmt.Sprintf("%v", keyCount-1),
-			PAddr: fmt.Sprintf("%s:%v", s.Addr, s.Port),
-			Type:  s.Type,
+			Capacity: fmt.Sprintf("%d keys", keyCount),
+			PAddr:    fmt.Sprintf("%s:%v", s.Addr, s.Port),
+			Type:     s.Type,
 		}
 		ls = append(ls, l)
 	}
@@ -127,18 +138,26 @@ func (s *RedisOP) GetPaginatedKeyInfo(ctx context.Context, db int, pattern strin
 	// 使用 SCAN 遍历键
 	var allKeys []string
 	cursor := uint64(0)
-	s.DB.Options().DB = db
+	if pattern == "" {
+		pattern = "*"
+	}
+	client := s.clientForDB(db)
+	defer client.Close()
 	for {
-		keys, nextCursor, err := s.DB.Scan(ctx, cursor, pattern, 100).Result() // 每次最多扫描 1000 个键
+		keys, nextCursor, err := client.Scan(ctx, cursor, pattern, 500).Result()
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan keys: %w", err)
 		}
 		allKeys = append(allKeys, keys...)
+		if len(allKeys) > 100000 {
+			return nil, fmt.Errorf("Redis key listing exceeds the 100000-key safety limit")
+		}
 		cursor = nextCursor
 		if cursor == 0 {
 			break
 		}
 	}
+	sort.Strings(allKeys)
 
 	totalKeys := len(allKeys)
 
@@ -165,7 +184,7 @@ func (s *RedisOP) GetPaginatedKeyInfo(ctx context.Context, db int, pattern strin
 	// 获取每个键的详细信息
 	var keysInfo []KeyInfo
 	for _, key := range keysPage {
-		keyType, err := s.DB.Type(ctx, key).Result()
+		keyType, err := client.Type(ctx, key).Result()
 		if err != nil {
 			return nil, fmt.Errorf("failed to get key type for key %s: %w", key, err)
 		}
@@ -174,15 +193,15 @@ func (s *RedisOP) GetPaginatedKeyInfo(ctx context.Context, db int, pattern strin
 		var length int64
 		switch keyType {
 		case "string":
-			length, err = s.DB.StrLen(ctx, key).Result()
+			length, err = client.StrLen(ctx, key).Result()
 		case "hash":
-			length, err = s.DB.HLen(ctx, key).Result()
+			length, err = client.HLen(ctx, key).Result()
 		case "list":
-			length, err = s.DB.LLen(ctx, key).Result()
+			length, err = client.LLen(ctx, key).Result()
 		case "set":
-			length, err = s.DB.SCard(ctx, key).Result()
+			length, err = client.SCard(ctx, key).Result()
 		case "zset":
-			length, err = s.DB.ZCard(ctx, key).Result()
+			length, err = client.ZCard(ctx, key).Result()
 		default:
 			length = 0
 		}
@@ -191,7 +210,7 @@ func (s *RedisOP) GetPaginatedKeyInfo(ctx context.Context, db int, pattern strin
 		}
 
 		// 获取键的 TTL
-		ttl, err := s.DB.TTL(ctx, key).Result()
+		ttl, err := client.TTL(ctx, key).Result()
 		if err != nil {
 			return nil, fmt.Errorf("failed to get TTL for key %s: %w", key, err)
 		}
@@ -218,5 +237,19 @@ func (s *RedisOP) GetPaginatedKeyInfo(ctx context.Context, db int, pattern strin
 }
 
 func (s *RedisOP) CreateLibrary(lb *models.Library) error {
-	return nil
+	return fmt.Errorf("Redis logical databases are configured by the Redis server and cannot be created from Panel")
+}
+
+func (s *RedisOP) DeleteLibrary(lb *models.Library) error {
+	return fmt.Errorf("deleting or flushing a Redis logical database is not supported by this endpoint")
+}
+
+func (s *RedisOP) UpdateLibraryPassword(_ *models.Library, _ string) error {
+	return fmt.Errorf("Redis logical databases do not have dedicated user passwords")
+}
+
+func (s *RedisOP) clientForDB(db int) *redis.Client {
+	options := *s.DB.Options()
+	options.DB = db
+	return redis.NewClient(&options)
 }

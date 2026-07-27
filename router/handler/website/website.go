@@ -1,10 +1,12 @@
 package website
 
 import (
+	"net/http"
 	"oneinstack/core"
 	"oneinstack/internal/models"
 	"oneinstack/internal/services/website"
 	"oneinstack/router/input"
+	"oneinstack/router/middleware"
 
 	"github.com/gin-gonic/gin"
 )
@@ -12,7 +14,7 @@ import (
 func List(c *gin.Context) {
 	input := &input.WebsiteQueryParam{}
 	if err := c.ShouldBindJSON(&input); err != nil {
-		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		appErr := core.WrapError(err, core.ErrBadRequest, "请求参数格式错误")
 		core.HandleError(c, appErr)
 		return
 	}
@@ -28,13 +30,13 @@ func List(c *gin.Context) {
 func Add(c *gin.Context) {
 	input := &models.Website{}
 	if err := c.ShouldBindJSON(&input); err != nil {
-		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		appErr := core.WrapError(err, core.ErrBadRequest, "请求参数格式错误")
 		core.HandleError(c, appErr)
 		return
 	}
 	err := website.Add(input)
 	if err != nil {
-		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		appErr := core.WrapError(err, core.ErrConfigError, "网站配置发布失败")
 		core.HandleError(c, appErr)
 		return
 	}
@@ -45,13 +47,13 @@ func Add(c *gin.Context) {
 func Update(c *gin.Context) {
 	input := &models.Website{}
 	if err := c.ShouldBindJSON(&input); err != nil {
-		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		appErr := core.WrapError(err, core.ErrBadRequest, "请求参数格式错误")
 		core.HandleError(c, appErr)
 		return
 	}
 	err := website.Update(input)
 	if err != nil {
-		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		appErr := core.WrapError(err, core.ErrConfigError, "网站配置更新失败")
 		core.HandleError(c, appErr)
 		return
 	}
@@ -59,19 +61,34 @@ func Update(c *gin.Context) {
 }
 
 func Delete(c *gin.Context) {
-	input := &models.Website{}
-	if err := c.ShouldBindJSON(&input); err != nil {
-		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
-		core.HandleError(c, appErr)
+	var request input.WebsiteDeleteParam
+	if err := c.ShouldBindJSON(&request); err != nil {
+		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "请求参数格式错误"))
 		return
 	}
-	err := website.Delete(input.ID)
+	if request.ID <= 0 || request.ConfirmName == "" {
+		core.HandleError(c, core.NewError(core.ErrBadRequest, "请输入网站名称确认删除"))
+		return
+	}
+	manager, err := DefaultWebsiteTaskManager()
 	if err != nil {
-		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		appErr := core.WrapError(err, core.ErrInternalError, "网站任务服务不可用")
 		core.HandleError(c, appErr)
 		return
 	}
-	core.HandleSuccess(c, "删除成功")
+	userID, _ := middleware.AuthenticatedUserID(c)
+	task, err := manager.SubmitDelete(
+		request.ID,
+		request.DatabaseID,
+		request.DeleteFiles,
+		request.ConfirmName,
+		userID,
+	)
+	if err != nil {
+		handleWebsiteTaskError(c, err, "创建网站安全删除任务失败")
+		return
+	}
+	c.JSON(http.StatusAccepted, core.SuccessResponse(task))
 }
 
 func Info(context *gin.Context) {

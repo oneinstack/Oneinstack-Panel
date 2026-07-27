@@ -1,15 +1,15 @@
 package system
 
 import (
+	"errors"
 	"fmt"
 	"oneinstack/app"
 	"oneinstack/internal/crypto"
 	"oneinstack/internal/models"
-	"oneinstack/router/input"
 	"oneinstack/router/output"
 
-	"os"
 	"regexp"
+	"strings"
 	"time"
 	"unicode"
 
@@ -18,8 +18,10 @@ import (
 	"github.com/shirou/gopsutil/v4/host"
 	"github.com/shirou/gopsutil/v4/mem"
 	"github.com/shirou/gopsutil/v4/net"
-	"github.com/spf13/viper"
+	"gorm.io/gorm"
 )
+
+var ErrCurrentPasswordInvalid = errors.New("current password is invalid")
 
 func GetSystemMonitor() (map[string]interface{}, error) {
 	ls, err := GetNetIOCounters()
@@ -326,7 +328,7 @@ func GetWebSiteCount() (int64, error) {
 	return count, nil
 }
 
-func SystemInfo() (map[string]interface{}, error) {
+func SystemInfo() (*output.PanelSettings, error) {
 	port := app.ONE_CONFIG.System.Port
 	u := models.User{}
 	tx := app.DB().Model(&u).First(&u)
@@ -338,55 +340,47 @@ func SystemInfo() (map[string]interface{}, error) {
 	if tx.Error != nil {
 		return nil, tx.Error
 	}
-	info := map[string]interface{}{
-		"port":  port,
-		"user":  u,
-		"title": s.Title,
+	info := &output.PanelSettings{
+		Port: port,
+		User: output.UserSummary{
+			ID:         u.ID,
+			Username:   u.Username,
+			IsAdmin:    u.IsAdmin,
+			FirstJoin:  u.FirstJoin,
+			CreateTime: u.CreateTime,
+		},
+		Title: s.Title,
 	}
 	return info, nil
 }
 
 func UpdateSystemPort(port string) error {
-	if port == "" {
-		return fmt.Errorf(" Port not provided")
-	}
-	configFile := app.GetBasePath() + "/config.yaml"
-	if _, err := os.Stat(configFile); os.IsNotExist(err) {
-		return fmt.Errorf(" Configuration file %s not found", configFile)
-	}
-
-	// 使用 viper 读取和更新配置
-	v := viper.New()
-	v.SetConfigFile(configFile)
-	v.SetConfigType("yaml")
-
-	// 读取配置文件
-	err := v.ReadInConfig()
+	current, err := loadStoredPanelConfig()
 	if err != nil {
-		return fmt.Errorf(" Failed to read configuration file: %v", err)
+		return err
 	}
-
-	// 更新端口配置
-	v.Set("system.port", port)
-
-	// 保存更新到配置文件
-	err = v.WriteConfig()
-	if err != nil {
-		return fmt.Errorf(" Failed to update configuration file: %v", err)
-	}
-	return nil
+	_, err = UpdatePanelNetwork(UpdatePanelNetworkRequest{
+		BindAddress:          current.BindAddress,
+		HTTPPort:             strings.TrimSpace(port),
+		HTTPSEnabled:         current.HTTPSEnabled,
+		HTTPSPort:            current.HTTPSPort,
+		HTTPSCertificateFile: current.CertificateFile,
+		HTTPSPrivateKeyFile:  current.PrivateKeyFile,
+		TrustedProxies:       current.TrustedProxies,
+	})
+	return err
 }
 
-func UpdateUser(user models.User) error {
+func UpdateUser(userID int64, username string) error {
 	u := models.User{}
-	tx := app.DB().Where("id = ?", user.ID).First(&u)
+	tx := app.DB().Where("id = ?", userID).First(&u)
 	if tx.Error != nil {
 		return tx.Error
 	}
-	if user.Username == "" {
+	if username == "" {
 		return fmt.Errorf("Username is empty")
 	}
-	u.Username = user.Username
+	u.Username = username
 	tx = app.DB().Updates(u)
 	if tx.Error != nil {
 		return tx.Error
@@ -394,30 +388,40 @@ func UpdateUser(user models.User) error {
 	return nil
 }
 
-func ResetPassword(user input.ResetPasswordRequest) error {
-	u := models.User{}
-	tx := app.DB().Where("id = ?", user.Id).First(&u)
-	if tx.Error != nil {
-		return tx.Error
-	}
-
+func ResetPassword(userID int64, currentPassword, newPassword string) error {
 	// 验证密码强度
-	if err := validatePasswordStrength(user.NewPassword); err != nil {
+	if err := validatePasswordStrength(newPassword); err != nil {
 		return err
 	}
 
 	// 加密密码
-	hashedPassword, err := crypto.HashPassword(user.NewPassword)
+	hashedPassword, err := crypto.HashPassword(newPassword)
 	if err != nil {
 		return fmt.Errorf("failed to hash password: %v", err)
 	}
-
-	u.Password = hashedPassword
-	tx = app.DB().Updates(u)
-	if tx.Error != nil {
-		return tx.Error
-	}
-	return nil
+	return app.DB().Transaction(func(tx *gorm.DB) error {
+		var u models.User
+		if err := tx.Where("id = ?", userID).First(&u).Error; err != nil {
+			return err
+		}
+		if !u.MustChangePassword && !crypto.CheckPasswordHash(currentPassword, u.Password) {
+			return ErrCurrentPasswordInvalid
+		}
+		nextVersion := u.EffectiveSecurityVersion() + 1
+		if err := tx.Model(&models.User{}).Where("id = ?", userID).Updates(map[string]interface{}{
+			"password":             hashedPassword,
+			"must_change_password": false,
+			"security_version":     nextVersion,
+		}).Error; err != nil {
+			return err
+		}
+		now := time.Now().UTC()
+		return tx.Model(&models.UserSession{}).
+			Where("user_id = ? AND revoked_at IS NULL", userID).
+			Updates(map[string]interface{}{
+				"revoked_at": now, "revocation_reason": "password_changed",
+			}).Error
+	})
 }
 
 func UpdateSystemTitle(title string) error {

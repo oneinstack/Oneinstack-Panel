@@ -1,306 +1,233 @@
-# 构建指南 (Build Guide)
+# OneinStack Panel 构建与发布
 
-本文档说明如何构建 Oneinstack Panel 项目。
+本文档描述当前仓库实际支持的构建、质量检查和发布流程。Panel 的生产目标是 Linux，安装方式仍采用 OneinStack 风格的 Shell 安装脚本，不依赖 Docker。
 
-## 📋 系统要求
+## 环境要求
 
-### 开发环境
-- **Go**: 1.20+ (推荐 1.21+)
-- **Git**: 用于版本控制
-- **Make**: 用于构建自动化
-- **Docker**: 用于容器构建 (可选)
-- **Docker Compose**: 用于多容器管理 (可选)
+- Go：以 `go.mod` 的 `go` 和 `toolchain` 声明为准。
+- Git、GNU Make、tar、jq。
+- `sha256sum`（Linux）或 `shasum`（macOS）。
+- 安装器契约测试需要 Bats；CI 固定在 Ubuntu 22.04/24.04 执行。
+- 仅在重新构建前端时需要 Node.js 22 和 npm。
 
-### 系统支持
-- **构建平台**: Linux, macOS, Windows
-- **目标平台**: Linux (AMD64, ARM64)
-- **容器平台**: CentOS 7+, Ubuntu 20.04+
+后端和前端仓库默认放在同一目录：
 
-## 🚀 快速开始
-
-### 1. 克隆项目
-```bash
-git clone https://github.com/oneinstack/panel.git
-cd panel
+```text
+workspace/
+├── Oneinstack-Panel/
+└── Oneinstack-Panel-Web/
 ```
 
-### 2. 安装依赖
+## 本地质量门禁
+
 ```bash
 go mod download
+make quality
 ```
 
-### 3. 构建项目
-```bash
-# 使用 Make
-make build
+`make quality` 会强制执行 Go 格式检查、`go vet`、全部单元测试、Shell 语法检查和高置信凭据扫描。代码与依赖安全检查由 GitHub CodeQL、Dependabot 和仓库安全告警统一完成，避免本地命令在未授权时把私有依赖元数据发送给外部漏洞服务。
 
-# 或使用构建脚本
-./scripts/build.sh
+需要竞态检测时执行：
+
+```bash
+make test-race
 ```
 
-## 🔨 构建命令
-
-### Make 命令
+安装器契约测试：
 
 ```bash
-# 显示帮助
-make help
+make install-test
+```
 
-# 构建当前平台
+用例在隔离测试根目录中验证首次安装、重复安装、升级保留配置、显式替换配置、普通卸载、彻底清理和危险系统变更禁用。
+
+## 构建后端
+
+默认构建 Linux AMD64：
+
+```bash
 make build
+./dist/one-linux-amd64 version
+```
 
-# 构建所有平台
+构建正式支持的两个 Linux 架构：
+
+```bash
 make build-all
-
-# 运行测试
-make test
-
-# 运行代码检查
-make lint
-
-# 创建发布包
-make package
-
-# 构建 Docker 镜像
-make docker-build
-
-# 运行 Docker 容器
-make docker-run
-
-# 完整发布流程
-make release
-
-# 清理构建文件
-make clean
 ```
 
-### 构建脚本
+也可以显式传入版本元数据：
 
 ```bash
-# 检查依赖
-./scripts/build.sh check
-
-# 清理构建目录
-./scripts/build.sh clean
-
-# 运行测试
-./scripts/build.sh test
-
-# 运行代码检查
-./scripts/build.sh lint
-
-# 构建二进制文件
-./scripts/build.sh build
-
-# 创建发布包
-./scripts/build.sh package
-
-# 完整构建流程
-./scripts/build.sh all
+make build \
+  VERSION=v1.0.0 \
+  COMMIT_HASH="$(git rev-parse --short HEAD)" \
+  BUILD_TIME="$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+  WEB_VERSION=1.0.0
 ```
 
-## 🐳 Docker 构建
+前端生产文件已压缩嵌入后端二进制，因此部署时不需要单独复制静态目录。
 
-### 构建镜像
+## 更新嵌入前端
+
+前端代码修改后，在前端仓库安装锁定依赖，再由后端统一刷新嵌入包：
+
 ```bash
-# 构建 CentOS 版本
-docker build -f docker/Dockerfile.centos -t oneinstack/panel:centos .
-
-# 构建 Ubuntu 版本
-docker build -f docker/Dockerfile.ubuntu -t oneinstack/panel:ubuntu .
-
-# 使用 Make
-make docker-build
+cd ../Oneinstack-Panel-Web
+npm ci
+cd ../Oneinstack-Panel
+make build-ui
 ```
 
-### 运行容器
-```bash
-# 使用 Docker Compose (推荐)
-docker-compose --profile centos up -d
+`make build-ui` 会执行前端类型检查和生产构建，把生成的 `version/app-1.0.0.zip` 同步到 `webui/app.zip`，并验证入口页引用的静态资源均存在。
 
-# 直接运行
-docker run -d --name oneinstack-panel \
-  -p 8089:8089 \
-  -v /data:/data \
-  oneinstack/panel:centos
+## 创建并验证发布包
+
+```bash
+make release VERSION=v1.0.0
 ```
 
-## 🎯 目标平台
+发布输出位于 `packages/`：
 
-### 支持的架构
-- `linux/amd64` - Linux x86_64
-- `linux/arm64` - Linux ARM64
-- `darwin/amd64` - macOS x86_64 (仅二进制)
-- `darwin/arm64` - macOS ARM64 (仅二进制)
-- `windows/amd64` - Windows x86_64 (仅二进制)
+```text
+one-linux-amd64-v1.0.0.tar.gz
+one-linux-amd64-v1.0.0.tar.gz.sha256
+one-linux-arm64-v1.0.0.tar.gz
+one-linux-arm64-v1.0.0.tar.gz.sha256
+```
 
-### 发布包内容
-每个 Linux 发布包包含：
-- 编译好的二进制文件
-- 配置文件模板
-- 安装脚本 (CentOS/Ubuntu)
-- 文档文件
-- 许可证文件
+每个包包含二进制、配置模板、统一 Shell 安装入口及两个兼容入口、中英文 README、构建说明和许可证。单独验证下载包：
 
-## 📦 发布流程
-
-### 本地发布
 ```bash
-# 创建标签
+./scripts/verify-release.sh packages/one-linux-amd64-v1.0.0.tar.gz
+```
+
+发布包中的 `install-ubuntu.sh` 和 `install-cent.sh` 只是兼容入口，全部转交统一的 `install.sh`，不会维护三套不同安装行为。生产初始化使用权限为 `0600` 或更严格的密码文件：
+
+```bash
+sudo ./install.sh \
+  --admin-user admin \
+  --admin-password-file /run/one-admin-password
+```
+
+更新和卸载：
+
+```bash
+sudo ./install.sh --force
+sudo ./install.sh uninstall
+sudo ./install.sh uninstall --purge --yes
+```
+
+## 审计日志与保留策略
+
+面板会持久化登录、失败请求、所有变更操作和敏感读取。审计记录不保存请求正文或查询字符串，避免密码、Token、私钥和一次性终端票据落库。只有数据库中的管理员可以通过“审计日志”页面查询、校验和导出。
+
+默认策略：
+
+```yaml
+system:
+  auditRetentionDays: 365
+  auditCleanupSchedule: "45 4 * * *"
+  auditExportMaxRows: 10000
+```
+
+对应环境变量为：
+
+- `ONEINSTACK_SYSTEM_AUDIT_RETENTION_DAYS`：30～3650 天。
+- `ONEINSTACK_SYSTEM_AUDIT_CLEANUP_SCHEDULE`：五段 Cron 表达式。
+- `ONEINSTACK_SYSTEM_AUDIT_EXPORT_MAX_ROWS`：100～100000 行。
+
+每条记录通过实例凭据密钥派生的 HMAC 密钥形成只追加链；自动清理前会校验整条链并写入签名检查点。链异常时追加和清理都会停止。该机制可检测数据库内容篡改、链断裂和常规尾部删除；需要防御整套数据库快照回滚时，应把周期性链头签名额外发送到独立不可变存储。
+
+## 签名更新与回滚
+
+安装器同时写入 `one.service` 和独立的 `one-update.service`。后者运行旧版本内存中的更新进程，因此主面板停服、替换磁盘上的 `one` 链接时不会终止更新事务。
+
+首次建立发布密钥：
+
+```bash
+go run ./cmd/update-keygen \
+  --key-id release-2026 \
+  --private-output /secure/offline/update-signing.seed \
+  --public-output update-signing.pub
+```
+
+- 私钥文件为 Base64 Ed25519 seed，工具强制以 `0600` 创建且拒绝覆盖；只应保存到发布密钥系统或 GitHub Secret，不得提交到仓库或复制到 Panel 主机。
+- 公钥文件可公开。把其中的一行 Base64 内容预置到每台 Panel 的 `config.yaml`：
+
+```yaml
+updateCenter:
+  enabled: true
+  manifestUrl: "https://updates.example.com/oneinstack/stable/manifest.json"
+  channel: "stable"
+  requestTimeoutSeconds: 20
+  maxPackageBytes: 268435456
+  maxExpandedBytes: 536870912
+  healthTimeoutSeconds: 60
+  backupRetention: 5
+  trustedKeys:
+    release-2026: "BASE64_ED25519_PUBLIC_KEY"
+```
+
+本地生成清单示例：
+
+```bash
+go run ./cmd/update-manifest \
+  --version v0.4.0 \
+  --channel stable \
+  --minimum-version v0.3.0 \
+  --base-url https://updates.example.com/oneinstack/v0.4.0 \
+  --key-id release-2026 \
+  --private-key-file /secure/offline/update-signing.seed \
+  --artifact linux-amd64=packages/one-linux-amd64-v0.4.0.tar.gz \
+  --artifact linux-arm64=packages/one-linux-arm64-v0.4.0.tar.gz \
+  --output packages/manifest.json
+```
+
+更新器会校验清单签名、目标平台、制品大小和 SHA-256，使用数据库副本执行迁移预检，再切换双版本指针。新服务未通过 `/health/ready` 时会恢复旧二进制、数据库、配置和内置脚本。常用命令：
+
+```bash
+sudo one update check
+sudo one update apply --yes
+sudo one update status
+sudo one update rollback --yes
+```
+
+`rollback` 用于恢复被异常终止的活动事务。存在活动事务时，新更新会被拒绝，避免覆盖唯一恢复点。
+
+标签 Release 工作流要求配置：
+
+- `UPDATE_SIGNING_PRIVATE_KEY`：私钥种子文件的完整 Base64 内容。
+- `UPDATE_SIGNING_KEY_ID`：与 `updateCenter.trustedKeys` 一致的标识。
+
+密钥轮换必须先把新公钥加入 Panel 配置，再用新私钥发布清单；确认受管主机均信任新公钥后才能删除旧公钥。自动撤销清单和离线根密钥签发体系仍属于发布运维待验收项。
+
+## GitHub 质量与发布流程
+
+- `CI`：对 `main`、`develop` 和 Pull Request 执行格式、vet、竞态测试、ShellCheck、Secret Scan、双架构编译，以及 Ubuntu 22.04/24.04 安装生命周期矩阵。
+- `CodeQL`：对 Go 代码执行代码安全分析，并每周定时复查。
+- `Dependabot`：每周检查 Go 模块和 GitHub Actions 依赖并生成升级 PR。
+- `Release`：仅在 `v*` 标签或手动触发时运行；生成双架构包、SHA-256、Ed25519 签名更新清单、CycloneDX 1.6 SBOM、Go 模块清单和许可证证据表，标签发布会创建或更新 GitHub Release。
+- 前端 CI 独立生成 npm CycloneDX SBOM、依赖树、许可证表和校验和制品。
+- 推送普通分支不会自动创建 Beta Release，也不会自动修改或推送仓库文件。
+
+发布标签前应先确保前后端改动已经提交，并执行：
+
+```bash
+make release VERSION=v1.0.0
 git tag v1.0.0
 git push origin v1.0.0
-
-# 构建发布包
-make release
-
-# 发布文件位于 releases/v1.0.0/
 ```
 
-### GitHub Actions 自动发布
+## 运行时探针
 
-当推送标签到 GitHub 时，会自动触发构建和发布流程：
+服务启动后可用于 systemd、负载均衡器或监控平台：
 
-1. **代码检查**: 运行测试和代码检查
-2. **多平台构建**: 构建所有目标平台的二进制文件
-3. **Docker 构建**: 构建 CentOS 和 Ubuntu 镜像
-4. **创建发布**: 自动创建 GitHub Release
-5. **上传制品**: 上传所有构建文件和校验和
-
-### 发布包验证
 ```bash
-# 验证校验和
-sha256sum -c checksums.txt
-
-# 验证二进制文件
-./one --version
+curl -fsS http://127.0.0.1:8089/health/live
+curl -fsS http://127.0.0.1:8089/health/ready
 ```
 
-## 🔧 开发构建
-
-### 开发模式运行
-```bash
-# 直接运行
-go run ./cmd/main.go server start
-
-# 调试模式
-go run ./cmd/main.go debug
-
-# 使用 Make
-make dev
-make dev-debug
-```
-
-### 热重载开发
-```bash
-# 安装 air (可选)
-go install github.com/cosmtrek/air@latest
-
-# 启动热重载
-air
-```
-
-## 🧪 测试
-
-### 运行测试
-```bash
-# 运行所有测试
-go test ./...
-
-# 带覆盖率
-go test -coverprofile=coverage.out ./...
-go tool cover -html=coverage.out
-
-# 使用 Make
-make test
-make test-coverage
-```
-
-### 代码检查
-```bash
-# 安装 golangci-lint
-curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin v1.54.2
-
-# 运行检查
-golangci-lint run
-
-# 使用 Make
-make lint
-```
-
-## 📊 构建优化
-
-### 编译优化
-- 使用 `-ldflags="-s -w"` 减小二进制文件大小
-- 设置 `CGO_ENABLED=0` 创建静态链接二进制
-- 嵌入版本信息和构建时间
-
-### Docker 优化
-- 多阶段构建减小镜像大小
-- 使用 Alpine 作为构建镜像
-- 非 root 用户运行提高安全性
-- 健康检查确保服务可用性
-
-## 🚨 故障排除
-
-### 常见问题
-
-#### 1. Go 版本过低
-```bash
-# 检查版本
-go version
-
-# 升级 Go (Linux)
-sudo rm -rf /usr/local/go
-wget https://go.dev/dl/go1.21.5.linux-amd64.tar.gz
-sudo tar -C /usr/local -xzf go1.21.5.linux-amd64.tar.gz
-```
-
-#### 2. 依赖下载失败
-```bash
-# 设置代理 (中国用户)
-go env -w GOPROXY=https://goproxy.cn,direct
-go env -w GOSUMDB=sum.golang.google.cn
-
-# 清理模块缓存
-go clean -modcache
-go mod download
-```
-
-#### 3. Docker 构建失败
-```bash
-# 清理 Docker 缓存
-docker system prune -f
-
-# 重新构建
-docker build --no-cache -f docker/Dockerfile.centos -t oneinstack/panel:centos .
-```
-
-#### 4. 权限问题
-```bash
-# 设置脚本执行权限
-chmod +x scripts/build.sh
-
-# 设置 Docker 权限 (Linux)
-sudo usermod -aG docker $USER
-newgrp docker
-```
-
-## 📝 贡献指南
-
-### 提交代码前
-1. 运行测试: `make test`
-2. 运行代码检查: `make lint`
-3. 确保构建成功: `make build`
-4. 更新文档 (如需要)
-
-### 提交规范
-- 使用语义化提交信息
-- 包含相关的测试
-- 更新 CHANGELOG.md
-
-## 🔗 相关链接
-
-- [项目主页](https://github.com/oneinstack/panel)
-- [问题报告](https://github.com/oneinstack/panel/issues)
-- [讨论区](https://github.com/oneinstack/panel/discussions)
-- [Wiki 文档](https://github.com/oneinstack/panel/wiki)
+- `/health/live`：HTTP 进程可响应。
+- `/health/ready`：数据库和嵌入前端均可用。
+- `/v1/sys/version`：认证后返回后端、前端、提交和 Go 运行时版本。

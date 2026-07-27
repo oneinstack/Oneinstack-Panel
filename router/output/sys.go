@@ -6,6 +6,7 @@ import (
 	"github.com/shirou/gopsutil/v4/host"
 	"github.com/shirou/gopsutil/v4/mem"
 	"github.com/shirou/gopsutil/v4/net"
+	"time"
 )
 
 // SystemInfo 用于承载系统和磁盘相关信息的数据结构
@@ -57,4 +58,18 @@ type NetSpeed struct {
 	Name     string
 	SentRate float64 // bytes per second
 	RecvRate float64 // bytes per second
+}
+
+type UserSummary struct {
+	ID         int64     `json:"id"`
+	Username   string    `json:"username"`
+	IsAdmin    bool      `json:"is_admin"`
+	FirstJoin  bool      `json:"first_join"`
+	CreateTime time.Time `json:"create_time"`
+}
+
+type PanelSettings struct {
+	Port  string      `json:"port"`
+	User  UserSummary `json:"user"`
+	Title string      `json:"title"`
 }

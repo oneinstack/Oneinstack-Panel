@@ -7,19 +7,22 @@ import (
 )
 
 type Website struct {
-	ID         int64     `json:"id"`
-	Name       string    `json:"name"`
-	Domain     string    `json:"domain"`
-	Dir        string    `json:"dir"`
-	Remark     string    `json:"remark"`
-	RootDir    string    `json:"root_dir"`
-	TarUrl     string    `json:"tar_url"`
-	SendUrl    string    `json:"send_url"`
-	Class      string    `json:"class"`
-	Type       string    `json:"type"`
-	Pact       string    `json:"pact"`
-	CreateTime time.Time `json:"create_time"`
-	UpdateTime time.Time `json:"update_time"`
+	ID                   int64      `json:"id"`
+	Name                 string     `json:"name"`
+	Domain               string     `json:"domain"`
+	Dir                  string     `json:"dir"`
+	Remark               string     `json:"remark"`
+	RootDir              string     `json:"root_dir"`
+	TarUrl               string     `json:"tar_url"`
+	SendUrl              string     `json:"send_url"`
+	Class                string     `json:"class"`
+	Type                 string     `json:"type"`
+	Pact                 string     `json:"pact"`
+	CreateTime           time.Time  `json:"create_time"`
+	UpdateTime           time.Time  `json:"update_time"`
+	SSLEnabled           bool       `json:"ssl_enabled" gorm:"-"`
+	CertificateStatus    string     `json:"certificate_status,omitempty" gorm:"-"`
+	CertificateExpiresAt *time.Time `json:"certificate_expires_at,omitempty" gorm:"-"`
 }
 
 func (m *Website) BeforeCreate(tx *gorm.DB) (err error) {

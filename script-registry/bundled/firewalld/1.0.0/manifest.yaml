@@ -1,0 +1,46 @@
+schemaVersion: 1
+component:
+  id: firewalld
+  name: firewalld
+  version: 1.0.0
+  softwareVersions: ["1.0.0"]
+  channel: stable
+  description: Installs firewalld through the host package manager without enabling it before the Panel port is protected.
+compatibility:
+  systems:
+    - id: ubuntu
+      versions: ["*"]
+    - id: debian
+      versions: ["*"]
+    - id: rhel
+      versions: ["*"]
+    - id: centos
+      versions: ["*"]
+    - id: rocky
+      versions: ["*"]
+    - id: almalinux
+      versions: ["*"]
+    - id: fedora
+      versions: ["*"]
+    - id: opensuse-leap
+      versions: ["*"]
+    - id: sles
+      versions: ["*"]
+  architectures: [amd64, arm64]
+dependencies:
+  packages:
+    apt: [firewalld, netbase]
+    dnf: [firewalld, setup]
+    yum: [firewalld, setup]
+    zypper: [firewalld, netcfg]
+actions:
+  precheck: scripts/precheck.sh
+  install: scripts/install.sh
+  verify: scripts/verify.sh
+  upgrade: scripts/install.sh
+  rollback: scripts/rollback.sh
+  uninstall: scripts/uninstall.sh
+parameters:
+  - {name: SOFTWARE_VERSION, type: string, required: true, description: firewalld installer profile version.}
+  - {name: ONEINSTACK_COMPONENT_STATE, type: path, default: /var/lib/oneinstack/components}
+timeouts: {precheck: 120, install: 1800, verify: 120, upgrade: 1800, rollback: 600, uninstall: 600}

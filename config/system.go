@@ -1,11 +1,53 @@
 package config
 
 type System struct {
-	Port        string `mapstructure:"port" json:"port" yaml:"port"`                      // 端口值
-	Remote      string `mapstructure:"remote" json:"remote" yaml:"remote"`                // 远程更新地址
-	DefaultPath string `mapstructure:"defaultPath" json:"defaultPath" yaml:"defaultPath"` // 默认路径
-	WebPath     string `mapstructure:"webPath" json:"webPath" yaml:"webPath"`             // web路径
-	LogPath     string `mapstructure:"logPath" json:"logPath" yaml:"logPath"`             // 日志路径
-	DataPath    string `mapstructure:"dataPath" json:"dataPath" yaml:"dataPath"`          // 数据路径
-	JWTSecret   string `mapstructure:"jwtSecret" json:"jwtSecret" yaml:"jwtSecret"`       // JWT密钥
+	Port                          string   `mapstructure:"port" json:"port" yaml:"port"`
+	BindAddress                   string   `mapstructure:"bindAddress" json:"bindAddress" yaml:"bindAddress"`
+	HTTPSEnabled                  bool     `mapstructure:"httpsEnabled" json:"httpsEnabled" yaml:"httpsEnabled"`
+	HTTPSPort                     string   `mapstructure:"httpsPort" json:"httpsPort" yaml:"httpsPort"`
+	HTTPSCertificateFile          string   `mapstructure:"httpsCertificateFile" json:"httpsCertificateFile" yaml:"httpsCertificateFile"`
+	HTTPSPrivateKeyFile           string   `mapstructure:"httpsPrivateKeyFile" json:"-" yaml:"httpsPrivateKeyFile"`
+	TrustedProxies                []string `mapstructure:"trustedProxies" json:"trustedProxies" yaml:"trustedProxies"`
+	Remote                        string   `mapstructure:"remote" json:"remote" yaml:"remote"`
+	DefaultPath                   string   `mapstructure:"defaultPath" json:"defaultPath" yaml:"defaultPath"`
+	WebPath                       string   `mapstructure:"webPath" json:"webPath" yaml:"webPath"`
+	LogPath                       string   `mapstructure:"logPath" json:"logPath" yaml:"logPath"`
+	DataPath                      string   `mapstructure:"dataPath" json:"dataPath" yaml:"dataPath"`
+	JWTSecret                     string   `mapstructure:"jwtSecret" json:"jwtSecret" yaml:"jwtSecret"`
+	CredentialKey                 string   `mapstructure:"credentialKey" json:"-" yaml:"credentialKey"`
+	FileUploadMaxBytes            int64    `mapstructure:"fileUploadMaxBytes" json:"fileUploadMaxBytes" yaml:"fileUploadMaxBytes"`
+	FileEditMaxBytes              int64    `mapstructure:"fileEditMaxBytes" json:"fileEditMaxBytes" yaml:"fileEditMaxBytes"`
+	FileRootQuotaBytes            int64    `mapstructure:"fileRootQuotaBytes" json:"fileRootQuotaBytes" yaml:"fileRootQuotaBytes"`
+	FileMinFreeBytes              int64    `mapstructure:"fileMinFreeBytes" json:"fileMinFreeBytes" yaml:"fileMinFreeBytes"`
+	TrashRetentionDays            int      `mapstructure:"trashRetentionDays" json:"trashRetentionDays" yaml:"trashRetentionDays"`
+	TrashCleanupSchedule          string   `mapstructure:"trashCleanupSchedule" json:"trashCleanupSchedule" yaml:"trashCleanupSchedule"`
+	SoftwareTaskRetentionDays     int      `mapstructure:"softwareTaskRetentionDays" json:"softwareTaskRetentionDays" yaml:"softwareTaskRetentionDays"`
+	SoftwareTaskLogRetentionDays  int      `mapstructure:"softwareTaskLogRetentionDays" json:"softwareTaskLogRetentionDays" yaml:"softwareTaskLogRetentionDays"`
+	SoftwareTaskCleanupSchedule   string   `mapstructure:"softwareTaskCleanupSchedule" json:"softwareTaskCleanupSchedule" yaml:"softwareTaskCleanupSchedule"`
+	DatabaseBackupRetentionDays   int      `mapstructure:"databaseBackupRetentionDays" json:"databaseBackupRetentionDays" yaml:"databaseBackupRetentionDays"`
+	DatabaseBackupCleanupSchedule string   `mapstructure:"databaseBackupCleanupSchedule" json:"databaseBackupCleanupSchedule" yaml:"databaseBackupCleanupSchedule"`
+	WebsiteBackupRetentionDays    int      `mapstructure:"websiteBackupRetentionDays" json:"websiteBackupRetentionDays" yaml:"websiteBackupRetentionDays"`
+	WebsiteBackupCleanupSchedule  string   `mapstructure:"websiteBackupCleanupSchedule" json:"websiteBackupCleanupSchedule" yaml:"websiteBackupCleanupSchedule"`
+	WebsiteBackupMaxBytes         int64    `mapstructure:"websiteBackupMaxBytes" json:"websiteBackupMaxBytes" yaml:"websiteBackupMaxBytes"`
+	WebsiteBackupMaxFiles         int      `mapstructure:"websiteBackupMaxFiles" json:"websiteBackupMaxFiles" yaml:"websiteBackupMaxFiles"`
+	AuditRetentionDays            int      `mapstructure:"auditRetentionDays" json:"auditRetentionDays" yaml:"auditRetentionDays"`
+	AuditCleanupSchedule          string   `mapstructure:"auditCleanupSchedule" json:"auditCleanupSchedule" yaml:"auditCleanupSchedule"`
+	AuditExportMaxRows            int      `mapstructure:"auditExportMaxRows" json:"auditExportMaxRows" yaml:"auditExportMaxRows"`
+	MonitorSampleSchedule         string   `mapstructure:"monitorSampleSchedule" json:"monitorSampleSchedule" yaml:"monitorSampleSchedule"`
+	MonitorRetentionDays          int      `mapstructure:"monitorRetentionDays" json:"monitorRetentionDays" yaml:"monitorRetentionDays"`
+	MonitorAlertRetentionDays     int      `mapstructure:"monitorAlertRetentionDays" json:"monitorAlertRetentionDays" yaml:"monitorAlertRetentionDays"`
+	MonitorCleanupSchedule        string   `mapstructure:"monitorCleanupSchedule" json:"monitorCleanupSchedule" yaml:"monitorCleanupSchedule"`
+	RuntimeLogRetentionDays       int      `mapstructure:"runtimeLogRetentionDays" json:"runtimeLogRetentionDays" yaml:"runtimeLogRetentionDays"`
+	RuntimeLogCleanupSchedule     string   `mapstructure:"runtimeLogCleanupSchedule" json:"runtimeLogCleanupSchedule" yaml:"runtimeLogCleanupSchedule"`
+	CronExecutionRetentionDays    int      `mapstructure:"cronExecutionRetentionDays" json:"cronExecutionRetentionDays" yaml:"cronExecutionRetentionDays"`
+	CronExecutionCleanupSchedule  string   `mapstructure:"cronExecutionCleanupSchedule" json:"cronExecutionCleanupSchedule" yaml:"cronExecutionCleanupSchedule"`
+	CertificatePath               string   `mapstructure:"certificatePath" json:"certificatePath" yaml:"certificatePath"`
+	ACMEChallengePath             string   `mapstructure:"acmeChallengePath" json:"acmeChallengePath" yaml:"acmeChallengePath"`
+	ACMEDirectoryURL              string   `mapstructure:"acmeDirectoryUrl" json:"acmeDirectoryUrl" yaml:"acmeDirectoryUrl"`
+	ACMERenewSchedule             string   `mapstructure:"acmeRenewSchedule" json:"acmeRenewSchedule" yaml:"acmeRenewSchedule"`
+	ACMERenewBeforeDays           int      `mapstructure:"acmeRenewBeforeDays" json:"acmeRenewBeforeDays" yaml:"acmeRenewBeforeDays"`
+	CertificateExpiryWarningDays  int      `mapstructure:"certificateExpiryWarningDays" json:"certificateExpiryWarningDays" yaml:"certificateExpiryWarningDays"`
+	ACMEIssueTimeoutMinutes       int      `mapstructure:"acmeIssueTimeoutMinutes" json:"acmeIssueTimeoutMinutes" yaml:"acmeIssueTimeoutMinutes"`
+	TerminalEnabled               bool     `mapstructure:"terminalEnabled" json:"terminalEnabled" yaml:"terminalEnabled"`
+	TerminalSessionMins           int      `mapstructure:"terminalSessionMinutes" json:"terminalSessionMinutes" yaml:"terminalSessionMinutes"`
 }

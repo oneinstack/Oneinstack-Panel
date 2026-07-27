@@ -1,0 +1,41 @@
+schemaVersion: 1
+component:
+  id: mysql
+  name: MySQL 8.0
+  version: 1.0.0
+  softwareVersions: ["8.0"]
+  channel: stable
+  description: OneinStack-style MySQL 8.0 generic-binary installation with verified upstream downloads and systemd.
+compatibility:
+  systems:
+    - id: ubuntu
+      versions: ["22.04", "24.04"]
+  architectures: [amd64]
+dependencies:
+  packages:
+    apt: [ca-certificates, curl, libaio1, libnuma1, libtinfo6, xz-utils]
+actions:
+  precheck: scripts/precheck.sh
+  install: scripts/install.sh
+  configure: scripts/configure.sh
+  verify: scripts/verify.sh
+  upgrade: scripts/install.sh
+  rollback: scripts/rollback.sh
+  uninstall: scripts/uninstall.sh
+  status: scripts/status.sh
+  start: scripts/start.sh
+  stop: scripts/stop.sh
+  restart: scripts/restart.sh
+  configGet: scripts/config.sh
+  configApply: scripts/config.sh
+parameters:
+  - {name: SOFTWARE_VERSION, type: string, required: true}
+  - {name: INSTALL_DIR, type: path, default: /usr/local/mysql}
+  - {name: DATA_DIR, type: path, default: /data/mysql}
+  - {name: MYSQL_PORT, type: port, default: "3306"}
+  - {name: MYSQL_BIND_ADDRESS, type: string, default: "127.0.0.1"}
+  - {name: MYSQL_PASSWORD, type: password, secret: true, description: Required only when initializing a new data directory.}
+  - {name: SOURCE_URL, type: string, default: "https://cdn.mysql.com/Downloads/MySQL-8.0/mysql-8.0.45-linux-glibc2.28-x86_64.tar.xz"}
+  - {name: SOURCE_SHA256, type: string, default: "c09137539ab42590c8682d498716e6b97a45d83d2188339fa2e980dd54b6e0af"}
+  - {name: ONEINSTACK_COMPONENT_STATE, type: path, default: /var/lib/oneinstack/components}
+timeouts: {precheck: 180, install: 7200, configure: 900, verify: 180, upgrade: 7200, rollback: 600, uninstall: 300, status: 10, start: 180, stop: 180, restart: 300, configGet: 10, configApply: 600}

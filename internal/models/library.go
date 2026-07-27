@@ -11,7 +11,8 @@ type Library struct {
 	PID        int64     `json:"pid"`
 	Name       string    `json:"name"`
 	User       string    `json:"user"`
-	Password   string    `json:"password"`
+	Password   string    `json:"-"`
+	Encoding   string    `json:"encoding"`
 	Capacity   string    `json:"capacity"`
 	PAddr      string    `json:"p_addr"`
 	Type       string    `json:"type"`

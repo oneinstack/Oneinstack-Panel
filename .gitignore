@@ -24,6 +24,7 @@ cmd/oneinstack
 !install-ubuntu.sh
 !install-cent.sh
 !update.sh
+!scripts/*.sh
 
 server.pid
 
@@ -33,6 +34,13 @@ oneinstack.iml
 node_modules
 
 dist
+/packages/
+/releases/
+/coverage.out
+/coverage.html
+
+/docker/secrets/*
+!/docker/secrets/README.md
 
 version
 
@@ -40,3 +48,9 @@ version
 
 mysql*
 /docs/
+
+# Versioned runtime sources must not be hidden by the legacy global *.sh and
+# mysql* rules above. Runtime secret files under docker/secrets stay ignored.
+!/docker/entrypoint.sh
+!/script-registry/
+!/script-registry/**

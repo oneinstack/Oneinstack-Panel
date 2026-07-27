@@ -1,0 +1,41 @@
+schemaVersion: 1
+component:
+  id: redis
+  name: Redis
+  version: 1.0.0
+  softwareVersions: ["7.4.8"]
+  channel: stable
+  description: OneinStack-style source installation of Redis with verified upstream downloads and systemd.
+compatibility:
+  systems:
+    - id: ubuntu
+      versions: ["22.04", "24.04"]
+  architectures: [amd64]
+dependencies:
+  packages:
+    apt: [build-essential, ca-certificates, curl, libssl-dev, pkg-config]
+actions:
+  precheck: scripts/precheck.sh
+  install: scripts/install.sh
+  configure: scripts/configure.sh
+  verify: scripts/verify.sh
+  upgrade: scripts/install.sh
+  rollback: scripts/rollback.sh
+  uninstall: scripts/uninstall.sh
+  status: scripts/status.sh
+  start: scripts/start.sh
+  stop: scripts/stop.sh
+  restart: scripts/restart.sh
+  configGet: scripts/config.sh
+  configApply: scripts/config.sh
+parameters:
+  - {name: SOFTWARE_VERSION, type: string, required: true}
+  - {name: INSTALL_DIR, type: path, default: /usr/local/redis}
+  - {name: DATA_DIR, type: path, default: /data/redis}
+  - {name: REDIS_PORT, type: port, default: "6379"}
+  - {name: REDIS_BIND, type: string, default: "127.0.0.1 ::1"}
+  - {name: REDIS_PASSWORD, type: password, secret: true}
+  - {name: SOURCE_URL, type: string, default: "https://download.redis.io/releases/redis-7.4.8.tar.gz"}
+  - {name: SOURCE_SHA256, type: string, default: "f6773cb7d63be236c59c2917a82f1f08e47b77d89b2f0c9f53becb22b8ea4172"}
+  - {name: ONEINSTACK_COMPONENT_STATE, type: path, default: /var/lib/oneinstack/components}
+timeouts: {precheck: 120, install: 3600, configure: 120, verify: 120, upgrade: 3600, rollback: 300, uninstall: 300, status: 10, start: 120, stop: 120, restart: 180, configGet: 10, configApply: 180}

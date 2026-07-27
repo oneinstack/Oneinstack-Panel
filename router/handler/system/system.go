@@ -1,10 +1,12 @@
 package system
 
 import (
+	"errors"
 	"oneinstack/core"
-	"oneinstack/internal/models"
 	"oneinstack/internal/services/system"
 	"oneinstack/router/input"
+	"oneinstack/router/middleware"
+	"oneinstack/router/session"
 
 	"github.com/gin-gonic/gin"
 )
@@ -71,21 +73,19 @@ func SystemInfo(c *gin.Context) {
 }
 
 func UpdateUser(c *gin.Context) {
-	user := models.User{}
-	if err := c.ShouldBindJSON(&user); err != nil {
+	var request input.UpdateUserRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
 		appErr := core.WrapError(err, core.ErrBadRequest, "请求参数错误")
 		core.HandleError(c, appErr)
 		return
 	}
-	id, exist := c.Get("id")
-	if exist != true {
-		appErr := core.NewError(core.ErrNotFound, "资源未找到")
+	userID, exists := middleware.AuthenticatedUserID(c)
+	if !exists {
+		appErr := core.NewError(core.ErrUnauthorized, "登录状态无效")
 		core.HandleError(c, appErr)
 		return
 	}
-	user.ID = id.(int64)
-	err := system.UpdateUser(user)
-	if err != nil {
+	if err := system.UpdateUser(userID, request.Username); err != nil {
 		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
 		core.HandleError(c, appErr)
 		return
@@ -94,27 +94,31 @@ func UpdateUser(c *gin.Context) {
 }
 
 func ResetPassword(c *gin.Context) {
-	user := input.ResetPasswordRequest{}
-	id, exist := c.Get("id")
-	if exist != true {
-		appErr := core.NewError(core.ErrNotFound, "资源未找到")
+	userID, exists := middleware.AuthenticatedUserID(c)
+	if !exists {
+		appErr := core.NewError(core.ErrUnauthorized, "登录状态无效")
 		core.HandleError(c, appErr)
 		return
 	}
-	if err := c.ShouldBindJSON(&user); err != nil {
+	var request input.ResetPasswordRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
 		appErr := core.WrapError(err, core.ErrBadRequest, "请求参数错误")
 		core.HandleError(c, appErr)
 		return
 	}
-	user.Id = id.(int64)
-	user.NewPassword = user.Password
-	err := system.ResetPassword(user)
-	if err != nil {
-		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+	if err := system.ResetPassword(userID, request.CurrentPassword, request.Password); err != nil {
+		appErr := core.WrapError(err, core.ErrBadRequest, "密码修改失败")
+		if errors.Is(err, system.ErrCurrentPasswordInvalid) {
+			appErr = core.NewError(core.ErrInvalidPassword, "当前密码错误")
+		}
 		core.HandleError(c, appErr)
 		return
 	}
-	core.HandleSuccess(c, nil)
+	session.Clear(c)
+	core.HandleSuccess(c, gin.H{
+		"authenticated":            false,
+		"reauthenticationRequired": true,
+	})
 }
 
 func UpdatePort(c *gin.Context) {
@@ -131,6 +135,41 @@ func UpdatePort(c *gin.Context) {
 		return
 	}
 	core.HandleSuccess(c, nil)
+}
+
+func GetPanelNetwork(c *gin.Context) {
+	settings, err := system.GetPanelNetworkSettings()
+	if err != nil {
+		core.HandleError(c, core.WrapError(err, core.ErrInternalError, "获取面板访问配置失败"))
+		return
+	}
+	core.HandleSuccess(c, settings)
+}
+
+func UpdatePanelNetwork(c *gin.Context) {
+	var request input.UpdatePanelNetworkRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "请求参数错误"))
+		return
+	}
+	settings, err := system.UpdatePanelNetwork(system.UpdatePanelNetworkRequest{
+		BindAddress:          request.BindAddress,
+		HTTPPort:             request.HTTPPort,
+		HTTPSEnabled:         request.HTTPSEnabled,
+		HTTPSPort:            request.HTTPSPort,
+		HTTPSCertificateFile: request.HTTPSCertificateFile,
+		HTTPSPrivateKeyFile:  request.HTTPSPrivateKeyFile,
+		TrustedProxies:       request.TrustedProxies,
+	})
+	if err != nil {
+		if errors.Is(err, system.ErrNetworkConfigInvalid) {
+			core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "面板访问配置无效"))
+			return
+		}
+		core.HandleError(c, core.WrapError(err, core.ErrInternalError, "保存面板访问配置失败"))
+		return
+	}
+	core.HandleSuccess(c, settings)
 }
 
 func UpdateSystemTitle(c *gin.Context) {

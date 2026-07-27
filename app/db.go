@@ -3,41 +3,38 @@ package app
 import (
 	"errors"
 	"fmt"
-	"log"
 	"oneinstack/internal/crypto"
 	"oneinstack/internal/models"
+	"oneinstack/utils"
 	"os"
+	"path/filepath"
+	"time"
 
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
 
-func ensureOneDir() {
-	dirPath := "/usr/local/one"
-
-	// 检查目录是否存在
-	if _, err := os.Stat(dirPath); os.IsNotExist(err) {
-		log.Printf("目录 %s 不存在，正在创建...", dirPath)
-
-		// 递归创建目录
-		if err := os.MkdirAll(dirPath, 0755); err != nil {
-			log.Fatalf("创建目录失败: %v", err)
-		}
-
-		// 设置权限（可选）
-		if err := os.Chmod(dirPath, 0755); err != nil {
-			log.Printf("警告：无法设置目录权限: %v", err)
-		}
-		log.Println("目录创建成功")
+func ensureOneDir() error {
+	dirPath := GetBasePath()
+	if err := os.MkdirAll(dirPath, 0755); err != nil {
+		return fmt.Errorf("create data directory %s: %w", dirPath, err)
 	}
+	return nil
 }
 
-func init() {
-	ensureOneDir() // 新增目录检查
-	if err := InitDB(GetBasePath() + "myadmin.db"); err != nil {
-		log.Fatal("InitDB error:", err)
+// Initialize performs the filesystem and database setup required by commands
+// that use application state. Package imports intentionally have no side effects,
+// so tests and read-only tooling can load the application without writing to
+// /usr/local.
+func Initialize() error {
+	if err := ensureOneDir(); err != nil {
+		return err
 	}
+	if _, err := LoadConfig(); err != nil {
+		return err
+	}
+	return InitDB(filepath.Join(GetBasePath(), "myadmin.db"))
 }
 
 func InitDB(dbPath string) error {
@@ -55,7 +52,7 @@ func InitDB(dbPath string) error {
 	// 检查是否存在用户，如果不存在提示创建管理员
 	err = createTables()
 	if err != nil {
-		log.Fatal("failed to migrate the database:", err)
+		return fmt.Errorf("migrate database: %w", err)
 	}
 
 	return nil
@@ -70,6 +67,10 @@ func createTables() error {
 	if err != nil {
 		return err
 	}
+	err = db.AutoMigrate(&models.UserSession{}, &models.UserMFA{})
+	if err != nil {
+		return err
+	}
 	err = db.AutoMigrate(&models.Storage{})
 	if err != nil {
 		return err
@@ -78,11 +79,46 @@ func createTables() error {
 	if err != nil {
 		return err
 	}
+	err = db.AutoMigrate(
+		&models.DatabaseTask{},
+		&models.DatabaseBackup{},
+		&models.DatabaseOperationLock{},
+	)
+	if err != nil {
+		return err
+	}
+	if err := migrateStoredCredentials(); err != nil {
+		return err
+	}
 	err = db.AutoMigrate(&models.Software{})
 	if err != nil {
 		return err
 	}
+	err = db.AutoMigrate(
+		&models.SoftwareTask{},
+		&models.SoftwareTaskEvent{},
+		&models.ComponentOperationLock{},
+	)
+	if err != nil {
+		return err
+	}
 	err = db.AutoMigrate(&models.Website{})
+	if err != nil {
+		return err
+	}
+	err = db.AutoMigrate(
+		&models.WebsiteTask{},
+		&models.WebsiteBackup{},
+		&models.WebsiteOperationLock{},
+	)
+	if err != nil {
+		return err
+	}
+	err = db.AutoMigrate(
+		&models.Certificate{},
+		&models.CertificateTask{},
+		&models.CertificateOperationLock{},
+	)
 	if err != nil {
 		return err
 	}
@@ -127,7 +163,94 @@ func createTables() error {
 	if err != nil {
 		return err
 	}
+	err = db.AutoMigrate(&models.AuditEvent{}, &models.AuditCheckpoint{}, &models.AuditChainState{})
+	if err != nil {
+		return err
+	}
+	err = db.AutoMigrate(
+		&models.MetricSample{},
+		&models.MonitorRule{},
+		&models.MonitorAlertState{},
+		&models.MonitorAlertEvent{},
+		&models.NotificationChannel{},
+		&models.NotificationDelivery{},
+	)
+	if err != nil {
+		return err
+	}
+	if err := db.AutoMigrate(&models.RuntimeLogEntry{}); err != nil {
+		return err
+	}
 	return nil
+}
+
+func migrateStoredCredentials() error {
+	type credentialRecord struct {
+		table   string
+		purpose string
+		id      int64
+		value   string
+	}
+	var storages []models.Storage
+	if err := db.Select("id", "password").
+		Where("password <> ''").
+		Find(&storages).Error; err != nil {
+		return fmt.Errorf("list storage credentials: %w", err)
+	}
+	var libraries []models.Library
+	if err := db.Select("id", "password").
+		Where("password <> ''").
+		Find(&libraries).Error; err != nil {
+		return fmt.Errorf("list library credentials: %w", err)
+	}
+	records := make([]credentialRecord, 0, len(storages)+len(libraries))
+	for _, record := range storages {
+		records = append(records, credentialRecord{
+			table:   "storages",
+			purpose: utils.CredentialPurposeStoragePassword,
+			id:      record.ID,
+			value:   record.Password,
+		})
+	}
+	for _, record := range libraries {
+		records = append(records, credentialRecord{
+			table:   "libraries",
+			purpose: utils.CredentialPurposeLibraryPassword,
+			id:      record.ID,
+			value:   record.Password,
+		})
+	}
+	if len(records) == 0 {
+		return nil
+	}
+	if !utils.CredentialCipherReady() {
+		return errors.New("stored database credentials exist but credential encryption key is not configured")
+	}
+	return db.Transaction(func(tx *gorm.DB) error {
+		for _, record := range records {
+			if utils.IsEncryptedCredential(record.value) {
+				if _, err := utils.DecryptCredential(record.value, record.purpose); err != nil {
+					return fmt.Errorf(
+						"validate encrypted credential in %s record %d: %w",
+						record.table,
+						record.id,
+						err,
+					)
+				}
+				continue
+			}
+			encrypted, err := utils.EncryptCredential(record.value, record.purpose)
+			if err != nil {
+				return fmt.Errorf("encrypt credential in %s record %d: %w", record.table, record.id, err)
+			}
+			if err := tx.Table(record.table).
+				Where("id = ?", record.id).
+				UpdateColumn("password", encrypted).Error; err != nil {
+				return fmt.Errorf("persist encrypted credential in %s record %d: %w", record.table, record.id, err)
+			}
+		}
+		return nil
+	})
 }
 
 func initSoftware() error {
@@ -306,11 +429,88 @@ func initSoftware() error {
 	if result.Error != nil && !errors.Is(result.Error, gorm.ErrRecordNotFound) {
 		return result.Error
 	}
-	if soft.Id > 0 {
-		return nil
+	if soft.Id == 0 {
+		tx := db.CreateInBatches(softToSeed, len(softToSeed))
+		if tx.Error != nil {
+			return tx.Error
+		}
 	}
-	tx := db.CreateInBatches(softToSeed, len(softToSeed))
-	return tx.Error
+	return syncCenterSoftwareCatalog()
+}
+
+// syncCenterSoftwareCatalog adds versions backed by the production Center
+// packages without rewriting installed or legacy catalog rows.
+func syncCenterSoftwareCatalog() error {
+	// MySQL installation is deliberately parameter-free in the store. Panel
+	// fixes the local account to root, the port to 3306, and generates the
+	// initial password server-side so secrets never have to be typed into the
+	// software card.
+	if err := db.Model(&models.Software{}).
+		Where("`key` = ?", "db").
+		Updates(map[string]any{
+			"name":   "MySQL",
+			"params": "",
+		}).Error; err != nil {
+		return fmt.Errorf("normalize MySQL catalog parameters: %w", err)
+	}
+	versions := []struct {
+		key     string
+		name    string
+		version string
+	}{
+		{key: "webserver", name: "Nginx", version: "1.28.2"},
+		{key: "redis", name: "Redis", version: "7.4.8"},
+		{key: "php", name: "PHP", version: "8.2"},
+		{key: "php", name: "PHP", version: "8.3"},
+	}
+	for _, item := range versions {
+		var count int64
+		if err := db.Model(&models.Software{}).
+			Where("`key` = ? AND version = ?", item.key, item.version).
+			Count(&count).Error; err != nil {
+			return err
+		}
+		if count > 0 {
+			continue
+		}
+		var template models.Software
+		if err := db.Where("`key` = ?", item.key).Order("id DESC").First(&template).Error; err != nil {
+			return fmt.Errorf("find %s catalog template: %w", item.key, err)
+		}
+		template.Id = 0
+		template.Name = item.name
+		template.Version = item.version
+		template.Status = models.Soft_Status_Default
+		template.Installed = false
+		template.InstallVersion = ""
+		template.InstallTime = time.Time{}
+		template.Log = ""
+		template.IsUpdate = false
+		if err := db.Create(&template).Error; err != nil {
+			return fmt.Errorf("create %s %s catalog entry: %w", item.name, item.version, err)
+		}
+	}
+	var firewallCount int64
+	if err := db.Model(&models.Software{}).
+		Where("`key` = ? AND version = ?", "firewalld", "1.0.0").
+		Count(&firewallCount).Error; err != nil {
+		return err
+	}
+	if firewallCount == 0 {
+		if err := db.Create(&models.Software{
+			Name:      "firewalld",
+			Key:       "firewalld",
+			Describe:  "Linux 动态防火墙管理服务",
+			Status:    models.Soft_Status_Default,
+			Resource:  "local",
+			Installed: false,
+			Version:   "1.0.0",
+			Tags:      "安全",
+		}).Error; err != nil {
+			return fmt.Errorf("create firewalld catalog entry: %w", err)
+		}
+	}
+	return nil
 }
 
 func initDic() error {
@@ -362,46 +562,49 @@ func initRemark() error {
 }
 
 func InitUser(userName string, password string) error {
-	var count int64 = 0
-	tx := DB().Model(models.User{}).Count(&count)
-	if tx.Error != nil {
-		return tx.Error
-	}
-	if count > 0 {
-		return nil
-	}
-	err := setupAdminUser(userName, password)
+	hasUsers, err := HasUsers()
 	if err != nil {
 		return err
 	}
-	return nil
+	if hasUsers {
+		return nil
+	}
+	return setupAdminUser(userName, password)
+}
+
+// HasUsers reports whether initial administrator setup has already completed.
+func HasUsers() (bool, error) {
+	var count int64 = 0
+	tx := DB().Model(models.User{}).Count(&count)
+	if tx.Error != nil {
+		return false, tx.Error
+	}
+	return count > 0, nil
 }
 
 func setupAdminUser(userName string, password string) error {
+	if err := utils.ValidateUsername(userName); err != nil {
+		return err
+	}
+	if err := utils.ValidatePassword(password); err != nil {
+		return err
+	}
 	hashed, err := crypto.HashPassword(password)
 	if err != nil {
 		return err
 	}
 	user := &models.User{
-		Username: userName,
-		Password: hashed,
-		IsAdmin:  true,
+		Username:           userName,
+		Password:           hashed,
+		IsAdmin:            true,
+		MustChangePassword: true,
+		SecurityVersion:    1,
 	}
 	tx := DB().Create(user)
 	if tx.Error != nil {
 		return tx.Error
 	}
-	fmt.Printf("用户创建成功.\n用户名: %s\n用户密码: %s\n", userName, password)
-	return nil
-}
-
-func getAdminUser() error {
-	var user models.User
-	tx := DB().First(&user)
-	if tx.Error != nil {
-		return tx.Error
-	}
-	fmt.Printf("用户创建成功.\n用户名: %s\n用户密码: %s\n", user.Username, user.Password)
+	fmt.Printf("管理员用户创建成功。\n用户名: %s\n", userName)
 	return nil
 }
 

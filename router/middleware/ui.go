@@ -1,132 +1,86 @@
 package middleware
 
 import (
+	"io/fs"
 	"net/http"
 	"oneinstack/utils/httpex"
-	"path/filepath"
+	"oneinstack/webui"
+	"path"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 )
 
-// 声明外部变量，由main.go中的embed提供
-var (
-	GetFile    func(path string) ([]byte, error)
-	FileExists func(path string) bool
-)
-
+// MidUiHandle serves the embedded SPA only for non-API routes that were not
+// matched by the router.
 func MidUiHandle(c *gin.Context) {
-	c.Next()
-	if c.Writer.Status() != http.StatusNotFound || c.Writer.Size() > 0 {
+	requestPath := c.Request.URL.Path
+	if requestPath == "/v1" || strings.HasPrefix(requestPath, "/v1/") {
+		c.JSON(http.StatusNotFound, gin.H{
+			"code":    "NOT_FOUND",
+			"message": "API route not found",
+		})
+		return
+	}
+	if c.Request.Method != http.MethodGet && c.Request.Method != http.MethodHead {
+		c.Status(http.StatusNotFound)
 		return
 	}
 
-	path := c.Request.URL.Path
-	if path == "/" {
-		path = "/index.html"
+	if requestPath == "/" {
+		requestPath = "/index.html"
 	}
-
-	// 移除开头的斜杠
-	filePath := strings.TrimPrefix(path, "/")
-	if filePath == "" {
-		filePath = "index.html"
-	}
-
-	// 清理路径
-	filePath = filepath.Clean(filePath)
-	if strings.HasPrefix(filePath, "..") {
+	filePath := path.Clean(strings.TrimPrefix(requestPath, "/"))
+	if !fs.ValidPath(filePath) {
 		httpex.ResMsgUrl(c, "路径错误", "/")
 		return
 	}
 
-	// 设置缓存头
-	setCacheHeaders(c, filePath)
-
-	// 尝试从嵌入的文件系统读取文件
-	data, err := GetFile(filePath)
+	servedPath := filePath
+	data, err := webui.ReadFile(filePath)
 	if err != nil {
-		// 如果文件不存在，返回index.html（SPA路由）
-		data, err = GetFile("index.html")
+		// Extension-less paths are SPA routes. Missing assets stay 404 so a
+		// broken deployment cannot be hidden behind index.html.
+		if path.Ext(filePath) != "" {
+			c.Status(http.StatusNotFound)
+			return
+		}
+		servedPath = "index.html"
+		data, err = webui.ReadFile(servedPath)
 		if err != nil {
-			httpex.ResMsgUrl(c, "未找到内容,跳转中...", "/")
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"code":    "WEB_UI_UNAVAILABLE",
+				"message": "Web UI is unavailable",
+			})
 			return
 		}
 	}
 
-	// 设置Content-Type
-	setContentType(c, filePath)
-
-	// 返回文件内容
-	c.Data(http.StatusOK, getContentType(filePath), data)
+	setCacheHeaders(c, servedPath)
+	c.Header("X-Content-Type-Options", "nosniff")
+	c.Header("Referrer-Policy", "same-origin")
+	c.Data(http.StatusOK, getContentType(servedPath), data)
 }
 
-// setCacheHeaders 设置缓存头
-func setCacheHeaders(c *gin.Context, path string) {
-	ext := filepath.Ext(path)
-
-	// HTML文件不缓存
-	if ext == ".html" {
+func setCacheHeaders(c *gin.Context, filePath string) {
+	if path.Ext(filePath) == ".html" {
 		c.Header("Cache-Control", "no-cache, no-store, must-revalidate")
 		c.Header("Pragma", "no-cache")
 		c.Header("Expires", "0")
-	} else {
-		// 其他静态文件缓存1年
-		c.Header("Cache-Control", "public, max-age=31536000, immutable")
+		return
 	}
+	c.Header("Cache-Control", "public, max-age=31536000, immutable")
 }
 
-// setContentType 设置Content-Type
-func setContentType(c *gin.Context, path string) {
-	ext := strings.ToLower(filepath.Ext(path))
-
-	switch ext {
-	case ".html":
-		c.Header("Content-Type", "text/html; charset=utf-8")
-	case ".css":
-		c.Header("Content-Type", "text/css; charset=utf-8")
-	case ".js":
-		c.Header("Content-Type", "application/javascript; charset=utf-8")
-	case ".json":
-		c.Header("Content-Type", "application/json; charset=utf-8")
-	case ".png":
-		c.Header("Content-Type", "image/png")
-	case ".jpg", ".jpeg":
-		c.Header("Content-Type", "image/jpeg")
-	case ".gif":
-		c.Header("Content-Type", "image/gif")
-	case ".svg":
-		c.Header("Content-Type", "image/svg+xml")
-	case ".ico":
-		c.Header("Content-Type", "image/x-icon")
-	case ".woff":
-		c.Header("Content-Type", "font/woff")
-	case ".woff2":
-		c.Header("Content-Type", "font/woff2")
-	case ".ttf":
-		c.Header("Content-Type", "font/ttf")
-	case ".eot":
-		c.Header("Content-Type", "application/vnd.ms-fontobject")
-	case ".otf":
-		c.Header("Content-Type", "font/otf")
-	case ".map":
-		c.Header("Content-Type", "application/json")
-	default:
-		c.Header("Content-Type", "application/octet-stream")
-	}
-}
-
-// getContentType 获取Content-Type
-func getContentType(path string) string {
-	ext := strings.ToLower(filepath.Ext(path))
-
-	switch ext {
+func getContentType(filePath string) string {
+	switch strings.ToLower(path.Ext(filePath)) {
 	case ".html":
 		return "text/html; charset=utf-8"
 	case ".css":
 		return "text/css; charset=utf-8"
 	case ".js":
 		return "application/javascript; charset=utf-8"
-	case ".json":
+	case ".json", ".map":
 		return "application/json; charset=utf-8"
 	case ".png":
 		return "image/png"
@@ -134,6 +88,8 @@ func getContentType(path string) string {
 		return "image/jpeg"
 	case ".gif":
 		return "image/gif"
+	case ".webp":
+		return "image/webp"
 	case ".svg":
 		return "image/svg+xml"
 	case ".ico":
@@ -148,8 +104,6 @@ func getContentType(path string) string {
 		return "application/vnd.ms-fontobject"
 	case ".otf":
 		return "font/otf"
-	case ".map":
-		return "application/json"
 	default:
 		return "application/octet-stream"
 	}

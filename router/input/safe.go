@@ -6,3 +6,12 @@ type IptablesRuleParam struct {
 	Direction string `json:"direction"`
 	Page
 }
+
+type FirewallToggleParam struct {
+	Enabled bool   `json:"enabled"`
+	Confirm string `json:"confirm"`
+}
+
+type FirewallPingParam struct {
+	Blocked bool `json:"blocked"`
+}
