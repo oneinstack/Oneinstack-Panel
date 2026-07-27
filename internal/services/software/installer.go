@@ -183,13 +183,25 @@ func (installer *Installer) getUninstallScript(
 func (installer *Installer) getInstallScript(ctx context.Context, params *input.InstallParams, actionName string) (*script.ScriptInfo, error) {
 	var componentName string
 	var legacyScriptName string
+	if app.DB() != nil {
+		var catalogRow models.Software
+		if err := app.DB().
+			Where("`key` = ? AND version = ? AND component <> ''", params.Key, params.Version).
+			First(&catalogRow).Error; err == nil {
+			componentName = strings.ToLower(strings.TrimSpace(catalogRow.Component))
+		}
+	}
 
 	switch params.Key {
 	case "webserver":
-		componentName = "nginx"
+		if componentName == "" {
+			componentName = "nginx"
+		}
 		legacyScriptName = "nginx"
 	case "db":
-		componentName = "mysql"
+		if componentName == "" {
+			componentName = "mysql"
+		}
 		switch params.Version {
 		case "5.5":
 			legacyScriptName = "mysql55"
@@ -198,16 +210,24 @@ func (installer *Installer) getInstallScript(ctx context.Context, params *input.
 		case "8.0":
 			legacyScriptName = "mysql80"
 		default:
-			return nil, fmt.Errorf("unsupported MySQL version: %s", params.Version)
+			if componentName == "" {
+				return nil, fmt.Errorf("unsupported MySQL version: %s", params.Version)
+			}
 		}
 	case "redis":
-		componentName = "redis"
+		if componentName == "" {
+			componentName = "redis"
+		}
 		legacyScriptName = "redis"
 	case "php":
-		componentName = "php"
+		if componentName == "" {
+			componentName = "php"
+		}
 		legacyScriptName = "php"
 	case "java":
-		componentName = "java"
+		if componentName == "" {
+			componentName = "java"
+		}
 		switch params.Version {
 		case "11":
 			legacyScriptName = "openjdk11"
@@ -216,18 +236,28 @@ func (installer *Installer) getInstallScript(ctx context.Context, params *input.
 		case "18":
 			legacyScriptName = "openjdk18"
 		default:
-			return nil, fmt.Errorf("unsupported Java version: %s", params.Version)
+			if componentName == "" {
+				return nil, fmt.Errorf("unsupported Java version: %s", params.Version)
+			}
 		}
 	case "openresty":
-		componentName = "openresty"
+		if componentName == "" {
+			componentName = "openresty"
+		}
 		legacyScriptName = "openresty"
 	case "phpmyadmin":
-		componentName = "phpmyadmin"
+		if componentName == "" {
+			componentName = "phpmyadmin"
+		}
 		legacyScriptName = "phpmyadmin"
 	case "firewalld":
-		componentName = "firewalld"
+		if componentName == "" {
+			componentName = "firewalld"
+		}
 	default:
-		return nil, fmt.Errorf("unsupported software: %s", params.Key)
+		if componentName == "" {
+			return nil, fmt.Errorf("unsupported software: %s", params.Key)
+		}
 	}
 
 	registry, registryErr := scriptregistry.New(app.ONE_CONFIG.ScriptCenter)
@@ -352,7 +382,18 @@ func bundledLegacyScript(name string) (string, bool) {
 }
 
 func componentForRemove(value string) (component string, softwareKey string, err error) {
-	switch strings.ToLower(strings.TrimSpace(value)) {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	if app.DB() != nil {
+		var catalogRow models.Software
+		result := app.DB().
+			Where("(`key` = ? OR component = ?) AND component <> ''", normalized, normalized).
+			Order("installed DESC, catalog_managed DESC, id DESC").
+			First(&catalogRow)
+		if result.Error == nil {
+			return strings.ToLower(strings.TrimSpace(catalogRow.Component)), catalogRow.Key, nil
+		}
+	}
+	switch normalized {
 	case "nginx", "webserver":
 		return "nginx", "webserver", nil
 	case "mysql", "db":

@@ -246,7 +246,7 @@ system:
   httpsCertificateFile: ""
   httpsPrivateKeyFile: ""
   trustedProxies: []
-  remote: "http://localhost:8189/v1/sys/update"
+  remote: ""
   defaultPath: "/data/"
   webPath: "/data/wwwroot/"
   logPath: "/data/wwwlogs/"

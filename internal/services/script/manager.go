@@ -843,6 +843,7 @@ func (sm *ScriptManager) updateSoftwareInstallInfo(params *input.InstallParams, 
 				Updates(map[string]interface{}{
 					"installed":       false,
 					"install_version": "",
+					"is_update":       false,
 				}).Error; err != nil {
 				return err
 			}
@@ -851,6 +852,7 @@ func (sm *ScriptManager) updateSoftwareInstallInfo(params *input.InstallParams, 
 				Updates(map[string]interface{}{
 					"installed":       true,
 					"install_version": version,
+					"is_update":       false,
 				}).Error
 		}); err != nil {
 			fmt.Printf("Update software install state failed: %v\n", err)

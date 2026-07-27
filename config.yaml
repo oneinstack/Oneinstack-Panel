@@ -10,7 +10,9 @@ system:
     httpsPrivateKeyFile: ''
     # Keep empty for direct IP access. Add only controlled reverse-proxy IP/CIDR values.
     trustedProxies: []
-    remote: 'http://localhost:8189/v1/sys/update'
+    # Deprecated legacy catalog endpoint. Software catalog synchronization now
+    # uses scriptCenter.url + /v1/software/catalog.
+    remote: ''
     defaultPath: '/data/'
     webPath: '/data/wwwroot/'
     logPath: '/data/wwwlogs/'
@@ -61,6 +63,10 @@ scriptCenter:
     maxExpandedBytes: 268435456
     cachePath: '/usr/local/one/script-registry/cache'
     bundledPath: '/usr/local/one/script-registry/bundled'
+    # Center controls the software store; Panel keeps the last verified snapshot
+    # so the store remains available during a temporary Center outage.
+    catalogSyncIntervalMinutes: 15
+    catalogStaleAfterHours: 24
     # keyId: Base64-encoded Ed25519 public key. Keep empty until Center is deployed.
     trustedKeys: {}
 updateCenter:

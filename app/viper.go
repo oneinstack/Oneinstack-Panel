@@ -30,6 +30,8 @@ const defaultConfig = `scriptCenter:
     maxExpandedBytes: 268435456
     cachePath: "/usr/local/one/script-registry/cache"
     bundledPath: "/usr/local/one/script-registry/bundled"
+    catalogSyncIntervalMinutes: 15
+    catalogStaleAfterHours: 24
     trustedKeys: {}
 updateCenter:
     enabled: false
@@ -50,7 +52,7 @@ system:
     httpsCertificateFile: ""
     httpsPrivateKeyFile: ""
     trustedProxies: []
-    remote: "http://localhost:8189/v1/sys/update"
+    remote: ""
     defaultPath: "/data/"
     webPath: "/data/wwwroot/"
     logPath: "/data/wwwlogs/"
@@ -171,6 +173,8 @@ func LoadConfig(path ...string) (*viper.Viper, error) {
 	v.SetDefault("scriptCenter.maxExpandedBytes", int64(256<<20))
 	v.SetDefault("scriptCenter.cachePath", filepath.Join(GetBasePath(), "script-registry", "cache"))
 	v.SetDefault("scriptCenter.bundledPath", filepath.Join(GetBasePath(), "script-registry", "bundled"))
+	v.SetDefault("scriptCenter.catalogSyncIntervalMinutes", 15)
+	v.SetDefault("scriptCenter.catalogStaleAfterHours", 24)
 	v.SetDefault("updateCenter.enabled", false)
 	v.SetDefault("updateCenter.centerUrl", "")
 	v.SetDefault("updateCenter.channel", "stable")
@@ -180,65 +184,67 @@ func LoadConfig(path ...string) (*viper.Viper, error) {
 	v.SetDefault("updateCenter.healthTimeoutSeconds", 60)
 	v.SetDefault("updateCenter.backupRetention", 5)
 	for key, environmentName := range map[string]string{
-		"system.port":                          "ONEINSTACK_SYSTEM_PORT",
-		"system.bindAddress":                   "ONEINSTACK_SYSTEM_BIND_ADDRESS",
-		"system.httpsEnabled":                  "ONEINSTACK_SYSTEM_HTTPS_ENABLED",
-		"system.httpsPort":                     "ONEINSTACK_SYSTEM_HTTPS_PORT",
-		"system.httpsCertificateFile":          "ONEINSTACK_SYSTEM_HTTPS_CERTIFICATE_FILE",
-		"system.httpsPrivateKeyFile":           "ONEINSTACK_SYSTEM_HTTPS_PRIVATE_KEY_FILE",
-		"system.fileUploadMaxBytes":            "ONEINSTACK_SYSTEM_FILE_UPLOAD_MAX_BYTES",
-		"system.fileEditMaxBytes":              "ONEINSTACK_SYSTEM_FILE_EDIT_MAX_BYTES",
-		"system.fileRootQuotaBytes":            "ONEINSTACK_SYSTEM_FILE_ROOT_QUOTA_BYTES",
-		"system.fileMinFreeBytes":              "ONEINSTACK_SYSTEM_FILE_MIN_FREE_BYTES",
-		"system.trashRetentionDays":            "ONEINSTACK_SYSTEM_TRASH_RETENTION_DAYS",
-		"system.trashCleanupSchedule":          "ONEINSTACK_SYSTEM_TRASH_CLEANUP_SCHEDULE",
-		"system.softwareTaskRetentionDays":     "ONEINSTACK_SYSTEM_SOFTWARE_TASK_RETENTION_DAYS",
-		"system.softwareTaskLogRetentionDays":  "ONEINSTACK_SYSTEM_SOFTWARE_TASK_LOG_RETENTION_DAYS",
-		"system.softwareTaskCleanupSchedule":   "ONEINSTACK_SYSTEM_SOFTWARE_TASK_CLEANUP_SCHEDULE",
-		"system.databaseBackupRetentionDays":   "ONEINSTACK_SYSTEM_DATABASE_BACKUP_RETENTION_DAYS",
-		"system.databaseBackupCleanupSchedule": "ONEINSTACK_SYSTEM_DATABASE_BACKUP_CLEANUP_SCHEDULE",
-		"system.websiteBackupRetentionDays":    "ONEINSTACK_SYSTEM_WEBSITE_BACKUP_RETENTION_DAYS",
-		"system.websiteBackupCleanupSchedule":  "ONEINSTACK_SYSTEM_WEBSITE_BACKUP_CLEANUP_SCHEDULE",
-		"system.websiteBackupMaxBytes":         "ONEINSTACK_SYSTEM_WEBSITE_BACKUP_MAX_BYTES",
-		"system.websiteBackupMaxFiles":         "ONEINSTACK_SYSTEM_WEBSITE_BACKUP_MAX_FILES",
-		"system.auditRetentionDays":            "ONEINSTACK_SYSTEM_AUDIT_RETENTION_DAYS",
-		"system.auditCleanupSchedule":          "ONEINSTACK_SYSTEM_AUDIT_CLEANUP_SCHEDULE",
-		"system.auditExportMaxRows":            "ONEINSTACK_SYSTEM_AUDIT_EXPORT_MAX_ROWS",
-		"system.monitorSampleSchedule":         "ONEINSTACK_SYSTEM_MONITOR_SAMPLE_SCHEDULE",
-		"system.monitorRetentionDays":          "ONEINSTACK_SYSTEM_MONITOR_RETENTION_DAYS",
-		"system.monitorAlertRetentionDays":     "ONEINSTACK_SYSTEM_MONITOR_ALERT_RETENTION_DAYS",
-		"system.monitorCleanupSchedule":        "ONEINSTACK_SYSTEM_MONITOR_CLEANUP_SCHEDULE",
-		"system.runtimeLogRetentionDays":       "ONEINSTACK_SYSTEM_RUNTIME_LOG_RETENTION_DAYS",
-		"system.runtimeLogCleanupSchedule":     "ONEINSTACK_SYSTEM_RUNTIME_LOG_CLEANUP_SCHEDULE",
-		"system.cronExecutionRetentionDays":    "ONEINSTACK_SYSTEM_CRON_EXECUTION_RETENTION_DAYS",
-		"system.cronExecutionCleanupSchedule":  "ONEINSTACK_SYSTEM_CRON_EXECUTION_CLEANUP_SCHEDULE",
-		"system.certificatePath":               "ONEINSTACK_SYSTEM_CERTIFICATE_PATH",
-		"system.acmeChallengePath":             "ONEINSTACK_SYSTEM_ACME_CHALLENGE_PATH",
-		"system.acmeDirectoryUrl":              "ONEINSTACK_SYSTEM_ACME_DIRECTORY_URL",
-		"system.acmeRenewSchedule":             "ONEINSTACK_SYSTEM_ACME_RENEW_SCHEDULE",
-		"system.acmeRenewBeforeDays":           "ONEINSTACK_SYSTEM_ACME_RENEW_BEFORE_DAYS",
-		"system.certificateExpiryWarningDays":  "ONEINSTACK_SYSTEM_CERTIFICATE_EXPIRY_WARNING_DAYS",
-		"system.acmeIssueTimeoutMinutes":       "ONEINSTACK_SYSTEM_ACME_ISSUE_TIMEOUT_MINUTES",
-		"system.terminalEnabled":               "ONEINSTACK_SYSTEM_TERMINAL_ENABLED",
-		"system.terminalSessionMinutes":        "ONEINSTACK_SYSTEM_TERMINAL_SESSION_MINUTES",
-		"scriptCenter.enabled":                 "ONEINSTACK_SCRIPT_CENTER_ENABLED",
-		"scriptCenter.allowInsecureHTTP":       "ONEINSTACK_SCRIPT_CENTER_ALLOW_INSECURE_HTTP",
-		"scriptCenter.url":                     "ONEINSTACK_SCRIPT_CENTER_URL",
-		"scriptCenter.channel":                 "ONEINSTACK_SCRIPT_CENTER_CHANNEL",
-		"scriptCenter.requestTimeoutSeconds":   "ONEINSTACK_SCRIPT_CENTER_REQUEST_TIMEOUT_SECONDS",
-		"scriptCenter.maxPackageBytes":         "ONEINSTACK_SCRIPT_CENTER_MAX_PACKAGE_BYTES",
-		"scriptCenter.maxExpandedBytes":        "ONEINSTACK_SCRIPT_CENTER_MAX_EXPANDED_BYTES",
-		"scriptCenter.cachePath":               "ONEINSTACK_SCRIPT_CENTER_CACHE_PATH",
-		"scriptCenter.bundledPath":             "ONEINSTACK_SCRIPT_CENTER_BUNDLED_PATH",
-		"updateCenter.enabled":                 "ONEINSTACK_UPDATE_CENTER_ENABLED",
-		"updateCenter.centerUrl":               "ONEINSTACK_UPDATE_CENTER_URL",
-		"updateCenter.manifestUrl":             "ONEINSTACK_UPDATE_CENTER_MANIFEST_URL",
-		"updateCenter.channel":                 "ONEINSTACK_UPDATE_CENTER_CHANNEL",
-		"updateCenter.requestTimeoutSeconds":   "ONEINSTACK_UPDATE_CENTER_REQUEST_TIMEOUT_SECONDS",
-		"updateCenter.maxPackageBytes":         "ONEINSTACK_UPDATE_CENTER_MAX_PACKAGE_BYTES",
-		"updateCenter.maxExpandedBytes":        "ONEINSTACK_UPDATE_CENTER_MAX_EXPANDED_BYTES",
-		"updateCenter.healthTimeoutSeconds":    "ONEINSTACK_UPDATE_CENTER_HEALTH_TIMEOUT_SECONDS",
-		"updateCenter.backupRetention":         "ONEINSTACK_UPDATE_CENTER_BACKUP_RETENTION",
+		"system.port":                             "ONEINSTACK_SYSTEM_PORT",
+		"system.bindAddress":                      "ONEINSTACK_SYSTEM_BIND_ADDRESS",
+		"system.httpsEnabled":                     "ONEINSTACK_SYSTEM_HTTPS_ENABLED",
+		"system.httpsPort":                        "ONEINSTACK_SYSTEM_HTTPS_PORT",
+		"system.httpsCertificateFile":             "ONEINSTACK_SYSTEM_HTTPS_CERTIFICATE_FILE",
+		"system.httpsPrivateKeyFile":              "ONEINSTACK_SYSTEM_HTTPS_PRIVATE_KEY_FILE",
+		"system.fileUploadMaxBytes":               "ONEINSTACK_SYSTEM_FILE_UPLOAD_MAX_BYTES",
+		"system.fileEditMaxBytes":                 "ONEINSTACK_SYSTEM_FILE_EDIT_MAX_BYTES",
+		"system.fileRootQuotaBytes":               "ONEINSTACK_SYSTEM_FILE_ROOT_QUOTA_BYTES",
+		"system.fileMinFreeBytes":                 "ONEINSTACK_SYSTEM_FILE_MIN_FREE_BYTES",
+		"system.trashRetentionDays":               "ONEINSTACK_SYSTEM_TRASH_RETENTION_DAYS",
+		"system.trashCleanupSchedule":             "ONEINSTACK_SYSTEM_TRASH_CLEANUP_SCHEDULE",
+		"system.softwareTaskRetentionDays":        "ONEINSTACK_SYSTEM_SOFTWARE_TASK_RETENTION_DAYS",
+		"system.softwareTaskLogRetentionDays":     "ONEINSTACK_SYSTEM_SOFTWARE_TASK_LOG_RETENTION_DAYS",
+		"system.softwareTaskCleanupSchedule":      "ONEINSTACK_SYSTEM_SOFTWARE_TASK_CLEANUP_SCHEDULE",
+		"system.databaseBackupRetentionDays":      "ONEINSTACK_SYSTEM_DATABASE_BACKUP_RETENTION_DAYS",
+		"system.databaseBackupCleanupSchedule":    "ONEINSTACK_SYSTEM_DATABASE_BACKUP_CLEANUP_SCHEDULE",
+		"system.websiteBackupRetentionDays":       "ONEINSTACK_SYSTEM_WEBSITE_BACKUP_RETENTION_DAYS",
+		"system.websiteBackupCleanupSchedule":     "ONEINSTACK_SYSTEM_WEBSITE_BACKUP_CLEANUP_SCHEDULE",
+		"system.websiteBackupMaxBytes":            "ONEINSTACK_SYSTEM_WEBSITE_BACKUP_MAX_BYTES",
+		"system.websiteBackupMaxFiles":            "ONEINSTACK_SYSTEM_WEBSITE_BACKUP_MAX_FILES",
+		"system.auditRetentionDays":               "ONEINSTACK_SYSTEM_AUDIT_RETENTION_DAYS",
+		"system.auditCleanupSchedule":             "ONEINSTACK_SYSTEM_AUDIT_CLEANUP_SCHEDULE",
+		"system.auditExportMaxRows":               "ONEINSTACK_SYSTEM_AUDIT_EXPORT_MAX_ROWS",
+		"system.monitorSampleSchedule":            "ONEINSTACK_SYSTEM_MONITOR_SAMPLE_SCHEDULE",
+		"system.monitorRetentionDays":             "ONEINSTACK_SYSTEM_MONITOR_RETENTION_DAYS",
+		"system.monitorAlertRetentionDays":        "ONEINSTACK_SYSTEM_MONITOR_ALERT_RETENTION_DAYS",
+		"system.monitorCleanupSchedule":           "ONEINSTACK_SYSTEM_MONITOR_CLEANUP_SCHEDULE",
+		"system.runtimeLogRetentionDays":          "ONEINSTACK_SYSTEM_RUNTIME_LOG_RETENTION_DAYS",
+		"system.runtimeLogCleanupSchedule":        "ONEINSTACK_SYSTEM_RUNTIME_LOG_CLEANUP_SCHEDULE",
+		"system.cronExecutionRetentionDays":       "ONEINSTACK_SYSTEM_CRON_EXECUTION_RETENTION_DAYS",
+		"system.cronExecutionCleanupSchedule":     "ONEINSTACK_SYSTEM_CRON_EXECUTION_CLEANUP_SCHEDULE",
+		"system.certificatePath":                  "ONEINSTACK_SYSTEM_CERTIFICATE_PATH",
+		"system.acmeChallengePath":                "ONEINSTACK_SYSTEM_ACME_CHALLENGE_PATH",
+		"system.acmeDirectoryUrl":                 "ONEINSTACK_SYSTEM_ACME_DIRECTORY_URL",
+		"system.acmeRenewSchedule":                "ONEINSTACK_SYSTEM_ACME_RENEW_SCHEDULE",
+		"system.acmeRenewBeforeDays":              "ONEINSTACK_SYSTEM_ACME_RENEW_BEFORE_DAYS",
+		"system.certificateExpiryWarningDays":     "ONEINSTACK_SYSTEM_CERTIFICATE_EXPIRY_WARNING_DAYS",
+		"system.acmeIssueTimeoutMinutes":          "ONEINSTACK_SYSTEM_ACME_ISSUE_TIMEOUT_MINUTES",
+		"system.terminalEnabled":                  "ONEINSTACK_SYSTEM_TERMINAL_ENABLED",
+		"system.terminalSessionMinutes":           "ONEINSTACK_SYSTEM_TERMINAL_SESSION_MINUTES",
+		"scriptCenter.enabled":                    "ONEINSTACK_SCRIPT_CENTER_ENABLED",
+		"scriptCenter.allowInsecureHTTP":          "ONEINSTACK_SCRIPT_CENTER_ALLOW_INSECURE_HTTP",
+		"scriptCenter.url":                        "ONEINSTACK_SCRIPT_CENTER_URL",
+		"scriptCenter.channel":                    "ONEINSTACK_SCRIPT_CENTER_CHANNEL",
+		"scriptCenter.requestTimeoutSeconds":      "ONEINSTACK_SCRIPT_CENTER_REQUEST_TIMEOUT_SECONDS",
+		"scriptCenter.maxPackageBytes":            "ONEINSTACK_SCRIPT_CENTER_MAX_PACKAGE_BYTES",
+		"scriptCenter.maxExpandedBytes":           "ONEINSTACK_SCRIPT_CENTER_MAX_EXPANDED_BYTES",
+		"scriptCenter.catalogSyncIntervalMinutes": "ONEINSTACK_SCRIPT_CENTER_CATALOG_SYNC_INTERVAL_MINUTES",
+		"scriptCenter.catalogStaleAfterHours":     "ONEINSTACK_SCRIPT_CENTER_CATALOG_STALE_AFTER_HOURS",
+		"scriptCenter.cachePath":                  "ONEINSTACK_SCRIPT_CENTER_CACHE_PATH",
+		"scriptCenter.bundledPath":                "ONEINSTACK_SCRIPT_CENTER_BUNDLED_PATH",
+		"updateCenter.enabled":                    "ONEINSTACK_UPDATE_CENTER_ENABLED",
+		"updateCenter.centerUrl":                  "ONEINSTACK_UPDATE_CENTER_URL",
+		"updateCenter.manifestUrl":                "ONEINSTACK_UPDATE_CENTER_MANIFEST_URL",
+		"updateCenter.channel":                    "ONEINSTACK_UPDATE_CENTER_CHANNEL",
+		"updateCenter.requestTimeoutSeconds":      "ONEINSTACK_UPDATE_CENTER_REQUEST_TIMEOUT_SECONDS",
+		"updateCenter.maxPackageBytes":            "ONEINSTACK_UPDATE_CENTER_MAX_PACKAGE_BYTES",
+		"updateCenter.maxExpandedBytes":           "ONEINSTACK_UPDATE_CENTER_MAX_EXPANDED_BYTES",
+		"updateCenter.healthTimeoutSeconds":       "ONEINSTACK_UPDATE_CENTER_HEALTH_TIMEOUT_SECONDS",
+		"updateCenter.backupRetention":            "ONEINSTACK_UPDATE_CENTER_BACKUP_RETENTION",
 	} {
 		if err := v.BindEnv(key, environmentName); err != nil {
 			return nil, fmt.Errorf("bind environment %s: %w", environmentName, err)
@@ -352,6 +358,12 @@ func validateScriptCenterConfig() error {
 	}
 	if strings.TrimSpace(center.CachePath) == "" || strings.TrimSpace(center.BundledPath) == "" {
 		return fmt.Errorf("validate config: scriptCenter cachePath and bundledPath cannot be empty")
+	}
+	if center.CatalogSyncIntervalMinutes < 1 || center.CatalogSyncIntervalMinutes > 1440 {
+		return fmt.Errorf("validate config: scriptCenter.catalogSyncIntervalMinutes must be between 1 and 1440")
+	}
+	if center.CatalogStaleAfterHours < 1 || center.CatalogStaleAfterHours > 8760 {
+		return fmt.Errorf("validate config: scriptCenter.catalogStaleAfterHours must be between 1 and 8760")
 	}
 	if center.Enabled {
 		parsed, err := url.Parse(center.URL)

@@ -68,6 +68,34 @@ sudo one update status
 
 Center 统一控制稳定版、测试版、灰度百分比、实例白名单和版本撤回；Panel 不直接信任 Center 的网络响应，而是再次校验固定 Ed25519 公钥、清单、制品大小和 SHA-256，再执行数据库迁移预检、版本原子切换和健康检查。失败时自动恢复旧二进制、数据库、配置和内置脚本。密钥配置、手工恢复和发布流程见 [BUILD.md](BUILD.md)。
 
+### Center 控制软件商城
+
+软件商城和组件脚本包共用同一套可信 Center 连接。配置
+`scriptCenter.enabled`、`scriptCenter.url` 和
+`scriptCenter.trustedKeys` 中固定的 Ed25519 公钥后，Panel 会在启动时立即
+获取 `/v1/software/catalog`，默认每 15 分钟自动同步一次。
+
+Center 统一控制商城显示的软件、版本、推荐版本、是否允许安装、排序、标签、
+更新说明以及对应的脚本组件。Panel 只有在签名和目录摘要校验通过后，才会在
+一个数据库事务中应用新目录。Center 临时离线时继续使用上一次可信快照；
+Center 移除的软件不再允许新装，但已经安装的实例仍会显示，可继续管理服务
+或卸载。
+
+```yaml
+scriptCenter:
+  enabled: true
+  url: 'https://center.example.com'
+  channel: 'stable'
+  catalogSyncIntervalMinutes: 15
+  catalogStaleAfterHours: 24
+  trustedKeys:
+    center-key-id: 'BASE64_ED25519_PUBLIC_KEY'
+```
+
+只在本机开发 Center 使用 HTTP 时设置 `allowInsecureHTTP: true`，生产环境
+必须使用 HTTPS。管理员可在软件商城顶部查看当前数据来源、同步时间和错误，
+也可以手动立即同步。
+
 普通卸载会保留配置、数据库、日志和备份：
 
 ```bash

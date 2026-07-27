@@ -92,6 +92,38 @@ previous binary, database, configuration, and bundled component scripts. See
 [BUILD.md](BUILD.md) for key configuration, manual recovery, and release
 operations.
 
+### Center-controlled software store
+
+The software store and the component-package registry use the same trusted
+Center connection. Configure `scriptCenter.enabled`, `scriptCenter.url`, and
+the pinned Ed25519 public key in `scriptCenter.trustedKeys`. Panel downloads
+`/v1/software/catalog` at startup and every 15 minutes by default.
+
+Center controls which applications and versions are visible, which version is
+recommended, whether new installations are allowed, ordering, tags, release
+notes, and the component package used for each application. Panel verifies the
+catalog signature and revision before applying it in one database transaction.
+If Center is temporarily unavailable, the last verified snapshot remains
+usable. An application removed from Center is hidden for new installations,
+while an already-installed instance remains visible for service management and
+uninstallation.
+
+```yaml
+scriptCenter:
+  enabled: true
+  url: 'https://center.example.com'
+  channel: 'stable'
+  catalogSyncIntervalMinutes: 15
+  catalogStaleAfterHours: 24
+  trustedKeys:
+    center-key-id: 'BASE64_ED25519_PUBLIC_KEY'
+```
+
+For a loopback-only development Center using HTTP, set
+`allowInsecureHTTP: true`. Production Center connections must use HTTPS.
+Administrators can see the active source and manually refresh the catalog from
+the software-store page.
+
 Normal uninstall preserves configuration, database, logs, and backups:
 
 ```bash

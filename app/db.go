@@ -90,7 +90,7 @@ func createTables() error {
 	if err := migrateStoredCredentials(); err != nil {
 		return err
 	}
-	err = db.AutoMigrate(&models.Software{})
+	err = db.AutoMigrate(&models.Software{}, &models.SoftwareCatalogState{})
 	if err != nil {
 		return err
 	}

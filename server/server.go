@@ -15,7 +15,7 @@ func Start() {
 	// 检查是否有用户，没有则自动创建admin用户
 	initializeDefaultUser()
 
-	go software.Sync()
+	go software.StartCatalogSync()
 }
 
 // initializeDefaultUser 初始化默认用户

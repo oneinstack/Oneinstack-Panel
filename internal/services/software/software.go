@@ -2,8 +2,6 @@ package software
 
 import (
 	"encoding/json"
-	"errors"
-	"fmt"
 	"oneinstack/app"
 	"oneinstack/internal/models"
 	"oneinstack/internal/services"
@@ -11,10 +9,6 @@ import (
 	"oneinstack/router/output"
 	"oneinstack/utils"
 	"strings"
-	"time"
-
-	"github.com/imroc/req/v3"
-	"gorm.io/gorm"
 )
 
 func RunInstall(p *input.InstallParams) (string, error) {
@@ -79,23 +73,30 @@ func checkRedis(sf *models.Software) bool {
 }
 
 func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software], error) {
-	tx := app.DB().Select(
-		"MAX(id) as id," +
-			"`key`," +
-			"MAX(describe) as describe," +
-			"GROUP_CONCAT(DISTINCT version) as versions," +
-			"MAX(name) as name," +
-			"MAX(icon) as icon," +
-			"MAX(type) as type," +
-			"MAX(status) as status," +
-			"MAX(resource) as resource," +
-			"MAX(is_update) as is_update," +
-			"MAX(CASE WHEN installed = 1 THEN install_version ELSE '' END) as install_version," +
-			"MAX(CASE WHEN installed = 1 THEN 1 ELSE 0 END) as installed," +
-			"MAX(params) as params," +
-			"MAX(log) as log," +
-			"MAX(tags) as tags").
-		Group("`key`")
+	tx := app.DB().
+		Where("(catalog_visible = ? OR installed = ?)", true, true).
+		Select(
+			"MAX(id) as id," +
+				"`key`," +
+				"MAX(component) as component," +
+				"MAX(describe) as describe," +
+				"GROUP_CONCAT(DISTINCT version) as versions," +
+				"MAX(name) as name," +
+				"MAX(icon) as icon," +
+				"MAX(type) as type," +
+				"MAX(status) as status," +
+				"MAX(resource) as resource," +
+				"MAX(is_update) as is_update," +
+				"MAX(CASE WHEN installed = 1 THEN install_version ELSE '' END) as install_version," +
+				"MAX(CASE WHEN installed = 1 THEN 1 ELSE 0 END) as installed," +
+				"MAX(CASE WHEN catalog_visible = 1 AND installable = 1 THEN 1 ELSE 0 END) as installable," +
+				"MAX(CASE WHEN catalog_visible = 1 AND recommended = 1 THEN version ELSE '' END) as recommended_version," +
+				"MAX(CASE WHEN catalog_managed = 1 THEN 1 ELSE 0 END) as catalog_managed," +
+				"MAX(params) as params," +
+				"MAX(log) as log," +
+				"MAX(tags) as tags").
+		Group("`key`").
+		Order("MIN(catalog_order) ASC, `key` ASC")
 	if param.Id > 0 {
 		tx = tx.Where("id = ?", param.Id)
 	}
@@ -152,18 +153,24 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 	var groupedResults []output.Software
 	for i, item := range paginated.Data {
 		groupedResults = append(groupedResults, output.Software{
-			Id:             item.Id,
-			Describe:       item.Describe,
-			Installed:      item.Installed,
-			Name:           item.Name,
-			Key:            item.Key,
-			Icon:           item.Icon,
-			Type:           item.Type,
-			Status:         item.Status,
-			Resource:       item.Resource,
-			InstallVersion: item.InstallVersion,
-			Log:            item.Log,
-			Versions:       strings.Split(item.Versions, ","),
+			Id:                 item.Id,
+			Describe:           item.Describe,
+			Installed:          item.Installed,
+			Name:               item.Name,
+			Key:                item.Key,
+			Component:          item.Component,
+			Icon:               item.Icon,
+			Type:               item.Type,
+			Status:             item.Status,
+			Resource:           item.Resource,
+			InstallVersion:     item.InstallVersion,
+			RecommendedVersion: item.RecommendedVersion,
+			Installable:        item.Installable,
+			CatalogManaged:     item.CatalogManaged,
+			IsUpdate:           item.IsUpdate,
+			Log:                item.Log,
+			Tags:               item.Tags,
+			Versions:           strings.Split(item.Versions, ","),
 		})
 		var params []*output.SoftParam
 		_ = json.Unmarshal([]byte(item.Params), &params)
@@ -176,81 +183,6 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 		Page:     paginated.Page,
 		PageSize: paginated.PageSize,
 	}, err
-}
-
-func Sync() {
-	ticker := time.NewTicker(5 * time.Hour)
-	defer ticker.Stop()
-	for range ticker.C {
-		type Data struct {
-			Softwares []*models.Software `json:"soft"`
-		}
-		type Response struct {
-			Code    int    `json:"code"`
-			Message string `json:"message"`
-			Data    *Data  `json:"data"`
-		}
-		client := req.C()
-		var result Response
-		url := app.ONE_CONFIG.System.Remote + "?key=onesync"
-		if app.ONE_CONFIG.System.Remote == "" {
-			url = "http://localhost:8189/v1/sys/update"
-		}
-		resps, err := client.R().SetSuccessResult(&result).Post(url)
-
-		if err != nil {
-			fmt.Println("同步软件失败:", err.Error())
-			continue
-		}
-
-		if !resps.IsSuccessState() {
-			fmt.Println("同步软件失败")
-			continue
-		}
-		if result.Data != nil && len(result.Data.Softwares) <= 0 {
-			continue
-		}
-		for _, s := range result.Data.Softwares {
-			sf := &models.Software{}
-			tx := app.DB().Where("key =? and version = ?", s.Key, s.Version).First(sf)
-			if tx.Error != nil && !errors.Is(tx.Error, gorm.ErrRecordNotFound) {
-				fmt.Println("同步软件失败:", tx.Error.Error())
-				continue
-			}
-
-			if sf.Id <= 0 {
-				osf := &models.Software{}
-				tx := app.DB().Where("key =? and installed = 1", s.Key).First(osf)
-				if tx.Error != nil && !errors.Is(tx.Error, gorm.ErrRecordNotFound) {
-					fmt.Println("同步软件失败状态更新:", tx.Error.Error())
-				}
-				if osf.Id > 0 {
-					osf.IsUpdate = true
-					app.DB().Updates(osf)
-				}
-				sf = &models.Software{
-					Name:      s.Name,
-					Key:       s.Key,
-					Icon:      s.Icon,
-					Type:      s.Type,
-					Status:    s.Status,
-					Resource:  "remote",
-					Installed: s.Installed,
-					Log:       s.Log,
-					Version:   s.Version,
-					Tags:      s.Tags,
-					Params:    s.Params,
-					Script:    s.Script,
-				}
-				app.DB().Create(sf)
-			} else {
-				sf.Script = s.Script
-				sf.Resource = "remote"
-				app.DB().Updates(sf)
-			}
-		}
-
-	}
 }
 
 // remove software

@@ -126,7 +126,7 @@ func (m *Manager) Submit(request InstallRequest, requestedBy int64) (*models.Sof
 }
 
 func (m *Manager) SubmitUninstall(name, version string, requestedBy int64) (*models.SoftwareTask, error) {
-	key, err := softwareKeyForUninstall(name)
+	key, err := m.softwareKeyForUninstall(name)
 	if err != nil {
 		return nil, err
 	}
@@ -206,9 +206,14 @@ func (m *Manager) submit(request InstallRequest, requestedBy int64) (*models.Sof
 	if requestedBy <= 0 {
 		return nil, errors.New("authenticated user is required")
 	}
-	component, err := componentForKey(request.Key)
+	component, err := m.componentForKey(request.Key)
 	if err != nil {
 		return nil, err
+	}
+	if request.Operation == "install" {
+		if err := m.validateCatalogInstall(request.Key, request.Version); err != nil {
+			return nil, err
+		}
 	}
 
 	m.submitMu.Lock()
@@ -569,8 +574,18 @@ func sanitizeRecoveryValue(value string, limit int, fallback string) string {
 	return value
 }
 
-func componentForKey(key string) (string, error) {
-	switch strings.ToLower(strings.TrimSpace(key)) {
+func (m *Manager) componentForKey(key string) (string, error) {
+	normalized := strings.ToLower(strings.TrimSpace(key))
+	var catalogRow models.Software
+	if err := m.db.
+		Where("`key` = ? AND component <> ''", normalized).
+		Order("catalog_managed DESC, catalog_visible DESC, id DESC").
+		First(&catalogRow).Error; err == nil {
+		return strings.ToLower(strings.TrimSpace(catalogRow.Component)), nil
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return "", fmt.Errorf("look up software component: %w", err)
+	}
+	switch normalized {
 	case "webserver":
 		return "nginx", nil
 	case "db":
@@ -582,8 +597,17 @@ func componentForKey(key string) (string, error) {
 	}
 }
 
-func softwareKeyForUninstall(value string) (string, error) {
-	switch strings.ToLower(strings.TrimSpace(value)) {
+func (m *Manager) softwareKeyForUninstall(value string) (string, error) {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	var catalogRow models.Software
+	if err := m.db.
+		Where("(`key` = ? OR component = ?) AND installed = ?", normalized, normalized, true).
+		First(&catalogRow).Error; err == nil {
+		return catalogRow.Key, nil
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return "", fmt.Errorf("look up installed software: %w", err)
+	}
+	switch normalized {
 	case "nginx", "webserver":
 		return "webserver", nil
 	case "mysql", "db":
@@ -597,6 +621,36 @@ func softwareKeyForUninstall(value string) (string, error) {
 	default:
 		return "", fmt.Errorf("unsupported software for uninstall: %s", value)
 	}
+}
+
+func (m *Manager) validateCatalogInstall(key, version string) error {
+	if !m.db.Migrator().HasTable(&models.SoftwareCatalogState{}) {
+		return nil
+	}
+	var state models.SoftwareCatalogState
+	if err := m.db.First(&state, 1).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("read software catalog state: %w", err)
+	}
+	if strings.TrimSpace(state.Revision) == "" {
+		return nil
+	}
+	var catalogRow models.Software
+	if err := m.db.
+		Where("`key` = ? AND version = ?", key, version).
+		First(&catalogRow).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+		return fmt.Errorf("software %s %s is not published by Center", key, version)
+	} else if err != nil {
+		return fmt.Errorf("read Center software catalog entry: %w", err)
+	}
+	if !catalogRow.CatalogManaged || !catalogRow.CatalogVisible {
+		return fmt.Errorf("software %s %s has been removed from the Center catalog", key, version)
+	}
+	if !catalogRow.Installable {
+		return fmt.Errorf("software %s %s installation is disabled by Center", key, version)
+	}
+	return nil
 }
 
 func softwareKeyForService(value string) (string, error) {

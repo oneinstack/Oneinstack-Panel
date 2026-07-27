@@ -181,6 +181,8 @@ func SetupRouter() *gin.Engine {
 	softg := protected.Group("/soft")
 	{
 		softg.POST("/list", software.GetSoftware)
+		softg.GET("/catalog/status", software.GetSoftwareCatalogStatus)
+		softg.POST("/catalog/sync", middleware.RequireAdmin(), software.SyncSoftwareCatalog)
 		softg.GET("/getlog", software.GetLogContent)
 		softg.POST("/install", software.RunInstallation)
 		softg.POST("/remove", software.RemoveSoftware)
