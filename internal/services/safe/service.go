@@ -49,13 +49,38 @@ func (s *Service) Status(ctx context.Context) (*output.IptablesStatus, error) {
 	state := s.detectBackend(ctx)
 	status := &output.IptablesStatus{
 		Install: state.Installed, Enabled: state.Enabled, Backend: state.Name,
-		Persistent: state.Persistent, CanToggle: state.CanToggle,
+		RuntimeBackend: state.Name,
+		Persistent:     state.Persistent, CanToggle: state.CanToggle,
 		RepairRequired: state.RepairRequired,
 		Warning:        state.Warning, PanelPort: s.panelPort,
 	}
 	if s.db != nil {
 		if err := s.db.Model(&models.IptablesRule{}).Count(&status.ManagedRuleCount).Error; err != nil {
 			return nil, err
+		}
+		var managedProtectedRule models.IptablesRule
+		managedResult := s.db.Where(
+			"protected = ? AND protocol = ? AND strategy = ? AND ports = ?",
+			true, "tcp", "allow", fmt.Sprint(s.panelPort),
+		).Order("id DESC").First(&managedProtectedRule)
+		if managedResult.Error == nil {
+			status.ManagedBackend = managedProtectedRule.Backend
+			status.ManagedPanelRule = true
+			if !status.Install && status.ManagedBackend != "" {
+				status.Install = true
+				status.Backend = status.ManagedBackend
+				status.Persistent = backendPersistentDefault(status.ManagedBackend)
+				status.Warning = "检测到面板受管防火墙规则，但当前未检测到对应防火墙运行时，请先修复主机防火墙环境"
+			} else if status.ManagedBackend != "" &&
+				state.Name != BackendNone &&
+				status.ManagedBackend != state.Name {
+				status.Warning = appendWarning(
+					status.Warning,
+					"受管规则后端与当前运行时后端不一致，请核对防火墙切换或持久化状态",
+				)
+			}
+		} else if !errors.Is(managedResult.Error, gorm.ErrRecordNotFound) {
+			return nil, managedResult.Error
 		}
 		var protectedRule models.IptablesRule
 		result := s.db.Where(
@@ -67,9 +92,12 @@ func (s *Service) Status(ctx context.Context) (*output.IptablesStatus, error) {
 		} else if !errors.Is(result.Error, gorm.ErrRecordNotFound) {
 			return nil, result.Error
 		}
+		if !status.PanelPortProtected && status.ManagedPanelRule && state.Name == BackendNone {
+			status.Warning = appendWarning(status.Warning, "面板端口保护规则记录仍在，但当前无法确认系统规则已生效")
+		}
 	}
 	blocked, err := s.pingBlocked(ctx, state)
-	if err != nil && state.Installed {
+	if err != nil && status.Install {
 		status.Warning = appendWarning(status.Warning, "无法确认 ICMP 状态："+err.Error())
 	} else {
 		status.PingBlocked = blocked

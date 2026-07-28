@@ -58,6 +58,15 @@ type backendState struct {
 	Warning        string
 }
 
+func backendPersistentDefault(name string) bool {
+	switch name {
+	case BackendUFW, BackendFirewalld:
+		return true
+	default:
+		return false
+	}
+}
+
 type commandOperation struct {
 	name     string
 	args     []string

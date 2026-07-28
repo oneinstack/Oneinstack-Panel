@@ -83,6 +83,20 @@ var rootCmd = &cobra.Command{
 		if cmd == versionCmd || isUpdateCommand(cmd) {
 			return nil
 		}
+		if cmd == debugCmd {
+			app.ENV = "debug"
+			if strings.TrimSpace(os.Getenv("ONEINSTACK_BASE_PATH")) == "" {
+				cacheDir, err := os.UserCacheDir()
+				if err != nil {
+					return fmt.Errorf("resolve debug data directory: %w", err)
+				}
+				app.BASE_PATH = filepath.Join(
+					cacheDir,
+					"oneinstack-panel",
+					"debug",
+				) + string(os.PathSeparator)
+			}
+		}
 		if err := app.Initialize(); err != nil {
 			return fmt.Errorf("initialize application: %w", err)
 		}

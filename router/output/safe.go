@@ -6,12 +6,15 @@ type IptablesStatus struct {
 	Enabled            bool   `json:"enabled"`
 	PingBlocked        bool   `json:"pingBlocked"`
 	Backend            string `json:"backend"`
+	RuntimeBackend     string `json:"runtimeBackend,omitempty"`
+	ManagedBackend     string `json:"managedBackend,omitempty"`
 	Persistent         bool   `json:"persistent"`
 	CanToggle          bool   `json:"canToggle"`
 	RepairRequired     bool   `json:"repairRequired"`
 	Warning            string `json:"warning,omitempty"`
 	PanelPort          int    `json:"panelPort"`
 	PanelPortProtected bool   `json:"panelPortProtected"`
+	ManagedPanelRule   bool   `json:"managedPanelRule"`
 	ManagedRuleCount   int64  `json:"managedRuleCount"`
 }
 

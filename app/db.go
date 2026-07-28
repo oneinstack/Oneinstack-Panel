@@ -15,6 +15,14 @@ import (
 	"gorm.io/gorm/logger"
 )
 
+var bundledCatalogVersions = map[string][]string{
+	"db":        {"8.0"},
+	"redis":     {"7.4.8"},
+	"webserver": {"1.28.2"},
+	"php":       {"8.1", "8.2", "8.3"},
+	"firewalld": {"1.0.0"},
+}
+
 func ensureOneDir() error {
 	dirPath := GetBasePath()
 	if err := os.MkdirAll(dirPath, 0755); err != nil {
@@ -453,13 +461,18 @@ func syncCenterSoftwareCatalog() error {
 		}).Error; err != nil {
 		return fmt.Errorf("normalize MySQL catalog parameters: %w", err)
 	}
+	if err := hideUnsupportedBundledVersions(); err != nil {
+		return err
+	}
 	versions := []struct {
 		key     string
 		name    string
 		version string
 	}{
+		{key: "db", name: "MySQL", version: "8.0"},
 		{key: "webserver", name: "Nginx", version: "1.28.2"},
 		{key: "redis", name: "Redis", version: "7.4.8"},
+		{key: "php", name: "PHP", version: "8.1"},
 		{key: "php", name: "PHP", version: "8.2"},
 		{key: "php", name: "PHP", version: "8.3"},
 	}
@@ -508,6 +521,29 @@ func syncCenterSoftwareCatalog() error {
 			Tags:      "安全",
 		}).Error; err != nil {
 			return fmt.Errorf("create firewalld catalog entry: %w", err)
+		}
+	}
+	return nil
+}
+
+func hideUnsupportedBundledVersions() error {
+	for key, versions := range bundledCatalogVersions {
+		if err := db.Model(&models.Software{}).
+			Where("`key` = ? AND installed = ?", key, false).
+			Where("`version` NOT IN ?", versions).
+			Updates(map[string]any{
+				"catalog_visible": false,
+				"installable":     false,
+			}).Error; err != nil {
+			return fmt.Errorf("hide unsupported %s catalog versions: %w", key, err)
+		}
+		if err := db.Model(&models.Software{}).
+			Where("`key` = ? AND version IN ?", key, versions).
+			Updates(map[string]any{
+				"catalog_visible": true,
+				"installable":     true,
+			}).Error; err != nil {
+			return fmt.Errorf("normalize supported %s catalog versions: %w", key, err)
 		}
 	}
 	return nil
