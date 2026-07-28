@@ -59,6 +59,15 @@ func List(ty string) ([]output.StorageConnection, error) {
 	if tx.Error != nil && !errors.Is(tx.Error, gorm.ErrRecordNotFound) {
 		return nil, tx.Error
 	}
+	if ty == "mysql" && len(list) == 0 {
+		restored, restoreErr := ensureRecordedLocalMySQLConnection()
+		if restoreErr != nil {
+			return nil, restoreErr
+		}
+		if restored != nil {
+			list = append(list, restored)
+		}
+	}
 	result := make([]output.StorageConnection, 0, len(list))
 	for _, item := range list {
 		result = append(result, storageConnectionOutput(item))
@@ -121,6 +130,9 @@ func GetRedisLib(param *input.QueryParam) (*services.PaginatedResult[output.Data
 }
 
 func AddLibs(param *input.LibParam) (*output.DatabaseCredential, error) {
+	if param.ID <= 0 {
+		return nil, fmt.Errorf("未检测到可用 MySQL 实例，请先安装或修复 MySQL")
+	}
 	s, err := loadStorage(param.ID)
 	if err != nil {
 		return nil, err
@@ -520,8 +532,36 @@ func storageConnectionOutput(item *models.Storage) output.StorageConnection {
 		ID: item.ID, Addr: item.Addr, Port: item.Port, Root: item.Root,
 		Remark: item.Remark, Type: item.Type,
 		PasswordConfigured: item.Password != "",
+		Managed:            strings.Contains(item.Remark, "面板自动管理"),
 		CreateTime:         item.CreateTime, UpdateTime: item.UpdateTime,
 	}
+}
+
+func ensureRecordedLocalMySQLConnection() (*models.Storage, error) {
+	var installed models.Software
+	if err := app.DB().
+		Where("`key` = ? AND installed = ?", "db", true).
+		Order("install_time DESC").
+		First(&installed).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	password := strings.TrimSpace(installed.RootPwd)
+	if password == "" {
+		return nil, nil
+	}
+	if err := EnsureManagedLocalMySQLConnection("3306", "root", password); err != nil {
+		return nil, nil
+	}
+	var restored models.Storage
+	if err := app.DB().
+		Where("type = ? AND port = ? AND addr = ?", "mysql", "3306", "127.0.0.1").
+		First(&restored).Error; err != nil {
+		return nil, err
+	}
+	return &restored, nil
 }
 
 func libraryOutput(item *models.Library) output.DatabaseLibrary {

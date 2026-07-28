@@ -42,7 +42,11 @@ func ADDLib(c *gin.Context) {
 		return
 	}
 	if err := req.Validate(); err != nil {
-		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "数据库参数无效"))
+		message := "数据库参数无效"
+		if req.ID <= 0 {
+			message = "未检测到可用 MySQL 实例，请先安装或修复 MySQL"
+		}
+		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, message))
 		return
 	}
 	credential, err := storage.AddLibs(&req)

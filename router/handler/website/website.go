@@ -1,6 +1,7 @@
 package website
 
 import (
+	"errors"
 	"net/http"
 	"oneinstack/core"
 	"oneinstack/internal/models"
@@ -36,7 +37,11 @@ func Add(c *gin.Context) {
 	}
 	err := website.Add(input)
 	if err != nil {
-		appErr := core.WrapError(err, core.ErrConfigError, "网站配置发布失败")
+		message := "网站配置发布失败"
+		if errors.Is(err, website.ErrNginxUnavailable) {
+			message = "未检测到可用 Nginx，请先安装并确保服务可执行文件可被面板访问"
+		}
+		appErr := core.WrapError(err, core.ErrConfigError, message)
 		core.HandleError(c, appErr)
 		return
 	}
@@ -53,7 +58,11 @@ func Update(c *gin.Context) {
 	}
 	err := website.Update(input)
 	if err != nil {
-		appErr := core.WrapError(err, core.ErrConfigError, "网站配置更新失败")
+		message := "网站配置更新失败"
+		if errors.Is(err, website.ErrNginxUnavailable) {
+			message = "未检测到可用 Nginx，请先安装并确保服务可执行文件可被面板访问"
+		}
+		appErr := core.WrapError(err, core.ErrConfigError, message)
 		core.HandleError(c, appErr)
 		return
 	}

@@ -10,6 +10,7 @@ type StorageConnection struct {
 	Remark             string    `json:"remark"`
 	Type               string    `json:"type"`
 	PasswordConfigured bool      `json:"passwordConfigured"`
+	Managed            bool      `json:"managed"`
 	CreateTime         time.Time `json:"create_time"`
 	UpdateTime         time.Time `json:"update_time"`
 }

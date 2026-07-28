@@ -33,9 +33,9 @@ func defaultService() (*Service, error) {
 	if app.DB() == nil {
 		return nil, errors.New("database is not initialized")
 	}
-	binary := defaultNginxBinary
-	if _, err := os.Stat(binary); errors.Is(err, os.ErrNotExist) {
-		binary = "nginx"
+	binary, err := resolveNginxBinary()
+	if err != nil {
+		return nil, err
 	}
 	return &Service{
 		DB:              app.DB(),
@@ -762,12 +762,9 @@ func Check() bool {
 	if count == 0 {
 		return false
 	}
-	binary := defaultNginxBinary
-	if _, err := os.Stat(binary); err != nil {
-		if _, lookErr := exec.LookPath("nginx"); lookErr != nil {
-			return false
-		}
-		binary = "nginx"
+	binary, err := resolveNginxBinary()
+	if err != nil {
+		return false
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
