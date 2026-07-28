@@ -98,6 +98,17 @@ var templateRegistry = map[string]templateSpec{
 			return executable, []string{"-s", "-h", "--", target}, nil
 		},
 	},
+	"firewall-status": {
+		definition: TemplateDefinition{
+			ID: "firewall-status", Name: "防火墙状态检查",
+			Description: "检查主机 firewalld 服务状态，适用于计划任务安全模板验证。",
+		},
+		validate: noTemplateParameters,
+		command: func(map[string]string) (string, []string, error) {
+			executable, err := resolveExecutable("/bin/systemctl", "/usr/bin/systemctl")
+			return executable, []string{"is-active", "--", "firewalld"}, err
+		},
+	},
 }
 
 func Templates() []TemplateDefinition {

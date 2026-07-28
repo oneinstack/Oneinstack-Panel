@@ -20,6 +20,8 @@ import (
 	"gorm.io/gorm"
 )
 
+const cronTaskTypeTemplate = "template"
+
 var (
 	cronService     *cron.CronService
 	cronServiceErr  error
@@ -101,15 +103,16 @@ func AddCron(c *gin.Context) {
 		return
 	}
 
-	taskType := strings.ToLower(strings.TrimSpace(param.TaskType))
-	if taskType == "" {
-		taskType = cron.TaskTypeShell
-	}
+	taskType := normalizeCronTaskType(param.TaskType, param.TemplateID)
 	if taskType == cron.TaskTypeShell && !param.ConfirmUnsafeShell {
 		core.HandleError(c, core.NewError(
 			core.ErrBadRequest,
 			"自定义 Shell 以面板权限执行，必须显式确认风险",
 		))
+		return
+	}
+	if taskType == cronTaskTypeTemplate && strings.TrimSpace(param.TemplateID) == "" {
+		core.HandleError(c, core.NewError(core.ErrBadRequest, "安全模板任务必须选择模板"))
 		return
 	}
 	job := &models.CronJob{
@@ -133,7 +136,7 @@ func AddCron(c *gin.Context) {
 		return
 	}
 	if err := service.AddJob(job); err != nil {
-		appErr := core.WrapError(err, core.ErrBadRequest, "创建计划任务失败")
+		appErr := core.WrapError(err, core.ErrBadRequest, cronAddErrorMessage(taskType))
 		core.HandleError(c, appErr)
 		return
 	}
@@ -147,15 +150,16 @@ func UpdateCron(c *gin.Context) {
 		core.HandleError(c, appErr)
 		return
 	}
-	taskType := strings.ToLower(strings.TrimSpace(param.TaskType))
-	if taskType == "" {
-		taskType = cron.TaskTypeShell
-	}
+	taskType := normalizeCronTaskType(param.TaskType, param.TemplateID)
 	if taskType == cron.TaskTypeShell && !param.ConfirmUnsafeShell {
 		core.HandleError(c, core.NewError(
 			core.ErrBadRequest,
 			"自定义 Shell 以面板权限执行，必须显式确认风险",
 		))
+		return
+	}
+	if taskType == cronTaskTypeTemplate && strings.TrimSpace(param.TemplateID) == "" {
+		core.HandleError(c, core.NewError(core.ErrBadRequest, "安全模板任务必须选择模板"))
 		return
 	}
 	updateData := &models.CronJob{
@@ -178,11 +182,40 @@ func UpdateCron(c *gin.Context) {
 		return
 	}
 	if err := service.UpdateJob(uint(param.ID), updateData); err != nil {
-		appErr := core.WrapError(err, core.ErrBadRequest, "更新计划任务失败")
+		appErr := core.WrapError(err, core.ErrBadRequest, cronUpdateErrorMessage(taskType))
 		core.HandleError(c, appErr)
 		return
 	}
 	core.HandleSuccess(c, nil)
+}
+
+func normalizeCronTaskType(rawTaskType, templateID string) string {
+	taskType := strings.ToLower(strings.TrimSpace(rawTaskType))
+	switch taskType {
+	case "", cron.TaskTypeShell:
+		if strings.TrimSpace(templateID) != "" {
+			return cron.TaskTypeTemplate
+		}
+		return cron.TaskTypeShell
+	case cron.TaskTypeTemplate, "safe", "safe_template", "security_template":
+		return cron.TaskTypeTemplate
+	default:
+		return taskType
+	}
+}
+
+func cronAddErrorMessage(taskType string) string {
+	if taskType == cronTaskTypeTemplate {
+		return "创建安全模板任务失败"
+	}
+	return "创建计划任务失败"
+}
+
+func cronUpdateErrorMessage(taskType string) string {
+	if taskType == cronTaskTypeTemplate {
+		return "更新安全模板任务失败"
+	}
+	return "更新计划任务失败"
 }
 
 func DeleteCron(c *gin.Context) {
