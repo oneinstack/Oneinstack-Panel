@@ -139,6 +139,70 @@ func TestResolveRejectsUntrustedSignature(t *testing.T) {
 	}
 }
 
+func TestResolveInstalledReusesVerifiedPackageAcrossChannelChange(t *testing.T) {
+	cachePath := t.TempDir()
+	archive := testPackageArchive(t)
+	archivePath := filepath.Join(t.TempDir(), "nginx.tar.gz")
+	if err := os.WriteFile(archivePath, archive, 0600); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(archive)
+	destination := filepath.Join(
+		cachePath,
+		"components",
+		"nginx",
+		"1.0.0",
+		hex.EncodeToString(digest[:]),
+	)
+	if err := os.MkdirAll(filepath.Dir(destination), 0750); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := extractPackage(archivePath, destination, 32<<20); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := New(config.ScriptCenter{
+		Enabled:     false,
+		Channel:     "development",
+		CachePath:   cachePath,
+		BundledPath: filepath.Join(t.TempDir(), "missing"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry.host = Host{
+		PanelVersion:  "v0.1.0-test",
+		SystemID:      "ubuntu",
+		SystemVersion: "24.04",
+		Architecture:  "amd64",
+	}
+
+	if _, err := registry.Resolve(context.Background(), "nginx", "1.26.2"); err == nil {
+		t.Fatal("new installation resolution crossed the configured channel")
+	}
+	resolved, err := registry.ResolveInstalled(
+		context.Background(),
+		"nginx",
+		"1.26.2",
+		"install",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.Source != "cache" ||
+		resolved.Manifest.Component.Channel != "stable" ||
+		resolved.Manifest.Component.Version != "1.0.0" {
+		t.Fatalf("unexpected installed package resolution: %#v", resolved)
+	}
+	if _, err := registry.ResolveInstalled(
+		context.Background(),
+		"nginx",
+		"1.26.2",
+		"configGet",
+	); err == nil {
+		t.Fatal("package missing a required action was selected")
+	}
+}
+
 type handlerTransport struct {
 	handler http.Handler
 }

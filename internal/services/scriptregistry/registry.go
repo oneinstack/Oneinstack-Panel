@@ -72,6 +72,153 @@ func (r *Registry) Resolve(ctx context.Context, component, softwareVersion strin
 	return Package{}, bundledErr
 }
 
+// ResolveInstalled resolves a package for an already installed software
+// version. New installations remain pinned to the configured channel through
+// Resolve, while lifecycle and configuration operations may reuse a verified
+// package from the original channel after the marketplace channel changes.
+func (r *Registry) ResolveInstalled(
+	ctx context.Context,
+	component string,
+	softwareVersion string,
+	requiredActions ...string,
+) (Package, error) {
+	current, currentErr := r.Resolve(ctx, component, softwareVersion)
+	if currentErr == nil && packageSupportsActions(current.Manifest, requiredActions) {
+		return current, nil
+	}
+	if currentErr == nil {
+		currentErr = fmt.Errorf("configured-channel package does not provide the required actions")
+	}
+
+	cached, cacheErr := r.resolveCachedInstalled(component, softwareVersion, requiredActions)
+	if cacheErr == nil {
+		return cached, nil
+	}
+
+	var fallbackErr error
+	if r.config.Enabled {
+		for _, channel := range []string{"stable", "beta", "development"} {
+			if channel == r.config.Channel {
+				continue
+			}
+			fallback := *r
+			fallback.config.Channel = channel
+			candidate, err := fallback.resolveRemote(ctx, component, softwareVersion)
+			if err == nil && packageSupportsActions(candidate.Manifest, requiredActions) {
+				return candidate, nil
+			}
+			if err == nil {
+				err = fmt.Errorf("package does not provide the required actions")
+			}
+			fallbackErr = errors.Join(fallbackErr, fmt.Errorf("%s: %w", channel, err))
+		}
+	}
+
+	bundled, bundledErr := r.resolveBundledInstalled(component, softwareVersion, requiredActions)
+	if bundledErr == nil {
+		return bundled, nil
+	}
+	return Package{}, fmt.Errorf(
+		"no compatible package for installed %s %s (configured channel: %v; cache: %v; fallback channels: %v; bundled: %v)",
+		component,
+		softwareVersion,
+		currentErr,
+		cacheErr,
+		fallbackErr,
+		bundledErr,
+	)
+}
+
+func (r *Registry) resolveCachedInstalled(
+	component string,
+	softwareVersion string,
+	requiredActions []string,
+) (Package, error) {
+	componentRoot := filepath.Join(r.config.CachePath, "components", component)
+	versions, err := os.ReadDir(componentRoot)
+	if err != nil {
+		return Package{}, fmt.Errorf("read cached component %s: %w", component, err)
+	}
+	var selected Package
+	for _, versionEntry := range versions {
+		if !versionEntry.IsDir() {
+			continue
+		}
+		versionRoot := filepath.Join(componentRoot, versionEntry.Name())
+		digests, readErr := os.ReadDir(versionRoot)
+		if readErr != nil {
+			continue
+		}
+		for _, digestEntry := range digests {
+			if !digestEntry.IsDir() {
+				continue
+			}
+			root := filepath.Join(versionRoot, digestEntry.Name())
+			manifest, validateErr := validateDirectory(root)
+			if validateErr != nil ||
+				manifest.Component.ID != component ||
+				!manifest.supportsSoftwareVersion(softwareVersion) ||
+				!compatibleWithHost(manifest, r.host) ||
+				!packageSupportsActions(manifest, requiredActions) {
+				continue
+			}
+			if selected.Root == "" ||
+				compareVersions(manifest.Component.Version, selected.Manifest.Component.Version) > 0 {
+				selected = Package{Manifest: manifest, Root: root, Source: "cache"}
+			}
+		}
+	}
+	if selected.Root == "" {
+		return Package{}, fmt.Errorf("no compatible cached %s package for software version %s", component, softwareVersion)
+	}
+	return selected, nil
+}
+
+func (r *Registry) resolveBundledInstalled(
+	component string,
+	softwareVersion string,
+	requiredActions []string,
+) (Package, error) {
+	componentRoot := filepath.Join(r.config.BundledPath, component)
+	entries, err := os.ReadDir(componentRoot)
+	if err != nil {
+		return Package{}, fmt.Errorf("read bundled component %s: %w", component, err)
+	}
+	var selected Package
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		root := filepath.Join(componentRoot, entry.Name())
+		manifest, validateErr := validateDirectory(root)
+		if validateErr != nil ||
+			manifest.Component.ID != component ||
+			!manifest.supportsSoftwareVersion(softwareVersion) ||
+			!compatibleWithHost(manifest, r.host) ||
+			!packageSupportsActions(manifest, requiredActions) {
+			continue
+		}
+		if selected.Root == "" ||
+			compareVersions(manifest.Component.Version, selected.Manifest.Component.Version) > 0 {
+			selected = Package{Manifest: manifest, Root: root, Source: "bundled"}
+		}
+	}
+	if selected.Root == "" {
+		return Package{}, fmt.Errorf("no compatible bundled %s package for installed software version %s", component, softwareVersion)
+	}
+	return selected, nil
+}
+
+func packageSupportsActions(manifest Manifest, requiredActions []string) bool {
+	actions := manifest.actionMap()
+	for _, action := range requiredActions {
+		if strings.TrimSpace(actions[action]) == "" {
+			return false
+		}
+	}
+	return true
+}
+
 func (r *Registry) resolveRemote(ctx context.Context, component, softwareVersion string) (Package, error) {
 	if err := r.checkReady(ctx); err != nil {
 		return Package{}, err

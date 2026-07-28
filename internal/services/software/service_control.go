@@ -83,7 +83,12 @@ func (installer *Installer) InspectService(
 	if err != nil {
 		return ComponentServiceProbe{}, err
 	}
-	componentPackage, err := registry.Resolve(ctx, definition.Component, strings.TrimSpace(version))
+	componentPackage, err := registry.ResolveInstalled(
+		ctx,
+		definition.Component,
+		strings.TrimSpace(version),
+		"status",
+	)
 	if err != nil {
 		return ComponentServiceProbe{}, fmt.Errorf("resolve %s status package: %w", definition.Component, err)
 	}

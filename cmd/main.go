@@ -211,6 +211,8 @@ func startServer() error {
 		return err
 	}
 
+	go software.StartCatalogSync()
+
 	runtimeLogManager, err := runtimelog.NewRuntimeManager(
 		app.DB(),
 		app.ONE_CONFIG.System.RuntimeLogRetentionDays,

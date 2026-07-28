@@ -135,7 +135,12 @@ func (installer *Installer) ServiceActionTask(
 	if err != nil {
 		return "", err
 	}
-	componentPackage, err := registry.Resolve(ctx, definition.Component, strings.TrimSpace(version))
+	componentPackage, err := registry.ResolveInstalled(
+		ctx,
+		definition.Component,
+		strings.TrimSpace(version),
+		action,
+	)
 	if err != nil {
 		return "", fmt.Errorf("resolve %s %s package: %w", definition.Component, action, err)
 	}
@@ -163,7 +168,12 @@ func (installer *Installer) getUninstallScript(
 	if err != nil {
 		return nil, nil, err
 	}
-	componentPackage, err := registry.Resolve(ctx, componentName, params.Version)
+	componentPackage, err := registry.ResolveInstalled(
+		ctx,
+		componentName,
+		params.Version,
+		"uninstall",
+	)
 	if err != nil {
 		return nil, nil, fmt.Errorf("resolve %s uninstall package: %w", componentName, err)
 	}
@@ -183,12 +193,14 @@ func (installer *Installer) getUninstallScript(
 func (installer *Installer) getInstallScript(ctx context.Context, params *input.InstallParams, actionName string) (*script.ScriptInfo, error) {
 	var componentName string
 	var legacyScriptName string
+	var catalogManaged bool
 	if app.DB() != nil {
 		var catalogRow models.Software
 		if err := app.DB().
 			Where("`key` = ? AND version = ? AND component <> ''", params.Key, params.Version).
 			First(&catalogRow).Error; err == nil {
 			componentName = strings.ToLower(strings.TrimSpace(catalogRow.Component))
+			catalogManaged = catalogRow.CatalogManaged
 		}
 	}
 
@@ -272,6 +284,18 @@ func (installer *Installer) getInstallScript(ctx context.Context, params *input.
 		registryErr = resolveErr
 	}
 
+	// A Center catalog entry is a promise that the matching signed component
+	// package exists. Falling back to a legacy installer here can install a
+	// different runtime version while the database records the requested
+	// catalog version, leaving every subsequent lifecycle action unresolvable.
+	if catalogManaged {
+		return nil, fmt.Errorf(
+			"resolve Center-managed %s %s installer: %w",
+			componentName,
+			params.Version,
+			registryErr,
+		)
+	}
 	if legacyScriptName == "" {
 		return nil, fmt.Errorf("resolve %s installer: %v", componentName, registryErr)
 	}
@@ -433,6 +457,25 @@ func (installer *Installer) setScriptParams(scriptInfo *script.ScriptInfo, param
 		scriptInfo.Params["PHP_VERSION"] = params.Version
 	case "java":
 		scriptInfo.Params["JAVA_VERSION"] = params.Version
+	}
+
+	// Center can publish new database components without adding a hard-coded
+	// software key to Panel. Map the generic password field to the package's
+	// declared secret password parameter so MariaDB, Percona, PostgreSQL, and
+	// MongoDB packages use the same safe installation pipeline as MySQL.
+	if params.Pwd != "" {
+		for _, parameter := range scriptInfo.ParameterSpecs {
+			if !parameter.Secret || parameter.Type != "password" {
+				continue
+			}
+			name := strings.ToUpper(strings.TrimSpace(parameter.Name))
+			if name != "PASSWORD" && !strings.HasSuffix(name, "_PASSWORD") {
+				continue
+			}
+			if _, exists := scriptInfo.Params[parameter.Name]; !exists {
+				scriptInfo.Params[parameter.Name] = params.Pwd
+			}
+		}
 	}
 
 	// 通用参数

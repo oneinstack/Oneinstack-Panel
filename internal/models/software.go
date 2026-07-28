@@ -59,6 +59,7 @@ type Softwares struct {
 type SoftwareCatalogState struct {
 	ID            uint       `json:"-" gorm:"primaryKey"`
 	Mode          string     `json:"mode" gorm:"size:32;not null"`
+	Channel       string     `json:"channel,omitempty" gorm:"size:32"`
 	Revision      string     `json:"revision,omitempty" gorm:"size:64"`
 	KeyID         string     `json:"keyId,omitempty" gorm:"size:64"`
 	ProductCount  int        `json:"productCount"`

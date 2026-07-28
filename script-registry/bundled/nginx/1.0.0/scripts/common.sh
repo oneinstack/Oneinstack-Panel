@@ -35,12 +35,19 @@ validate_path() {
   case "${value}" in /|/usr|/usr/local|/etc|/var|/data|/home|/root) die "${label} is too broad: ${value}" ;; esac
 }
 validate_inputs() {
-  [[ "${software_version}" == "1.28.2" ]] || die "Unsupported Nginx version: ${software_version}"
+  case "${software_version}" in
+    1.26.2|1.28.2) ;;
+    *) die "Unsupported managed Nginx version: ${software_version}" ;;
+  esac
   [[ "${source_url}" == https://* ]] || die "SOURCE_URL must use HTTPS."
   [[ "${source_sha256}" =~ ^[0-9a-f]{64}$ ]] || die "SOURCE_SHA256 must be a lowercase SHA-256 digest."
   validate_identifier "${run_user}"; validate_identifier "${run_group}"
   validate_path "${install_dir}" INSTALL_DIR; validate_path "${web_root}" WEB_ROOT
   validate_path "${log_dir}" LOG_DIR; validate_path "${state_root}" ONEINSTACK_COMPONENT_STATE
+}
+validate_install_version() {
+  [[ "${software_version}" == "1.28.2" ]] ||
+    die "This bundled package only installs Nginx 1.28.2; ${software_version} is supported for existing-installation lifecycle actions only."
 }
 check_host() {
   [[ -r /etc/os-release ]] || die "/etc/os-release is unavailable."

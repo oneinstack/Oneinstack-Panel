@@ -337,7 +337,13 @@ func (installer *Installer) resolveConfigurationPackage(
 	if err != nil {
 		return scriptregistry.Package{}, err
 	}
-	componentPackage, err := registry.Resolve(ctx, definition.Component, strings.TrimSpace(version))
+	componentPackage, err := registry.ResolveInstalled(
+		ctx,
+		definition.Component,
+		strings.TrimSpace(version),
+		"configGet",
+		"configApply",
+	)
 	if err != nil {
 		return scriptregistry.Package{}, fmt.Errorf(
 			"resolve %s configuration package: %w",

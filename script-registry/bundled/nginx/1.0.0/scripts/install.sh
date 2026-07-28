@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/common.sh"
-require_root; validate_inputs; check_host
+require_root; validate_inputs; validate_install_version; check_host
 emit_progress 5 install_dependencies "正在安装 Nginx 编译依赖"
 install_dependencies
 emit_progress 15 prepare_account "正在准备 Nginx 运行账户"

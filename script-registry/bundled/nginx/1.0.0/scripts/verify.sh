@@ -2,6 +2,7 @@
 set -Eeuo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 validate_inputs
+validate_install_version
 emit_progress 10 validate_config "正在验证 Nginx 配置"
 "${install_dir}/sbin/nginx" -t
 emit_progress 35 service_status "正在检查 Nginx 服务状态"
