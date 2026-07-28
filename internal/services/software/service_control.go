@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -198,4 +199,28 @@ func parseComponentServiceProbe(
 		RuntimeVersion: fields["runtime_version"],
 		CanReload:      canReload,
 	}, nil
+}
+
+func ClassifyServiceProbeError(err error) (string, string) {
+	if err == nil {
+		return "", ""
+	}
+	switch {
+	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
+		return "probe_timeout", "状态探测超时"
+	case strings.Contains(err.Error(), "missing field"),
+		strings.Contains(err.Error(), "duplicate field"),
+		strings.Contains(err.Error(), "invalid line"),
+		strings.Contains(err.Error(), "unknown field"),
+		strings.Contains(err.Error(), "invalid runtime version"),
+		strings.Contains(err.Error(), "invalid can_reload"),
+		strings.Contains(err.Error(), "identity does not match request"):
+		return "probe_output_invalid", "状态探针输出格式异常"
+	case strings.Contains(err.Error(), "resolve"),
+		strings.Contains(err.Error(), "package"),
+		strings.Contains(err.Error(), "script"):
+		return "probe_package_unavailable", "状态探针脚本不可用"
+	default:
+		return "probe_execution_failed", "状态探测失败"
+	}
 }

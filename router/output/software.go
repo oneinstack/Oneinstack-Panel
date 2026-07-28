@@ -20,6 +20,7 @@ type Software struct {
 	IsUpdate           bool         `json:"isUpdate"`
 	Tags               string       `json:"tags"`
 	Params             []*SoftParam `json:"params"`
+	FailureMessage     string       `json:"failureMessage,omitempty"`
 }
 
 type SoftParam struct {

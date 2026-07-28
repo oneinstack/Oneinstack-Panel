@@ -34,6 +34,7 @@ type componentServiceStatus struct {
 	PackageSource    string    `json:"packageSource,omitempty"`
 	Busy             bool      `json:"busy"`
 	ActiveTaskID     string    `json:"activeTaskId,omitempty"`
+	ProbeErrorCode   string    `json:"probeErrorCode,omitempty"`
 	ProbeError       string    `json:"probeError,omitempty"`
 	CheckedAt        time.Time `json:"checkedAt"`
 }
@@ -359,10 +360,14 @@ func componentServiceStatusesFor(
 				status.RecordedVersion,
 			)
 			if probeErr != nil {
-				if errors.Is(probeErr, context.Canceled) || errors.Is(probeErr, context.DeadlineExceeded) {
-					status.ProbeError = "状态探测超时"
-				} else {
-					status.ProbeError = "状态探测失败"
+				status.ProbeErrorCode, status.ProbeError = softwareService.ClassifyServiceProbeError(probeErr)
+				running, runningErr := softwareService.ComponentProcessRunning(probeCtx, definition.Component)
+				if runningErr == nil {
+					if running {
+						status.State = "running"
+					} else {
+						status.State = "stopped"
+					}
 				}
 				result[index] = status
 				return

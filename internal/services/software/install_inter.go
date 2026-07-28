@@ -1015,7 +1015,7 @@ download_sources() {
         "https://mirrors.oneinstack.com/oneinstack/src/openssl-${OPENSSL_VERSION}.tar.gz"
     
     download_with_retry "zlib-${ZLIB_VERSION}.tar.gz" \
-        "https://www.zlib.net/zlib-${ZLIB_VERSION}.tar.gz" \
+        "https://zlib.net/fossils/zlib-${ZLIB_VERSION}.tar.gz" \
         "https://mirrors.oneinstack.com/oneinstack/src/zlib-${ZLIB_VERSION}.tar.gz"
 }
 

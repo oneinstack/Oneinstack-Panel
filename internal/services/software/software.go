@@ -148,6 +148,22 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 		Page:     param.Page.Page,
 		PageSize: param.Page.PageSize,
 	})
+	if err != nil {
+		return nil, err
+	}
+
+	failedTaskByKey := make(map[string]models.SoftwareTask)
+	var failedTasks []models.SoftwareTask
+	if taskErr := app.DB().
+		Where("status IN ?", []string{models.SoftwareTaskStatusFailed, models.SoftwareTaskStatusInterrupted}).
+		Order("created_at DESC").
+		Find(&failedTasks).Error; taskErr == nil {
+		for _, task := range failedTasks {
+			if _, exists := failedTaskByKey[task.SoftwareKey]; !exists {
+				failedTaskByKey[task.SoftwareKey] = task
+			}
+		}
+	}
 
 	// 转换版本格式
 	var groupedResults []output.Software
@@ -175,6 +191,12 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 		var params []*output.SoftParam
 		_ = json.Unmarshal([]byte(item.Params), &params)
 		groupedResults[i].Params = params
+		if failedTask, exists := failedTaskByKey[item.Key]; exists {
+			groupedResults[i].FailureMessage = strings.TrimSpace(failedTask.ErrorMessage)
+			if groupedResults[i].FailureMessage == "" {
+				groupedResults[i].FailureMessage = strings.TrimSpace(failedTask.Message)
+			}
+		}
 	}
 
 	return &services.PaginatedResult[output.Software]{
@@ -182,7 +204,7 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 		Total:    paginated.Total,
 		Page:     paginated.Page,
 		PageSize: paginated.PageSize,
-	}, err
+	}, nil
 }
 
 // remove software

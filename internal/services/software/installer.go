@@ -13,6 +13,14 @@ import (
 	"time"
 )
 
+var bundledOnlySoftwareKeys = map[string]struct{}{
+	"db":        {},
+	"redis":     {},
+	"webserver": {},
+	"php":       {},
+	"firewalld": {},
+}
+
 // Installer 软件安装器
 type Installer struct {
 	scriptManager *script.ScriptManager
@@ -270,6 +278,15 @@ func (installer *Installer) getInstallScript(ctx context.Context, params *input.
 			return scriptInfoFromPackage(componentPackage, actionName)
 		}
 		registryErr = resolveErr
+	}
+
+	if _, bundledOnly := bundledOnlySoftwareKeys[params.Key]; bundledOnly {
+		return nil, fmt.Errorf(
+			"resolve %s %s package: %v",
+			componentName,
+			actionName,
+			registryErr,
+		)
 	}
 
 	if legacyScriptName == "" {

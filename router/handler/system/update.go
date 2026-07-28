@@ -107,7 +107,7 @@ func ApplyPanelUpdate(c *gin.Context) {
 func handlePanelUpdateError(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, panelupdate.ErrDisabled):
-		core.HandleError(c, core.WrapError(err, core.ErrConfigError, "面板更新中心未启用"))
+		core.HandleError(c, core.WrapError(err, core.ErrConfigError, "面板更新中心未启用，请先在配置中开启更新中心"))
 	case errors.Is(err, panelupdate.ErrInvalidManifest):
 		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "更新清单校验失败"))
 	case errors.Is(err, panelupdate.ErrNoUpdate):

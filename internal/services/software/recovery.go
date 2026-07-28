@@ -156,3 +156,7 @@ func recoveryProcessRunning(ctx context.Context, component string) (bool, error)
 	}
 	return false, nil
 }
+
+func ComponentProcessRunning(ctx context.Context, component string) (bool, error) {
+	return recoveryProcessRunning(ctx, component)
+}
