@@ -24,6 +24,16 @@ func TestNormalizePanelConfigUsesIPHTTPDefaults(t *testing.T) {
 	}
 }
 
+func TestNormalizeManagedPanelConfigNormalizesEntryPath(t *testing.T) {
+	config := normalizeManagedPanelConfig(managedPanelConfig{
+		Network:        panelServer.PanelConfig{HTTPPort: "8089"},
+		PanelEntryPath: "  demo-entry/ ",
+	})
+	if config.PanelEntryPath != "/demo-entry" {
+		t.Fatalf("unexpected normalized panel entry path %q", config.PanelEntryPath)
+	}
+}
+
 func TestPersistPanelConfigAtomicallyKeepsSecurePermissions(t *testing.T) {
 	originalConfig := app.ONE_CONFIG
 	originalViper := app.ONE_VIP
@@ -81,5 +91,36 @@ func TestAccessURLUsesServerIPPlaceholderForAllInterfaces(t *testing.T) {
 	}
 	if got := accessURL("https", "2001:db8::10", "8443"); got != "https://[2001:db8::10]:8443" {
 		t.Fatalf("unexpected IPv6 access URL %q", got)
+	}
+}
+
+func TestValidateManagedPanelConfigRejectsReservedEntryPath(t *testing.T) {
+	err := validateManagedPanelConfig(managedPanelConfig{
+		Network: panelServer.PanelConfig{
+			BindAddress: "0.0.0.0",
+			HTTPPort:    "8089",
+			HTTPSPort:   "8443",
+		},
+		PanelEntryEnabled: true,
+		PanelEntryPath:    "/v1",
+	})
+	if err == nil || !strings.Contains(err.Error(), "reserved path") {
+		t.Fatalf("expected reserved path error, got %v", err)
+	}
+}
+
+func TestPanelAccessURLUsesEntryPathWhenEnabled(t *testing.T) {
+	config := managedPanelConfig{
+		Network: panelServer.PanelConfig{
+			BindAddress:  "0.0.0.0",
+			HTTPPort:     "8089",
+			HTTPSEnabled: true,
+			HTTPSPort:    "8443",
+		},
+		PanelEntryEnabled: true,
+		PanelEntryPath:    "/AbCd123456",
+	}
+	if got := panelAccessURL(config); got != "https://服务器IP:8443/AbCd123456" {
+		t.Fatalf("unexpected panel access URL %q", got)
 	}
 }

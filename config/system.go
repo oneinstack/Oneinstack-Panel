@@ -8,6 +8,8 @@ type System struct {
 	HTTPSCertificateFile          string   `mapstructure:"httpsCertificateFile" json:"httpsCertificateFile" yaml:"httpsCertificateFile"`
 	HTTPSPrivateKeyFile           string   `mapstructure:"httpsPrivateKeyFile" json:"-" yaml:"httpsPrivateKeyFile"`
 	TrustedProxies                []string `mapstructure:"trustedProxies" json:"trustedProxies" yaml:"trustedProxies"`
+	PanelEntryEnabled             bool     `mapstructure:"panelEntryEnabled" json:"panelEntryEnabled" yaml:"panelEntryEnabled"`
+	PanelEntryPath                string   `mapstructure:"panelEntryPath" json:"panelEntryPath" yaml:"panelEntryPath"`
 	Remote                        string   `mapstructure:"remote" json:"remote" yaml:"remote"`
 	DefaultPath                   string   `mapstructure:"defaultPath" json:"defaultPath" yaml:"defaultPath"`
 	WebPath                       string   `mapstructure:"webPath" json:"webPath" yaml:"webPath"`

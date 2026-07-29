@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"io"
 	"oneinstack/app"
+	authzHandler "oneinstack/router/handler/access"
+	approvalHandler "oneinstack/router/handler/approval"
 	"time"
 
 	logservice "oneinstack/internal/services/log"
@@ -68,8 +70,13 @@ func SetupRouter() *gin.Engine {
 
 	// 公共路由必须显式注册在受保护路由组之外。
 	{
-		api.POST("/login", middleware.AuditLog(), middleware.LoginRateLimitMiddleware(), user.LoginHandler)
-		api.GET("/sys/getbaseinfo", system.GetInfo)
+		api.POST("/login",
+			middleware.PanelEntryGuard(),
+			middleware.AuditLog(),
+			middleware.LoginRateLimitMiddleware(),
+			user.LoginHandler,
+		)
+		api.GET("/sys/getbaseinfo", middleware.PanelEntryGuard(), system.GetInfo)
 	}
 
 	// 除上述白名单外，所有 API 默认要求认证、限流并记录审计日志。
@@ -77,9 +84,12 @@ func SetupRouter() *gin.Engine {
 	protected.Use(middleware.AuditLog())
 	protected.Use(middleware.APIRateLimitMiddleware())
 	protected.Use(middleware.AuthMiddleware())
+	protected.Use(middleware.LoadAuthorizationContext())
 	protected.Use(middleware.CSRFMiddleware())
 	protected.Use(middleware.RequirePasswordChange())
 	protected.POST("/logout", user.LogoutHandler)
+	protected.GET("/auth/me", authzHandler.Me)
+	protected.GET("/access/matrix", authzHandler.Matrix)
 	protected.GET("/sessions", securityHandler.ListSessions)
 	protected.POST("/sessions/revoke-others", securityHandler.RevokeOtherSessions)
 	protected.POST("/sessions/:id/revoke", securityHandler.RevokeSession)
@@ -90,6 +100,16 @@ func SetupRouter() *gin.Engine {
 		securityg.POST("/totp/confirm", securityHandler.ConfirmTOTP)
 		securityg.POST("/totp/disable", securityHandler.DisableTOTP)
 		securityg.POST("/totp/recovery-codes/regenerate", securityHandler.RegenerateRecoveryCodes)
+	}
+
+	accessg := protected.Group("/access")
+	accessg.Use(middleware.RequireSuperAdmin())
+	{
+		accessg.GET("/users", authzHandler.ListUsers)
+		accessg.GET("/roles", authzHandler.ListRoles)
+		accessg.POST("/users", authzHandler.CreateUser)
+		accessg.PUT("/users/:id/roles", authzHandler.AssignRoles)
+		accessg.POST("/users/:id/reset-password", authzHandler.ResetUserPassword)
 	}
 
 	// 系统接口
@@ -131,30 +151,31 @@ func SetupRouter() *gin.Engine {
 
 	// 数据库相关
 	storageg := protected.Group("/storage")
-	storageg.Use(middleware.RequireAdmin())
 	{
-		storageg.POST("/addconn", storage.ADDStorage)
-		storageg.POST("/testconn", storage.TestStorageConnection)
-		storageg.POST("/addlib", storage.ADDLib)
-		storageg.POST("/dellib", storage.DeleteLibrary)
-		storageg.POST("/libraries/:id/credential/reveal", storage.RevealLibraryCredential)
-		storageg.POST("/libraries/:id/credential/update", storage.UpdateLibraryCredential)
-		storageg.POST("/updateconn", storage.UpdateStorage)
-		storageg.GET("/connlist", storage.GetStorage)
-		storageg.POST("/delconn", storage.DelStorage)
-		storageg.POST("/sync", storage.SyncStorage)
-		storageg.POST("/liblist", storage.GetLib)
-		storageg.POST("/rklist", storage.GetRedisKeys)
-		storageg.POST("/info", storage.Info)
-		storageg.POST("/backups", storage.CreateDatabaseBackup)
-		storageg.GET("/backups", storage.ListDatabaseBackups)
-		storageg.GET("/backups/:id/download", storage.DownloadDatabaseBackup)
-		storageg.POST("/backups/:id/delete", storage.DeleteDatabaseBackup)
-		storageg.POST("/restores", storage.RestoreDatabaseBackup)
-		storageg.GET("/tasks", storage.ListDatabaseTasks)
-		storageg.GET("/tasks/:id", storage.GetDatabaseTask)
-		storageg.GET("/tasks/:id/log", storage.GetDatabaseTaskLog)
-		storageg.POST("/tasks/:id/cancel", storage.CancelDatabaseTask)
+		storageg.POST("/addconn", middleware.RequirePermission("database.write"), storage.ADDStorage)
+		storageg.POST("/testconn", middleware.RequirePermission("database.write"), storage.TestStorageConnection)
+		storageg.POST("/addlib", middleware.RequirePermission("database.write"), storage.ADDLib)
+		storageg.POST("/dellib", middleware.RequirePermission("database.write"), storage.DeleteLibrary)
+		storageg.POST("/libraries/:id/credential/reveal",
+			middleware.RequirePermission("database.write"), storage.RevealLibraryCredential)
+		storageg.POST("/libraries/:id/credential/update",
+			middleware.RequirePermission("database.write"), storage.UpdateLibraryCredential)
+		storageg.POST("/updateconn", middleware.RequirePermission("database.write"), storage.UpdateStorage)
+		storageg.GET("/connlist", middleware.RequirePermission("database.read"), storage.GetStorage)
+		storageg.POST("/delconn", middleware.RequirePermission("database.write"), storage.DelStorage)
+		storageg.POST("/sync", middleware.RequirePermission("database.write"), storage.SyncStorage)
+		storageg.POST("/liblist", middleware.RequirePermission("database.read"), storage.GetLib)
+		storageg.POST("/rklist", middleware.RequirePermission("database.read"), storage.GetRedisKeys)
+		storageg.POST("/info", middleware.RequirePermission("database.read"), storage.Info)
+		storageg.POST("/backups", middleware.RequirePermission("database.write"), storage.CreateDatabaseBackup)
+		storageg.GET("/backups", middleware.RequirePermission("database.read"), storage.ListDatabaseBackups)
+		storageg.GET("/backups/:id/download", middleware.RequirePermission("database.read"), storage.DownloadDatabaseBackup)
+		storageg.POST("/backups/:id/delete", middleware.RequirePermission("database.write"), storage.DeleteDatabaseBackup)
+		storageg.POST("/restores", middleware.RequirePermission("database.write"), storage.RestoreDatabaseBackup)
+		storageg.GET("/tasks", middleware.RequirePermission("database.read"), storage.ListDatabaseTasks)
+		storageg.GET("/tasks/:id", middleware.RequirePermission("database.read"), storage.GetDatabaseTask)
+		storageg.GET("/tasks/:id/log", middleware.RequirePermission("database.read"), storage.GetDatabaseTaskLog)
+		storageg.POST("/tasks/:id/cancel", middleware.RequirePermission("database.write"), storage.CancelDatabaseTask)
 	}
 
 	// FTP/文件相关
@@ -206,7 +227,7 @@ func SetupRouter() *gin.Engine {
 
 	// 面板运行日志仅管理员可查看。
 	logg := protected.Group("/log")
-	logg.Use(middleware.RequireAdmin())
+	logg.Use(middleware.RequirePermission("runtime_log.read"))
 	{
 		logg.GET("/runtime", logHandler.ListRuntimeLogs)
 		logg.GET("/runtime/stats", logHandler.RuntimeLogStats)
@@ -214,41 +235,49 @@ func SetupRouter() *gin.Engine {
 	}
 
 	auditg := protected.Group("/audit")
-	auditg.Use(middleware.RequireAdmin())
+	auditg.Use(middleware.RequirePermission("audit.read"))
 	{
 		auditg.GET("/events", auditHandler.ListEvents)
 		auditg.GET("/events/:id", auditHandler.GetEvent)
 		auditg.GET("/stats", auditHandler.GetStats)
-		auditg.GET("/export", auditHandler.ExportEvents)
-		auditg.POST("/verify", auditHandler.VerifyChain)
+		auditg.GET("/export", middleware.RequirePermission("audit.export"), auditHandler.ExportEvents)
+		auditg.POST("/verify", middleware.RequirePermission("audit.verify"), auditHandler.VerifyChain)
+	}
+
+	approvalg := protected.Group("/approvals")
+	approvalg.Use(middleware.RequirePermission("approval.read"))
+	{
+		approvalg.GET("", approvalHandler.List)
+		approvalg.GET("/:id", approvalHandler.Get)
+		approvalg.POST("/:id/approve", middleware.RequireAnyPermission("approval.review", "approval.execute"), approvalHandler.Approve)
+		approvalg.POST("/:id/reject", middleware.RequirePermission("approval.review"), approvalHandler.Reject)
 	}
 
 	// 网站相关
 	websiteg := protected.Group("/website")
-	websiteg.Use(middleware.RequireAdmin())
 	{
-		websiteg.POST("/list", website.List)
-		websiteg.POST("/add", website.Add)
-		websiteg.POST("/del", website.Delete)
-		websiteg.POST("/update", website.Update)
-		websiteg.POST("/info", website.Info)
-		websiteg.POST("/backups", website.CreateWebsiteBackup)
-		websiteg.GET("/backups", website.ListWebsiteBackups)
-		websiteg.GET("/backups/:id/download", website.DownloadWebsiteBackup)
-		websiteg.POST("/backups/:id/delete", website.DeleteWebsiteBackup)
-		websiteg.POST("/restores", website.RestoreWebsiteBackup)
-		websiteg.GET("/tasks", website.ListWebsiteTasks)
-		websiteg.GET("/tasks/:id", website.GetWebsiteTask)
-		websiteg.GET("/tasks/:id/log", website.GetWebsiteTaskLog)
-		websiteg.POST("/tasks/:id/cancel", website.CancelWebsiteTask)
-		websiteg.POST("/certificates/acme", website.IssueCertificate)
-		websiteg.GET("/certificates/:websiteId", website.GetCertificate)
-		websiteg.POST("/certificates/:id/renew", website.RenewCertificate)
-		websiteg.POST("/certificates/:id/disable", website.DisableCertificate)
-		websiteg.GET("/certificate-tasks", website.ListCertificateTasks)
-		websiteg.GET("/certificate-tasks/:id", website.GetCertificateTask)
-		websiteg.GET("/certificate-tasks/:id/log", website.GetCertificateTaskLog)
-		websiteg.POST("/certificate-tasks/:id/cancel", website.CancelCertificateTask)
+		websiteg.POST("/list", middleware.RequirePermission("website.read"), website.List)
+		websiteg.POST("/add", middleware.RequirePermission("website.write"), website.Add)
+		websiteg.POST("/del", middleware.RequirePermission("website.write"), website.Delete)
+		websiteg.POST("/update", middleware.RequirePermission("website.write"), website.Update)
+		websiteg.POST("/info", middleware.RequirePermission("website.read"), website.Info)
+		websiteg.POST("/backups", middleware.RequirePermission("website.write"), website.CreateWebsiteBackup)
+		websiteg.GET("/backups", middleware.RequirePermission("website.read"), website.ListWebsiteBackups)
+		websiteg.GET("/backups/:id/download", middleware.RequirePermission("website.read"), website.DownloadWebsiteBackup)
+		websiteg.POST("/backups/:id/delete", middleware.RequirePermission("website.write"), website.DeleteWebsiteBackup)
+		websiteg.POST("/restores", middleware.RequirePermission("website.write"), website.RestoreWebsiteBackup)
+		websiteg.GET("/tasks", middleware.RequirePermission("website.read"), website.ListWebsiteTasks)
+		websiteg.GET("/tasks/:id", middleware.RequirePermission("website.read"), website.GetWebsiteTask)
+		websiteg.GET("/tasks/:id/log", middleware.RequirePermission("website.read"), website.GetWebsiteTaskLog)
+		websiteg.POST("/tasks/:id/cancel", middleware.RequirePermission("website.write"), website.CancelWebsiteTask)
+		websiteg.POST("/certificates/acme", middleware.RequirePermission("website.write"), website.IssueCertificate)
+		websiteg.GET("/certificates/:websiteId", middleware.RequirePermission("website.read"), website.GetCertificate)
+		websiteg.POST("/certificates/:id/renew", middleware.RequirePermission("website.write"), website.RenewCertificate)
+		websiteg.POST("/certificates/:id/disable", middleware.RequirePermission("website.write"), website.DisableCertificate)
+		websiteg.GET("/certificate-tasks", middleware.RequirePermission("website.read"), website.ListCertificateTasks)
+		websiteg.GET("/certificate-tasks/:id", middleware.RequirePermission("website.read"), website.GetCertificateTask)
+		websiteg.GET("/certificate-tasks/:id/log", middleware.RequirePermission("website.read"), website.GetCertificateTaskLog)
+		websiteg.POST("/certificate-tasks/:id/cancel", middleware.RequirePermission("website.write"), website.CancelCertificateTask)
 	}
 
 	// 安全相关

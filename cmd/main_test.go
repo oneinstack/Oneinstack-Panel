@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	systemservice "oneinstack/internal/services/system"
 )
 
 func TestResolveInitPasswordFromFile(t *testing.T) {
@@ -60,5 +62,28 @@ func TestResolveInitPasswordRejectsPermissiveFile(t *testing.T) {
 	_, err := resolveInitPassword("", passwordFile)
 	if err == nil || !strings.Contains(err.Error(), "group or other users") {
 		t.Fatalf("expected file permission error, got %v", err)
+	}
+}
+
+func TestFormatPanelEntryOutputShowsCurrentAccessURL(t *testing.T) {
+	output := formatPanelEntryOutput(&systemservice.PanelNetworkSettings{
+		HTTPAccessURL:     "http://服务器IP:8089",
+		PanelEntryEnabled: true,
+		PanelAccessURL:    "http://服务器IP:8089/AbCd123456",
+	})
+	if !strings.Contains(output, "http://服务器IP:8089/AbCd123456") {
+		t.Fatalf("unexpected output: %s", output)
+	}
+}
+
+func TestFormatPanelEntryOutputShowsDefaultURLWhenDisabled(t *testing.T) {
+	output := formatPanelEntryOutput(&systemservice.PanelNetworkSettings{
+		HTTPAccessURL:  "http://服务器IP:8089",
+		HTTPSEnabled:   true,
+		HTTPSAccessURL: "https://服务器IP:8443",
+	})
+	if !strings.Contains(output, "http://服务器IP:8089") ||
+		!strings.Contains(output, "https://服务器IP:8443") {
+		t.Fatalf("unexpected output: %s", output)
 	}
 }

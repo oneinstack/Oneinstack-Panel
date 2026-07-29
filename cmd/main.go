@@ -17,6 +17,7 @@ import (
 	"oneinstack/internal/services/panelupdate"
 	"oneinstack/internal/services/software"
 	"oneinstack/internal/services/softwaretask"
+	systemservice "oneinstack/internal/services/system"
 	"oneinstack/internal/services/websitetask"
 	web "oneinstack/router"
 	cronHandler "oneinstack/router/handler/cron"
@@ -69,6 +70,7 @@ func main() {
 	rootCmd.AddCommand(debugCmd)
 	rootCmd.AddCommand(updateCmd)
 	rootCmd.AddCommand(versionCmd)
+	rootCmd.AddCommand(panelEntryCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Println(err)
@@ -118,6 +120,33 @@ var versionCmd = &cobra.Command{
 		fmt.Printf("Go Version: %s\n", info.GoVersion)
 		fmt.Printf("Platform: %s/%s\n", info.OS, info.Arch)
 	},
+}
+
+var panelEntryCmd = &cobra.Command{
+	Use:   systemservice.PanelEntryCLISubcommand,
+	Short: "Show the current panel access entry",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		settings, err := systemservice.GetPanelNetworkSettings()
+		if err != nil {
+			return err
+		}
+		fmt.Print(formatPanelEntryOutput(settings))
+		return nil
+	},
+}
+
+func formatPanelEntryOutput(settings *systemservice.PanelNetworkSettings) string {
+	if settings == nil {
+		return ""
+	}
+	if settings.PanelEntryEnabled {
+		return fmt.Sprintf("安全入口已开启，请使用以下地址访问面板：\n%s\n", settings.PanelAccessURL)
+	}
+	output := fmt.Sprintf("安全入口未开启，当前面板访问地址：\n%s\n", settings.HTTPAccessURL)
+	if settings.HTTPSEnabled {
+		output += fmt.Sprintf("HTTPS 地址：\n%s\n", settings.HTTPSAccessURL)
+	}
+	return output
 }
 
 // 定义 initCmd 指令

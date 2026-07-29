@@ -3,6 +3,7 @@ package system
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"net"
@@ -27,9 +28,17 @@ var (
 	networkConfigMu         sync.Mutex
 )
 
+const PanelEntryCLISubcommand = "entrance"
+
 type preparedPanelRule struct {
 	id      int64
 	created bool
+}
+
+type managedPanelConfig struct {
+	Network           panelServer.PanelConfig
+	PanelEntryEnabled bool
+	PanelEntryPath    string
 }
 
 type PanelNetworkSettings struct {
@@ -42,6 +51,9 @@ type PanelNetworkSettings struct {
 	HTTPSCertificateFile string                  `json:"httpsCertificateFile"`
 	HTTPSPrivateKeyFile  string                  `json:"httpsPrivateKeyFile"`
 	TrustedProxies       []string                `json:"trustedProxies"`
+	PanelEntryEnabled    bool                    `json:"panelEntryEnabled"`
+	PanelEntryPath       string                  `json:"panelEntryPath"`
+	PanelAccessURL       string                  `json:"panelAccessUrl"`
 	Certificate          *PanelCertificateStatus `json:"certificate,omitempty"`
 	RestartRequired      bool                    `json:"restartRequired"`
 }
@@ -63,14 +75,17 @@ type UpdatePanelNetworkRequest struct {
 	HTTPSCertificateFile string   `json:"httpsCertificateFile"`
 	HTTPSPrivateKeyFile  string   `json:"httpsPrivateKeyFile"`
 	TrustedProxies       []string `json:"trustedProxies"`
+	PanelEntryEnabled    bool     `json:"panelEntryEnabled"`
+	PanelEntryPath       string   `json:"panelEntryPath"`
+	RotatePanelEntry     bool     `json:"rotatePanelEntry"`
 }
 
 func GetPanelNetworkSettings() (*PanelNetworkSettings, error) {
-	stored, err := loadStoredPanelConfig()
+	stored, err := loadStoredManagedPanelConfig()
 	if err != nil {
 		return nil, err
 	}
-	effective := effectivePanelConfig()
+	effective := effectiveManagedPanelConfig()
 	return describePanelConfig(stored, !reflect.DeepEqual(stored, effective)), nil
 }
 
@@ -78,21 +93,39 @@ func UpdatePanelNetwork(request UpdatePanelNetworkRequest) (*PanelNetworkSetting
 	networkConfigMu.Lock()
 	defer networkConfigMu.Unlock()
 
-	next := normalizePanelConfig(panelServer.PanelConfig{
-		BindAddress:     request.BindAddress,
-		HTTPPort:        request.HTTPPort,
-		HTTPSEnabled:    request.HTTPSEnabled,
-		HTTPSPort:       request.HTTPSPort,
-		CertificateFile: request.HTTPSCertificateFile,
-		PrivateKeyFile:  request.HTTPSPrivateKeyFile,
-		TrustedProxies:  request.TrustedProxies,
+	currentStored, err := loadStoredManagedPanelConfig()
+	if err != nil {
+		return nil, err
+	}
+	next := normalizeManagedPanelConfig(managedPanelConfig{
+		Network: panelServer.PanelConfig{
+			BindAddress:     request.BindAddress,
+			HTTPPort:        request.HTTPPort,
+			HTTPSEnabled:    request.HTTPSEnabled,
+			HTTPSPort:       request.HTTPSPort,
+			CertificateFile: request.HTTPSCertificateFile,
+			PrivateKeyFile:  request.HTTPSPrivateKeyFile,
+			TrustedProxies:  request.TrustedProxies,
+		},
+		PanelEntryEnabled: request.PanelEntryEnabled,
+		PanelEntryPath:    request.PanelEntryPath,
 	})
-	if err := panelServer.ValidatePanelConfig(next); err != nil {
+	if request.RotatePanelEntry {
+		next.PanelEntryEnabled = true
+		next.PanelEntryPath = generatePanelEntryPath()
+	}
+	if next.PanelEntryEnabled && next.PanelEntryPath == "" {
+		next.PanelEntryPath = generatePanelEntryPath()
+	}
+	if !next.PanelEntryEnabled && next.PanelEntryPath == "" {
+		next.PanelEntryPath = currentStored.PanelEntryPath
+	}
+	if err := validateManagedPanelConfig(next); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrNetworkConfigInvalid, err)
 	}
 
-	current := effectivePanelConfig()
-	candidateListeners, err := probeChangedListeners(current, next)
+	current := effectiveManagedPanelConfig()
+	candidateListeners, err := probeChangedListeners(current.Network, next.Network)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrNetworkConfigInvalid, err)
 	}
@@ -104,9 +137,9 @@ func UpdatePanelNetwork(request UpdatePanelNetworkRequest) (*PanelNetworkSetting
 
 	var preparedRules []preparedPanelRule
 	firewallService := safe.NewDefaultService()
-	ports := []string{next.HTTPPort}
-	if next.HTTPSEnabled {
-		ports = append(ports, next.HTTPSPort)
+	ports := []string{next.Network.HTTPPort}
+	if next.Network.HTTPSEnabled {
+		ports = append(ports, next.Network.HTTPSPort)
 	}
 	for _, portValue := range ports {
 		port, _ := strconv.Atoi(portValue)
@@ -118,10 +151,11 @@ func UpdatePanelNetwork(request UpdatePanelNetworkRequest) (*PanelNetworkSetting
 		preparedRules = append(preparedRules, preparedPanelRule{id: id, created: created})
 	}
 
-	if err := persistPanelConfig(next); err != nil {
+	if err := persistManagedPanelConfig(next); err != nil {
 		rollbackPreparedRules(firewallService, preparedRules)
 		return nil, err
 	}
+	applyRuntimePanelConfig(next)
 	return describePanelConfig(next, !reflect.DeepEqual(next, current)), nil
 }
 
@@ -134,16 +168,30 @@ func rollbackPreparedRules(firewallService *safe.Service, rules []preparedPanelR
 }
 
 func effectivePanelConfig() panelServer.PanelConfig {
+	return effectiveManagedPanelConfig().Network
+}
+
+func effectiveManagedPanelConfig() managedPanelConfig {
 	system := app.ONE_CONFIG.System
-	return normalizePanelConfig(panelServer.PanelConfig{
-		BindAddress:     system.BindAddress,
-		HTTPPort:        system.Port,
-		HTTPSEnabled:    system.HTTPSEnabled,
-		HTTPSPort:       system.HTTPSPort,
-		CertificateFile: system.HTTPSCertificateFile,
-		PrivateKeyFile:  system.HTTPSPrivateKeyFile,
-		TrustedProxies:  system.TrustedProxies,
+	return normalizeManagedPanelConfig(managedPanelConfig{
+		Network: panelServer.PanelConfig{
+			BindAddress:     system.BindAddress,
+			HTTPPort:        system.Port,
+			HTTPSEnabled:    system.HTTPSEnabled,
+			HTTPSPort:       system.HTTPSPort,
+			CertificateFile: system.HTTPSCertificateFile,
+			PrivateKeyFile:  system.HTTPSPrivateKeyFile,
+			TrustedProxies:  system.TrustedProxies,
+		},
+		PanelEntryEnabled: system.PanelEntryEnabled,
+		PanelEntryPath:    system.PanelEntryPath,
 	})
+}
+
+func normalizeManagedPanelConfig(config managedPanelConfig) managedPanelConfig {
+	config.Network = normalizePanelConfig(config.Network)
+	config.PanelEntryPath = normalizePanelEntryPath(config.PanelEntryPath)
+	return config
 }
 
 func normalizePanelConfig(config panelServer.PanelConfig) panelServer.PanelConfig {
@@ -173,45 +221,63 @@ func normalizePanelConfig(config panelServer.PanelConfig) panelServer.PanelConfi
 }
 
 func loadStoredPanelConfig() (panelServer.PanelConfig, error) {
+	config, err := loadStoredManagedPanelConfig()
+	if err != nil {
+		return panelServer.PanelConfig{}, err
+	}
+	return config.Network, nil
+}
+
+func loadStoredManagedPanelConfig() (managedPanelConfig, error) {
 	configPath := configFilePath()
 	v := viper.New()
 	v.SetConfigFile(configPath)
 	v.SetConfigType("yaml")
 	if err := v.ReadInConfig(); err != nil {
-		return panelServer.PanelConfig{}, fmt.Errorf("读取面板配置: %w", err)
+		return managedPanelConfig{}, fmt.Errorf("读取面板配置: %w", err)
 	}
-	fallback := effectivePanelConfig()
-	config := panelServer.PanelConfig{
-		BindAddress:     fallback.BindAddress,
-		HTTPPort:        fallback.HTTPPort,
-		HTTPSEnabled:    fallback.HTTPSEnabled,
-		HTTPSPort:       fallback.HTTPSPort,
-		CertificateFile: fallback.CertificateFile,
-		PrivateKeyFile:  fallback.PrivateKeyFile,
-		TrustedProxies:  append([]string(nil), fallback.TrustedProxies...),
+	fallback := effectiveManagedPanelConfig()
+	config := managedPanelConfig{
+		Network: panelServer.PanelConfig{
+			BindAddress:     fallback.Network.BindAddress,
+			HTTPPort:        fallback.Network.HTTPPort,
+			HTTPSEnabled:    fallback.Network.HTTPSEnabled,
+			HTTPSPort:       fallback.Network.HTTPSPort,
+			CertificateFile: fallback.Network.CertificateFile,
+			PrivateKeyFile:  fallback.Network.PrivateKeyFile,
+			TrustedProxies:  append([]string(nil), fallback.Network.TrustedProxies...),
+		},
+		PanelEntryEnabled: fallback.PanelEntryEnabled,
+		PanelEntryPath:    fallback.PanelEntryPath,
 	}
 	if v.IsSet("system.bindAddress") {
-		config.BindAddress = v.GetString("system.bindAddress")
+		config.Network.BindAddress = v.GetString("system.bindAddress")
 	}
 	if v.IsSet("system.port") {
-		config.HTTPPort = v.GetString("system.port")
+		config.Network.HTTPPort = v.GetString("system.port")
 	}
 	if v.IsSet("system.httpsEnabled") {
-		config.HTTPSEnabled = v.GetBool("system.httpsEnabled")
+		config.Network.HTTPSEnabled = v.GetBool("system.httpsEnabled")
 	}
 	if v.IsSet("system.httpsPort") {
-		config.HTTPSPort = v.GetString("system.httpsPort")
+		config.Network.HTTPSPort = v.GetString("system.httpsPort")
 	}
 	if v.IsSet("system.httpsCertificateFile") {
-		config.CertificateFile = v.GetString("system.httpsCertificateFile")
+		config.Network.CertificateFile = v.GetString("system.httpsCertificateFile")
 	}
 	if v.IsSet("system.httpsPrivateKeyFile") {
-		config.PrivateKeyFile = v.GetString("system.httpsPrivateKeyFile")
+		config.Network.PrivateKeyFile = v.GetString("system.httpsPrivateKeyFile")
 	}
 	if v.IsSet("system.trustedProxies") {
-		config.TrustedProxies = v.GetStringSlice("system.trustedProxies")
+		config.Network.TrustedProxies = v.GetStringSlice("system.trustedProxies")
 	}
-	return normalizePanelConfig(config), nil
+	if v.IsSet("system.panelEntryEnabled") {
+		config.PanelEntryEnabled = v.GetBool("system.panelEntryEnabled")
+	}
+	if v.IsSet("system.panelEntryPath") {
+		config.PanelEntryPath = v.GetString("system.panelEntryPath")
+	}
+	return normalizeManagedPanelConfig(config), nil
 }
 
 func probeChangedListeners(current, next panelServer.PanelConfig) ([]net.Listener, error) {
@@ -249,6 +315,10 @@ func probeChangedListeners(current, next panelServer.PanelConfig) ([]net.Listene
 }
 
 func persistPanelConfig(config panelServer.PanelConfig) error {
+	return persistManagedPanelConfig(managedPanelConfig{Network: config})
+}
+
+func persistManagedPanelConfig(config managedPanelConfig) error {
 	configPath := configFilePath()
 	data, err := os.ReadFile(configPath)
 	if err != nil {
@@ -266,17 +336,19 @@ func persistPanelConfig(config panelServer.PanelConfig) error {
 	if systemNode == nil || systemNode.Kind != yaml.MappingNode {
 		return errors.New("面板配置缺少 system 映射")
 	}
-	setYAMLMappingValue(systemNode, "bindAddress", yamlScalar(config.BindAddress, "!!str"))
-	setYAMLMappingValue(systemNode, "port", yamlScalar(config.HTTPPort, "!!str"))
-	setYAMLMappingValue(systemNode, "httpsEnabled", yamlScalar(strconv.FormatBool(config.HTTPSEnabled), "!!bool"))
-	setYAMLMappingValue(systemNode, "httpsPort", yamlScalar(config.HTTPSPort, "!!str"))
-	setYAMLMappingValue(systemNode, "httpsCertificateFile", yamlScalar(config.CertificateFile, "!!str"))
-	setYAMLMappingValue(systemNode, "httpsPrivateKeyFile", yamlScalar(config.PrivateKeyFile, "!!str"))
+	setYAMLMappingValue(systemNode, "bindAddress", yamlScalar(config.Network.BindAddress, "!!str"))
+	setYAMLMappingValue(systemNode, "port", yamlScalar(config.Network.HTTPPort, "!!str"))
+	setYAMLMappingValue(systemNode, "httpsEnabled", yamlScalar(strconv.FormatBool(config.Network.HTTPSEnabled), "!!bool"))
+	setYAMLMappingValue(systemNode, "httpsPort", yamlScalar(config.Network.HTTPSPort, "!!str"))
+	setYAMLMappingValue(systemNode, "httpsCertificateFile", yamlScalar(config.Network.CertificateFile, "!!str"))
+	setYAMLMappingValue(systemNode, "httpsPrivateKeyFile", yamlScalar(config.Network.PrivateKeyFile, "!!str"))
 	proxyNode := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
-	for _, proxy := range config.TrustedProxies {
+	for _, proxy := range config.Network.TrustedProxies {
 		proxyNode.Content = append(proxyNode.Content, yamlScalar(proxy, "!!str"))
 	}
 	setYAMLMappingValue(systemNode, "trustedProxies", proxyNode)
+	setYAMLMappingValue(systemNode, "panelEntryEnabled", yamlScalar(strconv.FormatBool(config.PanelEntryEnabled), "!!bool"))
+	setYAMLMappingValue(systemNode, "panelEntryPath", yamlScalar(config.PanelEntryPath, "!!str"))
 
 	var encoded bytes.Buffer
 	encoder := yaml.NewEncoder(&encoded)
@@ -353,22 +425,25 @@ func configFilePath() string {
 	return filepath.Join(app.GetBasePath(), "config.yaml")
 }
 
-func describePanelConfig(config panelServer.PanelConfig, restartRequired bool) *PanelNetworkSettings {
+func describePanelConfig(config managedPanelConfig, restartRequired bool) *PanelNetworkSettings {
 	settings := &PanelNetworkSettings{
-		BindAddress:          config.BindAddress,
-		HTTPPort:             config.HTTPPort,
-		HTTPAccessURL:        accessURL("http", config.BindAddress, config.HTTPPort),
-		HTTPSEnabled:         config.HTTPSEnabled,
-		HTTPSPort:            config.HTTPSPort,
-		HTTPSAccessURL:       accessURL("https", config.BindAddress, config.HTTPSPort),
-		HTTPSCertificateFile: config.CertificateFile,
-		HTTPSPrivateKeyFile:  config.PrivateKeyFile,
-		TrustedProxies:       append([]string(nil), config.TrustedProxies...),
+		BindAddress:          config.Network.BindAddress,
+		HTTPPort:             config.Network.HTTPPort,
+		HTTPAccessURL:        accessURL("http", config.Network.BindAddress, config.Network.HTTPPort),
+		HTTPSEnabled:         config.Network.HTTPSEnabled,
+		HTTPSPort:            config.Network.HTTPSPort,
+		HTTPSAccessURL:       accessURL("https", config.Network.BindAddress, config.Network.HTTPSPort),
+		HTTPSCertificateFile: config.Network.CertificateFile,
+		HTTPSPrivateKeyFile:  config.Network.PrivateKeyFile,
+		TrustedProxies:       append([]string(nil), config.Network.TrustedProxies...),
+		PanelEntryEnabled:    config.PanelEntryEnabled,
+		PanelEntryPath:       config.PanelEntryPath,
+		PanelAccessURL:       panelAccessURL(config),
 		RestartRequired:      restartRequired,
 	}
-	if config.CertificateFile != "" || config.PrivateKeyFile != "" {
+	if config.Network.CertificateFile != "" || config.Network.PrivateKeyFile != "" {
 		status := &PanelCertificateStatus{DNSNames: []string{}, IPAddresses: []string{}}
-		info, err := panelServer.ValidateTLSCertificate(config.CertificateFile, config.PrivateKeyFile, time.Now())
+		info, err := panelServer.ValidateTLSCertificate(config.Network.CertificateFile, config.Network.PrivateKeyFile, time.Now())
 		if err != nil {
 			status.Error = err.Error()
 		} else {
@@ -383,6 +458,84 @@ func describePanelConfig(config panelServer.PanelConfig, restartRequired bool) *
 	return settings
 }
 
+func validateManagedPanelConfig(config managedPanelConfig) error {
+	if err := panelServer.ValidatePanelConfig(config.Network); err != nil {
+		return err
+	}
+	if !config.PanelEntryEnabled {
+		return nil
+	}
+	if config.PanelEntryPath == "" {
+		return errors.New("system.panelEntryPath is required when panel entry is enabled")
+	}
+	slug := strings.TrimPrefix(config.PanelEntryPath, "/")
+	switch strings.ToLower(slug) {
+	case "v1", "health", "favicon.ico":
+		return errors.New("system.panelEntryPath uses a reserved path")
+	}
+	if len(slug) < 10 || len(slug) > 20 {
+		return errors.New("system.panelEntryPath length must be 10-20")
+	}
+	for _, ch := range slug {
+		switch {
+		case ch >= '0' && ch <= '9':
+		case ch >= 'A' && ch <= 'Z':
+		case ch >= 'a' && ch <= 'z':
+		default:
+			return errors.New("system.panelEntryPath must contain only letters and digits")
+		}
+	}
+	return nil
+}
+
+func normalizePanelEntryPath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	path = "/" + strings.Trim(path, "/")
+	if path == "/" {
+		return ""
+	}
+	return path
+}
+
+func generatePanelEntryPath() string {
+	const alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	const length = 12
+	buffer := make([]byte, length)
+	if _, err := rand.Read(buffer); err != nil {
+		return "/p" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	}
+	for index := range buffer {
+		buffer[index] = alphabet[int(buffer[index])%len(alphabet)]
+	}
+	return "/" + string(buffer)
+}
+
+func panelAccessURL(config managedPanelConfig) string {
+	path := config.PanelEntryPath
+	if !config.PanelEntryEnabled {
+		path = ""
+	}
+	if config.Network.HTTPSEnabled {
+		return accessURL("https", config.Network.BindAddress, config.Network.HTTPSPort) + path
+	}
+	return accessURL("http", config.Network.BindAddress, config.Network.HTTPPort) + path
+}
+
+func applyRuntimePanelConfig(config managedPanelConfig) {
+	app.ONE_CONFIG.System.BindAddress = config.Network.BindAddress
+	app.ONE_CONFIG.System.Port = config.Network.HTTPPort
+	app.ONE_CONFIG.System.HTTPSEnabled = config.Network.HTTPSEnabled
+	app.ONE_CONFIG.System.HTTPSPort = config.Network.HTTPSPort
+	app.ONE_CONFIG.System.HTTPSCertificateFile = config.Network.CertificateFile
+	app.ONE_CONFIG.System.HTTPSPrivateKeyFile = config.Network.PrivateKeyFile
+	app.ONE_CONFIG.System.TrustedProxies = append([]string(nil), config.Network.TrustedProxies...)
+	app.ONE_CONFIG.System.PanelEntryEnabled = config.PanelEntryEnabled
+	app.ONE_CONFIG.System.PanelEntryPath = config.PanelEntryPath
+}
+
 func accessURL(scheme, bindAddress, port string) string {
 	host := strings.TrimSpace(bindAddress)
 	if host == "" || host == "0.0.0.0" || host == "::" {
@@ -391,4 +544,8 @@ func accessURL(scheme, bindAddress, port string) string {
 		host = "[" + host + "]"
 	}
 	return fmt.Sprintf("%s://%s:%s", scheme, host, port)
+}
+
+func PanelEntryCLICommand() string {
+	return "one " + PanelEntryCLISubcommand
 }

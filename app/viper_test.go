@@ -29,6 +29,9 @@ func TestLoadConfigCreatesSecureDefault(t *testing.T) {
 		len(ONE_CONFIG.System.TrustedProxies) != 0 {
 		t.Fatalf("unexpected panel network defaults: %+v", ONE_CONFIG.System)
 	}
+	if ONE_CONFIG.System.PanelEntryEnabled || ONE_CONFIG.System.PanelEntryPath != "" {
+		t.Fatalf("unexpected panel entry defaults: %+v", ONE_CONFIG.System)
+	}
 	if ONE_CONFIG.System.FileUploadMaxBytes != 100<<20 {
 		t.Fatalf("unexpected upload limit: %d", ONE_CONFIG.System.FileUploadMaxBytes)
 	}

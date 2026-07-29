@@ -3,6 +3,7 @@ package system
 import (
 	"errors"
 	"oneinstack/core"
+	auditservice "oneinstack/internal/services/audit"
 	"oneinstack/internal/services/system"
 	"oneinstack/router/input"
 	"oneinstack/router/middleware"
@@ -109,11 +110,13 @@ func ResetPassword(c *gin.Context) {
 	if err := system.ResetPassword(userID, request.CurrentPassword, request.Password); err != nil {
 		appErr := core.WrapError(err, core.ErrBadRequest, "密码修改失败")
 		if errors.Is(err, system.ErrCurrentPasswordInvalid) {
+			auditservice.RecordAuthEvent(c, "auth.password_change", "", userID, 401, "failure", "", "当前密码错误")
 			appErr = core.NewError(core.ErrInvalidPassword, "当前密码错误")
 		}
 		core.HandleError(c, appErr)
 		return
 	}
+	auditservice.RecordAuthEvent(c, "auth.password_change", "", userID, 200, "success", "", "")
 	session.Clear(c)
 	core.HandleSuccess(c, gin.H{
 		"authenticated":            false,
@@ -160,6 +163,9 @@ func UpdatePanelNetwork(c *gin.Context) {
 		HTTPSCertificateFile: request.HTTPSCertificateFile,
 		HTTPSPrivateKeyFile:  request.HTTPSPrivateKeyFile,
 		TrustedProxies:       request.TrustedProxies,
+		PanelEntryEnabled:    request.PanelEntryEnabled,
+		PanelEntryPath:       request.PanelEntryPath,
+		RotatePanelEntry:     request.RotatePanelEntry,
 	})
 	if err != nil {
 		if errors.Is(err, system.ErrNetworkConfigInvalid) {

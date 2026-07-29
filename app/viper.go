@@ -52,6 +52,8 @@ system:
     httpsCertificateFile: ""
     httpsPrivateKeyFile: ""
     trustedProxies: []
+    panelEntryEnabled: false
+    panelEntryPath: ""
     remote: ""
     defaultPath: "/data/"
     webPath: "/data/wwwroot/"
@@ -130,6 +132,8 @@ func LoadConfig(path ...string) (*viper.Viper, error) {
 	v.SetDefault("system.httpsCertificateFile", "")
 	v.SetDefault("system.httpsPrivateKeyFile", "")
 	v.SetDefault("system.trustedProxies", []string{})
+	v.SetDefault("system.panelEntryEnabled", false)
+	v.SetDefault("system.panelEntryPath", "")
 	v.SetDefault("system.fileUploadMaxBytes", int64(100<<20))
 	v.SetDefault("system.fileEditMaxBytes", int64(10<<20))
 	v.SetDefault("system.fileRootQuotaBytes", int64(0))
@@ -190,6 +194,8 @@ func LoadConfig(path ...string) (*viper.Viper, error) {
 		"system.httpsPort":                        "ONEINSTACK_SYSTEM_HTTPS_PORT",
 		"system.httpsCertificateFile":             "ONEINSTACK_SYSTEM_HTTPS_CERTIFICATE_FILE",
 		"system.httpsPrivateKeyFile":              "ONEINSTACK_SYSTEM_HTTPS_PRIVATE_KEY_FILE",
+		"system.panelEntryEnabled":                "ONEINSTACK_SYSTEM_PANEL_ENTRY_ENABLED",
+		"system.panelEntryPath":                   "ONEINSTACK_SYSTEM_PANEL_ENTRY_PATH",
 		"system.fileUploadMaxBytes":               "ONEINSTACK_SYSTEM_FILE_UPLOAD_MAX_BYTES",
 		"system.fileEditMaxBytes":                 "ONEINSTACK_SYSTEM_FILE_EDIT_MAX_BYTES",
 		"system.fileRootQuotaBytes":               "ONEINSTACK_SYSTEM_FILE_ROOT_QUOTA_BYTES",

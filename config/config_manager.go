@@ -129,6 +129,8 @@ func (cm *ConfigManager) setDefaults() {
 	cm.viper.SetDefault("system.httpsCertificateFile", "")
 	cm.viper.SetDefault("system.httpsPrivateKeyFile", "")
 	cm.viper.SetDefault("system.trustedProxies", []string{})
+	cm.viper.SetDefault("system.panelEntryEnabled", false)
+	cm.viper.SetDefault("system.panelEntryPath", "")
 	cm.viper.SetDefault("system.defaultPath", "/data/")
 	cm.viper.SetDefault("system.webPath", "/data/wwwroot/")
 	cm.viper.SetDefault("system.logPath", "/data/wwwlogs/")

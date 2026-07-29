@@ -12,6 +12,9 @@ type UpdatePanelNetworkRequest struct {
 	HTTPSCertificateFile string   `json:"httpsCertificateFile"`
 	HTTPSPrivateKeyFile  string   `json:"httpsPrivateKeyFile"`
 	TrustedProxies       []string `json:"trustedProxies"`
+	PanelEntryEnabled    bool     `json:"panelEntryEnabled"`
+	PanelEntryPath       string   `json:"panelEntryPath"`
+	RotatePanelEntry     bool     `json:"rotatePanelEntry"`
 }
 
 type UpdateSystemTitleRequest struct {
