@@ -76,6 +76,25 @@ func IssueCertificate(c *gin.Context) {
 		return
 	}
 	userID, _ := middleware.AuthenticatedUserID(c)
+	if shouldRequestWebsiteApproval(c) {
+		approval, err := createWebsiteApproval(c, ApprovalActionCertificateIssue, "", strconv.FormatInt(request.WebsiteID, 10), CertificateIssueApprovalPayload{
+			WebsiteID:       request.WebsiteID,
+			Email:           request.Email,
+			AutoRenew:       request.AutoRenew,
+			RenewBeforeDays: request.RenewBeforeDays,
+			ForceHTTPS:      request.ForceHTTPS,
+		})
+		if err != nil {
+			core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "创建证书签发审批失败"))
+			return
+		}
+		c.JSON(http.StatusAccepted, core.SuccessResponse(gin.H{
+			"mode":       "approval_pending",
+			"approvalId": approval.ID,
+			"status":     approval.Status,
+		}))
+		return
+	}
 	task, err := manager.SubmitIssue(certificateService.IssueOptions{
 		WebsiteID:       request.WebsiteID,
 		Email:           request.Email,
@@ -119,6 +138,21 @@ func RenewCertificate(c *gin.Context) {
 		return
 	}
 	userID, _ := middleware.AuthenticatedUserID(c)
+	if shouldRequestWebsiteApproval(c) {
+		approval, err := createWebsiteApproval(c, ApprovalActionCertificateRenew, "", c.Param("id"), CertificateRenewApprovalPayload{
+			CertificateID: c.Param("id"),
+		})
+		if err != nil {
+			core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "创建证书续签审批失败"))
+			return
+		}
+		c.JSON(http.StatusAccepted, core.SuccessResponse(gin.H{
+			"mode":       "approval_pending",
+			"approvalId": approval.ID,
+			"status":     approval.Status,
+		}))
+		return
+	}
 	task, err := manager.SubmitRenew(c.Param("id"), userID)
 	if err != nil {
 		handleCertificateError(c, err, "创建证书续签任务失败")
@@ -149,6 +183,22 @@ func DisableCertificate(c *gin.Context) {
 	}
 	manager, ok := certificateManagerForRequest(c)
 	if !ok {
+		return
+	}
+	if shouldRequestWebsiteApproval(c) {
+		approval, err := createWebsiteApproval(c, ApprovalActionCertificateDisable, website.Name, c.Param("id"), CertificateDisableApprovalPayload{
+			CertificateID: c.Param("id"),
+			ConfirmDomain: request.ConfirmDomain,
+		})
+		if err != nil {
+			core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "创建证书禁用审批失败"))
+			return
+		}
+		c.JSON(http.StatusAccepted, core.SuccessResponse(gin.H{
+			"mode":       "approval_pending",
+			"approvalId": approval.ID,
+			"status":     approval.Status,
+		}))
 		return
 	}
 	updated, err := manager.Disable(website.ID)

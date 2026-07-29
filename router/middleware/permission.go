@@ -1,90 +1,79 @@
 package middleware
 
 import (
+	"errors"
 	"log"
 	"net/http"
 	"oneinstack/app"
-	"oneinstack/internal/models"
+	accessservice "oneinstack/internal/services/access"
 	auditservice "oneinstack/internal/services/audit"
-	"oneinstack/utils"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
-// Permission 权限定义
-type Permission string
+const ContextUserAccess = "userAccess"
 
-const (
-	PermissionSystemRead    Permission = "system:read"
-	PermissionSystemWrite   Permission = "system:write"
-	PermissionUserManage    Permission = "user:manage"
-	PermissionSoftwareRead  Permission = "software:read"
-	PermissionSoftwareWrite Permission = "software:write"
-	PermissionWebsiteRead   Permission = "website:read"
-	PermissionWebsiteWrite  Permission = "website:write"
-	PermissionFirewallRead  Permission = "firewall:read"
-	PermissionFirewallWrite Permission = "firewall:write"
-	PermissionSSHAccess     Permission = "ssh:access"
-	PermissionCronRead      Permission = "cron:read"
-	PermissionCronWrite     Permission = "cron:write"
-	PermissionFileRead      Permission = "file:read"
-	PermissionFileWrite     Permission = "file:write"
-)
+type AuthorizationMatrix struct {
+	Menu             map[string]bool            `json:"menu"`
+	Actions          map[string]bool            `json:"actions"`
+	ApprovalPolicies map[string]bool            `json:"approvalPolicies"`
+	Scopes           map[string]map[string]bool `json:"scopes"`
+}
 
 // RequirePermission 权限验证中间件
-func RequirePermission(requiredPermission Permission) gin.HandlerFunc {
+func RequirePermission(requiredPermission string) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// 获取token信息
-		tokenClaims, exists := c.Get(ContextTokenClaims)
-		if !exists {
-			c.JSON(http.StatusUnauthorized, gin.H{
-				"error": "Authentication required",
-				"code":  "AUTH_REQUIRED",
-			})
-			c.Abort()
+		access, ok := UserAccess(c)
+		if !ok || !access.HasPermission(requiredPermission) {
+			writePermissionDenied(c, access, requiredPermission)
 			return
 		}
-
-		claims, ok := tokenClaims.(*utils.Claims)
-		if !ok {
-			c.JSON(http.StatusUnauthorized, gin.H{
-				"error": "Invalid token claims",
-				"code":  "INVALID_CLAIMS",
-			})
-			c.Abort()
-			return
-		}
-
-		// 检查用户权限
-		if !hasPermission(claims, requiredPermission) {
-			c.JSON(http.StatusForbidden, gin.H{
-				"error":               "Insufficient permissions",
-				"code":                "INSUFFICIENT_PERMISSIONS",
-				"required_permission": string(requiredPermission),
-			})
-			c.Abort()
-			return
-		}
-
 		c.Next()
 	}
 }
 
-// RequireAdmin 需要管理员权限的中间件
-func RequireAdmin() gin.HandlerFunc {
+func writePermissionDenied(c *gin.Context, access *accessservice.UserAccess, requiredPermission string) {
+	if access == nil || (!access.IsSuperAdmin && len(access.Roles) == 0 && len(access.Permissions) == 0) {
+		c.JSON(http.StatusForbidden, gin.H{
+			"error": "Administrator access required",
+			"code":  "ADMIN_REQUIRED",
+		})
+		c.Abort()
+		return
+	}
+	c.JSON(http.StatusForbidden, gin.H{
+		"error":               "Insufficient permissions",
+		"code":                "INSUFFICIENT_PERMISSIONS",
+		"required_permission": requiredPermission,
+	})
+	c.Abort()
+}
+
+func RequireAnyPermission(requiredPermissions ...string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		access, ok := UserAccess(c)
+		if ok {
+			for _, permission := range requiredPermissions {
+				if access.HasPermission(permission) {
+					c.Next()
+					return
+				}
+			}
+		}
+		writePermissionDenied(c, access, strings.Join(requiredPermissions, ","))
+	}
+}
+
+func LoadAuthorizationContext() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userID, ok := AuthenticatedUserID(c)
 		if !ok {
-			c.JSON(http.StatusUnauthorized, gin.H{
-				"error": "Authentication required",
-				"code":  "AUTH_REQUIRED",
-			})
-			c.Abort()
+			c.Next()
 			return
 		}
-
 		database := app.DB()
 		if database == nil {
 			c.JSON(http.StatusServiceUnavailable, gin.H{
@@ -94,9 +83,29 @@ func RequireAdmin() gin.HandlerFunc {
 			c.Abort()
 			return
 		}
+		access, err := accessservice.NewService(database).LoadUserAccess(userID)
+		if err != nil {
+			mode, _ := c.Get(ContextAuthMode)
+			if mode == AuthModeTicket || errors.Is(err, gorm.ErrRecordNotFound) {
+				c.Next()
+				return
+			}
+			c.JSON(http.StatusServiceUnavailable, gin.H{
+				"error": "Permission service is unavailable",
+				"code":  "PERMISSION_UNAVAILABLE",
+			})
+			c.Abort()
+			return
+		}
+		c.Set(ContextUserAccess, access)
+		c.Next()
+	}
+}
 
-		var user models.User
-		if err := database.Select("id", "is_admin").First(&user, userID).Error; err != nil || !user.IsAdmin {
+func RequireSuperAdmin() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		access, ok := UserAccess(c)
+		if !ok || !access.IsSuperAdmin {
 			c.JSON(http.StatusForbidden, gin.H{
 				"error": "Administrator access required",
 				"code":  "ADMIN_REQUIRED",
@@ -104,25 +113,73 @@ func RequireAdmin() gin.HandlerFunc {
 			c.Abort()
 			return
 		}
-
 		c.Next()
 	}
 }
 
-// hasPermission 检查用户是否具有特定权限
-func hasPermission(claims *utils.Claims, permission Permission) bool {
-	// 简化的权限检查逻辑
-	// 在实际应用中，应该从数据库查询用户角色和权限
+// RequireAdmin keeps compatibility with existing route intent and now
+// explicitly means "super administrator only".
+func RequireAdmin() gin.HandlerFunc {
+	return RequireSuperAdmin()
+}
 
-	// 假设用户ID为1的是超级管理员，拥有所有权限
-	if claims.Id == 1 {
-		return true
+func UserAccess(c *gin.Context) (*accessservice.UserAccess, bool) {
+	value, exists := c.Get(ContextUserAccess)
+	if !exists {
+		return nil, false
 	}
+	access, ok := value.(*accessservice.UserAccess)
+	return access, ok && access != nil
+}
 
-	// 这里可以根据实际需求实现更复杂的权限逻辑
-	// 例如：从数据库查询用户角色，然后检查角色权限
-
-	return false
+func BuildAuthorizationMatrix(access *accessservice.UserAccess) AuthorizationMatrix {
+	has := func(code string) bool {
+		return access != nil && access.HasPermission(code)
+	}
+	return AuthorizationMatrix{
+		Menu: map[string]bool{
+			"runtimeLog":   has(accessservice.PermissionRuntimeLogRead),
+			"audit":        has(accessservice.PermissionAuditRead),
+			"website":      has(accessservice.PermissionWebsiteRead) || has(accessservice.PermissionWebsiteWrite),
+			"database":     has(accessservice.PermissionDatabaseRead) || has(accessservice.PermissionDatabaseWrite),
+			"approval":     has(accessservice.PermissionApprovalRead),
+			"systemAccess": access != nil && access.IsSuperAdmin,
+		},
+		Actions: map[string]bool{
+			"website.delete":             has(accessservice.PermissionWebsiteWrite),
+			"website.restore":            has(accessservice.PermissionWebsiteWrite),
+			"database.restore":           has(accessservice.PermissionDatabaseWrite),
+			"audit.export":               has(accessservice.PermissionAuditExport),
+			"database.credential.reveal": has(accessservice.PermissionDatabaseWrite),
+			"certificate.issue":          has(accessservice.PermissionWebsiteWrite),
+		},
+		ApprovalPolicies: map[string]bool{
+			"website.delete":             true,
+			"website.restore":            true,
+			"database.restore":           true,
+			"certificate.issue":          true,
+			"certificate.renew":          true,
+			"certificate.disable":        true,
+			"database.credential.reveal": true,
+		},
+		Scopes: map[string]map[string]bool{
+			"website": {
+				"read":            has(accessservice.PermissionWebsiteRead),
+				"write":           has(accessservice.PermissionWebsiteWrite),
+				"approvalRequest": has(accessservice.PermissionWebsiteApproval) || has(accessservice.PermissionApprovalRequest),
+			},
+			"database": {
+				"read":            has(accessservice.PermissionDatabaseRead),
+				"write":           has(accessservice.PermissionDatabaseWrite),
+				"approvalRequest": has(accessservice.PermissionDatabaseApproval) || has(accessservice.PermissionApprovalRequest),
+			},
+			"approval": {
+				"read":    has(accessservice.PermissionApprovalRead),
+				"review":  has(accessservice.PermissionApprovalReview),
+				"execute": has(accessservice.PermissionApprovalExecute),
+			},
+		},
+	}
 }
 
 // AuditLog 审计日志中间件

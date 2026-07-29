@@ -8,6 +8,7 @@ import (
 	"oneinstack/internal/services/website"
 	"oneinstack/router/input"
 	"oneinstack/router/middleware"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 )
@@ -77,6 +78,24 @@ func Delete(c *gin.Context) {
 	}
 	if request.ID <= 0 || request.ConfirmName == "" {
 		core.HandleError(c, core.NewError(core.ErrBadRequest, "请输入网站名称确认删除"))
+		return
+	}
+	if shouldRequestWebsiteApproval(c) {
+		approval, err := createWebsiteApproval(c, ApprovalActionWebsiteDelete, request.ConfirmName, strconv.FormatInt(request.ID, 10), DeleteApprovalPayload{
+			ID:          request.ID,
+			DatabaseID:  request.DatabaseID,
+			DeleteFiles: request.DeleteFiles,
+			ConfirmName: request.ConfirmName,
+		})
+		if err != nil {
+			core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "创建网站删除审批失败"))
+			return
+		}
+		c.JSON(http.StatusAccepted, core.SuccessResponse(gin.H{
+			"mode":       "approval_pending",
+			"approvalId": approval.ID,
+			"status":     approval.Status,
+		}))
 		return
 	}
 	manager, err := DefaultWebsiteTaskManager()

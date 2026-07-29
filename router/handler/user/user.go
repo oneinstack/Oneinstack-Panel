@@ -2,9 +2,11 @@ package user
 
 import (
 	"errors"
+	"net/http"
 	"oneinstack/app"
 	"oneinstack/core"
 	"oneinstack/internal/models"
+	accessservice "oneinstack/internal/services/access"
 	auditservice "oneinstack/internal/services/audit"
 	"oneinstack/internal/services/log"
 	securityservice "oneinstack/internal/services/security"
@@ -66,6 +68,16 @@ func LoginHandler(c *gin.Context) {
 
 	account, ok := user.CheckUserPassword(req.Username, req.Password)
 	if !ok {
+		auditservice.RecordAuthEvent(
+			c,
+			"auth.login_failed",
+			req.Username,
+			0,
+			http.StatusUnauthorized,
+			"failure",
+			middleware.AuthModeCookie,
+			"用户名或密码错误",
+		)
 		appErr := core.NewError(core.ErrInvalidPassword, "用户名或密码错误")
 		core.HandleError(c, appErr)
 		log.CreateLog(&models.SystemLog{
@@ -94,6 +106,16 @@ func LoginHandler(c *gin.Context) {
 	}
 	if totpEnabled {
 		if err := totpManager.VerifyLoginCode(account.ID, req.TOTPCode); err != nil {
+			auditservice.RecordAuthEvent(
+				c,
+				"auth.totp_failed",
+				account.Username,
+				account.ID,
+				http.StatusUnauthorized,
+				"failure",
+				middleware.AuthModeCookie,
+				"动态口令或恢复码无效",
+			)
 			appErr := core.NewError(core.ErrInvalidPassword, "动态口令或恢复码无效")
 			if !errors.Is(err, securityservice.ErrInvalidSecondFactor) {
 				appErr = core.WrapError(err, core.ErrInternalError, "校验二次认证失败")
@@ -141,6 +163,7 @@ func LoginHandler(c *gin.Context) {
 	c.Set(middleware.ContextUserID, account.ID)
 	c.Set(middleware.ContextAuthMode, middleware.AuthModeCookie)
 	c.Set(middleware.ContextSessionID, sessionRecord.ID)
+	accessSummary, _ := accessservice.NewService(app.DB()).LoadUserAccess(account.ID)
 
 	// 记录成功登录日志
 	log.CreateLog(&models.SystemLog{
@@ -151,6 +174,16 @@ func LoginHandler(c *gin.Context) {
 		Agent:    c.GetHeader("User-Agent"),
 		UserName: req.Username,
 	})
+	auditservice.RecordAuthEvent(
+		c,
+		"auth.login",
+		account.Username,
+		account.ID,
+		http.StatusOK,
+		"success",
+		middleware.AuthModeCookie,
+		"",
+	)
 
 	// 返回成功响应
 	core.HandleSuccess(c, gin.H{
@@ -159,21 +192,62 @@ func LoginHandler(c *gin.Context) {
 		"mustChangePassword": account.MustChangePassword,
 		"requiresTwoFactor":  false,
 		"user": gin.H{
-			"id":          account.ID,
-			"username":    account.Username,
-			"isAdmin":     account.IsAdmin,
-			"totpEnabled": totpEnabled,
+			"id":           account.ID,
+			"username":     account.Username,
+			"isAdmin":      account.IsAdmin,
+			"isSuperAdmin": account.IsAdmin,
+			"roles":        roleItems(accessSummary),
+			"permissions":  permissionItems(accessSummary),
+			"canApprove":   accessSummary != nil && accessSummary.CanApprove,
+			"totpEnabled":  totpEnabled,
 		},
 	})
 }
 
 func LogoutHandler(c *gin.Context) {
 	if userID, ok := middleware.AuthenticatedUserID(c); ok {
+		username, _ := c.Get(middleware.ContextUsername)
 		if sessionID, ok := middleware.AuthenticatedSessionID(c); ok {
 			_, _ = securityservice.NewSessionManager(app.DB()).
 				Revoke(userID, sessionID, "logout")
 		}
+		auditservice.RecordAuthEvent(
+			c,
+			"auth.logout",
+			valueString(username),
+			userID,
+			http.StatusOK,
+			"success",
+			middleware.AuthModeCookie,
+			"",
+		)
 	}
 	session.Clear(c)
 	core.HandleSuccess(c, gin.H{"authenticated": false})
+}
+
+func roleItems(access *accessservice.UserAccess) []gin.H {
+	if access == nil {
+		return []gin.H{}
+	}
+	items := make([]gin.H, 0, len(access.Roles))
+	for _, role := range access.Roles {
+		items = append(items, gin.H{
+			"code": role.Code,
+			"name": role.Name,
+		})
+	}
+	return items
+}
+
+func permissionItems(access *accessservice.UserAccess) []string {
+	if access == nil {
+		return []string{}
+	}
+	return append([]string(nil), access.Permissions...)
+}
+
+func valueString(value interface{}) string {
+	text, _ := value.(string)
+	return text
 }

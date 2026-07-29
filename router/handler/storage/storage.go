@@ -12,6 +12,13 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+const ApprovalActionDatabaseCredentialReveal = "database.credential.reveal"
+
+type RevealCredentialApprovalPayload struct {
+	LibraryID int64  `json:"libraryId"`
+	Reason    string `json:"reason"`
+}
+
 func ADDStorage(c *gin.Context) {
 	var req input.AddParam
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -204,6 +211,22 @@ func RevealLibraryCredential(c *gin.Context) {
 		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "数据库标识无效"))
 		return
 	}
+	if shouldRequestDatabaseApproval(c) {
+		approval, createErr := createDatabaseApproval(c, ApprovalActionDatabaseCredentialReveal, "", strconv.FormatInt(id, 10), RevealCredentialApprovalPayload{
+			LibraryID: id,
+			Reason:    "查看数据库明文凭据",
+		})
+		if createErr != nil {
+			core.HandleError(c, core.WrapError(createErr, core.ErrBadRequest, "创建数据库凭据审批失败"))
+			return
+		}
+		c.JSON(202, core.SuccessResponse(gin.H{
+			"mode":       "approval_pending",
+			"approvalId": approval.ID,
+			"status":     approval.Status,
+		}))
+		return
+	}
 	credential, err := storage.GetLibraryCredential(id)
 	if err != nil {
 		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "读取数据库账号失败"))
@@ -251,4 +274,8 @@ func verifyCurrentPassword(c *gin.Context, password string) bool {
 
 func parseLibraryID(c *gin.Context) (int64, error) {
 	return strconv.ParseInt(strings.TrimSpace(c.Param("id")), 10, 64)
+}
+
+func ExecuteRevealCredentialApproval(payload RevealCredentialApprovalPayload) (any, error) {
+	return storage.GetLibraryCredential(payload.LibraryID)
 }

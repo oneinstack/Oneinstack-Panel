@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"oneinstack/app"
 	"oneinstack/internal/models"
+	accessservice "oneinstack/internal/services/access"
 	securityservice "oneinstack/internal/services/security"
 	sshservice "oneinstack/internal/services/ssh"
 	"oneinstack/router/session"
@@ -152,6 +153,9 @@ func AuthMiddleware() gin.HandlerFunc {
 		c.Set(ContextAuthMode, authMode)
 		c.Set(ContextSessionID, claims.SessionID)
 		c.Set(ContextMustChangePassword, account.MustChangePassword)
+		if access, loadErr := accessservice.NewService(database).LoadUserAccess(claims.Id); loadErr == nil {
+			c.Set(ContextUserAccess, access)
+		}
 
 		c.Next()
 	}

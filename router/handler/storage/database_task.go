@@ -14,6 +14,7 @@ import (
 	"oneinstack/app"
 	"oneinstack/core"
 	"oneinstack/internal/models"
+	approvalservice "oneinstack/internal/services/approval"
 	"oneinstack/internal/services/databasetask"
 	storageService "oneinstack/internal/services/storage"
 	"oneinstack/router/input"
@@ -22,6 +23,14 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
+
+const ApprovalActionDatabaseRestore = "database.restore"
+
+type RestoreApprovalPayload struct {
+	LibraryID   int64  `json:"libraryId"`
+	BackupID    string `json:"backupId"`
+	ConfirmName string `json:"confirmName"`
+}
 
 var (
 	databaseTaskManagerMu sync.Mutex
@@ -105,6 +114,29 @@ func RestoreDatabaseBackup(c *gin.Context) {
 		return
 	}
 	userID, _ := middleware.AuthenticatedUserID(c)
+	if shouldRequestDatabaseApproval(c) {
+		approval, err := createDatabaseApproval(
+			c,
+			ApprovalActionDatabaseRestore,
+			library.Name,
+			strconv.FormatInt(req.LibraryID, 10),
+			RestoreApprovalPayload{
+				LibraryID:   req.LibraryID,
+				BackupID:    req.BackupID,
+				ConfirmName: req.ConfirmName,
+			},
+		)
+		if err != nil {
+			core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "创建数据库恢复审批失败"))
+			return
+		}
+		c.JSON(http.StatusAccepted, core.SuccessResponse(gin.H{
+			"mode":       "approval_pending",
+			"approvalId": approval.ID,
+			"status":     approval.Status,
+		}))
+		return
+	}
 	task, err := manager.SubmitRestore(req.LibraryID, req.BackupID, userID)
 	if err != nil {
 		handleDatabaseTaskError(c, err, "创建数据库恢复任务失败")
@@ -121,12 +153,16 @@ func ListDatabaseTasks(c *gin.Context) {
 	page := positiveQueryInt(c, "page", 1)
 	pageSize := positiveQueryInt(c, "pageSize", 20)
 	libraryID, _ := strconv.ParseInt(c.Query("libraryId"), 10, 64)
+	userID, _ := middleware.AuthenticatedUserID(c)
+	access, _ := middleware.UserAccess(c)
 	result, err := manager.ListTasks(databasetask.ListOptions{
-		LibraryID: libraryID,
-		Operation: c.Query("operation"),
-		Status:    c.Query("status"),
-		Page:      page,
-		PageSize:  pageSize,
+		LibraryID:   libraryID,
+		Operation:   c.Query("operation"),
+		Status:      c.Query("status"),
+		RequestedBy: userID,
+		IncludeAll:  access != nil && access.IsSuperAdmin,
+		Page:        page,
+		PageSize:    pageSize,
 	})
 	if err != nil {
 		handleDatabaseTaskError(c, err, "读取数据库任务失败")
@@ -145,6 +181,10 @@ func GetDatabaseTask(c *gin.Context) {
 		handleDatabaseTaskError(c, err, "读取数据库任务失败")
 		return
 	}
+	if !canAccessDatabaseTask(c, task.RequestedBy) {
+		core.HandleError(c, core.NewError(core.ErrForbidden, "无权查看该数据库任务"))
+		return
+	}
 	core.HandleSuccess(c, task)
 }
 
@@ -153,7 +193,16 @@ func CancelDatabaseTask(c *gin.Context) {
 	if !ok {
 		return
 	}
-	task, err := manager.Cancel(c.Param("id"))
+	task, err := manager.GetTask(c.Param("id"))
+	if err != nil {
+		handleDatabaseTaskError(c, err, "读取数据库任务失败")
+		return
+	}
+	if !canAccessDatabaseTask(c, task.RequestedBy) {
+		core.HandleError(c, core.NewError(core.ErrForbidden, "无权取消该数据库任务"))
+		return
+	}
+	task, err = manager.Cancel(c.Param("id"))
 	if err != nil {
 		handleDatabaseTaskError(c, err, "取消数据库任务失败")
 		return
@@ -164,6 +213,15 @@ func CancelDatabaseTask(c *gin.Context) {
 func GetDatabaseTaskLog(c *gin.Context) {
 	manager, ok := databaseManagerForRequest(c)
 	if !ok {
+		return
+	}
+	task, taskErr := manager.GetTask(c.Param("id"))
+	if taskErr != nil {
+		handleDatabaseTaskError(c, taskErr, "读取数据库任务失败")
+		return
+	}
+	if !canAccessDatabaseTask(c, task.RequestedBy) {
+		core.HandleError(c, core.NewError(core.ErrForbidden, "无权查看该数据库任务日志"))
 		return
 	}
 	cursor, err := strconv.ParseInt(c.DefaultQuery("cursor", "0"), 10, 64)
@@ -190,8 +248,12 @@ func ListDatabaseBackups(c *gin.Context) {
 		return
 	}
 	libraryID, _ := strconv.ParseInt(c.Query("libraryId"), 10, 64)
+	userID, _ := middleware.AuthenticatedUserID(c)
+	access, _ := middleware.UserAccess(c)
 	result, err := manager.ListBackups(
 		libraryID,
+		userID,
+		access != nil && access.IsSuperAdmin,
 		positiveQueryInt(c, "page", 1),
 		positiveQueryInt(c, "pageSize", 20),
 	)
@@ -270,6 +332,48 @@ func positiveQueryInt(c *gin.Context, key string, fallback int) int {
 		return fallback
 	}
 	return value
+}
+
+func shouldRequestDatabaseApproval(c *gin.Context) bool {
+	access, ok := middleware.UserAccess(c)
+	return ok && !access.IsSuperAdmin
+}
+
+func createDatabaseApproval(c *gin.Context, action, resourceName, resourceID string, payload interface{}) (*models.ApprovalRequest, error) {
+	userID, _ := middleware.AuthenticatedUserID(c)
+	access, _ := middleware.UserAccess(c)
+	username := ""
+	if access != nil {
+		username = access.Username
+	}
+	return approvalservice.NewService(app.DB()).Create(approvalservice.CreateInput{
+		Module:          "database",
+		Action:          action,
+		ResourceID:      resourceID,
+		ResourceName:    resourceName,
+		RiskLevel:       "high",
+		Reason:          action,
+		Payload:         payload,
+		RequestedBy:     userID,
+		RequestedByName: username,
+	})
+}
+
+func canAccessDatabaseTask(c *gin.Context, requestedBy int64) bool {
+	userID, ok := middleware.AuthenticatedUserID(c)
+	if !ok {
+		return false
+	}
+	access, _ := middleware.UserAccess(c)
+	return access != nil && (access.IsSuperAdmin || userID == requestedBy)
+}
+
+func ExecuteRestoreApproval(payload RestoreApprovalPayload, requestedBy int64) (*models.DatabaseTask, error) {
+	manager, err := getDatabaseTaskManager()
+	if err != nil {
+		return nil, err
+	}
+	return manager.SubmitRestore(payload.LibraryID, payload.BackupID, requestedBy)
 }
 
 // Keep context imported in this package's public startup surface so callers

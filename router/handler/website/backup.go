@@ -114,6 +114,22 @@ func RestoreWebsiteBackup(c *gin.Context) {
 		return
 	}
 	userID, _ := middleware.AuthenticatedUserID(c)
+	if shouldRequestWebsiteApproval(c) {
+		approval, err := createWebsiteApproval(c, ApprovalActionWebsiteRestore, request.ConfirmName, request.BackupID, RestoreApprovalPayload{
+			BackupID:    request.BackupID,
+			ConfirmName: request.ConfirmName,
+		})
+		if err != nil {
+			core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "创建网站恢复审批失败"))
+			return
+		}
+		c.JSON(http.StatusAccepted, core.SuccessResponse(gin.H{
+			"mode":       "approval_pending",
+			"approvalId": approval.ID,
+			"status":     approval.Status,
+		}))
+		return
+	}
 	task, err := manager.SubmitRestore(request.BackupID, request.ConfirmName, userID)
 	if err != nil {
 		handleWebsiteTaskError(c, err, "创建网站恢复任务失败")
@@ -127,13 +143,17 @@ func ListWebsiteTasks(c *gin.Context) {
 	if !ok {
 		return
 	}
+	userID, _ := middleware.AuthenticatedUserID(c)
+	access, _ := middleware.UserAccess(c)
 	websiteID, _ := strconv.ParseInt(c.Query("websiteId"), 10, 64)
 	result, err := manager.ListTasks(websitetask.ListOptions{
-		WebsiteID: websiteID,
-		Operation: c.Query("operation"),
-		Status:    c.Query("status"),
-		Page:      positiveWebsiteQueryInt(c, "page", 1),
-		PageSize:  positiveWebsiteQueryInt(c, "pageSize", 20),
+		WebsiteID:   websiteID,
+		Operation:   c.Query("operation"),
+		Status:      c.Query("status"),
+		RequestedBy: userID,
+		IncludeAll:  access != nil && access.IsSuperAdmin,
+		Page:        positiveWebsiteQueryInt(c, "page", 1),
+		PageSize:    positiveWebsiteQueryInt(c, "pageSize", 20),
 	})
 	if err != nil {
 		handleWebsiteTaskError(c, err, "读取网站任务失败")
@@ -152,6 +172,10 @@ func GetWebsiteTask(c *gin.Context) {
 		handleWebsiteTaskError(c, err, "读取网站任务失败")
 		return
 	}
+	if !canAccessWebsiteTask(c, task.RequestedBy) {
+		core.HandleError(c, core.NewError(core.ErrForbidden, "无权查看该网站任务"))
+		return
+	}
 	core.HandleSuccess(c, task)
 }
 
@@ -160,7 +184,16 @@ func CancelWebsiteTask(c *gin.Context) {
 	if !ok {
 		return
 	}
-	task, err := manager.Cancel(c.Param("id"))
+	task, err := manager.GetTask(c.Param("id"))
+	if err != nil {
+		handleWebsiteTaskError(c, err, "读取网站任务失败")
+		return
+	}
+	if !canAccessWebsiteTask(c, task.RequestedBy) {
+		core.HandleError(c, core.NewError(core.ErrForbidden, "无权取消该网站任务"))
+		return
+	}
+	task, err = manager.Cancel(c.Param("id"))
 	if err != nil {
 		handleWebsiteTaskError(c, err, "取消网站任务失败")
 		return
@@ -171,6 +204,15 @@ func CancelWebsiteTask(c *gin.Context) {
 func GetWebsiteTaskLog(c *gin.Context) {
 	manager, ok := websiteManagerForRequest(c)
 	if !ok {
+		return
+	}
+	task, taskErr := manager.GetTask(c.Param("id"))
+	if taskErr != nil {
+		handleWebsiteTaskError(c, taskErr, "读取网站任务失败")
+		return
+	}
+	if !canAccessWebsiteTask(c, task.RequestedBy) {
+		core.HandleError(c, core.NewError(core.ErrForbidden, "无权查看该网站任务日志"))
 		return
 	}
 	cursor, err := strconv.ParseInt(c.DefaultQuery("cursor", "0"), 10, 64)
@@ -197,8 +239,12 @@ func ListWebsiteBackups(c *gin.Context) {
 		return
 	}
 	websiteID, _ := strconv.ParseInt(c.Query("websiteId"), 10, 64)
+	userID, _ := middleware.AuthenticatedUserID(c)
+	access, _ := middleware.UserAccess(c)
 	result, err := manager.ListBackups(
 		websiteID,
+		userID,
+		access != nil && access.IsSuperAdmin,
 		positiveWebsiteQueryInt(c, "page", 1),
 		positiveWebsiteQueryInt(c, "pageSize", 20),
 	)

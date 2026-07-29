@@ -7,6 +7,7 @@ import (
 
 	"oneinstack/app"
 	"oneinstack/core"
+	auditservice "oneinstack/internal/services/audit"
 	securityservice "oneinstack/internal/services/security"
 	"oneinstack/router/middleware"
 	"oneinstack/router/session"
@@ -73,6 +74,7 @@ func ConfirmTOTP(c *gin.Context) {
 	core.HandleSuccess(c, gin.H{
 		"enabled": true, "recoveryCodes": codes, "revokedSessions": revoked,
 	})
+	auditservice.RecordAuthEvent(c, "auth.totp_enabled", valueString(usernameValue(c)), userID, 200, "success", "", "")
 }
 
 func DisableTOTP(c *gin.Context) {
@@ -90,6 +92,7 @@ func DisableTOTP(c *gin.Context) {
 		handleSecurityError(c, err)
 		return
 	}
+	auditservice.RecordAuthEvent(c, "auth.totp_disabled", valueString(usernameValue(c)), userID, 200, "success", "", "")
 	session.Clear(c)
 	core.HandleSuccess(c, gin.H{
 		"enabled": false, "authenticated": false, "reauthenticationRequired": true,
@@ -120,6 +123,7 @@ func RegenerateRecoveryCodes(c *gin.Context) {
 		return
 	}
 	core.HandleSuccess(c, gin.H{"recoveryCodes": codes, "revokedSessions": revoked})
+	auditservice.RecordAuthEvent(c, "auth.recovery_codes_regenerated", valueString(usernameValue(c)), userID, 200, "success", "", "")
 }
 
 func ListSessions(c *gin.Context) {
@@ -166,6 +170,7 @@ func RevokeSession(c *gin.Context) {
 			core.NewError(core.ErrNotFound, "会话不存在或已经失效"))
 		return
 	}
+	auditservice.RecordAuthEvent(c, "auth.session_revoke", valueString(usernameValue(c)), userID, 200, "success", "", "")
 	currentID, _ := middleware.AuthenticatedSessionID(c)
 	current := sessionID == currentID
 	if current {
@@ -186,7 +191,13 @@ func RevokeOtherSessions(c *gin.Context) {
 		handleSecurityError(c, err)
 		return
 	}
+	auditservice.RecordAuthEvent(c, "auth.session_revoke", valueString(usernameValue(c)), userID, 200, "success", "", "")
 	core.HandleSuccess(c, gin.H{"revokedSessions": count})
+}
+
+func usernameValue(c *gin.Context) interface{} {
+	value, _ := c.Get(middleware.ContextUsername)
+	return value
 }
 
 func authenticatedUser(c *gin.Context) (int64, bool) {

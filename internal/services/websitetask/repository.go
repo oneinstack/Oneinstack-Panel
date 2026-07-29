@@ -14,11 +14,13 @@ import (
 )
 
 type ListOptions struct {
-	WebsiteID int64
-	Operation string
-	Status    string
-	Page      int
-	PageSize  int
+	WebsiteID   int64
+	Operation   string
+	Status      string
+	RequestedBy int64
+	IncludeAll  bool
+	Page        int
+	PageSize    int
 }
 
 type TaskList struct {
@@ -67,6 +69,9 @@ func (m *Manager) ListTasks(options ListOptions) (*TaskList, error) {
 	if value := strings.TrimSpace(options.Status); value != "" {
 		query = query.Where("status = ?", value)
 	}
+	if !options.IncludeAll && options.RequestedBy > 0 {
+		query = query.Where("requested_by = ?", options.RequestedBy)
+	}
 	var total int64
 	if err := query.Count(&total).Error; err != nil {
 		return nil, err
@@ -83,7 +88,7 @@ func (m *Manager) ListTasks(options ListOptions) (*TaskList, error) {
 	}, nil
 }
 
-func (m *Manager) ListBackups(websiteID int64, page, pageSize int) (*BackupList, error) {
+func (m *Manager) ListBackups(websiteID, createdBy int64, includeAll bool, page, pageSize int) (*BackupList, error) {
 	if err := m.Start(); err != nil {
 		return nil, err
 	}
@@ -91,6 +96,9 @@ func (m *Manager) ListBackups(websiteID int64, page, pageSize int) (*BackupList,
 	query := m.db.Model(&models.WebsiteBackup{})
 	if websiteID > 0 {
 		query = query.Where("website_id = ?", websiteID)
+	}
+	if !includeAll && createdBy > 0 {
+		query = query.Where("created_by = ?", createdBy)
 	}
 	var total int64
 	if err := query.Count(&total).Error; err != nil {

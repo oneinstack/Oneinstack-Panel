@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"oneinstack/internal/crypto"
 	"oneinstack/internal/models"
+	accessservice "oneinstack/internal/services/access"
 	"oneinstack/utils"
 	"os"
 	"path/filepath"
@@ -72,6 +73,15 @@ func createTables() error {
 		return err
 	}
 	err = db.AutoMigrate(&models.User{})
+	if err != nil {
+		return err
+	}
+	err = db.AutoMigrate(
+		&models.Role{},
+		&models.Permission{},
+		&models.RolePermission{},
+		&models.UserRole{},
+	)
 	if err != nil {
 		return err
 	}
@@ -175,6 +185,9 @@ func createTables() error {
 	if err != nil {
 		return err
 	}
+	if err := db.AutoMigrate(&models.ApprovalRequest{}); err != nil {
+		return err
+	}
 	err = db.AutoMigrate(
 		&models.MetricSample{},
 		&models.MonitorRule{},
@@ -187,6 +200,9 @@ func createTables() error {
 		return err
 	}
 	if err := db.AutoMigrate(&models.RuntimeLogEntry{}); err != nil {
+		return err
+	}
+	if err := accessservice.SeedBuiltin(db); err != nil {
 		return err
 	}
 	return nil
