@@ -783,8 +783,20 @@ func classifyExecutionError(err error) string {
 		return "CONFIG_APPLY_FAILED"
 	case strings.Contains(message, "checksum"), strings.Contains(message, "signature"), strings.Contains(message, "verify package"):
 		return "PACKAGE_VERIFY_FAILED"
-	case strings.Contains(message, "resolve"), strings.Contains(message, "center"):
+	case strings.Contains(message, "no compatible package"),
+		strings.Contains(message, "no compatible bundled"),
+		strings.Contains(message, "no compatible cached"),
+		strings.Contains(message, "package does not provide the required actions"),
+		strings.Contains(message, "read bundled component"),
+		strings.Contains(message, "read cached component"):
+		return "PACKAGE_UNAVAILABLE"
+	case strings.Contains(message, "script center connectivity"),
+		strings.Contains(message, "script center is not ready"),
+		strings.Contains(message, "script center returned http"),
+		strings.Contains(message, "download package"):
 		return "CENTER_UNAVAILABLE"
+	case strings.Contains(message, "resolve"):
+		return "PACKAGE_UNAVAILABLE"
 	case strings.Contains(message, "precheck"):
 		return "PRECHECK_FAILED"
 	case strings.Contains(message, "configure"):

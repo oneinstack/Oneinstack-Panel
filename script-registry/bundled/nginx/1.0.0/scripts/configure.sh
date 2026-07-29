@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/common.sh"
-require_root; validate_inputs; ensure_account
+require_root; validate_inputs; validate_install_version; ensure_account
 emit_progress 10 prepare_directories "正在创建 Nginx 配置目录"
 install -d -m 0755 -- "${web_root}" "${web_root}/default" "${log_dir}" "${install_dir}/conf/conf.d"
 chown -R "${run_user}:${run_group}" "${web_root}" "${log_dir}"

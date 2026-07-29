@@ -146,7 +146,7 @@ func (m *Manager) Sync(ctx context.Context) (Status, error) {
 	if err != nil {
 		return m.failSync(err)
 	}
-	if state.Revision != "" {
+	if state.Revision != "" && state.Channel == m.config.Channel {
 		request.Header.Set("If-None-Match", `"`+state.Revision+`"`)
 	}
 	response, err := m.client.Do(request)
@@ -158,6 +158,7 @@ func (m *Manager) Sync(ctx context.Context) (Status, error) {
 		now := m.now().UTC()
 		state.ID = 1
 		state.Mode = "center"
+		state.Channel = m.config.Channel
 		state.LastAttemptAt = &now
 		state.LastSyncedAt = &now
 		state.LastError = ""
@@ -330,6 +331,7 @@ func (m *Manager) apply(document Document) error {
 		state := models.SoftwareCatalogState{
 			ID:            1,
 			Mode:          "center",
+			Channel:       m.config.Channel,
 			Revision:      document.Revision,
 			KeyID:         document.KeyID,
 			ProductCount:  productCount,

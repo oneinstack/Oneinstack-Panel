@@ -168,6 +168,87 @@ func TestSyncRejectsTamperedCatalog(t *testing.T) {
 	}
 }
 
+func TestSyncReappliesUnchangedCatalogWhenChannelChanges(t *testing.T) {
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	document := signTestDocument(t, privateKey, []Product{{
+		Key: "webserver", Component: "nginx", Name: "Nginx",
+		Visible: true, Installable: true,
+		Versions: []Version{
+			{Version: "1.28.2", Channel: "stable", Enabled: true, Recommended: true},
+			{Version: "1.31.0", Channel: "development", Enabled: true, Recommended: true},
+		},
+	}})
+	db := openCatalogTestDB(t)
+	publicKeyEncoded := base64.StdEncoding.EncodeToString(publicKey)
+	newManager := func(channel string) *Manager {
+		t.Helper()
+		manager, managerErr := New(config.ScriptCenter{
+			Enabled: true, URL: "http://center.test", Channel: channel,
+			RequestTimeoutSeconds: 5, CatalogStaleAfterHours: 24,
+			TrustedKeys: map[string]string{"test-key": publicKeyEncoded},
+		}, db)
+		if managerErr != nil {
+			t.Fatal(managerErr)
+		}
+		manager.client = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			if request.Header.Get("If-None-Match") != "" {
+				return &http.Response{
+					StatusCode: http.StatusNotModified,
+					Body:       io.NopCloser(strings.NewReader("")),
+					Header:     make(http.Header),
+					Request:    request,
+				}, nil
+			}
+			body, marshalErr := json.Marshal(document)
+			if marshalErr != nil {
+				return nil, marshalErr
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(string(body))),
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Request:    request,
+			}, nil
+		})}
+		return manager
+	}
+
+	stableStatus, err := newManager("stable").Sync(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stableStatus.ProductCount != 1 || stableStatus.VersionCount != 1 {
+		t.Fatalf("unexpected stable status: %+v", stableStatus)
+	}
+
+	developmentStatus, err := newManager("development").Sync(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if developmentStatus.ProductCount != 1 || developmentStatus.VersionCount != 1 ||
+		developmentStatus.Channel != "development" {
+		t.Fatalf("catalog was not reapplied for development channel: %+v", developmentStatus)
+	}
+	var development models.Software
+	if err := db.Where("`key` = ? AND version = ?", "webserver", "1.31.0").
+		First(&development).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !development.CatalogVisible || !development.Installable || !development.Recommended {
+		t.Fatalf("development release is unavailable: %+v", development)
+	}
+	var state models.SoftwareCatalogState
+	if err := db.First(&state, 1).Error; err != nil {
+		t.Fatal(err)
+	}
+	if state.Channel != "development" {
+		t.Fatalf("unexpected persisted channel: %q", state.Channel)
+	}
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (function roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {

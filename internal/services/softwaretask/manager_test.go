@@ -316,6 +316,21 @@ func TestClassifyConfigurationExecutionErrors(t *testing.T) {
 	}
 }
 
+func TestClassifyPackageResolutionErrors(t *testing.T) {
+	tests := map[string]string{
+		"resolve openresty uninstall package: no compatible package":                "PACKAGE_UNAVAILABLE",
+		"resolve nginx installer: script center connectivity check failed":          "CENTER_UNAVAILABLE",
+		"resolve redis status package: script center is not ready: HTTP 503":        "CENTER_UNAVAILABLE",
+		"resolve php installer: download package: HTTP 502":                         "CENTER_UNAVAILABLE",
+		"resolve mysql uninstall package: package does not provide required action": "PACKAGE_UNAVAILABLE",
+	}
+	for message, expected := range tests {
+		if actual := classifyExecutionError(errors.New(message)); actual != expected {
+			t.Fatalf("classifyExecutionError(%q) = %q, want %q", message, actual, expected)
+		}
+	}
+}
+
 func TestManagerStopSafelyInterruptsRunningTask(t *testing.T) {
 	db := openTaskTestDB(t)
 	started := make(chan struct{})

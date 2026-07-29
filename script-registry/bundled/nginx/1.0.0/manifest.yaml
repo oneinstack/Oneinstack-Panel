@@ -3,7 +3,7 @@ component:
   id: nginx
   name: Nginx
   version: 1.0.0
-  softwareVersions: ["1.28.2"]
+  softwareVersions: ["1.26.2", "1.28.2"]
   channel: stable
   description: OneinStack-style source installation of Nginx with verified upstream downloads and systemd.
 compatibility:
