@@ -190,6 +190,18 @@ func executeApprovedRequest(c *gin.Context, request *models.ApprovalRequest) err
 			return err
 		}
 		return service.UpdateExecutionResult(request.ID, models.ApprovalStatusCompleted, "", "", result)
+	case storage.ApprovalActionDatabaseConnectionDelete:
+		var payload storage.DeleteConnectionApprovalPayload
+		if err := json.Unmarshal([]byte(request.PayloadSnapshot), &payload); err != nil {
+			return err
+		}
+		if err := storage.ExecuteDeleteConnectionApproval(payload); err != nil {
+			return err
+		}
+		return service.UpdateExecutionResult(request.ID, models.ApprovalStatusCompleted, "", "", gin.H{
+			"connectionId": payload.ConnectionID,
+			"deleted":      true,
+		})
 	default:
 		return errors.New("unsupported approval action")
 	}

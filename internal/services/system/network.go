@@ -80,6 +80,10 @@ type UpdatePanelNetworkRequest struct {
 	RotatePanelEntry     bool     `json:"rotatePanelEntry"`
 }
 
+type PanelEntryStatus struct {
+	Enabled bool `json:"enabled"`
+}
+
 func GetPanelNetworkSettings() (*PanelNetworkSettings, error) {
 	stored, err := loadStoredManagedPanelConfig()
 	if err != nil {
@@ -87,6 +91,11 @@ func GetPanelNetworkSettings() (*PanelNetworkSettings, error) {
 	}
 	effective := effectiveManagedPanelConfig()
 	return describePanelConfig(stored, !reflect.DeepEqual(stored, effective)), nil
+}
+
+func GetPanelEntryStatus() *PanelEntryStatus {
+	config := effectiveManagedPanelConfig()
+	return &PanelEntryStatus{Enabled: config.PanelEntryEnabled}
 }
 
 func UpdatePanelNetwork(request UpdatePanelNetworkRequest) (*PanelNetworkSettings, error) {

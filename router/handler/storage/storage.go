@@ -1,7 +1,10 @@
 package storage
 
 import (
+	"net/http"
+	"oneinstack/app"
 	"oneinstack/core"
+	"oneinstack/internal/models"
 	"oneinstack/internal/services/storage"
 	userservice "oneinstack/internal/services/user"
 	"oneinstack/router/input"
@@ -13,10 +16,18 @@ import (
 )
 
 const ApprovalActionDatabaseCredentialReveal = "database.credential.reveal"
+const ApprovalActionDatabaseConnectionDelete = "database.connection.delete"
 
 type RevealCredentialApprovalPayload struct {
 	LibraryID int64  `json:"libraryId"`
 	Reason    string `json:"reason"`
+}
+
+type DeleteConnectionApprovalPayload struct {
+	ConnectionID int64  `json:"connectionId"`
+	Type         string `json:"type"`
+	Addr         string `json:"addr"`
+	Port         string `json:"port"`
 }
 
 func ADDStorage(c *gin.Context) {
@@ -103,6 +114,39 @@ func DelStorage(c *gin.Context) {
 	if err := c.ShouldBindJSON(&req); err != nil {
 		appErr := core.WrapError(err, core.ErrBadRequest, "请求参数错误")
 		core.HandleError(c, appErr)
+		return
+	}
+	var connection models.Storage
+	if err := app.DB().First(&connection, req.ID).Error; err != nil {
+		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "数据库连接不存在"))
+		return
+	}
+	if shouldRequestDatabaseApproval(c) {
+		resourceName := strings.TrimSpace(connection.Remark)
+		if resourceName == "" {
+			resourceName = connection.Addr + ":" + connection.Port
+		}
+		approval, createErr := createDatabaseApproval(
+			c,
+			ApprovalActionDatabaseConnectionDelete,
+			resourceName,
+			strconv.FormatInt(connection.ID, 10),
+			DeleteConnectionApprovalPayload{
+				ConnectionID: connection.ID,
+				Type:         connection.Type,
+				Addr:         connection.Addr,
+				Port:         connection.Port,
+			},
+		)
+		if createErr != nil {
+			core.HandleError(c, core.WrapError(createErr, core.ErrBadRequest, "创建数据库连接删除审批失败"))
+			return
+		}
+		c.JSON(http.StatusAccepted, core.SuccessResponse(gin.H{
+			"mode":       "approval_pending",
+			"approvalId": approval.ID,
+			"status":     approval.Status,
+		}))
 		return
 	}
 	err := storage.Del(&req)
@@ -278,4 +322,8 @@ func parseLibraryID(c *gin.Context) (int64, error) {
 
 func ExecuteRevealCredentialApproval(payload RevealCredentialApprovalPayload) (any, error) {
 	return storage.GetLibraryCredential(payload.LibraryID)
+}
+
+func ExecuteDeleteConnectionApproval(payload DeleteConnectionApprovalPayload) error {
+	return storage.Del(&input.IDParam{ID: payload.ConnectionID})
 }

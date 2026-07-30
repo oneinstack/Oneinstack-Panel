@@ -149,6 +149,10 @@ func GetPanelNetwork(c *gin.Context) {
 	core.HandleSuccess(c, settings)
 }
 
+func GetPanelEntryStatus(c *gin.Context) {
+	core.HandleSuccess(c, system.GetPanelEntryStatus())
+}
+
 func UpdatePanelNetwork(c *gin.Context) {
 	var request input.UpdatePanelNetworkRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
