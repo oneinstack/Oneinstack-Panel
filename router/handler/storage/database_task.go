@@ -14,6 +14,7 @@ import (
 	"oneinstack/app"
 	"oneinstack/core"
 	"oneinstack/internal/models"
+	accessservice "oneinstack/internal/services/access"
 	approvalservice "oneinstack/internal/services/approval"
 	"oneinstack/internal/services/databasetask"
 	storageService "oneinstack/internal/services/storage"
@@ -160,7 +161,7 @@ func ListDatabaseTasks(c *gin.Context) {
 		Operation:   c.Query("operation"),
 		Status:      c.Query("status"),
 		RequestedBy: userID,
-		IncludeAll:  access != nil && access.IsSuperAdmin,
+		IncludeAll:  canReadAllDatabaseTasks(access),
 		Page:        page,
 		PageSize:    pageSize,
 	})
@@ -253,7 +254,7 @@ func ListDatabaseBackups(c *gin.Context) {
 	result, err := manager.ListBackups(
 		libraryID,
 		userID,
-		access != nil && access.IsSuperAdmin,
+		canReadAllDatabaseTasks(access),
 		positiveQueryInt(c, "page", 1),
 		positiveQueryInt(c, "pageSize", 20),
 	)
@@ -365,7 +366,12 @@ func canAccessDatabaseTask(c *gin.Context, requestedBy int64) bool {
 		return false
 	}
 	access, _ := middleware.UserAccess(c)
-	return access != nil && (access.IsSuperAdmin || userID == requestedBy)
+	return canReadAllDatabaseTasks(access) || userID == requestedBy
+}
+
+func canReadAllDatabaseTasks(access *accessservice.UserAccess) bool {
+	return access != nil &&
+		(access.IsSuperAdmin || access.HasPermission(accessservice.PermissionTaskReadAll))
 }
 
 func ExecuteRestoreApproval(payload RestoreApprovalPayload, requestedBy int64) (*models.DatabaseTask, error) {

@@ -23,6 +23,109 @@ type AuthorizationMatrix struct {
 	Scopes           map[string]map[string]bool `json:"scopes"`
 }
 
+type menuVisibilityRule struct {
+	key     string
+	visible func(has func(string) bool, access *accessservice.UserAccess) bool
+}
+
+var authorizationMenuRules = []menuVisibilityRule{
+	{
+		key: "dashboard",
+		visible: func(has func(string) bool, access *accessservice.UserAccess) bool {
+			return access != nil && (access.IsSuperAdmin || has(accessservice.PermissionDashboardRead))
+		},
+	},
+	{
+		key: "website",
+		visible: func(has func(string) bool, access *accessservice.UserAccess) bool {
+			return has(accessservice.PermissionWebsiteRead) || has(accessservice.PermissionWebsiteWrite)
+		},
+	},
+	{
+		key: "database",
+		visible: func(has func(string) bool, access *accessservice.UserAccess) bool {
+			return has(accessservice.PermissionDatabaseRead) || has(accessservice.PermissionDatabaseWrite)
+		},
+	},
+	{
+		key: "monitoring",
+		visible: func(has func(string) bool, access *accessservice.UserAccess) bool {
+			return has(accessservice.PermissionMonitoringRead) || has(accessservice.PermissionMonitoringWrite)
+		},
+	},
+	{
+		key: "security",
+		visible: func(has func(string) bool, access *accessservice.UserAccess) bool {
+			return has(accessservice.PermissionSecurityRead) || has(accessservice.PermissionSecurityWrite)
+		},
+	},
+	{
+		key: "file",
+		visible: func(has func(string) bool, access *accessservice.UserAccess) bool {
+			return has(accessservice.PermissionFileRead) || has(accessservice.PermissionFileWrite)
+		},
+	},
+	{
+		key: "audit",
+		visible: func(has func(string) bool, access *accessservice.UserAccess) bool {
+			return has(accessservice.PermissionAuditRead)
+		},
+	},
+	{
+		key: "runtimeLog",
+		visible: func(has func(string) bool, access *accessservice.UserAccess) bool {
+			return has(accessservice.PermissionRuntimeLogRead)
+		},
+	},
+	{
+		key: "cron",
+		visible: func(has func(string) bool, access *accessservice.UserAccess) bool {
+			return has(accessservice.PermissionCronRead) || has(accessservice.PermissionCronWrite)
+		},
+	},
+	{
+		key: "software",
+		visible: func(has func(string) bool, access *accessservice.UserAccess) bool {
+			return has(accessservice.PermissionSoftwareRead) ||
+				has(accessservice.PermissionSoftwareWrite) ||
+				has(accessservice.PermissionServiceRead) ||
+				has(accessservice.PermissionServiceWrite)
+		},
+	},
+	{
+		key: "panelSettings",
+		visible: func(has func(string) bool, access *accessservice.UserAccess) bool {
+			return access != nil && access.IsSuperAdmin
+		},
+	},
+	{
+		key: "userManagement",
+		visible: func(has func(string) bool, access *accessservice.UserAccess) bool {
+			return access != nil && access.IsSuperAdmin
+		},
+	},
+	{
+		key: "approval",
+		visible: func(has func(string) bool, access *accessservice.UserAccess) bool {
+			return has(accessservice.PermissionApprovalRead)
+		},
+	},
+	{
+		key: "logout",
+		visible: func(has func(string) bool, access *accessservice.UserAccess) bool {
+			return access != nil
+		},
+	},
+	{
+		key: "systemAccess",
+		visible: func(has func(string) bool, access *accessservice.UserAccess) bool {
+			return has(accessservice.PermissionSystemRead) ||
+				has(accessservice.PermissionSystemWrite) ||
+				has(accessservice.PermissionTerminalAccess)
+		},
+	},
+}
+
 // RequirePermission 权限验证中间件
 func RequirePermission(requiredPermission string) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -136,19 +239,17 @@ func BuildAuthorizationMatrix(access *accessservice.UserAccess) AuthorizationMat
 	has := func(code string) bool {
 		return access != nil && access.HasPermission(code)
 	}
+	menu := make(map[string]bool, len(authorizationMenuRules))
+	for _, rule := range authorizationMenuRules {
+		menu[rule.key] = rule.visible(has, access)
+	}
 	return AuthorizationMatrix{
-		Menu: map[string]bool{
-			"runtimeLog":   has(accessservice.PermissionRuntimeLogRead),
-			"audit":        has(accessservice.PermissionAuditRead),
-			"website":      has(accessservice.PermissionWebsiteRead) || has(accessservice.PermissionWebsiteWrite),
-			"database":     has(accessservice.PermissionDatabaseRead) || has(accessservice.PermissionDatabaseWrite),
-			"approval":     has(accessservice.PermissionApprovalRead),
-			"systemAccess": access != nil && access.IsSuperAdmin,
-		},
+		Menu: menu,
 		Actions: map[string]bool{
 			"website.delete":             has(accessservice.PermissionWebsiteWrite),
 			"website.restore":            has(accessservice.PermissionWebsiteWrite),
 			"database.restore":           has(accessservice.PermissionDatabaseWrite),
+			"database.connection.delete": has(accessservice.PermissionDatabaseWrite),
 			"audit.export":               has(accessservice.PermissionAuditExport),
 			"database.credential.reveal": has(accessservice.PermissionDatabaseWrite),
 			"certificate.issue":          has(accessservice.PermissionWebsiteWrite),
@@ -157,6 +258,7 @@ func BuildAuthorizationMatrix(access *accessservice.UserAccess) AuthorizationMat
 			"website.delete":             true,
 			"website.restore":            true,
 			"database.restore":           true,
+			"database.connection.delete": true,
 			"certificate.issue":          true,
 			"certificate.renew":          true,
 			"certificate.disable":        true,

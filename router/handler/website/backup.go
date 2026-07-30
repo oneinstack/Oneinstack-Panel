@@ -151,7 +151,7 @@ func ListWebsiteTasks(c *gin.Context) {
 		Operation:   c.Query("operation"),
 		Status:      c.Query("status"),
 		RequestedBy: userID,
-		IncludeAll:  access != nil && access.IsSuperAdmin,
+		IncludeAll:  canReadAllWebsiteTasks(access),
 		Page:        positiveWebsiteQueryInt(c, "page", 1),
 		PageSize:    positiveWebsiteQueryInt(c, "pageSize", 20),
 	})
@@ -244,7 +244,7 @@ func ListWebsiteBackups(c *gin.Context) {
 	result, err := manager.ListBackups(
 		websiteID,
 		userID,
-		access != nil && access.IsSuperAdmin,
+		canReadAllWebsiteTasks(access),
 		positiveWebsiteQueryInt(c, "page", 1),
 		positiveWebsiteQueryInt(c, "pageSize", 20),
 	)

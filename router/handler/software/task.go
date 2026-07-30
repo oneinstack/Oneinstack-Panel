@@ -17,6 +17,7 @@ import (
 	"oneinstack/app"
 	"oneinstack/core"
 	"oneinstack/internal/models"
+	accessservice "oneinstack/internal/services/access"
 	softwareService "oneinstack/internal/services/software"
 	"oneinstack/internal/services/softwaretask"
 	storageService "oneinstack/internal/services/storage"
@@ -207,11 +208,12 @@ func ListSoftwareTasks(c *gin.Context) {
 		core.HandleError(c, core.NewError(core.ErrUnauthorized, "无法识别当前用户"))
 		return
 	}
+	access, _ := middleware.UserAccess(c)
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("pageSize", "20"))
 	result, err := manager.List(softwaretask.ListOptions{
 		RequestedBy: userID,
-		IncludeAll:  userID == 1,
+		IncludeAll:  canReadAllSoftwareTasks(access),
 		ActiveOnly:  parseQueryBool(c.Query("active")),
 		Component:   c.Query("component"),
 		Status:      c.Query("status"),
@@ -235,6 +237,7 @@ func GetSoftwareTaskStats(c *gin.Context) {
 		core.HandleError(c, core.NewError(core.ErrUnauthorized, "无法识别当前用户"))
 		return
 	}
+	access, _ := middleware.UserAccess(c)
 	days, err := strconv.Atoi(c.DefaultQuery("days", "30"))
 	if err != nil || days < 1 || days > 3650 {
 		core.HandleError(c, core.NewError(core.ErrBadRequest, "统计天数必须在 1 到 3650 之间"))
@@ -242,7 +245,7 @@ func GetSoftwareTaskStats(c *gin.Context) {
 	}
 	result, err := manager.Stats(softwaretask.TaskStatsOptions{
 		RequestedBy: userID,
-		IncludeAll:  userID == 1,
+		IncludeAll:  canReadAllSoftwareTasks(access),
 		Days:        days,
 	})
 	if err != nil {
@@ -426,7 +429,16 @@ func taskManagerForRequest(c *gin.Context) (*softwaretask.Manager, bool) {
 
 func canAccessTask(c *gin.Context, task *models.SoftwareTask) bool {
 	userID, ok := middleware.AuthenticatedUserID(c)
-	return ok && (userID == 1 || task.RequestedBy == userID)
+	if !ok {
+		return false
+	}
+	access, _ := middleware.UserAccess(c)
+	return canReadAllSoftwareTasks(access) || task.RequestedBy == userID
+}
+
+func canReadAllSoftwareTasks(access *accessservice.UserAccess) bool {
+	return access != nil &&
+		(access.IsSuperAdmin || access.HasPermission(accessservice.PermissionTaskReadAll))
 }
 
 func handleTaskLookupError(c *gin.Context, err error) {

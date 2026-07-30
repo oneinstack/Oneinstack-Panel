@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"oneinstack/internal/models"
+	accessservice "oneinstack/internal/services/access"
 	auditservice "oneinstack/internal/services/audit"
 
 	"github.com/gin-gonic/gin"
@@ -92,5 +93,86 @@ func TestAuditMiddlewareSkipsSuccessfulReadButCapturesFailure(t *testing.T) {
 		!isSensitiveOperation(http.MethodPost, "/v1/website/tasks/task-1/cancel") ||
 		!isSensitiveOperation(http.MethodGet, "/v1/website/backups/backup-1/download") {
 		t.Fatal("website backup mutations, cancellation, and downloads must be sensitive")
+	}
+}
+
+func TestBuildAuthorizationMatrixIncludesFullMenuForScopedRole(t *testing.T) {
+	matrix := BuildAuthorizationMatrix(&accessservice.UserAccess{
+		UserID:   7,
+		Username: "website-admin",
+		Roles: []accessservice.RoleSummary{
+			{Code: accessservice.RoleWebsiteAdmin, Name: "网站管理员"},
+		},
+		Permissions: []string{
+			accessservice.PermissionDashboardRead,
+			accessservice.PermissionRuntimeLogRead,
+			accessservice.PermissionFileRead,
+			accessservice.PermissionFileWrite,
+			accessservice.PermissionSoftwareRead,
+			accessservice.PermissionServiceRead,
+			accessservice.PermissionServiceWrite,
+			accessservice.PermissionWebsiteRead,
+			accessservice.PermissionWebsiteWrite,
+			accessservice.PermissionWebsiteApproval,
+			accessservice.PermissionApprovalRequest,
+		},
+		PermissionSet: map[string]struct{}{
+			accessservice.PermissionDashboardRead:   {},
+			accessservice.PermissionRuntimeLogRead:  {},
+			accessservice.PermissionFileRead:        {},
+			accessservice.PermissionFileWrite:       {},
+			accessservice.PermissionSoftwareRead:    {},
+			accessservice.PermissionServiceRead:     {},
+			accessservice.PermissionServiceWrite:    {},
+			accessservice.PermissionWebsiteRead:     {},
+			accessservice.PermissionWebsiteWrite:    {},
+			accessservice.PermissionWebsiteApproval: {},
+			accessservice.PermissionApprovalRequest: {},
+		},
+	})
+
+	expectedVisible := []string{
+		"dashboard",
+		"website",
+		"file",
+		"runtimeLog",
+		"software",
+		"logout",
+	}
+	for _, key := range expectedVisible {
+		if !matrix.Menu[key] {
+			t.Fatalf("menu %q should be visible for scoped role", key)
+		}
+	}
+
+	expectedHidden := []string{
+		"database",
+		"audit",
+		"approval",
+		"monitoring",
+		"cron",
+		"security",
+		"panelSettings",
+		"userManagement",
+		"systemAccess",
+	}
+	for _, key := range expectedHidden {
+		if matrix.Menu[key] {
+			t.Fatalf("menu %q should stay hidden for scoped role", key)
+		}
+	}
+}
+
+func TestBuildAuthorizationMatrixGrantsAdminMenusToSuperAdmin(t *testing.T) {
+	matrix := BuildAuthorizationMatrix(&accessservice.UserAccess{
+		UserID:       1,
+		Username:     "root",
+		IsSuperAdmin: true,
+	})
+
+	for _, key := range []string{"security", "panelSettings", "userManagement", "systemAccess"} {
+		if !matrix.Menu[key] {
+			t.Fatalf("menu %q should be visible for super admin", key)
+		}
 	}
 }

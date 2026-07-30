@@ -6,6 +6,7 @@ import (
 	"oneinstack/app"
 	"oneinstack/core"
 	"oneinstack/internal/models"
+	accessservice "oneinstack/internal/services/access"
 	approvalservice "oneinstack/internal/services/approval"
 	certificateService "oneinstack/internal/services/certificate"
 	"oneinstack/router/middleware"
@@ -81,7 +82,12 @@ func canAccessWebsiteTask(c *gin.Context, requestedBy int64) bool {
 		return false
 	}
 	access, _ := middleware.UserAccess(c)
-	return access != nil && (access.IsSuperAdmin || userID == requestedBy)
+	return canReadAllWebsiteTasks(access) || userID == requestedBy
+}
+
+func canReadAllWebsiteTasks(access *accessservice.UserAccess) bool {
+	return access != nil &&
+		(access.IsSuperAdmin || access.HasPermission(accessservice.PermissionTaskReadAll))
 }
 
 func ExecuteDeleteApproval(payload DeleteApprovalPayload, requestedBy int64) (*models.WebsiteTask, error) {

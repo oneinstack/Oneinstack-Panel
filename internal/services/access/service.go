@@ -17,12 +17,27 @@ import (
 const (
 	PermissionDashboardRead    = "dashboard.read"
 	PermissionRuntimeLogRead   = "runtime_log.read"
+	PermissionFileRead         = "file.read"
+	PermissionFileWrite        = "file.write"
 	PermissionWebsiteRead      = "website.read"
 	PermissionWebsiteWrite     = "website.write"
 	PermissionWebsiteApproval  = "website.approval.request"
 	PermissionDatabaseRead     = "database.read"
 	PermissionDatabaseWrite    = "database.write"
 	PermissionDatabaseApproval = "database.approval.request"
+	PermissionSoftwareRead     = "software.read"
+	PermissionSoftwareWrite    = "software.write"
+	PermissionServiceRead      = "software.service.read"
+	PermissionServiceWrite     = "software.service.write"
+	PermissionSecurityRead     = "security.read"
+	PermissionSecurityWrite    = "security.write"
+	PermissionCronRead         = "cron.read"
+	PermissionCronWrite        = "cron.write"
+	PermissionMonitoringRead   = "monitoring.read"
+	PermissionMonitoringWrite  = "monitoring.write"
+	PermissionSystemRead       = "system.settings.read"
+	PermissionSystemWrite      = "system.settings.write"
+	PermissionTerminalAccess   = "terminal.access"
 	PermissionAuditRead        = "audit.read"
 	PermissionAuditExport      = "audit.export"
 	PermissionAuditVerify      = "audit.verify"
@@ -39,6 +54,7 @@ const (
 	RoleObserver          = "observer"
 	RoleWebsiteAdmin      = "website_admin"
 	RoleDatabaseAdmin     = "database_admin"
+	RoleSystemOperator    = "system_operator"
 	RoleSecurityAuditor   = "security_auditor"
 	RoleOperationApprover = "operation_approver"
 )
@@ -89,12 +105,27 @@ func builtinPermissions() []models.Permission {
 	return []models.Permission{
 		{Code: PermissionDashboardRead, Name: "面板概览查看", Module: "dashboard"},
 		{Code: PermissionRuntimeLogRead, Name: "运行日志查看", Module: "log"},
+		{Code: PermissionFileRead, Name: "文件读取", Module: "file"},
+		{Code: PermissionFileWrite, Name: "文件修改", Module: "file"},
 		{Code: PermissionWebsiteRead, Name: "网站读取", Module: "website"},
 		{Code: PermissionWebsiteWrite, Name: "网站修改", Module: "website"},
 		{Code: PermissionWebsiteApproval, Name: "网站审批申请", Module: "website"},
 		{Code: PermissionDatabaseRead, Name: "数据库读取", Module: "database"},
 		{Code: PermissionDatabaseWrite, Name: "数据库修改", Module: "database"},
 		{Code: PermissionDatabaseApproval, Name: "数据库审批申请", Module: "database"},
+		{Code: PermissionSoftwareRead, Name: "软件读取", Module: "software"},
+		{Code: PermissionSoftwareWrite, Name: "软件修改", Module: "software"},
+		{Code: PermissionServiceRead, Name: "组件服务读取", Module: "software"},
+		{Code: PermissionServiceWrite, Name: "组件服务修改", Module: "software"},
+		{Code: PermissionSecurityRead, Name: "安全配置读取", Module: "security"},
+		{Code: PermissionSecurityWrite, Name: "安全配置修改", Module: "security"},
+		{Code: PermissionCronRead, Name: "计划任务读取", Module: "cron"},
+		{Code: PermissionCronWrite, Name: "计划任务修改", Module: "cron"},
+		{Code: PermissionMonitoringRead, Name: "监控读取", Module: "monitoring"},
+		{Code: PermissionMonitoringWrite, Name: "监控修改", Module: "monitoring"},
+		{Code: PermissionSystemRead, Name: "系统访问配置读取", Module: "system"},
+		{Code: PermissionSystemWrite, Name: "系统访问配置修改", Module: "system"},
+		{Code: PermissionTerminalAccess, Name: "Web 终端访问", Module: "terminal"},
 		{Code: PermissionAuditRead, Name: "审计查看", Module: "audit"},
 		{Code: PermissionAuditExport, Name: "审计导出", Module: "audit"},
 		{Code: PermissionAuditVerify, Name: "审计校验", Module: "audit"},
@@ -139,6 +170,11 @@ func builtinRoles() []struct {
 			Permissions: []string{
 				PermissionDashboardRead,
 				PermissionRuntimeLogRead,
+				PermissionFileRead,
+				PermissionFileWrite,
+				PermissionSoftwareRead,
+				PermissionServiceRead,
+				PermissionServiceWrite,
 				PermissionWebsiteRead,
 				PermissionWebsiteWrite,
 				PermissionWebsiteApproval,
@@ -157,11 +193,44 @@ func builtinRoles() []struct {
 			Permissions: []string{
 				PermissionDashboardRead,
 				PermissionRuntimeLogRead,
+				PermissionSoftwareRead,
+				PermissionServiceRead,
+				PermissionServiceWrite,
 				PermissionDatabaseRead,
 				PermissionDatabaseWrite,
 				PermissionDatabaseApproval,
 				PermissionApprovalRequest,
 				PermissionTaskReadSelf,
+				PermissionTaskCancelSelf,
+			},
+		},
+		{
+			Role: models.Role{
+				Code:        RoleSystemOperator,
+				Name:        "系统运维",
+				Description: "负责文件、软件、监控、计划任务与系统访问配置",
+				Builtin:     true,
+			},
+			Permissions: []string{
+				PermissionDashboardRead,
+				PermissionRuntimeLogRead,
+				PermissionFileRead,
+				PermissionFileWrite,
+				PermissionSoftwareRead,
+				PermissionSoftwareWrite,
+				PermissionServiceRead,
+				PermissionServiceWrite,
+				PermissionSecurityRead,
+				PermissionSecurityWrite,
+				PermissionCronRead,
+				PermissionCronWrite,
+				PermissionMonitoringRead,
+				PermissionMonitoringWrite,
+				PermissionSystemRead,
+				PermissionSystemWrite,
+				PermissionTerminalAccess,
+				PermissionTaskReadSelf,
+				PermissionTaskReadAll,
 				PermissionTaskCancelSelf,
 			},
 		},
@@ -175,6 +244,8 @@ func builtinRoles() []struct {
 			Permissions: []string{
 				PermissionDashboardRead,
 				PermissionRuntimeLogRead,
+				PermissionSecurityRead,
+				PermissionMonitoringRead,
 				PermissionAuditRead,
 				PermissionAuditExport,
 				PermissionAuditVerify,

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"oneinstack/app"
+	accessservice "oneinstack/internal/services/access"
 	authzHandler "oneinstack/router/handler/access"
 	approvalHandler "oneinstack/router/handler/approval"
 	"time"
@@ -76,6 +77,7 @@ func SetupRouter() *gin.Engine {
 			middleware.LoginRateLimitMiddleware(),
 			user.LoginHandler,
 		)
+		api.GET("/panel-entry/status", system.GetPanelEntryStatus)
 		api.GET("/sys/getbaseinfo", middleware.PanelEntryGuard(), system.GetInfo)
 	}
 
@@ -124,9 +126,9 @@ func SetupRouter() *gin.Engine {
 		sys.GET("/systeminfo", system.SystemInfo)
 		sys.POST("/updateuser", system.UpdateUser)
 		sys.POST("/resetpassword", system.ResetPassword)
-		sys.POST("/updateport", middleware.RequireAdmin(), system.UpdatePort)
-		sys.GET("/network", middleware.RequireAdmin(), system.GetPanelNetwork)
-		sys.POST("/network", middleware.RequireAdmin(), system.UpdatePanelNetwork)
+		sys.POST("/updateport", middleware.RequirePermission(accessservice.PermissionSystemWrite), system.UpdatePort)
+		sys.GET("/network", middleware.RequirePermission(accessservice.PermissionSystemRead), system.GetPanelNetwork)
+		sys.POST("/network", middleware.RequirePermission(accessservice.PermissionSystemWrite), system.UpdatePanelNetwork)
 		sys.POST("/updatesystemtitle", system.UpdateSystemTitle)
 
 		//备注相关
@@ -142,9 +144,9 @@ func SetupRouter() *gin.Engine {
 		sys.POST("/dic/del", system.DeleteDictionary)
 	}
 	panelUpdate := sys.Group("/update")
-	panelUpdate.Use(middleware.RequireAdmin())
+	panelUpdate.Use(middleware.RequirePermission(accessservice.PermissionSystemWrite))
 	{
-		panelUpdate.GET("/status", system.GetPanelUpdateStatus)
+		panelUpdate.GET("/status", middleware.RequirePermission(accessservice.PermissionSystemRead), system.GetPanelUpdateStatus)
 		panelUpdate.POST("/check", system.CheckPanelUpdate)
 		panelUpdate.POST("/apply", system.ApplyPanelUpdate)
 	}
@@ -181,48 +183,47 @@ func SetupRouter() *gin.Engine {
 	// FTP/文件相关
 	ftpg := protected.Group("/ftp")
 	{
-		ftpg.POST("/list", ftp.ListDirectory)
-		ftpg.POST("/create", ftp.CreateFileOrDir)
-		ftpg.POST("/upload", ftp.UploadFile)
-		ftpg.POST("/download", ftp.DownloadFile)
-		ftpg.POST("/urldownload", ftp.UrlDownloadFile)
-		ftpg.POST("/content", ftp.Content)
-		ftpg.POST("/tree", ftp.GetDirectoryTreeHandler)
-		ftpg.POST("/delete", ftp.DeleteFileOrDir)
-		ftpg.POST("/modify", ftp.ModifyFileOrDirAttributes)
-		ftpg.POST("/save", ftp.SaveFile)
-		ftpg.GET("/capacity", ftp.Capacity)
-		ftpg.GET("/trash/list", ftp.ListTrash)
-		ftpg.POST("/trash/restore", ftp.RestoreTrash)
-		ftpg.POST("/trash/delete", ftp.DeleteTrashPermanently)
-		ftpg.POST("/trash/empty", ftp.EmptyTrash)
+		ftpg.POST("/list", middleware.RequirePermission(accessservice.PermissionFileRead), ftp.ListDirectory)
+		ftpg.POST("/create", middleware.RequirePermission(accessservice.PermissionFileWrite), ftp.CreateFileOrDir)
+		ftpg.POST("/upload", middleware.RequirePermission(accessservice.PermissionFileWrite), ftp.UploadFile)
+		ftpg.POST("/download", middleware.RequirePermission(accessservice.PermissionFileRead), ftp.DownloadFile)
+		ftpg.POST("/urldownload", middleware.RequirePermission(accessservice.PermissionFileWrite), ftp.UrlDownloadFile)
+		ftpg.POST("/content", middleware.RequirePermission(accessservice.PermissionFileRead), ftp.Content)
+		ftpg.POST("/tree", middleware.RequirePermission(accessservice.PermissionFileRead), ftp.GetDirectoryTreeHandler)
+		ftpg.POST("/delete", middleware.RequirePermission(accessservice.PermissionFileWrite), ftp.DeleteFileOrDir)
+		ftpg.POST("/modify", middleware.RequirePermission(accessservice.PermissionFileWrite), ftp.ModifyFileOrDirAttributes)
+		ftpg.POST("/save", middleware.RequirePermission(accessservice.PermissionFileWrite), ftp.SaveFile)
+		ftpg.GET("/capacity", middleware.RequirePermission(accessservice.PermissionFileRead), ftp.Capacity)
+		ftpg.GET("/trash/list", middleware.RequirePermission(accessservice.PermissionFileRead), ftp.ListTrash)
+		ftpg.POST("/trash/restore", middleware.RequirePermission(accessservice.PermissionFileWrite), ftp.RestoreTrash)
+		ftpg.POST("/trash/delete", middleware.RequirePermission(accessservice.PermissionFileWrite), ftp.DeleteTrashPermanently)
+		ftpg.POST("/trash/empty", middleware.RequirePermission(accessservice.PermissionFileWrite), ftp.EmptyTrash)
 	}
 
 	// 软件相关
 	softg := protected.Group("/soft")
 	{
-		softg.POST("/list", software.GetSoftware)
-		softg.GET("/catalog/status", software.GetSoftwareCatalogStatus)
-		softg.POST("/catalog/sync", middleware.RequireAdmin(), software.SyncSoftwareCatalog)
-		softg.GET("/getlog", software.GetLogContent)
-		softg.POST("/install", software.RunInstallation)
-		softg.POST("/remove", software.RemoveSoftware)
-		softg.POST("/exploration", software.Exploration)
+		softg.POST("/list", middleware.RequirePermission(accessservice.PermissionSoftwareRead), software.GetSoftware)
+		softg.GET("/catalog/status", middleware.RequirePermission(accessservice.PermissionSoftwareRead), software.GetSoftwareCatalogStatus)
+		softg.POST("/catalog/sync", middleware.RequirePermission(accessservice.PermissionSoftwareWrite), software.SyncSoftwareCatalog)
+		softg.GET("/getlog", middleware.RequirePermission(accessservice.PermissionSoftwareRead), software.GetLogContent)
+		softg.POST("/install", middleware.RequirePermission(accessservice.PermissionSoftwareWrite), software.RunInstallation)
+		softg.POST("/remove", middleware.RequirePermission(accessservice.PermissionSoftwareWrite), software.RemoveSoftware)
+		softg.POST("/exploration", middleware.RequirePermission(accessservice.PermissionSoftwareRead), software.Exploration)
 		serviceg := softg.Group("/services")
-		serviceg.Use(middleware.RequireAdmin())
-		serviceg.GET("", software.ListComponentServices)
-		serviceg.GET("/:component", software.GetComponentService)
-		serviceg.POST("/:component/actions", software.RunComponentServiceAction)
-		serviceg.GET("/:component/config", software.GetComponentServiceConfiguration)
-		serviceg.POST("/:component/config/preview", software.PreviewComponentServiceConfiguration)
-		serviceg.POST("/:component/config/apply", software.ApplyComponentServiceConfiguration)
-		softg.GET("/tasks", software.ListSoftwareTasks)
-		softg.GET("/tasks/stats", software.GetSoftwareTaskStats)
-		softg.GET("/tasks/:id", software.GetSoftwareTask)
-		softg.GET("/tasks/:id/events", software.StreamSoftwareTaskEvents)
-		softg.GET("/tasks/:id/log", software.GetSoftwareTaskLog)
-		softg.GET("/tasks/:id/log/download", software.DownloadSoftwareTaskLog)
-		softg.POST("/tasks/:id/cancel", software.CancelSoftwareTask)
+		serviceg.GET("", middleware.RequirePermission(accessservice.PermissionServiceRead), software.ListComponentServices)
+		serviceg.GET("/:component", middleware.RequirePermission(accessservice.PermissionServiceRead), software.GetComponentService)
+		serviceg.POST("/:component/actions", middleware.RequirePermission(accessservice.PermissionServiceWrite), software.RunComponentServiceAction)
+		serviceg.GET("/:component/config", middleware.RequirePermission(accessservice.PermissionServiceRead), software.GetComponentServiceConfiguration)
+		serviceg.POST("/:component/config/preview", middleware.RequirePermission(accessservice.PermissionServiceRead), software.PreviewComponentServiceConfiguration)
+		serviceg.POST("/:component/config/apply", middleware.RequirePermission(accessservice.PermissionServiceWrite), software.ApplyComponentServiceConfiguration)
+		softg.GET("/tasks", middleware.RequirePermission(accessservice.PermissionSoftwareRead), middleware.RequireAnyPermission(accessservice.PermissionTaskReadSelf, accessservice.PermissionTaskReadAll), software.ListSoftwareTasks)
+		softg.GET("/tasks/stats", middleware.RequirePermission(accessservice.PermissionSoftwareRead), middleware.RequireAnyPermission(accessservice.PermissionTaskReadSelf, accessservice.PermissionTaskReadAll), software.GetSoftwareTaskStats)
+		softg.GET("/tasks/:id", middleware.RequirePermission(accessservice.PermissionSoftwareRead), middleware.RequireAnyPermission(accessservice.PermissionTaskReadSelf, accessservice.PermissionTaskReadAll), software.GetSoftwareTask)
+		softg.GET("/tasks/:id/events", middleware.RequirePermission(accessservice.PermissionSoftwareRead), middleware.RequireAnyPermission(accessservice.PermissionTaskReadSelf, accessservice.PermissionTaskReadAll), software.StreamSoftwareTaskEvents)
+		softg.GET("/tasks/:id/log", middleware.RequirePermission(accessservice.PermissionSoftwareRead), middleware.RequireAnyPermission(accessservice.PermissionTaskReadSelf, accessservice.PermissionTaskReadAll), software.GetSoftwareTaskLog)
+		softg.GET("/tasks/:id/log/download", middleware.RequirePermission(accessservice.PermissionSoftwareRead), middleware.RequireAnyPermission(accessservice.PermissionTaskReadSelf, accessservice.PermissionTaskReadAll), software.DownloadSoftwareTaskLog)
+		softg.POST("/tasks/:id/cancel", middleware.RequirePermission(accessservice.PermissionSoftwareWrite), middleware.RequirePermission(accessservice.PermissionTaskCancelSelf), software.CancelSoftwareTask)
 	}
 
 	// 面板运行日志仅管理员可查看。
@@ -282,65 +283,62 @@ func SetupRouter() *gin.Engine {
 
 	// 安全相关
 	safeg := protected.Group("/safe")
-	safeg.Use(middleware.RequireAdmin())
 	{
-		safeg.GET("/info", safe.GetFirewallInfo)
-		safeg.POST("/rules", safe.GetFirewallRules)
-		safeg.POST("/add", safe.AddFirewallRule)
-		safeg.POST("/update", safe.UpdateFirewallRule)
-		safeg.POST("/del", safe.DeleteFirewallRule)
-		safeg.POST("/stop", safe.StopFirewall)
-		safeg.POST("/blockping", safe.BlockPing)
-		safeg.POST("/install", safe.InstallFirewall)
+		safeg.GET("/info", middleware.RequirePermission(accessservice.PermissionSecurityRead), safe.GetFirewallInfo)
+		safeg.POST("/rules", middleware.RequirePermission(accessservice.PermissionSecurityRead), safe.GetFirewallRules)
+		safeg.POST("/add", middleware.RequirePermission(accessservice.PermissionSecurityWrite), safe.AddFirewallRule)
+		safeg.POST("/update", middleware.RequirePermission(accessservice.PermissionSecurityWrite), safe.UpdateFirewallRule)
+		safeg.POST("/del", middleware.RequirePermission(accessservice.PermissionSecurityWrite), safe.DeleteFirewallRule)
+		safeg.POST("/stop", middleware.RequirePermission(accessservice.PermissionSecurityWrite), safe.StopFirewall)
+		safeg.POST("/blockping", middleware.RequirePermission(accessservice.PermissionSecurityWrite), safe.BlockPing)
+		safeg.POST("/install", middleware.RequirePermission(accessservice.PermissionSecurityWrite), safe.InstallFirewall)
 	}
 
 	// SSH 相关
 	sshg := protected.Group("/ssh")
 	{
-		sshg.POST("/ticket", ssh.CreateTicket)
-		sshg.GET("/open", ssh.OpenSSH)
+		sshg.POST("/ticket", middleware.RequirePermission(accessservice.PermissionTerminalAccess), ssh.CreateTicket)
+		sshg.GET("/open", middleware.RequirePermission(accessservice.PermissionTerminalAccess), ssh.OpenSSH)
 	}
 
 	// 定时任务相关
 	crong := protected.Group("/cron")
-	crong.Use(middleware.RequireAdmin())
 	{
-		crong.GET("/templates", cron.ListTemplates)
-		crong.GET("/executions/running", cron.ListRunningExecutions)
-		crong.POST("/executions/:id/cancel", cron.CancelExecution)
-		crong.POST("/list", cron.GetCronList)
-		crong.POST("/add", cron.AddCron)
-		crong.POST("/update", cron.UpdateCron)
-		crong.POST("/del", cron.DeleteCron)
-		crong.POST("/disable", cron.DisableCron)
-		crong.POST("/enable", cron.EnableCron)
-		crong.POST("/log", cron.GetCronLogList)
-		crong.POST("/log/cleanup", cron.CleanupCronLogs)
-		crong.GET("/:id/log/export", cron.ExportCronLogs)
-		crong.POST("/run", cron.RunCron)
+		crong.GET("/templates", middleware.RequirePermission(accessservice.PermissionCronRead), cron.ListTemplates)
+		crong.GET("/executions/running", middleware.RequirePermission(accessservice.PermissionCronRead), cron.ListRunningExecutions)
+		crong.POST("/executions/:id/cancel", middleware.RequirePermission(accessservice.PermissionCronWrite), cron.CancelExecution)
+		crong.POST("/list", middleware.RequirePermission(accessservice.PermissionCronRead), cron.GetCronList)
+		crong.POST("/add", middleware.RequirePermission(accessservice.PermissionCronWrite), cron.AddCron)
+		crong.POST("/update", middleware.RequirePermission(accessservice.PermissionCronWrite), cron.UpdateCron)
+		crong.POST("/del", middleware.RequirePermission(accessservice.PermissionCronWrite), cron.DeleteCron)
+		crong.POST("/disable", middleware.RequirePermission(accessservice.PermissionCronWrite), cron.DisableCron)
+		crong.POST("/enable", middleware.RequirePermission(accessservice.PermissionCronWrite), cron.EnableCron)
+		crong.POST("/log", middleware.RequirePermission(accessservice.PermissionCronRead), cron.GetCronLogList)
+		crong.POST("/log/cleanup", middleware.RequirePermission(accessservice.PermissionCronWrite), cron.CleanupCronLogs)
+		crong.GET("/:id/log/export", middleware.RequirePermission(accessservice.PermissionCronRead), cron.ExportCronLogs)
+		crong.POST("/run", middleware.RequirePermission(accessservice.PermissionCronWrite), cron.RunCron)
 	}
 
 	monitoringg := protected.Group("/monitor")
-	monitoringg.Use(middleware.RequireAdmin())
 	{
-		monitoringg.GET("/summary", monitoringHandler.Summary)
-		monitoringg.GET("/metrics", monitoringHandler.Metrics)
-		monitoringg.GET("/rules", monitoringHandler.ListRules)
-		monitoringg.POST("/rules", monitoringHandler.CreateRule)
-		monitoringg.PUT("/rules/:id", monitoringHandler.UpdateRule)
-		monitoringg.DELETE("/rules/:id", monitoringHandler.DeleteRule)
-		monitoringg.POST("/rules/:id/update", monitoringHandler.UpdateRule)
-		monitoringg.POST("/rules/:id/delete", monitoringHandler.DeleteRule)
-		monitoringg.POST("/rules/:id/silence", monitoringHandler.SilenceRule)
-		monitoringg.GET("/events", monitoringHandler.Events)
-		monitoringg.GET("/deliveries", monitoringHandler.Deliveries)
-		monitoringg.GET("/channels", monitoringHandler.ListChannels)
-		monitoringg.POST("/channels", monitoringHandler.CreateChannel)
-		monitoringg.PUT("/channels/:id", monitoringHandler.UpdateChannel)
-		monitoringg.DELETE("/channels/:id", monitoringHandler.DeleteChannel)
-		monitoringg.POST("/channels/:id/update", monitoringHandler.UpdateChannel)
-		monitoringg.POST("/channels/:id/delete", monitoringHandler.DeleteChannel)
-		monitoringg.POST("/channels/:id/test", monitoringHandler.TestChannel)
+		monitoringg.GET("/summary", middleware.RequirePermission(accessservice.PermissionMonitoringRead), monitoringHandler.Summary)
+		monitoringg.GET("/metrics", middleware.RequirePermission(accessservice.PermissionMonitoringRead), monitoringHandler.Metrics)
+		monitoringg.GET("/rules", middleware.RequirePermission(accessservice.PermissionMonitoringRead), monitoringHandler.ListRules)
+		monitoringg.POST("/rules", middleware.RequirePermission(accessservice.PermissionMonitoringWrite), monitoringHandler.CreateRule)
+		monitoringg.PUT("/rules/:id", middleware.RequirePermission(accessservice.PermissionMonitoringWrite), monitoringHandler.UpdateRule)
+		monitoringg.DELETE("/rules/:id", middleware.RequirePermission(accessservice.PermissionMonitoringWrite), monitoringHandler.DeleteRule)
+		monitoringg.POST("/rules/:id/update", middleware.RequirePermission(accessservice.PermissionMonitoringWrite), monitoringHandler.UpdateRule)
+		monitoringg.POST("/rules/:id/delete", middleware.RequirePermission(accessservice.PermissionMonitoringWrite), monitoringHandler.DeleteRule)
+		monitoringg.POST("/rules/:id/silence", middleware.RequirePermission(accessservice.PermissionMonitoringWrite), monitoringHandler.SilenceRule)
+		monitoringg.GET("/events", middleware.RequirePermission(accessservice.PermissionMonitoringRead), monitoringHandler.Events)
+		monitoringg.GET("/deliveries", middleware.RequirePermission(accessservice.PermissionMonitoringRead), monitoringHandler.Deliveries)
+		monitoringg.GET("/channels", middleware.RequirePermission(accessservice.PermissionMonitoringRead), monitoringHandler.ListChannels)
+		monitoringg.POST("/channels", middleware.RequirePermission(accessservice.PermissionMonitoringWrite), monitoringHandler.CreateChannel)
+		monitoringg.PUT("/channels/:id", middleware.RequirePermission(accessservice.PermissionMonitoringWrite), monitoringHandler.UpdateChannel)
+		monitoringg.DELETE("/channels/:id", middleware.RequirePermission(accessservice.PermissionMonitoringWrite), monitoringHandler.DeleteChannel)
+		monitoringg.POST("/channels/:id/update", middleware.RequirePermission(accessservice.PermissionMonitoringWrite), monitoringHandler.UpdateChannel)
+		monitoringg.POST("/channels/:id/delete", middleware.RequirePermission(accessservice.PermissionMonitoringWrite), monitoringHandler.DeleteChannel)
+		monitoringg.POST("/channels/:id/test", middleware.RequirePermission(accessservice.PermissionMonitoringWrite), monitoringHandler.TestChannel)
 	}
 
 	return r
