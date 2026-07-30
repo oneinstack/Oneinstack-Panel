@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"oneinstack/app"
+	"oneinstack/webui"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -98,6 +100,7 @@ func TestEmbeddedUIRoutesWithPanelEntry(t *testing.T) {
 	})
 	router := gin.New()
 	router.NoRoute(MidUiHandle)
+	assetPath := mustEmbeddedUIAssetPath(t)
 
 	tests := []struct {
 		name     string
@@ -108,7 +111,7 @@ func TestEmbeddedUIRoutesWithPanelEntry(t *testing.T) {
 		{name: "root hint", path: "/", status: http.StatusOK, contains: "当前环境已经开启了安全入口登录"},
 		{name: "correct entry", path: "/AbCd123456", status: http.StatusOK, contains: `<base href="/AbCd123456/" />`},
 		{name: "spa child route", path: "/AbCd123456/settings/security", status: http.StatusOK, contains: `/AbCd123456/static/page/`},
-		{name: "asset under entry", path: "/AbCd123456/static/page/index-Bk1yKPJW.js", status: http.StatusOK},
+		{name: "asset under entry", path: "/AbCd123456" + assetPath, status: http.StatusOK},
 		{name: "wrong entry hint", path: "/wrong-entry", status: http.StatusOK, contains: "one entrance"},
 		{name: "wrong asset still missing", path: "/wrong-entry.js", status: http.StatusNotFound},
 	}
@@ -160,4 +163,19 @@ func TestPanelEntryGuard(t *testing.T) {
 	if blockedRecorder.Code != http.StatusNotFound {
 		t.Fatalf("blocked request status = %d, want 404", blockedRecorder.Code)
 	}
+}
+
+func mustEmbeddedUIAssetPath(t *testing.T) string {
+	t.Helper()
+
+	indexHTML, err := webui.ReadFile("index.html")
+	if err != nil {
+		t.Fatalf("read embedded index.html: %v", err)
+	}
+
+	matches := regexp.MustCompile(`src="(/static/page/[^"]+\.js)"`).FindSubmatch(indexHTML)
+	if len(matches) != 2 {
+		t.Fatalf("embedded index.html does not contain a static page script path")
+	}
+	return string(matches[1])
 }
