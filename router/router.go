@@ -129,6 +129,15 @@ func SetupRouter() *gin.Engine {
 		sys.POST("/updateport", middleware.RequirePermission(accessservice.PermissionSystemWrite), system.UpdatePort)
 		sys.GET("/network", middleware.RequirePermission(accessservice.PermissionSystemRead), system.GetPanelNetwork)
 		sys.POST("/network", middleware.RequirePermission(accessservice.PermissionSystemWrite), system.UpdatePanelNetwork)
+		sys.GET("/network/transactions/:id", middleware.RequirePermission(accessservice.PermissionSystemRead), system.GetPanelNetworkTransaction)
+		sys.POST("/backups", middleware.RequirePermission(accessservice.PermissionSystemWrite), system.CreatePanelBackup)
+		sys.POST("/backups/import", middleware.RequirePermission(accessservice.PermissionSystemWrite), system.ImportPanelBackup)
+		sys.GET("/backups", middleware.RequirePermission(accessservice.PermissionSystemRead), system.ListPanelBackups)
+		sys.GET("/backups/:id/download", middleware.RequirePermission(accessservice.PermissionSystemRead), system.DownloadPanelBackup)
+		sys.POST("/backups/:id/delete", middleware.RequirePermission(accessservice.PermissionSystemWrite), system.DeletePanelBackup)
+		sys.POST("/backups/:id/preflight", middleware.RequirePermission(accessservice.PermissionSystemRead), system.PreflightPanelBackup)
+		sys.POST("/backups/:id/restore", middleware.RequirePermission(accessservice.PermissionSystemWrite), system.RestorePanelBackup)
+		sys.GET("/restore/status", middleware.RequirePermission(accessservice.PermissionSystemRead), system.GetPanelRestoreStatus)
 		sys.POST("/updatesystemtitle", system.UpdateSystemTitle)
 
 		//备注相关
@@ -217,6 +226,9 @@ func SetupRouter() *gin.Engine {
 		serviceg.GET("/:component/config", middleware.RequirePermission(accessservice.PermissionServiceRead), software.GetComponentServiceConfiguration)
 		serviceg.POST("/:component/config/preview", middleware.RequirePermission(accessservice.PermissionServiceRead), software.PreviewComponentServiceConfiguration)
 		serviceg.POST("/:component/config/apply", middleware.RequirePermission(accessservice.PermissionServiceWrite), software.ApplyComponentServiceConfiguration)
+		serviceg.GET("/:component/config/history", middleware.RequirePermission(accessservice.PermissionServiceRead), software.ListComponentServiceConfigurationHistory)
+		serviceg.POST("/:component/config/history/:id/preview", middleware.RequirePermission(accessservice.PermissionServiceRead), software.PreviewComponentServiceConfigurationRestore)
+		serviceg.POST("/:component/config/history/:id/restore", middleware.RequirePermission(accessservice.PermissionServiceWrite), software.RestoreComponentServiceConfiguration)
 		softg.GET("/tasks", middleware.RequirePermission(accessservice.PermissionSoftwareRead), middleware.RequireAnyPermission(accessservice.PermissionTaskReadSelf, accessservice.PermissionTaskReadAll), software.ListSoftwareTasks)
 		softg.GET("/tasks/stats", middleware.RequirePermission(accessservice.PermissionSoftwareRead), middleware.RequireAnyPermission(accessservice.PermissionTaskReadSelf, accessservice.PermissionTaskReadAll), software.GetSoftwareTaskStats)
 		softg.GET("/tasks/:id", middleware.RequirePermission(accessservice.PermissionSoftwareRead), middleware.RequireAnyPermission(accessservice.PermissionTaskReadSelf, accessservice.PermissionTaskReadAll), software.GetSoftwareTask)
@@ -297,6 +309,8 @@ func SetupRouter() *gin.Engine {
 	// SSH 相关
 	sshg := protected.Group("/ssh")
 	{
+		sshg.GET("/status", middleware.RequirePermission(accessservice.PermissionTerminalAccess), ssh.Status)
+		sshg.GET("/sessions", middleware.RequirePermission(accessservice.PermissionTerminalAccess), ssh.Sessions)
 		sshg.POST("/ticket", middleware.RequirePermission(accessservice.PermissionTerminalAccess), ssh.CreateTicket)
 		sshg.GET("/open", middleware.RequirePermission(accessservice.PermissionTerminalAccess), ssh.OpenSSH)
 	}
@@ -322,6 +336,9 @@ func SetupRouter() *gin.Engine {
 	monitoringg := protected.Group("/monitor")
 	{
 		monitoringg.GET("/summary", middleware.RequirePermission(accessservice.PermissionMonitoringRead), monitoringHandler.Summary)
+		monitoringg.GET("/services", middleware.RequirePermission(accessservice.PermissionMonitoringRead), monitoringHandler.ServiceHealth)
+		monitoringg.POST("/services/check", middleware.RequirePermission(accessservice.PermissionMonitoringWrite), monitoringHandler.CheckServiceHealth)
+		monitoringg.POST("/services/:component/silence", middleware.RequirePermission(accessservice.PermissionMonitoringWrite), monitoringHandler.SilenceServiceHealth)
 		monitoringg.GET("/metrics", middleware.RequirePermission(accessservice.PermissionMonitoringRead), monitoringHandler.Metrics)
 		monitoringg.GET("/rules", middleware.RequirePermission(accessservice.PermissionMonitoringRead), monitoringHandler.ListRules)
 		monitoringg.POST("/rules", middleware.RequirePermission(accessservice.PermissionMonitoringWrite), monitoringHandler.CreateRule)

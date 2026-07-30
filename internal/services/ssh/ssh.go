@@ -4,23 +4,57 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"net"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"sync"
 	"syscall"
 	"time"
+
+	"oneinstack/app"
+	securityservice "oneinstack/internal/services/security"
 
 	"github.com/creack/pty"
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 )
 
-const terminalIdleTimeout = 10 * time.Minute
+const (
+	terminalReadLimit       = 64 << 10
+	terminalPingInterval    = 20 * time.Second
+	terminalSessionCheck    = 15 * time.Second
+	terminalProcessStopWait = 2 * time.Second
+	terminalWriteTimeout    = 5 * time.Second
+	terminalMaxOutputBytes  = 32 << 20
+)
 
-func OpenWebShell(c *gin.Context, maxDuration time.Duration) {
+func OpenWebShell(
+	c *gin.Context,
+	policy TerminalPolicy,
+	claims TerminalSessionClaims,
+) error {
+	sessionContext, cancel := context.WithTimeout(c.Request.Context(), policy.MaxDuration)
+	defer cancel()
+
+	command, identity, err := isolatedTerminalCommand(sessionContext, policy)
+	if err != nil {
+		return err
+	}
+	session, err := DefaultSessions.Acquire(claims, policy)
+	if err != nil {
+		return err
+	}
+	closeReason := "client_closed"
+	var reasonMu sync.Mutex
+	defer func() {
+		reasonMu.Lock()
+		reason := closeReason
+		reasonMu.Unlock()
+		session.Close(reason)
+	}()
+
 	upgrader := websocket.Upgrader{
 		ReadBufferSize:  4096,
 		WriteBufferSize: 4096,
@@ -28,81 +62,70 @@ func OpenWebShell(c *gin.Context, maxDuration time.Duration) {
 	}
 	connection, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
-		return
+		closeReason = "upgrade_failed"
+		return err
 	}
 	defer connection.Close()
-	connection.SetReadLimit(64 << 10)
-	_ = connection.SetReadDeadline(time.Now().Add(terminalIdleTimeout))
-	connection.SetPongHandler(func(string) error {
-		return connection.SetReadDeadline(time.Now().Add(terminalIdleTimeout))
-	})
+	connection.SetReadLimit(terminalReadLimit)
+	var writeMu sync.Mutex
 
-	sessionContext, cancel := context.WithTimeout(c.Request.Context(), maxDuration)
-	defer cancel()
-	command := exec.CommandContext(sessionContext, "/bin/bash", "--noprofile", "--norc", "-i")
-	command.Env = append(os.Environ(), "TERM=xterm-256color")
-	terminal, err := pty.StartWithAttrs(command, &pty.Winsize{Rows: 30, Cols: 100}, &syscall.SysProcAttr{
-		Setsid:  true,
-		Setctty: true,
-	})
+	terminal, err := pty.StartWithAttrs(
+		command,
+		&pty.Winsize{Rows: 30, Cols: 100},
+		&syscall.SysProcAttr{Setsid: true, Setctty: true},
+	)
 	if err != nil {
-		_ = connection.WriteMessage(websocket.TextMessage, []byte(base64.StdEncoding.EncodeToString([]byte("无法启动终端会话\r\n"))))
-		return
+		closeReason = "process_start_failed"
+		writeTerminalNotice(connection, &writeMu, "无法启动低权限终端会话")
+		return fmt.Errorf("start isolated terminal: %w", err)
 	}
 	defer terminal.Close()
-	defer func() {
-		if command.Process != nil {
-			_ = command.Process.Kill()
-		}
-		_ = command.Wait()
-	}()
+	defer stopTerminalProcess(command.Process, command.Wait)
 
-	disableEcho := exec.Command("stty", "-echo")
-	disableEcho.Stdin = terminal
-	disableEcho.Stdout = terminal
-	disableEcho.Stderr = terminal
-	_ = disableEcho.Run()
+	writeTerminalNotice(
+		connection,
+		&writeMu,
+		fmt.Sprintf(
+			"安全终端已启动：用户 %s，无 sudo、无 Linux capabilities；会话和命令摘要将写入审计日志。\r\n",
+			identity.username,
+		),
+	)
 
 	done := make(chan struct{})
 	var doneOnce sync.Once
-	finish := func() {
+	finish := func(reason string) {
 		doneOnce.Do(func() {
+			reasonMu.Lock()
+			closeReason = reason
+			reasonMu.Unlock()
 			close(done)
+			cancel()
 			_ = connection.Close()
 		})
 	}
 
-	go func() {
-		defer finish()
-		buffer := make([]byte, 4096)
-		for {
-			count, readErr := terminal.Read(buffer)
-			if count > 0 {
-				encoded := base64.StdEncoding.EncodeToString(buffer[:count])
-				if writeErr := connection.WriteMessage(websocket.TextMessage, []byte(encoded)); writeErr != nil {
-					return
-				}
-			}
-			if readErr != nil {
-				return
-			}
-		}
-	}()
-
-	go func() {
-		<-sessionContext.Done()
-		finish()
-	}()
+	go copyTerminalOutput(connection, &writeMu, terminal, session, finish)
+	go enforceTerminalLifetime(
+		sessionContext,
+		connection,
+		&writeMu,
+		session,
+		claims,
+		policy.IdleTimeout,
+		finish,
+	)
 
 	for {
 		messageType, data, readErr := connection.ReadMessage()
 		if readErr != nil {
-			if networkError, ok := readErr.(net.Error); ok && networkError.Timeout() {
-				finish()
+			if errors.Is(sessionContext.Err(), context.DeadlineExceeded) {
+				finish("duration_limit")
+			} else {
+				finish("client_closed")
 			}
 			break
 		}
-		_ = connection.SetReadDeadline(time.Now().Add(terminalIdleTimeout))
+		session.Touch()
 
 		switch messageType {
 		case websocket.TextMessage:
@@ -111,29 +134,188 @@ func OpenWebShell(c *gin.Context, maxDuration time.Duration) {
 			}
 			decoded, decodeErr := base64.StdEncoding.DecodeString(string(data))
 			if decodeErr != nil {
-				finish()
+				finish("invalid_input")
+				break
+			}
+			if recordErr := session.RecordInput(decoded); recordErr != nil {
+				writeTerminalNotice(
+					connection,
+					&writeMu,
+					"\r\n审计链不可写，本次命令未执行，终端已关闭。\r\n",
+				)
+				finish("audit_failed")
 				break
 			}
 			if _, writeErr := terminal.Write(decoded); writeErr != nil {
-				finish()
+				finish("pty_write_failed")
 				break
 			}
 		case websocket.BinaryMessage:
+			if recordErr := session.RecordInput(data); recordErr != nil {
+				writeTerminalNotice(
+					connection,
+					&writeMu,
+					"\r\n审计链不可写，本次命令未执行，终端已关闭。\r\n",
+				)
+				finish("audit_failed")
+				break
+			}
 			if _, writeErr := terminal.Write(data); writeErr != nil {
-				finish()
+				finish("pty_write_failed")
 				break
 			}
 		default:
-			finish()
+			finish("unsupported_message")
 		}
 		select {
 		case <-done:
-			return
+			return nil
 		default:
 		}
 	}
-	finish()
 	<-done
+	return nil
+}
+
+func copyTerminalOutput(
+	connection *websocket.Conn,
+	writeMu *sync.Mutex,
+	terminal *os.File,
+	session *TerminalSession,
+	finish func(string),
+) {
+	buffer := make([]byte, 4096)
+	for {
+		count, readErr := terminal.Read(buffer)
+		if count > 0 {
+			if session.RecordOutput(count) > terminalMaxOutputBytes {
+				writeTerminalNotice(
+					connection,
+					writeMu,
+					"\r\n终端输出已达到单会话上限，会话已关闭。\r\n",
+				)
+				finish("output_limit")
+				return
+			}
+			encoded := base64.StdEncoding.EncodeToString(buffer[:count])
+			writeMu.Lock()
+			_ = connection.SetWriteDeadline(time.Now().Add(terminalWriteTimeout))
+			writeErr := connection.WriteMessage(
+				websocket.TextMessage,
+				[]byte(encoded),
+			)
+			writeMu.Unlock()
+			if writeErr != nil {
+				finish("client_write_failed")
+				return
+			}
+		}
+		if readErr != nil {
+			finish("process_exited")
+			return
+		}
+	}
+}
+
+func enforceTerminalLifetime(
+	ctx context.Context,
+	connection *websocket.Conn,
+	writeMu *sync.Mutex,
+	session *TerminalSession,
+	claims TerminalSessionClaims,
+	idleTimeout time.Duration,
+	finish func(string),
+) {
+	if idleTimeout <= 0 {
+		idleTimeout = 5 * time.Minute
+	}
+	pingTicker := time.NewTicker(terminalPingInterval)
+	defer pingTicker.Stop()
+	sessionTicker := time.NewTicker(terminalSessionCheck)
+	defer sessionTicker.Stop()
+	idleTicker := time.NewTicker(time.Second)
+	defer idleTicker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			finish("duration_limit")
+			return
+		case <-pingTicker.C:
+			deadline := time.Now().Add(5 * time.Second)
+			if err := connection.WriteControl(
+				websocket.PingMessage,
+				[]byte("terminal"),
+				deadline,
+			); err != nil {
+				finish("client_unreachable")
+				return
+			}
+		case <-idleTicker.C:
+			if session.IdleFor() >= idleTimeout {
+				writeTerminalNotice(connection, writeMu, "\r\n会话因长时间无输入已关闭。\r\n")
+				finish("idle_timeout")
+				return
+			}
+		case <-sessionTicker.C:
+			if !sourceSessionValid(claims) {
+				writeTerminalNotice(connection, writeMu, "\r\n主登录会话已失效，终端已关闭。\r\n")
+				finish("source_session_revoked")
+				return
+			}
+		}
+	}
+}
+
+func sourceSessionValid(claims TerminalSessionClaims) bool {
+	if claims.SourceSessionID == "" || claims.UserID <= 0 {
+		return false
+	}
+	database := app.DB()
+	if database == nil {
+		return false
+	}
+	manager := securityservice.NewSessionManager(database)
+	_, err := manager.Validate(
+		claims.SourceSessionID,
+		claims.UserID,
+		claims.SecurityVersion,
+	)
+	return err == nil
+}
+
+func stopTerminalProcess(process *os.Process, wait func() error) {
+	if process == nil {
+		return
+	}
+	_ = syscall.Kill(-process.Pid, syscall.SIGTERM)
+	waited := make(chan struct{})
+	go func() {
+		_ = wait()
+		close(waited)
+	}()
+	timer := time.NewTimer(terminalProcessStopWait)
+	defer timer.Stop()
+	select {
+	case <-waited:
+	case <-timer.C:
+		_ = syscall.Kill(-process.Pid, syscall.SIGKILL)
+		<-waited
+	}
+}
+
+func writeTerminalNotice(
+	connection *websocket.Conn,
+	writeMu *sync.Mutex,
+	message string,
+) {
+	if connection == nil {
+		return
+	}
+	encoded := base64.StdEncoding.EncodeToString([]byte(message))
+	writeMu.Lock()
+	defer writeMu.Unlock()
+	_ = connection.SetWriteDeadline(time.Now().Add(terminalWriteTimeout))
+	_ = connection.WriteMessage(websocket.TextMessage, []byte(encoded))
 }
 
 func handleResizeMessage(terminal *os.File, data []byte) bool {
@@ -157,7 +339,8 @@ func sameOrigin(request *http.Request) bool {
 		return false
 	}
 	parsed, err := url.Parse(origin)
-	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") ||
+		parsed.User != nil {
 		return false
 	}
 	return parsed.Host == request.Host

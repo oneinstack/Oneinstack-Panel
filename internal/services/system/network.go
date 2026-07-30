@@ -42,20 +42,22 @@ type managedPanelConfig struct {
 }
 
 type PanelNetworkSettings struct {
-	BindAddress          string                  `json:"bindAddress"`
-	HTTPPort             string                  `json:"httpPort"`
-	HTTPAccessURL        string                  `json:"httpAccessUrl"`
-	HTTPSEnabled         bool                    `json:"httpsEnabled"`
-	HTTPSPort            string                  `json:"httpsPort"`
-	HTTPSAccessURL       string                  `json:"httpsAccessUrl"`
-	HTTPSCertificateFile string                  `json:"httpsCertificateFile"`
-	HTTPSPrivateKeyFile  string                  `json:"httpsPrivateKeyFile"`
-	TrustedProxies       []string                `json:"trustedProxies"`
-	PanelEntryEnabled    bool                    `json:"panelEntryEnabled"`
-	PanelEntryPath       string                  `json:"panelEntryPath"`
-	PanelAccessURL       string                  `json:"panelAccessUrl"`
-	Certificate          *PanelCertificateStatus `json:"certificate,omitempty"`
-	RestartRequired      bool                    `json:"restartRequired"`
+	BindAddress          string                         `json:"bindAddress"`
+	HTTPPort             string                         `json:"httpPort"`
+	HTTPAccessURL        string                         `json:"httpAccessUrl"`
+	HTTPSEnabled         bool                           `json:"httpsEnabled"`
+	HTTPSPort            string                         `json:"httpsPort"`
+	HTTPSAccessURL       string                         `json:"httpsAccessUrl"`
+	HTTPSCertificateFile string                         `json:"httpsCertificateFile"`
+	HTTPSPrivateKeyFile  string                         `json:"httpsPrivateKeyFile"`
+	TrustedProxies       []string                       `json:"trustedProxies"`
+	PanelEntryEnabled    bool                           `json:"panelEntryEnabled"`
+	PanelEntryPath       string                         `json:"panelEntryPath"`
+	PanelAccessURL       string                         `json:"panelAccessUrl"`
+	Certificate          *PanelCertificateStatus        `json:"certificate,omitempty"`
+	RestartRequired      bool                           `json:"restartRequired"`
+	AutoApplySupported   bool                           `json:"autoApplySupported"`
+	ApplyTransaction     *PanelNetworkTransactionStatus `json:"applyTransaction,omitempty"`
 }
 
 type PanelCertificateStatus struct {
@@ -90,7 +92,10 @@ func GetPanelNetworkSettings() (*PanelNetworkSettings, error) {
 		return nil, err
 	}
 	effective := effectiveManagedPanelConfig()
-	return describePanelConfig(stored, !reflect.DeepEqual(stored, effective)), nil
+	settings := describePanelConfig(stored, !reflect.DeepEqual(stored, effective))
+	settings.AutoApplySupported = panelNetworkAutoApplySupported(context.Background())
+	settings.ApplyTransaction = latestPanelNetworkTransactionStatus()
+	return settings, nil
 }
 
 func GetPanelEntryStatus() *PanelEntryStatus {
@@ -101,6 +106,10 @@ func GetPanelEntryStatus() *PanelEntryStatus {
 func UpdatePanelNetwork(request UpdatePanelNetworkRequest) (*PanelNetworkSettings, error) {
 	networkConfigMu.Lock()
 	defer networkConfigMu.Unlock()
+
+	if _, pending := pendingPanelNetworkTransaction(); pending {
+		return nil, ErrNetworkApplyInProgress
+	}
 
 	currentStored, err := loadStoredManagedPanelConfig()
 	if err != nil {
@@ -160,12 +169,71 @@ func UpdatePanelNetwork(request UpdatePanelNetworkRequest) (*PanelNetworkSetting
 		preparedRules = append(preparedRules, preparedPanelRule{id: id, created: created})
 	}
 
-	if err := persistManagedPanelConfig(next); err != nil {
+	configPath := configFilePath()
+	previousConfig, err := readLimitedFile(configPath, networkConfigSnapshotMaxBytes)
+	if err != nil {
+		rollbackPreparedRules(firewallService, preparedRules)
+		return nil, fmt.Errorf("读取面板配置: %w", err)
+	}
+	candidateConfig, err := renderManagedPanelConfig(next)
+	if err != nil {
 		rollbackPreparedRules(firewallService, preparedRules)
 		return nil, err
 	}
-	applyRuntimePanelConfig(next)
-	return describePanelConfig(next, !reflect.DeepEqual(next, current)), nil
+
+	restartRequired := !reflect.DeepEqual(next, current)
+	autoApplySupported := restartRequired &&
+		panelNetworkAutoApplySupported(context.Background())
+	if !autoApplySupported {
+		if err := replacePanelConfigFile(candidateConfig); err != nil {
+			rollbackPreparedRules(firewallService, preparedRules)
+			return nil, fmt.Errorf("提交面板访问配置: %w", err)
+		}
+		applyRuntimePanelConfig(next)
+		settings := describePanelConfig(next, restartRequired)
+		settings.AutoApplySupported = false
+		settings.ApplyTransaction = latestPanelNetworkTransactionStatus()
+		return settings, nil
+	}
+
+	transaction, err := createPanelNetworkTransaction(
+		currentStored.Network,
+		next.Network,
+		previousConfig,
+		candidateConfig,
+		preparedRules,
+	)
+	if err != nil {
+		rollbackPreparedRules(firewallService, preparedRules)
+		return nil, err
+	}
+	if err := replacePanelConfigFile(candidateConfig); err != nil {
+		transaction.Status = networkApplyStatusFailed
+		transaction.Error = truncateNetworkTransactionError(err.Error())
+		finished := time.Now().UTC()
+		transaction.FinishedAt = &finished
+		_ = savePanelNetworkTransaction(transaction)
+		_ = removePanelNetworkSnapshot(transaction)
+		rollbackPreparedRules(firewallService, preparedRules)
+		return nil, fmt.Errorf("提交面板访问配置: %w", err)
+	}
+	scheduleContext, cancelSchedule := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelSchedule()
+	if err := schedulePanelNetworkTransaction(scheduleContext, transaction.ID); err != nil {
+		restoreErr := replacePanelConfigFile(previousConfig)
+		rollbackPreparedRules(firewallService, preparedRules)
+		transaction.Status = networkApplyStatusFailed
+		transaction.Error = truncateNetworkTransactionError(errors.Join(err, restoreErr).Error())
+		finished := time.Now().UTC()
+		transaction.FinishedAt = &finished
+		_ = savePanelNetworkTransaction(transaction)
+		_ = removePanelNetworkSnapshot(transaction)
+		return nil, errors.Join(err, restoreErr)
+	}
+	settings := describePanelConfig(next, true)
+	settings.AutoApplySupported = true
+	settings.ApplyTransaction = describePanelNetworkTransaction(transaction)
+	return settings, nil
 }
 
 func rollbackPreparedRules(firewallService *safe.Service, rules []preparedPanelRule) {
@@ -324,26 +392,51 @@ func probeChangedListeners(current, next panelServer.PanelConfig) ([]net.Listene
 }
 
 func persistPanelConfig(config panelServer.PanelConfig) error {
-	return persistManagedPanelConfig(managedPanelConfig{Network: config})
+	current, err := loadStoredManagedPanelConfig()
+	if err != nil {
+		return err
+	}
+	current.Network = config
+	return persistManagedPanelConfig(current)
 }
 
 func persistManagedPanelConfig(config managedPanelConfig) error {
+	contents, err := renderManagedPanelConfig(config)
+	if err != nil {
+		return err
+	}
+	if err := replacePanelConfigFile(contents); err != nil {
+		return fmt.Errorf("提交面板访问配置: %w", err)
+	}
+	return nil
+}
+
+func renderPanelConfig(config panelServer.PanelConfig) ([]byte, error) {
+	current, err := loadStoredManagedPanelConfig()
+	if err != nil {
+		return nil, err
+	}
+	current.Network = config
+	return renderManagedPanelConfig(current)
+}
+
+func renderManagedPanelConfig(config managedPanelConfig) ([]byte, error) {
 	configPath := configFilePath()
 	data, err := os.ReadFile(configPath)
 	if err != nil {
-		return fmt.Errorf("读取面板配置: %w", err)
+		return nil, fmt.Errorf("读取面板配置: %w", err)
 	}
 	var document yaml.Node
 	if err := yaml.Unmarshal(data, &document); err != nil {
-		return fmt.Errorf("解析面板配置: %w", err)
+		return nil, fmt.Errorf("解析面板配置: %w", err)
 	}
 	if len(document.Content) != 1 || document.Content[0].Kind != yaml.MappingNode {
-		return errors.New("面板配置根节点必须是 YAML 映射")
+		return nil, errors.New("面板配置根节点必须是 YAML 映射")
 	}
 	root := document.Content[0]
 	systemNode := yamlMappingValue(root, "system")
 	if systemNode == nil || systemNode.Kind != yaml.MappingNode {
-		return errors.New("面板配置缺少 system 映射")
+		return nil, errors.New("面板配置缺少 system 映射")
 	}
 	setYAMLMappingValue(systemNode, "bindAddress", yamlScalar(config.Network.BindAddress, "!!str"))
 	setYAMLMappingValue(systemNode, "port", yamlScalar(config.Network.HTTPPort, "!!str"))
@@ -363,38 +456,12 @@ func persistManagedPanelConfig(config managedPanelConfig) error {
 	encoder := yaml.NewEncoder(&encoded)
 	encoder.SetIndent(4)
 	if err := encoder.Encode(&document); err != nil {
-		return fmt.Errorf("编码面板配置: %w", err)
+		return nil, fmt.Errorf("编码面板配置: %w", err)
 	}
 	if err := encoder.Close(); err != nil {
-		return fmt.Errorf("关闭配置编码器: %w", err)
+		return nil, fmt.Errorf("关闭配置编码器: %w", err)
 	}
-
-	directory := filepath.Dir(configPath)
-	temporary, err := os.CreateTemp(directory, ".config-network-*.yaml")
-	if err != nil {
-		return fmt.Errorf("创建配置事务文件: %w", err)
-	}
-	temporaryPath := temporary.Name()
-	defer os.Remove(temporaryPath)
-	if err := temporary.Chmod(0600); err != nil {
-		_ = temporary.Close()
-		return fmt.Errorf("保护配置事务文件: %w", err)
-	}
-	if _, err := temporary.Write(encoded.Bytes()); err != nil {
-		_ = temporary.Close()
-		return fmt.Errorf("写入配置事务文件: %w", err)
-	}
-	if err := temporary.Sync(); err != nil {
-		_ = temporary.Close()
-		return fmt.Errorf("同步配置事务文件: %w", err)
-	}
-	if err := temporary.Close(); err != nil {
-		return fmt.Errorf("关闭配置事务文件: %w", err)
-	}
-	if err := os.Rename(temporaryPath, configPath); err != nil {
-		return fmt.Errorf("提交面板访问配置: %w", err)
-	}
-	return nil
+	return encoded.Bytes(), nil
 }
 
 func yamlMappingValue(mapping *yaml.Node, key string) *yaml.Node {

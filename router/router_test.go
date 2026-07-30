@@ -159,10 +159,33 @@ func TestSSHRouteAcceptsOneTimeTicketOnlyOnce(t *testing.T) {
 	t.Cleanup(func() {
 		app.ONE_CONFIG.System.TerminalEnabled = previous
 	})
+	var account models.User
+	if err := app.DB().First(&account, 1).Error; err != nil {
+		account = models.User{
+			ID: 1, Username: "admin", Password: "test-password-hash",
+			IsAdmin: true, SecurityVersion: 1,
+		}
+		if err := app.DB().Create(&account).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	sourceSession, err := securityservice.NewSessionManager(app.DB()).Create(
+		securityservice.NewSession{
+			UserID: 1, Username: account.Username, RemoteIP: "192.0.2.1",
+			UserAgent: "router-test", SecurityVersion: account.EffectiveSecurityVersion(),
+			ExpiresAt: time.Now().Add(time.Hour),
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = app.DB().Unscoped().Delete(&models.UserSession{}, "id = ?", sourceSession.ID).Error
+	})
 	ticket, _, err := sshservice.DefaultTickets.Issue(sshservice.TicketClaims{
-		UserID:   1,
-		Username: "admin",
-		ClientIP: "192.0.2.1",
+		UserID: 1, Username: account.Username, ClientIP: "192.0.2.1",
+		UserAgent: "router-test", SourceSessionID: sourceSession.ID,
+		SecurityVersion: account.EffectiveSecurityVersion(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -171,6 +194,7 @@ func TestSSHRouteAcceptsOneTimeTicketOnlyOnce(t *testing.T) {
 	router := SetupRouter()
 	first := httptest.NewRequest(http.MethodGet, "/v1/ssh/open?ticket="+ticket, nil)
 	first.RemoteAddr = "192.0.2.1:1234"
+	first.Header.Set("User-Agent", "router-test")
 	firstResponse := httptest.NewRecorder()
 	router.ServeHTTP(firstResponse, first)
 	if firstResponse.Code == http.StatusUnauthorized {
@@ -179,6 +203,7 @@ func TestSSHRouteAcceptsOneTimeTicketOnlyOnce(t *testing.T) {
 
 	second := httptest.NewRequest(http.MethodGet, "/v1/ssh/open?ticket="+ticket, nil)
 	second.RemoteAddr = "192.0.2.1:1234"
+	second.Header.Set("User-Agent", "router-test")
 	secondResponse := httptest.NewRecorder()
 	router.ServeHTTP(secondResponse, second)
 	if secondResponse.Code != http.StatusUnauthorized {

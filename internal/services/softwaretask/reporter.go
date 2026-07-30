@@ -121,6 +121,32 @@ func (r *Reporter) OnActionStart(action string) {
 	_ = r.setPhase(phase, nil, "正在"+spec.label, action+"_started")
 }
 
+func (r *Reporter) OnPackageResolved(version, source string) {
+	version = strings.TrimSpace(version)
+	source = strings.TrimSpace(source)
+	if version == "" && source == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	message := "已解析组件脚本包"
+	if version != "" {
+		message += " " + version
+	}
+	if source != "" {
+		message += "（" + source + "）"
+	}
+	_ = r.publishLocked(taskUpdate{
+		resolvedVersion: version,
+		packageSource:   source,
+	}, eventData{
+		eventType: "package",
+		level:     "info",
+		code:      "package_resolved",
+		message:   message,
+	})
+}
+
 func (r *Reporter) OnActionProgress(action string, percent int, code, message string) {
 	phase, exists := normalizeActionPhase(action)
 	if !exists {
@@ -260,6 +286,8 @@ type taskUpdate struct {
 	finishedAt      *time.Time
 	setFailurePhase bool
 	cancelRequested *bool
+	resolvedVersion string
+	packageSource   string
 }
 
 type eventData struct {
@@ -319,9 +347,27 @@ func (r *Reporter) publishLocked(update taskUpdate, event eventData) error {
 		if update.cancelRequested != nil {
 			task.CancelRequested = *update.cancelRequested
 		}
+		if update.resolvedVersion != "" {
+			task.ResolvedVersion = update.resolvedVersion
+		}
+		if update.packageSource != "" {
+			task.PackageSource = update.packageSource
+		}
 		task.EventSeq++
 		if err := tx.Save(&task).Error; err != nil {
 			return err
+		}
+		if update.finishedAt != nil && task.Operation == "configure" {
+			historyStatus := configurationHistoryStatus(task.Status)
+			if err := tx.Model(&models.SoftwareConfigurationHistory{}).
+				Where("task_id = ? AND status = ?", task.ID, models.SoftwareConfigurationStatusPending).
+				Updates(map[string]any{
+					"status":      historyStatus,
+					"finished_at": update.finishedAt,
+					"updated_at":  now,
+				}).Error; err != nil {
+				return err
+			}
 		}
 		taskEvent := models.SoftwareTaskEvent{
 			TaskID:        task.ID,
@@ -342,6 +388,19 @@ func (r *Reporter) publishLocked(update taskUpdate, event eventData) error {
 		r.manager.notify(r.taskID)
 	}
 	return err
+}
+
+func configurationHistoryStatus(taskStatus string) string {
+	switch taskStatus {
+	case models.SoftwareTaskStatusSucceeded:
+		return models.SoftwareConfigurationStatusSucceeded
+	case models.SoftwareTaskStatusCanceled:
+		return models.SoftwareConfigurationStatusCanceled
+	case models.SoftwareTaskStatusInterrupted:
+		return models.SoftwareConfigurationStatusInterrupted
+	default:
+		return models.SoftwareConfigurationStatusFailed
+	}
 }
 
 func normalizeActionPhase(action string) (string, bool) {

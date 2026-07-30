@@ -53,6 +53,11 @@ system:
     acmeIssueTimeoutMinutes: 15
     terminalEnabled: false
     terminalSessionMinutes: 15
+    terminalIdleMinutes: 5
+    terminalMaxConcurrent: 2
+    terminalMaxPerUser: 1
+    terminalUser: "one-terminal"
+    terminalWorkingDirectory: "/var/lib/one-terminal"
 scriptCenter:
     enabled: false
     allowInsecureHTTP: false

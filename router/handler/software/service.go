@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -224,7 +225,9 @@ func ApplyComponentServiceConfiguration(c *gin.Context) {
 	task, err := manager.SubmitConfiguration(
 		definition.Component,
 		preview.Revision,
+		current.Values,
 		preview.Values,
+		"",
 		userID,
 	)
 	if err != nil {
@@ -242,6 +245,170 @@ func ApplyComponentServiceConfiguration(c *gin.Context) {
 		"statusUrl":   "/v1/soft/tasks/" + task.ID,
 		"streamUrl":   "/v1/soft/tasks/" + task.ID + "/events",
 	}))
+}
+
+func ListComponentServiceConfigurationHistory(c *gin.Context) {
+	definition, _, ok := installedConfigurationTarget(c)
+	if !ok {
+		return
+	}
+	page, err := strconv.Atoi(c.DefaultQuery("page", "1"))
+	if err != nil || page < 1 {
+		core.HandleError(c, core.NewError(core.ErrBadRequest, "页码必须是正整数"))
+		return
+	}
+	pageSize, err := strconv.Atoi(c.DefaultQuery("pageSize", "20"))
+	if err != nil || pageSize < 1 || pageSize > 100 {
+		core.HandleError(c, core.NewError(core.ErrBadRequest, "每页数量必须在 1 到 100 之间"))
+		return
+	}
+	result, err := softwareService.ListConfigurationHistory(
+		app.DB(),
+		definition.Component,
+		page,
+		pageSize,
+	)
+	if err != nil {
+		core.HandleError(c, core.WrapError(err, core.ErrInternalError, "读取组件配置历史失败"))
+		return
+	}
+	core.HandleSuccess(c, result)
+}
+
+func PreviewComponentServiceConfigurationRestore(c *gin.Context) {
+	history, current, preview, ok := configurationRestorePreview(c)
+	if !ok {
+		return
+	}
+	core.HandleSuccess(c, gin.H{
+		"history": history,
+		"current": gin.H{
+			"revision": current.Revision,
+			"values":   current.Values,
+		},
+		"preview": preview,
+	})
+}
+
+func RestoreComponentServiceConfiguration(c *gin.Context) {
+	history, current, preview, ok := configurationRestorePreview(c)
+	if !ok {
+		return
+	}
+	if !preview.HasChanges {
+		core.HandleError(c, core.NewError(core.ErrBadRequest, "当前配置已经与该历史版本一致"))
+		return
+	}
+	userID, ok := middleware.AuthenticatedUserID(c)
+	if !ok {
+		core.HandleError(c, core.NewError(core.ErrUnauthorized, "无法识别当前用户"))
+		return
+	}
+	manager, err := getTaskManager()
+	if err != nil {
+		core.HandleError(c, core.WrapError(err, core.ErrInternalError, "软件任务服务不可用"))
+		return
+	}
+	task, err := manager.SubmitConfiguration(
+		history.Component,
+		preview.Revision,
+		current.Values,
+		preview.Values,
+		history.ID,
+		userID,
+	)
+	if err != nil {
+		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "创建配置恢复任务失败"))
+		return
+	}
+	c.JSON(http.StatusAccepted, core.SuccessResponse(gin.H{
+		"taskId":        task.ID,
+		"operation":     task.Operation,
+		"component":     task.Component,
+		"softwareKey":   task.SoftwareKey,
+		"version":       task.RequestedVersion,
+		"status":        task.Status,
+		"progress":      task.Progress,
+		"restoreFromId": history.ID,
+		"statusUrl":     "/v1/soft/tasks/" + task.ID,
+		"streamUrl":     "/v1/soft/tasks/" + task.ID + "/events",
+	}))
+}
+
+func configurationRestorePreview(
+	c *gin.Context,
+) (
+	softwareService.ConfigurationHistoryEntry,
+	softwareService.ComponentConfiguration,
+	softwareService.ConfigurationPreview,
+	bool,
+) {
+	definition, version, ok := installedConfigurationTarget(c)
+	if !ok {
+		return softwareService.ConfigurationHistoryEntry{},
+			softwareService.ComponentConfiguration{},
+			softwareService.ConfigurationPreview{},
+			false
+	}
+	history, err := softwareService.GetConfigurationHistory(
+		app.DB(),
+		definition.Component,
+		c.Param("id"),
+	)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			core.HandleError(c, core.NewError(core.ErrNotFound, "配置历史不存在"))
+		} else {
+			core.HandleError(c, core.WrapError(err, core.ErrInternalError, "读取配置历史失败"))
+		}
+		return softwareService.ConfigurationHistoryEntry{},
+			softwareService.ComponentConfiguration{},
+			softwareService.ConfigurationPreview{},
+			false
+	}
+	if history.Status != models.SoftwareConfigurationStatusSucceeded {
+		core.HandleError(c, core.NewError(core.ErrBadRequest, "只能恢复发布成功的配置历史"))
+		return softwareService.ConfigurationHistoryEntry{},
+			softwareService.ComponentConfiguration{},
+			softwareService.ConfigurationPreview{},
+			false
+	}
+	current, err := softwareService.NewInstaller().InspectServiceConfiguration(
+		c.Request.Context(),
+		definition.Component,
+		version,
+	)
+	if err != nil {
+		core.HandleError(c, core.WrapError(err, core.ErrInternalError, "读取当前组件配置失败"))
+		return softwareService.ConfigurationHistoryEntry{},
+			softwareService.ComponentConfiguration{},
+			softwareService.ConfigurationPreview{},
+			false
+	}
+	restoreValues, err := softwareService.NormalizeConfigurationValues(
+		definition.Component,
+		history.Before,
+	)
+	if err != nil {
+		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "该历史配置与当前版本不兼容"))
+		return softwareService.ConfigurationHistoryEntry{},
+			softwareService.ComponentConfiguration{},
+			softwareService.ConfigurationPreview{},
+			false
+	}
+	preview, err := softwareService.PreviewConfiguration(
+		current,
+		current.Revision,
+		restoreValues,
+	)
+	if err != nil {
+		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "生成配置恢复预览失败"))
+		return softwareService.ConfigurationHistoryEntry{},
+			softwareService.ComponentConfiguration{},
+			softwareService.ConfigurationPreview{},
+			false
+	}
+	return history, current, preview, true
 }
 
 func installedConfigurationTarget(

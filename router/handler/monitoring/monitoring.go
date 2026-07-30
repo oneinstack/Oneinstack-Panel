@@ -28,6 +28,58 @@ func Summary(c *gin.Context) {
 	writeResult(c, result, err)
 }
 
+func ServiceHealth(c *gin.Context) {
+	manager, ok := managerOrUnavailable(c)
+	if !ok {
+		return
+	}
+	includeNotInstalled := strings.EqualFold(strings.TrimSpace(c.Query("includeNotInstalled")), "true")
+	result, err := manager.ListServiceHealth(includeNotInstalled)
+	writeResult(c, result, err)
+}
+
+func CheckServiceHealth(c *gin.Context) {
+	manager, ok := managerOrUnavailable(c)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 20*time.Second)
+	defer cancel()
+	if err := manager.CheckServiceHealth(ctx); err != nil {
+		writeResult(c, nil, err)
+		return
+	}
+	result, err := manager.ListServiceHealth(false)
+	writeResult(c, result, err)
+}
+
+func SilenceServiceHealth(c *gin.Context) {
+	manager, ok := managerOrUnavailable(c)
+	if !ok {
+		return
+	}
+	var request silenceRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		writeBadRequest(c, err)
+		return
+	}
+	if request.Minutes < 0 || request.Minutes > 30*24*60 {
+		writeBadRequest(c, errors.New("静默时间必须在 0 到 43200 分钟之间"))
+		return
+	}
+	var until *time.Time
+	if request.Minutes > 0 {
+		value := time.Now().UTC().Add(time.Duration(request.Minutes) * time.Minute)
+		until = &value
+	}
+	err := manager.SilenceServiceHealth(strings.TrimSpace(c.Param("component")), until)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		writeNotFound(c, "组件健康状态不存在")
+		return
+	}
+	writeResult(c, gin.H{"silencedUntil": until}, err)
+}
+
 func Metrics(c *gin.Context) {
 	manager, ok := managerOrUnavailable(c)
 	if !ok {
@@ -161,8 +213,10 @@ func Events(c *gin.Context) {
 	}
 	filter := monitorservice.EventFilter{
 		Page: optionalInt(c.Query("page"), 1), PageSize: optionalInt(c.Query("pageSize"), 20),
-		EventType: strings.TrimSpace(c.Query("eventType")),
-		Severity:  strings.TrimSpace(c.Query("severity")),
+		EventType:    strings.TrimSpace(c.Query("eventType")),
+		Severity:     strings.TrimSpace(c.Query("severity")),
+		ResourceType: strings.TrimSpace(c.Query("resourceType")),
+		ResourceID:   strings.ToLower(strings.TrimSpace(c.Query("resourceId"))),
 	}
 	if ruleID := strings.TrimSpace(c.Query("ruleId")); ruleID != "" {
 		parsed, err := strconv.ParseUint(ruleID, 10, 32)
@@ -180,6 +234,14 @@ func Events(c *gin.Context) {
 	if filter.Severity != "" &&
 		filter.Severity != "info" && filter.Severity != "warning" && filter.Severity != "critical" {
 		writeBadRequest(c, errors.New("severity 无效"))
+		return
+	}
+	if filter.ResourceType != "" && filter.ResourceType != "component_service" {
+		writeBadRequest(c, errors.New("resourceType 无效"))
+		return
+	}
+	if len(filter.ResourceID) > 64 {
+		writeBadRequest(c, errors.New("resourceId 过长"))
 		return
 	}
 	result, err := manager.Events(filter)

@@ -9,6 +9,7 @@ import (
 	"oneinstack/utils"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/glebarez/sqlite"
@@ -53,10 +54,24 @@ func InitDB(dbPath string) error {
 		gc.Logger = logger.Default.LogMode(logger.Info)
 	}
 
-	d, err := gorm.Open(sqlite.Open(dbPath))
+	separator := "?"
+	if strings.Contains(dbPath, "?") {
+		separator = "&"
+	}
+	dsn := dbPath + separator +
+		"_pragma=busy_timeout(10000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)"
+	d, err := gorm.Open(sqlite.Open(dsn), gc)
 	if err != nil {
 		return err
 	}
+	sqlDB, err := d.DB()
+	if err != nil {
+		return fmt.Errorf("open database pool: %w", err)
+	}
+	// SQLite has one writer. Keep a small pool for concurrent reads while the
+	// busy timeout serializes short task, audit, and session writes.
+	sqlDB.SetMaxOpenConns(8)
+	sqlDB.SetMaxIdleConns(4)
 	db = d
 	// 检查是否存在用户，如果不存在提示创建管理员
 	err = createTables()
@@ -116,6 +131,7 @@ func createTables() error {
 		&models.SoftwareTask{},
 		&models.SoftwareTaskEvent{},
 		&models.ComponentOperationLock{},
+		&models.SoftwareConfigurationHistory{},
 	)
 	if err != nil {
 		return err
@@ -193,6 +209,7 @@ func createTables() error {
 		&models.MonitorRule{},
 		&models.MonitorAlertState{},
 		&models.MonitorAlertEvent{},
+		&models.ComponentHealthState{},
 		&models.NotificationChannel{},
 		&models.NotificationDelivery{},
 	)

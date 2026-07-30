@@ -193,6 +193,13 @@ func TestResolveInstalledReusesVerifiedPackageAcrossChannelChange(t *testing.T) 
 		resolved.Manifest.Component.Version != "1.0.0" {
 		t.Fatalf("unexpected installed package resolution: %#v", resolved)
 	}
+	local, err := registry.ResolveInstalledLocal("nginx", "1.26.2", "install")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if local.Source != "cache" || local.Root != resolved.Root {
+		t.Fatalf("unexpected local installed package resolution: %#v", local)
+	}
 	if _, err := registry.ResolveInstalled(
 		context.Background(),
 		"nginx",

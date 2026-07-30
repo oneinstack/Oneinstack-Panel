@@ -166,6 +166,11 @@ func (cm *ConfigManager) setDefaults() {
 	cm.viper.SetDefault("system.acmeIssueTimeoutMinutes", 15)
 	cm.viper.SetDefault("system.terminalEnabled", false)
 	cm.viper.SetDefault("system.terminalSessionMinutes", 15)
+	cm.viper.SetDefault("system.terminalIdleMinutes", 5)
+	cm.viper.SetDefault("system.terminalMaxConcurrent", 2)
+	cm.viper.SetDefault("system.terminalMaxPerUser", 1)
+	cm.viper.SetDefault("system.terminalUser", "one-terminal")
+	cm.viper.SetDefault("system.terminalWorkingDirectory", "/var/lib/one-terminal")
 
 	// 数据库默认配置
 	cm.viper.SetDefault("database.type", "sqlite")
@@ -286,6 +291,11 @@ system:
   acmeIssueTimeoutMinutes: 15
   terminalEnabled: false
   terminalSessionMinutes: 15
+  terminalIdleMinutes: 5
+  terminalMaxConcurrent: 2
+  terminalMaxPerUser: 1
+  terminalUser: "one-terminal"
+  terminalWorkingDirectory: "/var/lib/one-terminal"
 
 database:
   type: "sqlite"

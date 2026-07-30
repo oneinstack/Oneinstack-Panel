@@ -66,6 +66,7 @@ type ScriptInfo struct {
 	ActionName     string            // install/upgrade/uninstall
 	Timeouts       map[string]time.Duration
 	Version        string // 软件版本
+	PackageVersion string // 组件脚本包版本
 }
 
 type ParameterSpec struct {

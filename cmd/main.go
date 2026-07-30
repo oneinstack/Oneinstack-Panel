@@ -51,6 +51,8 @@ func main() {
 
 	changePortCmd.Flags().StringP("port", "p", "", "New port for the system")
 	configureUpdateCommands()
+	configureNetworkCommands()
+	configureBackupCommands()
 
 	// 绑定 --user 和 --password 参数到 init 命令
 	initCmd.Flags().StringVarP(&userName, "user", "u", "", "Specify the username")
@@ -71,6 +73,8 @@ func main() {
 	rootCmd.AddCommand(updateCmd)
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(panelEntryCmd)
+	rootCmd.AddCommand(networkCmd)
+	rootCmd.AddCommand(backupCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Println(err)
@@ -82,7 +86,8 @@ var rootCmd = &cobra.Command{
 	Use:   "one",
 	Short: "oneinstack",
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-		if cmd == versionCmd || isUpdateCommand(cmd) {
+		if cmd == versionCmd || isUpdateCommand(cmd) || isNetworkTransactionCommand(cmd) ||
+			isPanelBackupCommand(cmd) {
 			return nil
 		}
 		if cmd == debugCmd {
@@ -318,6 +323,9 @@ func startServer() error {
 	if err != nil {
 		return fmt.Errorf("initialize monitoring service: %w", err)
 	}
+	monitorManager.SetServiceHealthCollector(
+		software.NewComponentHealthCollector(app.DB()),
+	)
 	monitoring.ConfigureDefault(monitorManager)
 	monitorManager.Start()
 	defer func() {
@@ -484,7 +492,11 @@ func startServer() error {
 		httpsAddress, _ := panelServer.NetworkAddress(networkConfig.BindAddress, networkConfig.HTTPSPort)
 		log.Printf("OneinStack Panel HTTPS listening on %s", httpsAddress)
 	}
-	if err := panelServer.RunPanel(ctx, networkConfig, web.SetupRouter()); err != nil {
+	if err := panelServer.RunPanelWithReady(ctx, networkConfig, web.SetupRouter(), func() {
+		if err := systemservice.FinalizePendingPanelNetworkTransaction(); err != nil {
+			log.Printf("finalize panel network transaction: %v", err)
+		}
+	}); err != nil {
 		return err
 	}
 	log.Printf("OneinStack Panel stopped")

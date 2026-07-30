@@ -46,7 +46,7 @@ func SupportedComponentServices() []ComponentServiceDefinition {
 		{Component: "nginx", SoftwareKey: "webserver", DisplayName: "Nginx", ServiceName: "nginx"},
 		{Component: "mysql", SoftwareKey: "db", DisplayName: "MySQL", ServiceName: "mysql"},
 		{Component: "php", SoftwareKey: "php", DisplayName: "PHP-FPM", ServiceName: "php-fpm"},
-		{Component: "redis", SoftwareKey: "redis", DisplayName: "Redis", ServiceName: "redis"},
+		{Component: "redis", SoftwareKey: "redis", DisplayName: "Redis", ServiceName: "redis-server"},
 	}
 }
 
@@ -76,6 +76,26 @@ func (installer *Installer) InspectService(
 	component string,
 	version string,
 ) (ComponentServiceProbe, error) {
+	return installer.inspectService(ctx, component, version, false)
+}
+
+// InspectServiceLocal performs the same verified status probe as
+// InspectService but only uses an already cached or bundled package. Scheduled
+// health monitoring must remain independent from Center availability.
+func (installer *Installer) InspectServiceLocal(
+	ctx context.Context,
+	component string,
+	version string,
+) (ComponentServiceProbe, error) {
+	return installer.inspectService(ctx, component, version, true)
+}
+
+func (installer *Installer) inspectService(
+	ctx context.Context,
+	component string,
+	version string,
+	localOnly bool,
+) (ComponentServiceProbe, error) {
 	definition, err := NormalizeServiceComponent(component)
 	if err != nil {
 		return ComponentServiceProbe{}, err
@@ -84,12 +104,21 @@ func (installer *Installer) InspectService(
 	if err != nil {
 		return ComponentServiceProbe{}, err
 	}
-	componentPackage, err := registry.ResolveInstalled(
-		ctx,
-		definition.Component,
-		strings.TrimSpace(version),
-		"status",
-	)
+	var componentPackage scriptregistry.Package
+	if localOnly {
+		componentPackage, err = registry.ResolveInstalledLocal(
+			definition.Component,
+			strings.TrimSpace(version),
+			"status",
+		)
+	} else {
+		componentPackage, err = registry.ResolveInstalled(
+			ctx,
+			definition.Component,
+			strings.TrimSpace(version),
+			"status",
+		)
+	}
 	if err != nil {
 		return ComponentServiceProbe{}, fmt.Errorf("resolve %s status package: %w", definition.Component, err)
 	}

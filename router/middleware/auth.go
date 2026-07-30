@@ -41,10 +41,53 @@ func AuthMiddleware() gin.HandlerFunc {
 				c.Abort()
 				return
 			}
+			if claims.UserAgent != c.GetHeader("User-Agent") {
+				c.JSON(http.StatusUnauthorized, gin.H{
+					"error": "Terminal ticket client changed",
+					"code":  "INVALID_TERMINAL_TICKET",
+				})
+				c.Abort()
+				return
+			}
+			database := app.DB()
+			if database == nil {
+				c.JSON(http.StatusServiceUnavailable, gin.H{
+					"error": "Session service is unavailable",
+					"code":  "SESSION_UNAVAILABLE",
+				})
+				c.Abort()
+				return
+			}
+			var account models.User
+			if err := database.First(&account, claims.UserID).Error; err != nil ||
+				account.Username != claims.Username ||
+				account.EffectiveSecurityVersion() != claims.SecurityVersion {
+				c.JSON(http.StatusUnauthorized, gin.H{
+					"error": "Terminal source session is invalid",
+					"code":  "SESSION_INVALIDATED",
+				})
+				c.Abort()
+				return
+			}
+			sessionManager := securityservice.NewSessionManager(database)
+			if _, err := sessionManager.Validate(
+				claims.SourceSessionID,
+				claims.UserID,
+				claims.SecurityVersion,
+			); err != nil {
+				c.JSON(http.StatusUnauthorized, gin.H{
+					"error": "Terminal source session is expired or revoked",
+					"code":  "SESSION_INVALIDATED",
+				})
+				c.Abort()
+				return
+			}
 			c.Set(ContextUsername, claims.Username)
 			c.Set(ContextUserID, claims.UserID)
 			c.Set(ContextTokenClaims, claims)
 			c.Set(ContextAuthMode, AuthModeTicket)
+			c.Set(ContextSessionID, claims.SourceSessionID)
+			c.Set(ContextMustChangePassword, account.MustChangePassword)
 			c.Next()
 			return
 		}

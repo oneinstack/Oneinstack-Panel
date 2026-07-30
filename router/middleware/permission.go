@@ -434,6 +434,11 @@ func isSensitiveOperation(method, path string) bool {
 		return true
 	}
 	if method == http.MethodGet &&
+		strings.HasPrefix(path, "/v1/sys/backups/") &&
+		strings.HasSuffix(path, "/download") {
+		return true
+	}
+	if method == http.MethodGet &&
 		strings.HasPrefix(path, "/v1/soft/tasks/") &&
 		strings.HasSuffix(path, "/log/download") {
 		return true
@@ -457,6 +462,7 @@ func isSensitiveOperation(method, path string) bool {
 			"/v1/sys/updateport",
 			"/v1/sys/update/check",
 			"/v1/sys/update/apply",
+			"/v1/sys/backups",
 			"/v1/soft/install",
 			"/v1/soft/remove",
 			"/v1/storage/addconn",

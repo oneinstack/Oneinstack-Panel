@@ -109,6 +109,7 @@ func (sender *WebhookSender) Send(
 	payload, err := json.Marshal(map[string]interface{}{
 		"source": "oneinstack-panel", "event": event.EventType,
 		"severity": event.Severity, "rule": event.RuleName, "metric": event.Metric,
+		"resourceType": event.ResourceType, "resourceId": event.ResourceID,
 		"value": event.Value, "threshold": event.Threshold,
 		"startedAt": event.StartedAt, "occurredAt": event.OccurredAt,
 		"message": event.Message,

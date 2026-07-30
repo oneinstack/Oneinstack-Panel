@@ -18,6 +18,7 @@ const (
 	ErrUnauthorized      ErrorCode = "UNAUTHORIZED"
 	ErrForbidden         ErrorCode = "FORBIDDEN"
 	ErrNotFound          ErrorCode = "NOT_FOUND"
+	ErrConflict          ErrorCode = "CONFLICT"
 	ErrRateLimitExceeded ErrorCode = "RATE_LIMIT_EXCEEDED"
 
 	// 认证相关错误码
@@ -139,7 +140,7 @@ func getHTTPStatusCode(code ErrorCode) int {
 		return http.StatusForbidden
 	case ErrNotFound, ErrUserNotFound, ErrSoftwareNotFound, ErrWebsiteNotFound, ErrFileNotFound:
 		return http.StatusNotFound
-	case ErrUserExists:
+	case ErrConflict, ErrUserExists:
 		return http.StatusConflict
 	case ErrRateLimitExceeded:
 		return http.StatusTooManyRequests
