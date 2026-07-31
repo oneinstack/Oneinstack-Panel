@@ -14,6 +14,7 @@ import (
 	"oneinstack/app"
 	"oneinstack/core"
 	"oneinstack/internal/services/filemanager"
+	"oneinstack/router/middleware"
 	"oneinstack/utils"
 	"os"
 	"os/user"
@@ -98,6 +99,17 @@ func ListDirectory(c *gin.Context) {
 	})
 
 	fileInfos := make([]gin.H, 0, len(entries))
+	favoritePaths := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		childRelative := pathpkg.Join(relative, entry.Name())
+		if relative == "." {
+			childRelative = entry.Name()
+		}
+		childPath := manager.VirtualPath(childRelative)
+		favoritePaths = append(favoritePaths, childPath)
+	}
+	userID, _ := middleware.AuthenticatedUserID(c)
+	favoriteMap := favoriteMapForPaths(userID, favoritePaths)
 	for _, entry := range entries {
 		info, err := entry.Info()
 		if err != nil {
@@ -127,6 +139,7 @@ func ListDirectory(c *gin.Context) {
 			"group":       groupName,
 			"modTime":     info.ModTime().Format("2006-01-02 15:04:05"),
 			"size":        utils.FormatBytes(info.Size()),
+			"favoriteID":  favoriteMap[childPath],
 		})
 	}
 	core.HandleSuccess(c, gin.H{"files": fileInfos, "path": manager.VirtualPath(relative)})
@@ -573,22 +586,23 @@ func Content(c *gin.Context) {
 	}
 
 	core.HandleSuccess(c, FileDetail{
-		Path:      manager.VirtualPath(relative),
-		Name:      info.Name(),
-		User:      userName,
-		Group:     groupName,
-		UID:       uid,
-		GID:       gid,
-		Extension: pathpkg.Ext(info.Name()),
-		Content:   string(data),
-		Size:      info.Size(),
-		IsDir:     false,
-		IsSymlink: isSymlink,
-		IsHidden:  strings.HasPrefix(info.Name(), "."),
-		Mode:      fmt.Sprintf("%04o", info.Mode().Perm()),
-		MimeType:  mimeType,
-		ModTime:   info.ModTime().Format(time.RFC3339Nano),
-		Revision:  contentRevision(data),
+		Path:       manager.VirtualPath(relative),
+		Name:       info.Name(),
+		User:       userName,
+		Group:      groupName,
+		UID:        uid,
+		GID:        gid,
+		Extension:  pathpkg.Ext(info.Name()),
+		Content:    string(data),
+		Size:       info.Size(),
+		IsDir:      false,
+		IsSymlink:  isSymlink,
+		IsHidden:   strings.HasPrefix(info.Name(), "."),
+		Mode:       fmt.Sprintf("%04o", info.Mode().Perm()),
+		MimeType:   mimeType,
+		ModTime:    info.ModTime().Format(time.RFC3339Nano),
+		FavoriteID: favoriteIDForPath(c, manager.VirtualPath(relative)),
+		Revision:   contentRevision(data),
 	})
 	finishFileOperation(c, "success", fmt.Sprintf("读取 %d 字节", info.Size()))
 }
@@ -598,7 +612,7 @@ func GetDirectoryTreeHandler(c *gin.Context) {
 		Path         string `json:"path" binding:"required"`
 		ShowHidden   bool   `json:"showHidden"`
 		DirOnly      bool   `json:"dirOnly"`
-		ContainSub   bool   `json:"containSub"`
+		ContainSub   *bool  `json:"containSub"`
 		MaxDepth     int    `json:"maxDepth"`
 		MaxPerFolder int    `json:"maxPerFolder"`
 	}
@@ -607,13 +621,17 @@ func GetDirectoryTreeHandler(c *gin.Context) {
 		return
 	}
 	if input.MaxDepth <= 0 {
-		input.MaxDepth = 2
+		input.MaxDepth = 4
 	}
 	if input.MaxDepth > maxTreeDepth {
 		input.MaxDepth = maxTreeDepth
 	}
 	if input.MaxPerFolder <= 0 || input.MaxPerFolder > maxTreeEntries {
 		input.MaxPerFolder = maxTreeEntries
+	}
+	containSub := true
+	if input.ContainSub != nil {
+		containSub = *input.ContainSub
 	}
 
 	manager, ok := managerForRequest(c)
@@ -632,7 +650,7 @@ func GetDirectoryTreeHandler(c *gin.Context) {
 		return
 	}
 
-	children, err := scanTree(manager, manager.VirtualPath(relative), input.ShowHidden, input.DirOnly, input.ContainSub, input.MaxDepth, input.MaxPerFolder, 1)
+	children, err := scanTree(manager, manager.VirtualPath(relative), input.ShowHidden, input.DirOnly, containSub, input.MaxDepth, input.MaxPerFolder, 1)
 	if err != nil {
 		handleFileError(c, err, "读取目录树失败")
 		return

@@ -14,9 +14,9 @@ import (
 )
 
 type transferInput struct {
-	Source     string `json:"source" binding:"required"`
-	TargetDir  string `json:"targetDir" binding:"required"`
-	TargetName string `json:"targetName"`
+	SourcePath string `json:"sourcePath" binding:"required"`
+	TargetPath string `json:"targetPath" binding:"required"`
+	Overwrite  bool   `json:"overwrite"`
 }
 
 func CopyFileOrDir(c *gin.Context) {
@@ -25,14 +25,15 @@ func CopyFileOrDir(c *gin.Context) {
 		handleBadRequest(c, err, "请求参数错误")
 		return
 	}
-	startFileOperation(c, "file.copy", operationAuditPath(input.Source, input.TargetDir, input.TargetName))
+	targetDir, targetName := splitTargetPath(input.TargetPath)
+	startFileOperation(c, "file.copy", operationAuditPath(input.SourcePath, targetDir, targetName))
 	manager, ok := managerForRequest(c)
 	if !ok {
 		return
 	}
 	defer manager.Close()
 
-	measured, err := manager.Measure(input.Source)
+	measured, err := manager.Measure(input.SourcePath)
 	if err != nil {
 		handleFileError(c, err, "读取复制源失败")
 		return
@@ -44,7 +45,7 @@ func CopyFileOrDir(c *gin.Context) {
 		return
 	}
 	defer reservation.Release()
-	result, err := manager.Copy(input.Source, input.TargetDir, input.TargetName)
+	result, err := manager.Copy(input.SourcePath, targetDir, targetName, input.Overwrite)
 	if err != nil {
 		handleFileError(c, err, "复制失败")
 		return
@@ -59,14 +60,15 @@ func MoveFileOrDir(c *gin.Context) {
 		handleBadRequest(c, err, "请求参数错误")
 		return
 	}
-	startFileOperation(c, "file.move", operationAuditPath(input.Source, input.TargetDir, input.TargetName))
+	targetDir, targetName := splitTargetPath(input.TargetPath)
+	startFileOperation(c, "file.move", operationAuditPath(input.SourcePath, targetDir, targetName))
 	manager, ok := managerForRequest(c)
 	if !ok {
 		return
 	}
 	defer manager.Close()
 
-	result, err := manager.Move(input.Source, input.TargetDir, input.TargetName)
+	result, err := manager.Move(input.SourcePath, targetDir, targetName)
 	if err != nil {
 		handleFileError(c, err, "移动失败")
 		return
@@ -196,4 +198,12 @@ func operationAuditPath(source, targetDir, targetName string) string {
 		targetName = pathpkg.Base(source)
 	}
 	return source + " -> " + pathpkg.Join(targetDir, targetName)
+}
+
+func splitTargetPath(targetPath string) (string, string) {
+	targetPath = strings.TrimSpace(targetPath)
+	if targetPath == "" {
+		return "", ""
+	}
+	return pathpkg.Dir(targetPath), pathpkg.Base(targetPath)
 }

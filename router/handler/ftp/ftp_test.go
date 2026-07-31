@@ -15,6 +15,7 @@ import (
 	"oneinstack/router/middleware"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -61,6 +62,130 @@ func TestFileHandlersUseVirtualPaths(t *testing.T) {
 	}
 	if len(content) != 0 {
 		t.Fatalf("empty save left content %q", content)
+	}
+}
+
+func TestFavoritesCreateListCancelAndDirectoryFavoriteID(t *testing.T) {
+	if err := app.InitDB("file:ftp-favorite-tests?mode=memory&cache=shared"); err != nil {
+		t.Fatal(err)
+	}
+	rootPath := configureTestFileRoot(t)
+	if err := os.MkdirAll(filepath.Join(rootPath, "sites"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(rootPath, "sites", "demo.conf"), []byte("demo"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	createDir := performJSONRequestAsUser(t, http.MethodPost, CreateFavorite, `{"path":"/sites"}`, 7, "alice")
+	if createDir.Code != http.StatusOK {
+		t.Fatalf("favorite dir status=%d body=%s", createDir.Code, createDir.Body.String())
+	}
+	if strings.Contains(createDir.Body.String(), rootPath) {
+		t.Fatalf("favorite dir leaked physical path: %s", createDir.Body.String())
+	}
+
+	createFile := performJSONRequestAsUser(t, http.MethodPost, CreateFavorite, `{"path":"/sites/demo.conf"}`, 7, "alice")
+	if createFile.Code != http.StatusOK {
+		t.Fatalf("favorite file status=%d body=%s", createFile.Code, createFile.Body.String())
+	}
+	repeatFile := performJSONRequestAsUser(t, http.MethodPost, CreateFavorite, `{"path":"/sites/demo.conf"}`, 7, "alice")
+	if repeatFile.Code != http.StatusOK {
+		t.Fatalf("repeat favorite status=%d body=%s", repeatFile.Code, repeatFile.Body.String())
+	}
+	var repeatPayload struct {
+		Data models.FileFavorite `json:"data"`
+	}
+	if err := json.Unmarshal(repeatFile.Body.Bytes(), &repeatPayload); err != nil {
+		t.Fatal(err)
+	}
+	if repeatPayload.Data.ID == 0 {
+		t.Fatalf("repeat favorite missing id: %s", repeatFile.Body.String())
+	}
+
+	otherUser := performJSONRequestAsUser(t, http.MethodPost, CreateFavorite, `{"path":"/sites/demo.conf"}`, 8, "bob")
+	if otherUser.Code != http.StatusOK {
+		t.Fatalf("other user favorite status=%d body=%s", otherUser.Code, otherUser.Body.String())
+	}
+
+	listResponse := performJSONRequestAsUser(t, http.MethodGet, ListFavorites, "", 7, "alice")
+	if listResponse.Code != http.StatusOK {
+		t.Fatalf("list favorites status=%d body=%s", listResponse.Code, listResponse.Body.String())
+	}
+	if !strings.Contains(listResponse.Body.String(), `"path":"/sites"`) ||
+		!strings.Contains(listResponse.Body.String(), `"path":"/sites/demo.conf"`) {
+		t.Fatalf("favorite list missing expected paths: %s", listResponse.Body.String())
+	}
+	if strings.Contains(listResponse.Body.String(), `"username":"bob"`) {
+		t.Fatalf("favorite list leaked other user data: %s", listResponse.Body.String())
+	}
+
+	dirListResponse := performJSONRequestAsUser(t, http.MethodPost, ListDirectory, `{"path":"/sites"}`, 7, "alice")
+	if dirListResponse.Code != http.StatusOK {
+		t.Fatalf("directory list status=%d body=%s", dirListResponse.Code, dirListResponse.Body.String())
+	}
+	if !strings.Contains(dirListResponse.Body.String(), `"favoriteID":`+strconv.FormatInt(repeatPayload.Data.ID, 10)) {
+		t.Fatalf("directory list missing favorite id: %s", dirListResponse.Body.String())
+	}
+
+	contentResponse := performJSONRequestAsUser(t, http.MethodPost, Content, `{"path":"/sites/demo.conf"}`, 7, "alice")
+	if contentResponse.Code != http.StatusOK {
+		t.Fatalf("content status=%d body=%s", contentResponse.Code, contentResponse.Body.String())
+	}
+	if !strings.Contains(contentResponse.Body.String(), `"favoriteID":`+strconv.FormatInt(repeatPayload.Data.ID, 10)) {
+		t.Fatalf("content missing favorite id: %s", contentResponse.Body.String())
+	}
+
+	cancelResponse := performJSONRequestAsUser(t, http.MethodPost, CancelFavorite, `{"path":"/sites/demo.conf"}`, 7, "alice")
+	if cancelResponse.Code != http.StatusOK {
+		t.Fatalf("cancel favorite status=%d body=%s", cancelResponse.Code, cancelResponse.Body.String())
+	}
+	cancelAgainResponse := performJSONRequestAsUser(t, http.MethodPost, CancelFavorite, `{"path":"/sites/demo.conf"}`, 7, "alice")
+	if cancelAgainResponse.Code != http.StatusOK {
+		t.Fatalf("repeat cancel favorite status=%d body=%s", cancelAgainResponse.Code, cancelAgainResponse.Body.String())
+	}
+}
+
+func TestFavoritesMissingPathAndIdCancel(t *testing.T) {
+	if err := app.InitDB("file:ftp-favorite-missing-tests?mode=memory&cache=shared"); err != nil {
+		t.Fatal(err)
+	}
+	rootPath := configureTestFileRoot(t)
+	target := filepath.Join(rootPath, "manual.txt")
+	if err := os.WriteFile(target, []byte("manual"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	createResponse := performJSONRequestAsUser(t, http.MethodPost, CreateFavorite, `{"path":"/manual.txt"}`, 7, "alice")
+	if createResponse.Code != http.StatusOK {
+		t.Fatalf("create favorite status=%d body=%s", createResponse.Code, createResponse.Body.String())
+	}
+	var payload struct {
+		Data models.FileFavorite `json:"data"`
+	}
+	if err := json.Unmarshal(createResponse.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(target); err != nil {
+		t.Fatal(err)
+	}
+
+	listResponse := performJSONRequestAsUser(t, http.MethodGet, ListFavorites, "", 7, "alice")
+	if listResponse.Code != http.StatusOK {
+		t.Fatalf("list missing favorite status=%d body=%s", listResponse.Code, listResponse.Body.String())
+	}
+	if !strings.Contains(listResponse.Body.String(), `"isMissing":true`) {
+		t.Fatalf("favorite list did not mark missing path: %s", listResponse.Body.String())
+	}
+
+	missingCreate := performJSONRequestAsUser(t, http.MethodPost, CreateFavorite, `{"path":"/not-exists.txt"}`, 7, "alice")
+	if missingCreate.Code != http.StatusBadRequest && missingCreate.Code != http.StatusNotFound {
+		t.Fatalf("missing favorite status=%d body=%s", missingCreate.Code, missingCreate.Body.String())
+	}
+
+	cancelByID := performJSONRequestAsUser(t, http.MethodPost, CancelFavorite, `{"id":`+strconv.FormatInt(payload.Data.ID, 10)+`}`, 7, "alice")
+	if cancelByID.Code != http.StatusOK {
+		t.Fatalf("cancel by id status=%d body=%s", cancelByID.Code, cancelByID.Body.String())
 	}
 }
 
@@ -163,6 +288,121 @@ func TestSearchFileReturnsBoundedMatches(t *testing.T) {
 	}
 }
 
+func TestGetDirectoryTreeHandlerIncludesNextLevelChildrenByDefault(t *testing.T) {
+	rootPath := configureTestFileRoot(t)
+	if err := os.MkdirAll(filepath.Join(rootPath, "sites", "demo", "conf.d", "vhosts"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(rootPath, "sites", "demo", "conf.d", "site.conf"), []byte("server {}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(rootPath, "sites", "demo", "conf.d", "vhosts", "default.conf"), []byte("server_name demo;"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(rootPath, "sites", "demo", "index.html"), []byte("ok"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	response := performJSONRequest(t, GetDirectoryTreeHandler, `{
+		"path":"/"
+	}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("tree status = %d, body = %s", response.Code, response.Body.String())
+	}
+
+	var payload struct {
+		Data []*FileNode `json:"data"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Data) != 1 {
+		t.Fatalf("root node count = %d, body = %s", len(payload.Data), response.Body.String())
+	}
+	if len(payload.Data[0].Children) != 1 {
+		t.Fatalf("root children count = %d, body = %s", len(payload.Data[0].Children), response.Body.String())
+	}
+	sitesNode := payload.Data[0].Children[0]
+	if sitesNode.Path != "/sites" {
+		t.Fatalf("unexpected child path = %s, body = %s", sitesNode.Path, response.Body.String())
+	}
+	if len(sitesNode.Children) != 1 || sitesNode.Children[0].Path != "/sites/demo" {
+		t.Fatalf("expected default tree to include next-level child, body = %s", response.Body.String())
+	}
+	if len(sitesNode.Children[0].Children) != 2 {
+		t.Fatalf("expected nested node to include immediate descendants, body = %s", response.Body.String())
+	}
+	var confNode *FileNode
+	for _, child := range sitesNode.Children[0].Children {
+		if child.Path == "/sites/demo/conf.d" {
+			confNode = child
+			break
+		}
+	}
+	if confNode == nil || len(confNode.Children) != 2 {
+		t.Fatalf("expected default tree to include one more nested level, body = %s", response.Body.String())
+	}
+}
+
+func TestGetDirectoryTreeHandlerRespectsContainSubAndExplicitDepth(t *testing.T) {
+	rootPath := configureTestFileRoot(t)
+	if err := os.MkdirAll(filepath.Join(rootPath, "sites", "demo", "conf.d"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(rootPath, "sites", "demo", "conf.d", "site.conf"), []byte("server {}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name                string
+		body                string
+		wantChildren        int
+		wantNestedChildren  int
+		wantDeepestChildren int
+	}{
+		{
+			name:                "containSub disabled does not recurse",
+			body:                `{"path":"/","containSub":false}`,
+			wantChildren:        1,
+			wantNestedChildren:  0,
+			wantDeepestChildren: 0,
+		},
+		{
+			name:                "explicit maxDepth overrides default",
+			body:                `{"path":"/","containSub":true,"maxDepth":2}`,
+			wantChildren:        1,
+			wantNestedChildren:  1,
+			wantDeepestChildren: 0,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			response := performJSONRequest(t, GetDirectoryTreeHandler, test.body)
+			if response.Code != http.StatusOK {
+				t.Fatalf("tree status = %d, body = %s", response.Code, response.Body.String())
+			}
+
+			var payload struct {
+				Data []*FileNode `json:"data"`
+			}
+			if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+				t.Fatal(err)
+			}
+			if len(payload.Data) != 1 || len(payload.Data[0].Children) != test.wantChildren {
+				t.Fatalf("unexpected root children, body = %s", response.Body.String())
+			}
+			sitesNode := payload.Data[0].Children[0]
+			if len(sitesNode.Children) != test.wantNestedChildren {
+				t.Fatalf("unexpected nested children count = %d, body = %s", len(sitesNode.Children), response.Body.String())
+			}
+			if test.wantNestedChildren > 0 && len(sitesNode.Children[0].Children) != test.wantDeepestChildren {
+				t.Fatalf("unexpected deepest children count = %d, body = %s", len(sitesNode.Children[0].Children), response.Body.String())
+			}
+		})
+	}
+}
+
 func TestFileMutationCreatesDetailedOperationRecord(t *testing.T) {
 	configureTestFileRoot(t)
 	database, err := gorm.Open(sqlite.Open("file:ftp-operation-audit?mode=memory&cache=shared"))
@@ -203,12 +443,26 @@ func TestFileActionHandlersCopyMoveRenameArchiveAndProperties(t *testing.T) {
 	}
 
 	copyResponse := performJSONRequest(t, CopyFileOrDir, `{
-		"source":"/source",
-		"targetDir":"/",
-		"targetName":"copied"
+		"sourcePath":"/source",
+		"targetPath":"/copied"
 	}`)
 	if copyResponse.Code != http.StatusOK {
 		t.Fatalf("copy status=%d body=%s", copyResponse.Code, copyResponse.Body.String())
+	}
+	if err := os.WriteFile(filepath.Join(rootPath, "copied.txt"), []byte("old"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	overwriteResponse := performJSONRequest(t, CopyFileOrDir, `{
+		"sourcePath":"/source/nested/app.conf",
+		"targetPath":"/copied.txt",
+		"overwrite":true
+	}`)
+	if overwriteResponse.Code != http.StatusOK {
+		t.Fatalf("overwrite copy status=%d body=%s", overwriteResponse.Code, overwriteResponse.Body.String())
+	}
+	overwrittenContent, err := os.ReadFile(filepath.Join(rootPath, "copied.txt"))
+	if err != nil || string(overwrittenContent) != "server" {
+		t.Fatalf("overwrite copy content=%q err=%v", overwrittenContent, err)
 	}
 	renameResponse := performJSONRequest(t, RenameFileOrDir, `{
 		"path":"/copied",
@@ -221,8 +475,8 @@ func TestFileActionHandlersCopyMoveRenameArchiveAndProperties(t *testing.T) {
 		t.Fatal(err)
 	}
 	moveResponse := performJSONRequest(t, MoveFileOrDir, `{
-		"source":"/renamed",
-		"targetDir":"/target"
+		"sourcePath":"/renamed",
+		"targetPath":"/target/renamed"
 	}`)
 	if moveResponse.Code != http.StatusOK {
 		t.Fatalf("move status=%d body=%s", moveResponse.Code, moveResponse.Body.String())
@@ -608,12 +862,32 @@ func configureTestFileRoot(t *testing.T) string {
 
 func performJSONRequest(t *testing.T, handler gin.HandlerFunc, body string) *httptest.ResponseRecorder {
 	t.Helper()
+	return performJSONRequestAsUser(t, http.MethodPost, handler, body, 0, "")
+}
+
+func performJSONRequestAsUser(
+	t *testing.T,
+	method string,
+	handler gin.HandlerFunc,
+	body string,
+	userID int64,
+	username string,
+) *httptest.ResponseRecorder {
+	t.Helper()
 	gin.SetMode(gin.TestMode)
-	request := httptest.NewRequest(http.MethodPost, "/ftp/test", strings.NewReader(body))
-	request.Header.Set("Content-Type", "application/json")
+	request := httptest.NewRequest(method, "/ftp/test", strings.NewReader(body))
+	if method != http.MethodGet {
+		request.Header.Set("Content-Type", "application/json")
+	}
 	response := httptest.NewRecorder()
 	context, _ := gin.CreateTestContext(response)
 	context.Request = request
+	if userID > 0 {
+		context.Set(middleware.ContextUserID, userID)
+	}
+	if username != "" {
+		context.Set(middleware.ContextUsername, username)
+	}
 	handler(context)
 	return response
 }

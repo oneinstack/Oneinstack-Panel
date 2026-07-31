@@ -64,8 +64,8 @@ func (m *Manager) Measure(virtualPath string) (OperationResult, error) {
 }
 
 // Copy copies source into targetDir using targetName. Existing targets are
-// never overwritten.
-func (m *Manager) Copy(source, targetDir, targetName string) (result OperationResult, err error) {
+// overwritten only when overwrite is true.
+func (m *Manager) Copy(source, targetDir, targetName string, overwrite bool) (result OperationResult, err error) {
 	sourceRelative, targetRelative, err := m.resolveOperationTarget(source, targetDir, targetName)
 	if err != nil {
 		return OperationResult{}, err
@@ -75,7 +75,12 @@ func (m *Manager) Copy(source, targetDir, targetName string) (result OperationRe
 		return OperationResult{}, fmt.Errorf("%w: target cannot be inside source", ErrInvalidPath)
 	}
 	if _, err := m.root.Lstat(targetRelative); err == nil {
-		return OperationResult{}, fs.ErrExist
+		if !overwrite {
+			return OperationResult{}, fs.ErrExist
+		}
+		if err := m.removeAllRelative(targetRelative); err != nil {
+			return OperationResult{}, err
+		}
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return OperationResult{}, err
 	}
@@ -125,7 +130,7 @@ func (m *Manager) Move(source, targetDir, targetName string) (OperationResult, e
 		return OperationResult{}, err
 	}
 
-	copied, err := m.Copy(source, targetDir, targetName)
+	copied, err := m.Copy(source, targetDir, targetName, false)
 	if err != nil {
 		return OperationResult{}, err
 	}

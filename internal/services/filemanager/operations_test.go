@@ -27,7 +27,7 @@ func TestCopyMoveRenameAndArchive(t *testing.T) {
 	}
 	defer manager.Close()
 
-	copied, err := manager.Copy("/source", "/backup", "copied")
+	copied, err := manager.Copy("/source", "/backup", "copied", false)
 	if err != nil {
 		t.Fatalf("copy: %v", err)
 	}
@@ -38,8 +38,22 @@ func TestCopyMoveRenameAndArchive(t *testing.T) {
 	if err != nil || string(content) != "hello" {
 		t.Fatalf("copied content=%q err=%v", content, err)
 	}
-	if _, err := manager.Copy("/source", "/backup", "copied"); !errors.Is(err, os.ErrExist) {
+	if _, err := manager.Copy("/source", "/backup", "copied", false); !errors.Is(err, os.ErrExist) {
 		t.Fatalf("copy should refuse overwrite, got %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(rootPath, "backup", "config.txt"), []byte("old"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	overwritten, err := manager.Copy("/source/nested/config.txt", "/backup", "config.txt", true)
+	if err != nil {
+		t.Fatalf("overwrite copy: %v", err)
+	}
+	if overwritten.Path != "/backup/config.txt" || overwritten.Bytes != 5 || overwritten.Entries != 1 {
+		t.Fatalf("unexpected overwrite result: %+v", overwritten)
+	}
+	overwrittenContent, err := os.ReadFile(filepath.Join(rootPath, "backup", "config.txt"))
+	if err != nil || string(overwrittenContent) != "hello" {
+		t.Fatalf("overwritten content=%q err=%v", overwrittenContent, err)
 	}
 
 	renamed, err := manager.Rename("/backup/copied", "renamed")
@@ -108,7 +122,7 @@ func TestCopyAndArchiveRejectSymbolicLinks(t *testing.T) {
 	}
 	defer manager.Close()
 
-	if _, err := manager.Copy("/link.txt", "/", "copy.txt"); !errors.Is(err, ErrUnsupportedType) {
+	if _, err := manager.Copy("/link.txt", "/", "copy.txt", false); !errors.Is(err, ErrUnsupportedType) {
 		t.Fatalf("copy symlink error=%v, want ErrUnsupportedType", err)
 	}
 	if _, err := manager.Archive("/link.txt", "/", "link.tar.gz"); !errors.Is(err, ErrUnsupportedType) {
