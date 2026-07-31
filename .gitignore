@@ -58,3 +58,8 @@ mysql*
 !/docker/entrypoint.sh
 !/script-registry/
 !/script-registry/**
+
+/.gocache/
+/.run/
+/.runtime/
+/.tmp/

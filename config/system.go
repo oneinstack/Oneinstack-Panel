@@ -52,6 +52,8 @@ type System struct {
 	ACMEIssueTimeoutMinutes       int      `mapstructure:"acmeIssueTimeoutMinutes" json:"acmeIssueTimeoutMinutes" yaml:"acmeIssueTimeoutMinutes"`
 	TerminalEnabled               bool     `mapstructure:"terminalEnabled" json:"terminalEnabled" yaml:"terminalEnabled"`
 	TerminalSessionMins           int      `mapstructure:"terminalSessionMinutes" json:"terminalSessionMinutes" yaml:"terminalSessionMinutes"`
+	AllowInsecureWebSocketInDev   bool     `mapstructure:"allowInsecureWebSocketInDev" json:"allowInsecureWebSocketInDev" yaml:"allowInsecureWebSocketInDev"`
+	AllowInlineStyle              bool     `mapstructure:"allowInlineStyle" json:"allowInlineStyle" yaml:"allowInlineStyle"`
 	TerminalIdleMins              int      `mapstructure:"terminalIdleMinutes" json:"terminalIdleMinutes" yaml:"terminalIdleMinutes"`
 	TerminalMaxConcurrent         int      `mapstructure:"terminalMaxConcurrent" json:"terminalMaxConcurrent" yaml:"terminalMaxConcurrent"`
 	TerminalMaxPerUser            int      `mapstructure:"terminalMaxPerUser" json:"terminalMaxPerUser" yaml:"terminalMaxPerUser"`

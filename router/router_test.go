@@ -140,6 +140,39 @@ func TestPublicRoutesDoNotRequireAuthentication(t *testing.T) {
 	}
 }
 
+func TestPublicBaseInfoReturnsOnlyTitle(t *testing.T) {
+	router := SetupRouter()
+	if err := app.DB().Exec("DELETE FROM system").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := app.DB().Create(&models.System{Title: "Secure Panel"}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/v1/sys/getbaseinfo", nil)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	var response struct {
+		Data map[string]interface{} `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if title, ok := response.Data["title"].(string); !ok || title != "Secure Panel" {
+		t.Fatalf("title = %#v, want %q", response.Data["title"], "Secure Panel")
+	}
+	for _, forbidden := range []string{"id", "created_at", "updated_at"} {
+		if _, exists := response.Data[forbidden]; exists {
+			t.Fatalf("public base info unexpectedly includes %q: %#v", forbidden, response.Data)
+		}
+	}
+}
+
 func TestSSHRouteRejectsLegacyQueryToken(t *testing.T) {
 	t.Setenv("JWT_SECRET_KEY", "test-only-jwt-secret-at-least-32-bytes")
 	token, err := utils.GenerateJWT("admin", 1)
