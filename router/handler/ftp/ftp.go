@@ -1,6 +1,9 @@
 package ftp
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -55,6 +58,7 @@ type FileDetail struct {
 	ItemTotal  int    `json:"itemTotal"`
 	FavoriteID int    `json:"favoriteID"`
 	IsDetail   bool   `json:"isDetail"`
+	Revision   string `json:"revision"`
 }
 
 type FileNode struct {
@@ -105,11 +109,19 @@ func ListDirectory(c *gin.Context) {
 		if relative == "." {
 			childRelative = entry.Name()
 		}
+		childPath := manager.VirtualPath(childRelative)
+		isSymlink := info.Mode()&os.ModeSymlink != 0
+		isDir := entry.IsDir()
+		if isSymlink {
+			if targetInfo, _, targetErr := manager.Stat(childPath); targetErr == nil {
+				isDir = targetInfo.IsDir()
+			}
+		}
 		fileInfos = append(fileInfos, gin.H{
-			"path":        manager.VirtualPath(childRelative),
+			"path":        childPath,
 			"name":        entry.Name(),
-			"isDir":       entry.IsDir(),
-			"isSymlink":   info.Mode()&os.ModeSymlink != 0,
+			"isDir":       isDir,
+			"isSymlink":   isSymlink,
 			"permissions": fmt.Sprintf("%04o", info.Mode().Perm()),
 			"user":        userName,
 			"group":       groupName,
@@ -129,6 +141,7 @@ func CreateFileOrDir(c *gin.Context) {
 		handleBadRequest(c, err, "请求参数错误")
 		return
 	}
+	startFileOperation(c, "file.create", input.Path)
 
 	manager, ok := managerForRequest(c)
 	if !ok {
@@ -159,6 +172,7 @@ func CreateFileOrDir(c *gin.Context) {
 		return
 	}
 	core.HandleSuccess(c, "创建成功")
+	finishFileOperation(c, "success", "创建"+map[bool]string{true: "目录", false: "文件"}[input.Type == "dir"])
 }
 
 func UploadFile(c *gin.Context) {
@@ -193,6 +207,7 @@ func UploadFile(c *gin.Context) {
 		handleFileError(c, err, "上传路径无效")
 		return
 	}
+	startFileOperation(c, "file.upload", manager.VirtualPath(target))
 	reservation, _, err := manager.ReserveCapacity(fileHeader.Size, settings.capacityPolicy)
 	if err != nil {
 		handleFileError(c, err, "存储容量不足")
@@ -238,6 +253,7 @@ func UploadFile(c *gin.Context) {
 	}
 	keepFile = true
 	core.HandleSuccess(c, gin.H{"path": manager.VirtualPath(target), "size": written})
+	finishFileOperation(c, "success", fmt.Sprintf("上传 %d 字节", written))
 }
 
 func DownloadFile(c *gin.Context) {
@@ -248,6 +264,7 @@ func DownloadFile(c *gin.Context) {
 		handleBadRequest(c, err, "请求参数错误")
 		return
 	}
+	startFileOperation(c, "file.download", input.Path)
 
 	manager, ok := managerForRequest(c)
 	if !ok {
@@ -279,6 +296,7 @@ func DownloadFile(c *gin.Context) {
 	c.Header("Content-Disposition", "attachment; filename*=utf-8''"+url.PathEscape(info.Name()))
 	c.Header("X-Content-Type-Options", "nosniff")
 	http.ServeContent(c.Writer, c.Request, info.Name(), info.ModTime(), file)
+	finishFileOperation(c, "success", fmt.Sprintf("下载 %d 字节", info.Size()))
 }
 
 func DeleteFileOrDir(c *gin.Context) {
@@ -289,6 +307,7 @@ func DeleteFileOrDir(c *gin.Context) {
 		handleBadRequest(c, err, "请求参数错误")
 		return
 	}
+	startFileOperation(c, "file.trash", input.Path)
 
 	manager, ok := managerForRequest(c)
 	if !ok {
@@ -306,6 +325,7 @@ func DeleteFileOrDir(c *gin.Context) {
 		return
 	}
 	core.HandleSuccess(c, entry)
+	finishFileOperation(c, "success", "移入回收站")
 }
 
 func CopyFileOrDir(c *gin.Context) {
@@ -403,6 +423,7 @@ func RestoreTrash(c *gin.Context) {
 		handleBadRequest(c, err, "请求参数错误")
 		return
 	}
+	startFileOperation(c, "file.restore", "/trash/"+input.ID)
 	manager, ok := managerForRequest(c)
 	if !ok {
 		return
@@ -414,7 +435,9 @@ func RestoreTrash(c *gin.Context) {
 		handleFileError(c, err, "恢复失败")
 		return
 	}
+	startFileOperation(c, "file.restore", entry.OriginalPath)
 	core.HandleSuccess(c, entry)
+	finishFileOperation(c, "success", "从回收站恢复")
 }
 
 func DeleteTrashPermanently(c *gin.Context) {
@@ -425,6 +448,7 @@ func DeleteTrashPermanently(c *gin.Context) {
 		handleBadRequest(c, err, "请求参数错误")
 		return
 	}
+	startFileOperation(c, "file.delete_permanently", "/trash/"+input.ID)
 	manager, ok := managerForRequest(c)
 	if !ok {
 		return
@@ -436,6 +460,7 @@ func DeleteTrashPermanently(c *gin.Context) {
 		return
 	}
 	core.HandleSuccess(c, "彻底删除成功")
+	finishFileOperation(c, "success", "彻底删除回收站文件")
 }
 
 func EmptyTrash(c *gin.Context) {
@@ -449,6 +474,7 @@ func EmptyTrash(c *gin.Context) {
 		handleBadRequest(c, err, "请求参数错误")
 		return
 	}
+	startFileOperation(c, "file.empty_trash", "/")
 	manager, ok := managerForRequest(c)
 	if !ok {
 		return
@@ -461,6 +487,7 @@ func EmptyTrash(c *gin.Context) {
 		return
 	}
 	core.HandleSuccess(c, gin.H{"deleted": deleted})
+	finishFileOperation(c, "success", fmt.Sprintf("清空回收站，共 %d 项", deleted))
 }
 
 func ModifyFileOrDirAttributes(c *gin.Context) {
@@ -475,6 +502,7 @@ func ModifyFileOrDirAttributes(c *gin.Context) {
 		handleBadRequest(c, err, "请求参数错误")
 		return
 	}
+	startFileOperation(c, "file.attributes", input.Path)
 
 	permission, err := strconv.ParseUint(input.Perm, 8, 32)
 	if err != nil || permission > 0777 {
@@ -554,9 +582,8 @@ func ModifyFileOrDirAttributes(c *gin.Context) {
 		return
 	}
 	core.HandleSuccess(c, "修改成功")
+	finishFileOperation(c, "success", "修改权限和所有者")
 }
-
-func SearchFile(_ *gin.Context) {}
 
 func Content(c *gin.Context) {
 	var input struct {
@@ -566,6 +593,7 @@ func Content(c *gin.Context) {
 		handleBadRequest(c, err, "请求参数错误")
 		return
 	}
+	startFileOperation(c, "file.read", input.Path)
 
 	manager, ok := managerForRequest(c)
 	if !ok {
@@ -603,6 +631,10 @@ func Content(c *gin.Context) {
 		handleFileError(c, filemanager.ErrInvalidPath, "文件过大，无法在线编辑")
 		return
 	}
+	if bytes.IndexByte(data, 0) >= 0 {
+		handleFileError(c, filemanager.ErrNotRegular, "二进制文件不支持在线编辑")
+		return
+	}
 
 	userName, groupName, uid, gid := fileOwner(info)
 	lstat, lstatErr := manager.LstatRelative(relative)
@@ -628,7 +660,9 @@ func Content(c *gin.Context) {
 		Mode:      fmt.Sprintf("%04o", info.Mode().Perm()),
 		MimeType:  mimeType,
 		ModTime:   info.ModTime().Format(time.RFC3339Nano),
+		Revision:  contentRevision(data),
 	})
+	finishFileOperation(c, "success", fmt.Sprintf("读取 %d 字节", info.Size()))
 }
 
 func GetDirectoryTreeHandler(c *gin.Context) {
@@ -692,13 +726,15 @@ func GetDirectoryTreeHandler(c *gin.Context) {
 
 func SaveFile(c *gin.Context) {
 	var input struct {
-		Path    string `json:"path" binding:"required"`
-		Content string `json:"content"`
+		Path     string `json:"path" binding:"required"`
+		Content  string `json:"content"`
+		Revision string `json:"revision"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
 		handleBadRequest(c, err, "请求参数错误")
 		return
 	}
+	startFileOperation(c, "file.save", input.Path)
 	settings := currentFileSettings()
 	if int64(len(input.Content)) > settings.editMaxBytes {
 		handleFileError(c, filemanager.ErrInvalidPath, "文件内容超过在线编辑限制")
@@ -720,6 +756,27 @@ func SaveFile(c *gin.Context) {
 		handleFileError(c, filemanager.ErrNotRegular, "仅支持保存普通文件")
 		return
 	}
+	if strings.TrimSpace(input.Revision) != "" {
+		current, _, openErr := manager.Open(input.Path)
+		if openErr != nil {
+			handleFileError(c, openErr, "读取文件当前版本失败")
+			return
+		}
+		currentData, readErr := io.ReadAll(io.LimitReader(current, settings.editMaxBytes+1))
+		closeErr := current.Close()
+		if readErr != nil {
+			handleFileError(c, readErr, "读取文件当前版本失败")
+			return
+		}
+		if closeErr != nil {
+			handleFileError(c, closeErr, "关闭文件失败")
+			return
+		}
+		if !strings.EqualFold(contentRevision(currentData), strings.TrimSpace(input.Revision)) {
+			handleFileError(c, filemanager.ErrRevisionConflict, "文件已被其他进程修改，请重新读取")
+			return
+		}
+	}
 	additionalBytes := int64(len(input.Content)) - info.Size()
 	if additionalBytes < 0 {
 		additionalBytes = 0
@@ -734,7 +791,9 @@ func SaveFile(c *gin.Context) {
 		handleFileError(c, err, "保存失败")
 		return
 	}
-	core.HandleSuccess(c, "保存成功")
+	revision := contentRevision([]byte(input.Content))
+	core.HandleSuccess(c, gin.H{"message": "保存成功", "revision": revision})
+	finishFileOperation(c, "success", fmt.Sprintf("保存 %d 字节", len(input.Content)))
 }
 
 func UrlDownloadFile(c *gin.Context) {
@@ -753,6 +812,12 @@ func UrlDownloadFile(c *gin.Context) {
 		return
 	}
 	defer manager.Close()
+	target, err := manager.Join(input.Path, input.Name)
+	if err != nil {
+		handleFileError(c, err, "远程下载路径无效")
+		return
+	}
+	startFileOperation(c, "file.remote_download", manager.VirtualPath(target))
 
 	settings := currentFileSettings()
 	reservation, _, err := manager.ReserveCapacity(settings.uploadMaxBytes, settings.capacityPolicy)
@@ -765,8 +830,8 @@ func UrlDownloadFile(c *gin.Context) {
 		handleFileError(c, err, "远程下载失败")
 		return
 	}
-	target, _ := manager.Join(input.Path, input.Name)
 	core.HandleSuccess(c, gin.H{"path": manager.VirtualPath(target)})
+	finishFileOperation(c, "success", "远程下载完成")
 }
 
 func Capacity(c *gin.Context) {
@@ -783,6 +848,7 @@ func Capacity(c *gin.Context) {
 		return
 	}
 	core.HandleSuccess(c, gin.H{
+		"rootPath":             manager.RootPath(),
 		"capacity":             status,
 		"uploadMaxBytes":       settings.uploadMaxBytes,
 		"editMaxBytes":         settings.editMaxBytes,
@@ -888,9 +954,12 @@ func handleFileError(c *gin.Context, err error, message string) {
 		core.HandleError(c, core.WrapError(err, core.ErrInsufficientStorage, message))
 	case errors.Is(err, filemanager.ErrRootOperation):
 		core.HandleError(c, core.WrapError(err, core.ErrForbidden, message))
+	case errors.Is(err, filemanager.ErrRevisionConflict):
+		core.HandleError(c, core.WrapError(err, core.ErrConflict, message))
 	case errors.Is(err, filemanager.ErrInvalidPath),
 		errors.Is(err, filemanager.ErrInvalidName),
 		errors.Is(err, filemanager.ErrNotRegular),
+		errors.Is(err, filemanager.ErrUnsupportedType),
 		errors.Is(err, filemanager.ErrReservedPath),
 		errors.Is(err, filemanager.ErrUnsafeRemoteURL),
 		errors.Is(err, filemanager.ErrDownloadLimit),
@@ -899,6 +968,12 @@ func handleFileError(c *gin.Context, err error, message string) {
 	default:
 		core.HandleError(c, core.NewError(core.ErrInternalError, message))
 	}
+	finishFileOperation(c, "failure", message)
+}
+
+func contentRevision(content []byte) string {
+	sum := sha256.Sum256(content)
+	return hex.EncodeToString(sum[:])
 }
 
 type fileSettings struct {

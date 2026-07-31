@@ -35,6 +35,8 @@ type Config struct {
 	Enabled          bool
 	ManifestURL      string
 	ResolveURL       string
+	KeyStatusURL     string
+	TrustStatePath   string
 	InstanceID       string
 	Channel          string
 	TrustedKeys      map[string]string
@@ -88,6 +90,12 @@ type CheckResult struct {
 	MinimumVersion  string    `json:"minimumVersion,omitempty"`
 	Compatible      bool      `json:"compatible"`
 	ArtifactSize    int64     `json:"artifactSize,omitempty"`
+	SigningKeyID    string    `json:"signingKeyId,omitempty"`
+	TrustRevision   uint64    `json:"trustRevision,omitempty"`
+	TrustSource     string    `json:"trustSource,omitempty"`
+	TrustedKeyCount int       `json:"trustedKeyCount"`
+	RevokedKeyCount int       `json:"revokedKeyCount"`
+	TrustUpdatedAt  time.Time `json:"trustUpdatedAt,omitempty"`
 }
 
 type Status struct {

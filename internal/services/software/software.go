@@ -217,15 +217,16 @@ func Remove(param *input.RemoveParams) (bool, error) {
 	logFile, err := installer.Uninstall(param, false)
 	if err != nil {
 		app.DB().Model(&models.Software{}).
-			Where("`key` = ? AND version = ?", softwareKey, param.Version).
+			Where("`key` = ? AND installed = ?", softwareKey, true).
 			Updates(map[string]interface{}{"status": models.Soft_Status_Err, "log": logFile})
 		return false, err
 	}
-	tx := app.DB().Model(&models.Software{}).Where("`key` = ? AND version = ?", softwareKey, param.Version).Updates(map[string]interface{}{
+	tx := app.DB().Model(&models.Software{}).Where("`key` = ? AND installed = ?", softwareKey, true).Updates(map[string]interface{}{
 		"status":          models.Soft_Status_Default,
 		"log":             logFile,
 		"installed":       false,
 		"install_version": "",
+		"is_update":       false,
 	})
 	if tx.Error != nil {
 		return false, tx.Error

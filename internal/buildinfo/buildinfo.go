@@ -1,6 +1,10 @@
 package buildinfo
 
-import "runtime"
+import (
+	"regexp"
+	"runtime"
+	"strings"
+)
 
 // These values are replaced by release builds through -ldflags.
 var (
@@ -9,6 +13,23 @@ var (
 	CommitHash = "unknown"
 	WebVersion = "dev"
 )
+
+const developmentCompatibilityVersion = "0.1.0-dev"
+
+var semanticVersionPattern = regexp.MustCompile(
+	`^v?[0-9]+(?:\.[0-9]+){1,2}(?:[-+][0-9A-Za-z.-]+)?$`,
+)
+
+// CompatibleVersion returns a semantic version suitable for Center package
+// compatibility checks. Local and source builds historically report "dev",
+// which is useful for display but is not a valid semantic version.
+func CompatibleVersion() string {
+	version := strings.TrimSpace(Version)
+	if semanticVersionPattern.MatchString(version) {
+		return version
+	}
+	return developmentCompatibilityVersion
+}
 
 // Info is the build metadata exposed by the CLI and the authenticated API.
 type Info struct {

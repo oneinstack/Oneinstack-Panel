@@ -2,6 +2,7 @@ package panelupdate
 
 import (
 	"fmt"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -14,6 +15,7 @@ func NewApplicationManager(manifestOverride string) (*Manager, error) {
 	center := app.ONE_CONFIG.UpdateCenter
 	manifestURL := strings.TrimSpace(manifestOverride)
 	resolveURL := ""
+	keyStatusURL := ""
 	enabled := center.Enabled
 	if manifestURL == "" {
 		centerURL := strings.TrimRight(strings.TrimSpace(center.CenterURL), "/")
@@ -22,6 +24,7 @@ func NewApplicationManager(manifestOverride string) (*Manager, error) {
 		}
 		if centerURL != "" {
 			resolveURL = centerURL + "/v1/panel/releases/resolve"
+			keyStatusURL = centerURL + "/v1/panel/keys"
 		} else {
 			manifestURL = center.ManifestURL
 		}
@@ -38,7 +41,9 @@ func NewApplicationManager(manifestOverride string) (*Manager, error) {
 	}
 	return NewManager(Config{
 		Enabled: enabled, ManifestURL: manifestURL, ResolveURL: resolveURL,
-		InstanceID: instanceID, Channel: center.Channel,
+		KeyStatusURL:   keyStatusURL,
+		TrustStatePath: filepath.Join(strings.TrimSuffix(app.GetBasePath(), "/"), "update", "trusted-keys.json"),
+		InstanceID:     instanceID, Channel: center.Channel,
 		TrustedKeys:     trustedKeys,
 		RequestTimeout:  time.Duration(center.RequestTimeoutSeconds) * time.Second,
 		MaxPackageBytes: center.MaxPackageBytes, MaxExpandedBytes: center.MaxExpandedBytes,

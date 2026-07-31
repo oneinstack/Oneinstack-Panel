@@ -30,6 +30,7 @@ func TestManagerPersistsProgressWithoutSecretParameters(t *testing.T) {
 		if err := os.WriteFile(logPath, []byte("install output\n"), 0600); err != nil {
 			return err
 		}
+		reporter.OnPackageResolved("2.0.2", "remote")
 		reporter.OnActionStart("precheck")
 		reporter.OnActionComplete("precheck")
 		reporter.OnActionStart("install")
@@ -52,6 +53,9 @@ func TestManagerPersistsProgressWithoutSecretParameters(t *testing.T) {
 	task = waitForTaskStatus(t, manager, task.ID, models.SoftwareTaskStatusSucceeded)
 	if task.Progress != 100 || task.EventSeq < 5 {
 		t.Fatalf("unexpected completed task: %#v", task)
+	}
+	if task.ResolvedVersion != "2.0.2" || task.PackageSource != "remote" {
+		t.Fatalf("package resolution was not persisted: %#v", task)
 	}
 	if strings.Contains(task.ParametersJSON, "task-secret-value") {
 		t.Fatalf("task parameters persisted secret: %s", task.ParametersJSON)
@@ -269,13 +273,28 @@ func TestManagerRunsConfigurationAsDurableTask(t *testing.T) {
 		reporter.OnActionComplete("configApply")
 		return nil
 	})
-	task, err := manager.SubmitConfiguration("redis", revision, map[string]string{
+	previous := map[string]string{
+		"maxmemory":       "0",
+		"maxmemoryPolicy": "noeviction",
+		"appendonly":      "false",
+		"timeout":         "0",
+		"tcpKeepalive":    "300",
+	}
+	target := map[string]string{
 		"maxmemory":       "512",
 		"maxmemoryPolicy": "allkeys-lru",
 		"appendonly":      "true",
 		"timeout":         "0",
 		"tcpKeepalive":    "300",
-	}, 14)
+	}
+	task, err := manager.SubmitConfiguration(
+		"redis",
+		revision,
+		previous,
+		target,
+		"",
+		14,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -299,6 +318,67 @@ func TestManagerRunsConfigurationAsDurableTask(t *testing.T) {
 	}
 	if !foundConfiguring {
 		t.Fatalf("configuration progress was not persisted: %#v", events)
+	}
+	var history models.SoftwareConfigurationHistory
+	if err := db.First(&history, "task_id = ?", task.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if history.Status != models.SoftwareConfigurationStatusSucceeded ||
+		history.SoftwareVersion != "7.4.8" ||
+		!strings.Contains(history.BeforeJSON, `"maxmemory":"0"`) ||
+		!strings.Contains(history.AfterJSON, `"maxmemory":"512"`) {
+		t.Fatalf("unexpected configuration history: %#v", history)
+	}
+}
+
+func TestManagerMarksFailedConfigurationHistory(t *testing.T) {
+	db := openTaskTestDB(t)
+	if err := db.Create(&models.Software{
+		Name:           "Redis",
+		Key:            "redis",
+		Version:        "7.4.8",
+		Installed:      true,
+		InstallVersion: "7.4.8",
+		Status:         models.Soft_Status_Suc,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(db, t.TempDir(), func(
+		context.Context,
+		InstallRequest,
+		string,
+		*Reporter,
+	) error {
+		return errors.New("configApply action failed: exit status 65")
+	})
+	values := map[string]string{
+		"maxmemory":       "0",
+		"maxmemoryPolicy": "noeviction",
+		"appendonly":      "false",
+		"timeout":         "0",
+		"tcpKeepalive":    "300",
+	}
+	target := cloneConfigurationValues(values)
+	target["maxmemory"] = "512"
+	task, err := manager.SubmitConfiguration(
+		"redis",
+		strings.Repeat("b", 64),
+		values,
+		target,
+		"",
+		14,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task = waitForTaskStatus(t, manager, task.ID, models.SoftwareTaskStatusFailed)
+	var history models.SoftwareConfigurationHistory
+	if err := db.First(&history, "task_id = ?", task.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if history.Status != models.SoftwareConfigurationStatusFailed ||
+		history.FinishedAt == nil {
+		t.Fatalf("unexpected failed configuration history: %#v", history)
 	}
 }
 
@@ -449,6 +529,7 @@ func openTaskTestDB(t *testing.T) *gorm.DB {
 		&models.SoftwareTask{},
 		&models.SoftwareTaskEvent{},
 		&models.ComponentOperationLock{},
+		&models.SoftwareConfigurationHistory{},
 	); err != nil {
 		t.Fatal(err)
 	}

@@ -24,14 +24,16 @@ const (
 )
 
 type InstallRequest struct {
-	Operation     string
-	Key           string
-	Version       string
-	Port          string
-	Username      string
-	Password      string
-	Revision      string
-	Configuration map[string]string
+	Operation             string
+	Key                   string
+	Version               string
+	Port                  string
+	Username              string
+	Password              string
+	Revision              string
+	PreviousConfiguration map[string]string
+	Configuration         map[string]string
+	RestoreFromID         string
 }
 
 type Executor func(
@@ -159,7 +161,9 @@ func (m *Manager) SubmitServiceAction(
 func (m *Manager) SubmitConfiguration(
 	component string,
 	revision string,
+	previousValues map[string]string,
 	values map[string]string,
+	restoreFromID string,
 	requestedBy int64,
 ) (*models.SoftwareTask, error) {
 	key, err := softwareKeyForService(component)
@@ -167,10 +171,12 @@ func (m *Manager) SubmitConfiguration(
 		return nil, err
 	}
 	return m.submit(InstallRequest{
-		Operation:     "configure",
-		Key:           key,
-		Revision:      strings.TrimSpace(revision),
-		Configuration: cloneConfigurationValues(values),
+		Operation:             "configure",
+		Key:                   key,
+		Revision:              strings.TrimSpace(revision),
+		PreviousConfiguration: cloneConfigurationValues(previousValues),
+		Configuration:         cloneConfigurationValues(values),
+		RestoreFromID:         strings.TrimSpace(restoreFromID),
 	}, requestedBy)
 }
 
@@ -197,7 +203,21 @@ func (m *Manager) submit(request InstallRequest, requestedBy int64) (*models.Sof
 		if err := validateConfigurationTaskPayload(request.Revision, request.Configuration); err != nil {
 			return nil, err
 		}
-	} else if request.Revision != "" || len(request.Configuration) != 0 {
+		if err := validateConfigurationTaskPayload(request.Revision, request.PreviousConfiguration); err != nil {
+			return nil, fmt.Errorf("previous configuration is invalid: %w", err)
+		}
+		if !sameConfigurationKeys(request.PreviousConfiguration, request.Configuration) {
+			return nil, errors.New("previous and target configuration fields must match")
+		}
+		if request.RestoreFromID != "" {
+			if _, err := uuid.Parse(request.RestoreFromID); err != nil {
+				return nil, errors.New("restore source ID is invalid")
+			}
+		}
+	} else if request.Revision != "" ||
+		len(request.PreviousConfiguration) != 0 ||
+		len(request.Configuration) != 0 ||
+		request.RestoreFromID != "" {
 		return nil, errors.New("configuration payload is only valid for configure tasks")
 	}
 	if request.Key == "" {
@@ -275,6 +295,9 @@ func (m *Manager) submit(request InstallRequest, requestedBy int64) (*models.Sof
 	if request.Operation == "configure" {
 		safeParameterValues["revision"] = request.Revision
 		safeParameterValues["configuration"] = request.Configuration
+		if request.RestoreFromID != "" {
+			safeParameterValues["restoreFromId"] = request.RestoreFromID
+		}
 	}
 	safeParameters, err := json.Marshal(safeParameterValues)
 	if err != nil {
@@ -313,11 +336,43 @@ func (m *Manager) submit(request InstallRequest, requestedBy int64) (*models.Sof
 		Message:   task.Message,
 		CreatedAt: now,
 	}
+	var configurationHistory *models.SoftwareConfigurationHistory
+	if request.Operation == "configure" {
+		beforeJSON, marshalErr := json.Marshal(request.PreviousConfiguration)
+		if marshalErr != nil {
+			return nil, fmt.Errorf("encode previous component configuration: %w", marshalErr)
+		}
+		afterJSON, marshalErr := json.Marshal(request.Configuration)
+		if marshalErr != nil {
+			return nil, fmt.Errorf("encode target component configuration: %w", marshalErr)
+		}
+		configurationHistory = &models.SoftwareConfigurationHistory{
+			ID:              uuid.NewString(),
+			TaskID:          task.ID,
+			Component:       component,
+			SoftwareKey:     request.Key,
+			SoftwareVersion: request.Version,
+			BaseRevision:    request.Revision,
+			BeforeJSON:      string(beforeJSON),
+			AfterJSON:       string(afterJSON),
+			Status:          models.SoftwareConfigurationStatusPending,
+			RestoreFromID:   request.RestoreFromID,
+			RequestedBy:     requestedBy,
+			CreatedAt:       now,
+			UpdatedAt:       now,
+		}
+	}
 	if err := m.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(task).Error; err != nil {
 			return err
 		}
-		return tx.Create(event).Error
+		if err := tx.Create(event).Error; err != nil {
+			return err
+		}
+		if configurationHistory != nil {
+			return tx.Create(configurationHistory).Error
+		}
+		return nil
 	}); err != nil {
 		return nil, fmt.Errorf("create software task: %w", err)
 	}
@@ -548,6 +603,17 @@ func (m *Manager) reconcileInterruptedTasks() error {
 			if err := tx.Create(&event).Error; err != nil {
 				return err
 			}
+			if task.Operation == "configure" {
+				if err := tx.Model(&models.SoftwareConfigurationHistory{}).
+					Where("task_id = ? AND status = ?", task.ID, models.SoftwareConfigurationStatusPending).
+					Updates(map[string]any{
+						"status":      models.SoftwareConfigurationStatusInterrupted,
+						"finished_at": now,
+						"updated_at":  now,
+					}).Error; err != nil {
+					return err
+				}
+			}
 		}
 		if err := tx.Session(&gorm.Session{AllowGlobalUpdate: true}).
 			Delete(&models.ComponentOperationLock{}).Error; err != nil {
@@ -688,6 +754,18 @@ func cloneConfigurationValues(values map[string]string) map[string]string {
 		result[key] = value
 	}
 	return result
+}
+
+func sameConfigurationKeys(left, right map[string]string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for key := range left {
+		if _, exists := right[key]; !exists {
+			return false
+		}
+	}
+	return true
 }
 
 func validateConfigurationTaskPayload(revision string, values map[string]string) error {

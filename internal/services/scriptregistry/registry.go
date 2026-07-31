@@ -129,6 +129,33 @@ func (r *Registry) ResolveInstalled(
 	)
 }
 
+// ResolveInstalledLocal resolves an already verified installed-component
+// package without contacting Center. It is intended for frequent local health
+// probes where a temporary Center outage must not make a running service look
+// unhealthy. Installation, upgrade, and user-triggered lifecycle operations
+// continue to use Resolve or ResolveInstalled.
+func (r *Registry) ResolveInstalledLocal(
+	component string,
+	softwareVersion string,
+	requiredActions ...string,
+) (Package, error) {
+	cached, cacheErr := r.resolveCachedInstalled(component, softwareVersion, requiredActions)
+	if cacheErr == nil {
+		return cached, nil
+	}
+	bundled, bundledErr := r.resolveBundledInstalled(component, softwareVersion, requiredActions)
+	if bundledErr == nil {
+		return bundled, nil
+	}
+	return Package{}, fmt.Errorf(
+		"no compatible local package for installed %s %s (cache: %v; bundled: %v)",
+		component,
+		softwareVersion,
+		cacheErr,
+		bundledErr,
+	)
+}
+
 func (r *Registry) resolveCachedInstalled(
 	component string,
 	softwareVersion string,
@@ -434,7 +461,7 @@ func signingPayload(componentID, version, digest string, size int64) []byte {
 func detectHost() Host {
 	systemID, systemVersion := readOSRelease("/etc/os-release")
 	return Host{
-		PanelVersion:  buildinfo.Version,
+		PanelVersion:  buildinfo.CompatibleVersion(),
 		SystemID:      systemID,
 		SystemVersion: systemVersion,
 		Architecture:  runtime.GOARCH,

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -18,6 +19,7 @@ import (
 	"oneinstack/internal/services/software"
 	"oneinstack/internal/services/softwaretask"
 	systemservice "oneinstack/internal/services/system"
+	websiteService "oneinstack/internal/services/website"
 	"oneinstack/internal/services/websitetask"
 	web "oneinstack/router"
 	cronHandler "oneinstack/router/handler/cron"
@@ -51,6 +53,8 @@ func main() {
 
 	changePortCmd.Flags().StringP("port", "p", "", "New port for the system")
 	configureUpdateCommands()
+	configureNetworkCommands()
+	configureBackupCommands()
 
 	// 绑定 --user 和 --password 参数到 init 命令
 	initCmd.Flags().StringVarP(&userName, "user", "u", "", "Specify the username")
@@ -71,6 +75,8 @@ func main() {
 	rootCmd.AddCommand(updateCmd)
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(panelEntryCmd)
+	rootCmd.AddCommand(networkCmd)
+	rootCmd.AddCommand(backupCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Println(err)
@@ -82,7 +88,8 @@ var rootCmd = &cobra.Command{
 	Use:   "one",
 	Short: "oneinstack",
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-		if cmd == versionCmd || isUpdateCommand(cmd) {
+		if cmd == versionCmd || isUpdateCommand(cmd) || isNetworkTransactionCommand(cmd) ||
+			isPanelBackupCommand(cmd) {
 			return nil
 		}
 		if cmd == debugCmd {
@@ -310,6 +317,9 @@ func startServer() error {
 	if err != nil {
 		return fmt.Errorf("initialize monitoring service: %w", err)
 	}
+	monitorManager.SetServiceHealthCollector(
+		software.NewComponentHealthCollector(app.DB()),
+	)
 	monitoring.ConfigureDefault(monitorManager)
 	monitorManager.Start()
 	defer func() {
@@ -400,60 +410,68 @@ func startServer() error {
 
 	websiteTaskManager, err := websiteHandler.DefaultWebsiteTaskManager()
 	if err != nil {
-		return fmt.Errorf("initialize website task manager: %w", err)
-	}
-	websiteBackupCleaner, err := websitetask.NewCleaner(
-		websiteTaskManager,
-		app.ONE_CONFIG.System.WebsiteBackupRetentionDays,
-		app.ONE_CONFIG.System.WebsiteBackupCleanupSchedule,
-	)
-	if err != nil {
-		return err
-	}
-	websiteBackupCleaner.Start()
-	defer func() {
-		stopContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if stopErr := websiteBackupCleaner.Stop(stopContext); stopErr != nil {
-			log.Printf("stop website backup cleaner: %v", stopErr)
+		if !errors.Is(err, websiteService.ErrNginxUnavailable) {
+			return fmt.Errorf("initialize website task manager: %w", err)
 		}
-	}()
-	defer func() {
-		stopContext, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if stopErr := websiteTaskManager.Stop(stopContext); stopErr != nil {
-			log.Printf("stop website task manager: %v", stopErr)
+		log.Printf("website task service disabled until Nginx is installed: %v", err)
+	} else {
+		websiteBackupCleaner, err := websitetask.NewCleaner(
+			websiteTaskManager,
+			app.ONE_CONFIG.System.WebsiteBackupRetentionDays,
+			app.ONE_CONFIG.System.WebsiteBackupCleanupSchedule,
+		)
+		if err != nil {
+			return err
 		}
-	}()
+		websiteBackupCleaner.Start()
+		defer func() {
+			stopContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if stopErr := websiteBackupCleaner.Stop(stopContext); stopErr != nil {
+				log.Printf("stop website backup cleaner: %v", stopErr)
+			}
+		}()
+		defer func() {
+			stopContext, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if stopErr := websiteTaskManager.Stop(stopContext); stopErr != nil {
+				log.Printf("stop website task manager: %v", stopErr)
+			}
+		}()
+	}
 
 	certificateManager, err := websiteHandler.DefaultCertificateManager()
 	if err != nil {
-		return fmt.Errorf("initialize certificate task manager: %w", err)
-	}
-	defer func() {
-		stopContext, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if stopErr := certificateManager.Stop(stopContext); stopErr != nil {
-			log.Printf("stop certificate task manager: %v", stopErr)
+		if !errors.Is(err, websiteService.ErrNginxUnavailable) {
+			return fmt.Errorf("initialize certificate task manager: %w", err)
 		}
-	}()
-	certificateRenewal, err := certificate.NewRenewalScheduler(
-		certificateManager,
-		app.ONE_CONFIG.System.ACMERenewSchedule,
-	)
-	if err != nil {
-		return err
-	}
-	if err := certificateRenewal.Start(); err != nil {
-		return err
-	}
-	defer func() {
-		stopContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if stopErr := certificateRenewal.Stop(stopContext); stopErr != nil {
-			log.Printf("stop certificate renewal scheduler: %v", stopErr)
+		log.Printf("certificate task service disabled until Nginx is installed: %v", err)
+	} else {
+		defer func() {
+			stopContext, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if stopErr := certificateManager.Stop(stopContext); stopErr != nil {
+				log.Printf("stop certificate task manager: %v", stopErr)
+			}
+		}()
+		certificateRenewal, err := certificate.NewRenewalScheduler(
+			certificateManager,
+			app.ONE_CONFIG.System.ACMERenewSchedule,
+		)
+		if err != nil {
+			return err
 		}
-	}()
+		if err := certificateRenewal.Start(); err != nil {
+			return err
+		}
+		defer func() {
+			stopContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if stopErr := certificateRenewal.Stop(stopContext); stopErr != nil {
+				log.Printf("stop certificate renewal scheduler: %v", stopErr)
+			}
+		}()
+	}
 	defer func() {
 		stopContext, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
@@ -476,7 +494,11 @@ func startServer() error {
 		httpsAddress, _ := panelServer.NetworkAddress(networkConfig.BindAddress, networkConfig.HTTPSPort)
 		log.Printf("OneinStack Panel HTTPS listening on %s", httpsAddress)
 	}
-	if err := panelServer.RunPanel(ctx, networkConfig, web.SetupRouter()); err != nil {
+	if err := panelServer.RunPanelWithReady(ctx, networkConfig, web.SetupRouter(), func() {
+		if err := systemservice.FinalizePendingPanelNetworkTransaction(); err != nil {
+			log.Printf("finalize panel network transaction: %v", err)
+		}
+	}); err != nil {
 		return err
 	}
 	log.Printf("OneinStack Panel stopped")

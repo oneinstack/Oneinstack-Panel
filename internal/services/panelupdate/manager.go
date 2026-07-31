@@ -84,6 +84,10 @@ func validateConfig(config Config) error {
 	if strings.TrimSpace(config.ResolveURL) != "" && !instanceIDPattern.MatchString(config.InstanceID) {
 		return fmt.Errorf("valid panel instance ID is required for Center-managed updates")
 	}
+	if strings.TrimSpace(config.KeyStatusURL) != "" &&
+		(!filepath.IsAbs(config.TrustStatePath) || filepath.Clean(config.TrustStatePath) == string(filepath.Separator)) {
+		return fmt.Errorf("update trust state path must be a non-root absolute path")
+	}
 	return nil
 }
 

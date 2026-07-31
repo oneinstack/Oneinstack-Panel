@@ -8,7 +8,10 @@ import (
 
 func TestTerminalTicketIsBoundAndSingleUse(t *testing.T) {
 	store := NewTicketStore(30 * time.Second)
-	issued := TicketClaims{UserID: 1, Username: "admin", ClientIP: "192.0.2.10"}
+	issued := TicketClaims{
+		UserID: 1, Username: "admin", ClientIP: "192.0.2.10",
+		SourceSessionID: "session-1", SecurityVersion: 1,
+	}
 	ticket, expiresAt, err := store.Issue(issued)
 	if err != nil {
 		t.Fatal(err)
@@ -36,7 +39,10 @@ func TestTerminalTicketExpires(t *testing.T) {
 	store := NewTicketStore(time.Second)
 	now := time.Now()
 	store.now = func() time.Time { return now }
-	ticket, _, err := store.Issue(TicketClaims{UserID: 1, Username: "admin", ClientIP: "192.0.2.10"})
+	ticket, _, err := store.Issue(TicketClaims{
+		UserID: 1, Username: "admin", ClientIP: "192.0.2.10",
+		SourceSessionID: "session-1", SecurityVersion: 1,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

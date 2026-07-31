@@ -267,20 +267,30 @@ func CheckUpdate(ctx context.Context, client *http.Client, config Config) (Check
 			config.CurrentVersion,
 		)
 	}
+	trustedKeys, trust, err := RefreshKeyTrust(ctx, client, config)
+	if err != nil {
+		return result, Manifest{}, Artifact{}, err
+	}
+	config.TrustedKeys = trustedKeys
+	result.TrustRevision = trust.Revision
+	result.TrustSource = trust.Source
+	result.TrustedKeyCount = trust.TrustedKeyCount
+	result.RevokedKeyCount = trust.RevokedKeyCount
+	result.TrustUpdatedAt = trust.UpdatedAt
 	var (
-		manifest Manifest
-		found    = true
-		err      error
+		manifest   Manifest
+		found      = true
+		resolveErr error
 	)
 	if strings.TrimSpace(config.ResolveURL) != "" {
 		result.Source = "center"
-		manifest, found, err = ResolveManifest(ctx, client, config)
+		manifest, found, resolveErr = ResolveManifest(ctx, client, config)
 	} else {
 		result.Source = "manifest"
-		manifest, err = FetchManifest(ctx, client, config.ManifestURL)
+		manifest, resolveErr = FetchManifest(ctx, client, config.ManifestURL)
 	}
-	if err != nil {
-		return result, Manifest{}, Artifact{}, err
+	if resolveErr != nil {
+		return result, Manifest{}, Artifact{}, resolveErr
 	}
 	if !found {
 		result.LatestVersion = config.CurrentVersion
@@ -295,6 +305,7 @@ func CheckUpdate(ctx context.Context, client *http.Client, config Config) (Check
 	result.ReleaseNotes = manifest.ReleaseNotes
 	result.MinimumVersion = manifest.MinimumVersion
 	result.ArtifactSize = artifact.Size
+	result.SigningKeyID = manifest.Signature.KeyID
 	if manifest.MinimumVersion != "" && semver.Compare(current, canonicalVersion(manifest.MinimumVersion)) < 0 {
 		result.Compatible = false
 		return result, manifest, artifact, fmt.Errorf("%w: current version is below minimum upgrade version %s", ErrInvalidManifest, manifest.MinimumVersion)

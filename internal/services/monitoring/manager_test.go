@@ -49,7 +49,7 @@ func monitorTestDB(t *testing.T) *gorm.DB {
 	}
 	if err := database.AutoMigrate(
 		&models.MetricSample{}, &models.MonitorRule{}, &models.MonitorAlertState{},
-		&models.MonitorAlertEvent{}, &models.NotificationChannel{},
+		&models.MonitorAlertEvent{}, &models.ComponentHealthState{}, &models.NotificationChannel{},
 		&models.NotificationDelivery{},
 	); err != nil {
 		t.Fatal(err)
@@ -58,6 +58,163 @@ func monitorTestDB(t *testing.T) *gorm.DB {
 		t.Fatal(err)
 	}
 	return database
+}
+
+type sequenceServiceHealthCollector struct {
+	observations [][]ComponentHealthObservation
+	index        int
+}
+
+func (collector *sequenceServiceHealthCollector) CollectServiceHealth(
+	context.Context,
+) ([]ComponentHealthObservation, error) {
+	if collector.index >= len(collector.observations) {
+		return nil, errors.New("no component health observation")
+	}
+	result := collector.observations[collector.index]
+	collector.index++
+	return result, nil
+}
+
+func TestComponentServiceHealthTriggersRecoversAndUsesNotifications(t *testing.T) {
+	started := time.Date(2026, 7, 29, 8, 0, 0, 0, time.UTC)
+	unhealthy := func(at time.Time) []ComponentHealthObservation {
+		return []ComponentHealthObservation{{
+			Component: "nginx", DisplayName: "Nginx", SoftwareKey: "webserver",
+			ServiceName: "nginx", SoftwareVersion: "1.28.2", Installed: true,
+			Healthy: false, ServiceState: "failed", LoadState: "loaded",
+			ActiveState: "failed", SubState: "failed", Error: "systemd 状态异常",
+			Severity: "critical", CheckedAt: at,
+		}}
+	}
+	collector := &sequenceServiceHealthCollector{observations: [][]ComponentHealthObservation{
+		unhealthy(started),
+		unhealthy(started.Add(time.Minute)),
+		{{
+			Component: "nginx", DisplayName: "Nginx", SoftwareKey: "webserver",
+			ServiceName: "nginx", SoftwareVersion: "1.28.2", RuntimeVersion: "1.28.2",
+			Installed: true, Healthy: true, ServiceState: "running", LoadState: "loaded",
+			ActiveState: "active", SubState: "running", Severity: "critical",
+			CheckedAt: started.Add(2 * time.Minute),
+		}},
+	}}
+	sender := &recordingSender{}
+	manager := newTestManager(t, &sequenceCollector{}, sender)
+	manager.SetServiceHealthCollector(collector)
+	if err := manager.db.Create(&models.NotificationChannel{
+		ID: "service-channel", Name: "operations", Type: "webhook", Enabled: true,
+		ConfigEncrypted: "not-used-by-recording-sender",
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if err := manager.CheckServiceHealth(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var state models.ComponentHealthState
+	if err := manager.db.First(&state, "component = ?", "nginx").Error; err != nil {
+		t.Fatal(err)
+	}
+	if state.HealthState != models.MonitorStatePending ||
+		state.ConsecutiveFailures != 1 {
+		t.Fatalf("unexpected pending service health state: %#v", state)
+	}
+	if err := manager.CheckServiceHealth(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.db.First(&state, "component = ?", "nginx").Error; err != nil {
+		t.Fatal(err)
+	}
+	if state.HealthState != models.MonitorStateFiring ||
+		state.ConsecutiveFailures != 2 {
+		t.Fatalf("unexpected firing service health state: %#v", state)
+	}
+	summary, err := manager.Summary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.ServiceFiringCount != 1 || summary.ServicePendingCount != 0 {
+		t.Fatalf("unexpected firing service summary: %#v", summary)
+	}
+	if err := manager.CheckServiceHealth(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.db.First(&state, "component = ?", "nginx").Error; err != nil {
+		t.Fatal(err)
+	}
+	if state.HealthState != models.MonitorStateNormal ||
+		state.ConsecutiveFailures != 0 {
+		t.Fatalf("unexpected recovered service health state: %#v", state)
+	}
+	summary, err = manager.Summary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.ServiceFiringCount != 0 || summary.ServicePendingCount != 0 {
+		t.Fatalf("unexpected recovered service summary: %#v", summary)
+	}
+	var events []models.MonitorAlertEvent
+	if err := manager.db.Order("occurred_at ASC").Find(&events).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 ||
+		events[0].EventType != models.AlertEventTriggered ||
+		events[1].EventType != models.AlertEventResolved ||
+		events[0].ResourceType != "component_service" ||
+		events[0].ResourceID != "nginx" {
+		t.Fatalf("unexpected component health events: %#v", events)
+	}
+	if len(sender.events) != 2 {
+		t.Fatalf("component health delivery count = %d, want 2", len(sender.events))
+	}
+}
+
+func TestComponentServiceHealthSilenceSuppressesDelivery(t *testing.T) {
+	now := time.Date(2026, 7, 29, 9, 0, 0, 0, time.UTC)
+	manager := newTestManager(t, &sequenceCollector{}, &recordingSender{})
+	manager.now = func() time.Time { return now }
+	if err := manager.db.Create(&models.ComponentHealthState{
+		Component: "redis", DisplayName: "Redis", SoftwareKey: "redis",
+		ServiceName: "redis", Installed: true, HealthState: models.MonitorStateNormal,
+		ServiceState: "running", LastCheckedAt: now,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	until := now.Add(time.Hour)
+	if err := manager.SilenceServiceHealth("redis", &until); err != nil {
+		t.Fatal(err)
+	}
+	manager.SetServiceHealthCollector(&sequenceServiceHealthCollector{
+		observations: [][]ComponentHealthObservation{
+			{{
+				Component: "redis", DisplayName: "Redis", SoftwareKey: "redis",
+				ServiceName: "redis", Installed: true, Healthy: false,
+				ServiceState: "stopped", Severity: "warning", CheckedAt: now,
+			}},
+			{{
+				Component: "redis", DisplayName: "Redis", SoftwareKey: "redis",
+				ServiceName: "redis", Installed: true, Healthy: false,
+				ServiceState: "stopped", Severity: "warning", CheckedAt: now.Add(time.Minute),
+			}},
+		},
+	})
+	if err := manager.CheckServiceHealth(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.CheckServiceHealth(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var events int64
+	if err := manager.db.Model(&models.MonitorAlertEvent{}).Count(&events).Error; err != nil {
+		t.Fatal(err)
+	}
+	var deliveries int64
+	if err := manager.db.Model(&models.NotificationDelivery{}).Count(&deliveries).Error; err != nil {
+		t.Fatal(err)
+	}
+	if events != 1 || deliveries != 0 {
+		t.Fatalf("silenced component health events=%d deliveries=%d", events, deliveries)
+	}
 }
 
 func newTestManager(

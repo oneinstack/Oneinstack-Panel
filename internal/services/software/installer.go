@@ -26,6 +26,19 @@ type Installer struct {
 	scriptManager *script.ScriptManager
 }
 
+type packageResolutionObserver interface {
+	OnPackageResolved(version, source string)
+}
+
+func reportPackageResolution(observer script.ExecutionObserver, info *script.ScriptInfo) {
+	if observer == nil || info == nil {
+		return
+	}
+	if reporter, ok := observer.(packageResolutionObserver); ok {
+		reporter.OnPackageResolved(info.PackageVersion, info.Source)
+	}
+}
+
 // NewInstaller 创建新的安装器
 func NewInstaller() *Installer {
 	return &Installer{
@@ -86,6 +99,7 @@ func (installer *Installer) InstallTask(
 	if err != nil {
 		return "", err
 	}
+	reportPackageResolution(observer, scriptInfo)
 	installer.setScriptParams(scriptInfo, params)
 	return installer.scriptManager.ExecuteScriptTask(ctx, scriptInfo, params, logPath, observer)
 }
@@ -112,6 +126,7 @@ func (installer *Installer) UninstallTask(
 	if err != nil {
 		return "", err
 	}
+	reportPackageResolution(observer, scriptInfo)
 	return installer.scriptManager.ExecuteScriptTask(
 		ctx,
 		scriptInfo,
@@ -156,6 +171,7 @@ func (installer *Installer) ServiceActionTask(
 	if err != nil {
 		return "", err
 	}
+	reportPackageResolution(observer, scriptInfo)
 	params := (&serviceInstallParams{
 		key:     definition.SoftwareKey,
 		version: strings.TrimSpace(version),
@@ -292,15 +308,6 @@ func (installer *Installer) getInstallScript(ctx context.Context, params *input.
 		registryErr = resolveErr
 	}
 
-	if _, bundledOnly := bundledOnlySoftwareKeys[params.Key]; bundledOnly {
-		return nil, fmt.Errorf(
-			"resolve %s %s package: %v",
-			componentName,
-			actionName,
-			registryErr,
-		)
-	}
-
 	// A Center catalog entry is a promise that the matching signed component
 	// package exists. Falling back to a legacy installer here can install a
 	// different runtime version while the database records the requested
@@ -310,6 +317,14 @@ func (installer *Installer) getInstallScript(ctx context.Context, params *input.
 			"resolve Center-managed %s %s installer: %w",
 			componentName,
 			params.Version,
+			registryErr,
+		)
+	}
+	if _, bundledOnly := bundledOnlySoftwareKeys[params.Key]; bundledOnly {
+		return nil, fmt.Errorf(
+			"resolve %s %s package: %v",
+			componentName,
+			actionName,
 			registryErr,
 		)
 	}
@@ -341,13 +356,14 @@ func scriptInfoFromPackage(componentPackage scriptregistry.Package, actionName s
 	}
 	manifest := componentPackage.Manifest
 	result := &script.ScriptInfo{
-		Name:       manifest.Component.ID,
-		Type:       script.ScriptType(actionName),
-		Path:       actionPath,
-		WorkingDir: componentPackage.Root,
-		Source:     componentPackage.Source,
-		Params:     make(map[string]string),
-		ActionName: actionName,
+		Name:           manifest.Component.ID,
+		Type:           script.ScriptType(actionName),
+		Path:           actionPath,
+		WorkingDir:     componentPackage.Root,
+		Source:         componentPackage.Source,
+		PackageVersion: manifest.Component.Version,
+		Params:         make(map[string]string),
+		ActionName:     actionName,
 		Timeouts: map[string]time.Duration{
 			"precheck":    time.Duration(manifest.Timeouts.Precheck) * time.Second,
 			"install":     time.Duration(manifest.Timeouts.Install) * time.Second,

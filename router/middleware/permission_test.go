@@ -94,6 +94,14 @@ func TestAuditMiddlewareSkipsSuccessfulReadButCapturesFailure(t *testing.T) {
 		!isSensitiveOperation(http.MethodGet, "/v1/website/backups/backup-1/download") {
 		t.Fatal("website backup mutations, cancellation, and downloads must be sensitive")
 	}
+	if !isSensitiveOperation(http.MethodPost, "/v1/sys/backups") ||
+		!isSensitiveOperation(http.MethodPost, "/v1/sys/backups/import") ||
+		!isSensitiveOperation(http.MethodPost, "/v1/sys/backups/backup-1/preflight") ||
+		!isSensitiveOperation(http.MethodPost, "/v1/sys/backups/backup-1/restore") ||
+		!isSensitiveOperation(http.MethodPost, "/v1/sys/backups/backup-1/delete") ||
+		!isSensitiveOperation(http.MethodGet, "/v1/sys/backups/backup-1/download") {
+		t.Fatal("Panel backup creation, import, validation, restore, deletion, and download must be sensitive")
+	}
 }
 
 func TestBuildAuthorizationMatrixIncludesFullMenuForScopedRole(t *testing.T) {

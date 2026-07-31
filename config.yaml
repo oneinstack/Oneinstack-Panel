@@ -13,7 +13,7 @@ system:
     # Deprecated legacy catalog endpoint. Software catalog synchronization now
     # uses scriptCenter.url + /v1/software/catalog.
     remote: ''
-    defaultPath: '/data/'
+    defaultPath: '/'
     webPath: '/data/wwwroot/'
     logPath: '/data/wwwlogs/'
     dataPath: '/data/db/'
@@ -53,8 +53,11 @@ system:
     acmeIssueTimeoutMinutes: 15
     terminalEnabled: false
     terminalSessionMinutes: 15
-    allowInsecureWebSocketInDev: false
-    allowInlineStyle: false
+    terminalIdleMinutes: 5
+    terminalMaxConcurrent: 2
+    terminalMaxPerUser: 1
+    terminalUser: "one-terminal"
+    terminalWorkingDirectory: "/var/lib/one-terminal"
 scriptCenter:
     enabled: false
     allowInsecureHTTP: false

@@ -33,7 +33,7 @@ func defaultService() (*Service, error) {
 	if app.DB() == nil {
 		return nil, errors.New("database is not initialized")
 	}
-	binary, err := resolveNginxBinary()
+	server, err := DetectWebServer()
 	if err != nil {
 		return nil, err
 	}
@@ -44,8 +44,8 @@ func defaultService() (*Service, error) {
 		ChallengeRoot:   app.ONE_CONFIG.System.ACMEChallengePath,
 		CertificateRoot: app.ONE_CONFIG.System.CertificatePath,
 		Publisher: &Publisher{
-			ConfigDir:   defaultNginxConfigDir,
-			NginxBinary: binary,
+			ConfigDir:   server.SiteConfigDir,
+			NginxBinary: server.BinaryPath,
 			Runner:      OSCommandRunner{},
 		},
 	}, nil
@@ -750,23 +750,19 @@ func ensureWebsiteRoot(siteType, root string) (bool, error) {
 }
 
 func Check() bool {
-	if app.DB() == nil {
-		return false
-	}
-	var count int64
-	if err := app.DB().Model(&models.Software{}).
-		Where("`key` = ? AND installed = ?", "webserver", true).
-		Count(&count).Error; err != nil {
-		return false
-	}
-	if count == 0 {
-		return false
-	}
-	binary, err := resolveNginxBinary()
+	server, err := DetectWebServer()
 	if err != nil {
 		return false
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	return exec.CommandContext(ctx, binary, "-t").Run() == nil
+	return exec.CommandContext(
+		ctx,
+		server.BinaryPath,
+		"-t",
+		"-p",
+		ensureTrailingSeparator(server.Prefix),
+		"-c",
+		server.MainConfigPath,
+	).Run() == nil
 }

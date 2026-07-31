@@ -148,6 +148,19 @@ func RunHTTP(ctx context.Context, address string, handler http.Handler) error {
 // HTTPS listener. All sockets and certificate material are prepared before
 // either server starts accepting requests.
 func RunPanel(ctx context.Context, config PanelConfig, handler http.Handler) error {
+	return RunPanelWithReady(ctx, config, handler, nil)
+}
+
+// RunPanelWithReady behaves like RunPanel and invokes ready after all configured
+// listeners have been bound and their serving goroutines have started. The hook
+// lets the caller durably commit configuration transactions only after the new
+// management-plane sockets are available.
+func RunPanelWithReady(
+	ctx context.Context,
+	config PanelConfig,
+	handler http.Handler,
+	ready func(),
+) error {
 	if err := ValidatePanelConfig(config); err != nil {
 		return err
 	}
@@ -205,6 +218,9 @@ func RunPanel(ctx context.Context, config PanelConfig, handler http.Handler) err
 			}
 			errCh <- err
 		}()
+	}
+	if ready != nil {
+		ready()
 	}
 
 	var runErr error

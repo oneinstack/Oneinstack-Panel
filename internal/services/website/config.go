@@ -27,43 +27,19 @@ const (
 )
 
 var (
-	ErrNginxUnavailable = errors.New("nginx unavailable")
-	domainLabelPattern  = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
-	configNamePattern   = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,252}\.conf$`)
+	ErrWebServerUnavailable    = errors.New("supported web server unavailable")
+	ErrWebServerConfigConflict = errors.New("web server configuration revision conflict")
+	ErrNginxUnavailable        = ErrWebServerUnavailable
+	domainLabelPattern         = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
+	configNamePattern          = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,252}\.conf$`)
 )
 
 func resolveNginxBinary() (string, error) {
-	if configured := strings.TrimSpace(os.Getenv("ONEINSTACK_NGINX_BIN")); configured != "" {
-		info, err := os.Stat(configured)
-		if err != nil {
-			return "", fmt.Errorf("%w: find configured Nginx binary: %v", ErrNginxUnavailable, err)
-		}
-		if !info.Mode().IsRegular() || info.Mode().Perm()&0111 == 0 {
-			return "", fmt.Errorf("%w: configured Nginx binary %q is not executable", ErrNginxUnavailable, configured)
-		}
-		return configured, nil
-	}
-
-	candidates := []string{
-		defaultNginxBinary,
-		"/usr/sbin/nginx",
-		"/usr/bin/nginx",
-		"/usr/local/sbin/nginx",
-		"/usr/local/bin/nginx",
-		"/opt/nginx/sbin/nginx",
-	}
-	for _, candidate := range candidates {
-		info, err := os.Stat(candidate)
-		if err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0111 != 0 {
-			return candidate, nil
-		}
-	}
-
-	path, err := exec.LookPath("nginx")
+	server, err := DetectWebServer()
 	if err != nil {
-		return "", fmt.Errorf("%w: nginx executable not found: %v", ErrNginxUnavailable, err)
+		return "", err
 	}
-	return path, nil
+	return server.BinaryPath, nil
 }
 
 type siteTemplateData struct {

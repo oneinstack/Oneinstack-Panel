@@ -11,6 +11,8 @@ root_prefix="${ONEINSTACK_INSTALL_ROOT:-}"
 install_dir_runtime="/usr/local/one"
 service_file_runtime="/etc/systemd/system/one.service"
 update_service_file_runtime="/etc/systemd/system/one-update.service"
+network_recovery_service_file_runtime="/etc/systemd/system/one-network-recover.service"
+panel_restore_service_file_runtime="/etc/systemd/system/one-panel-restore.service"
 link_path_runtime="/usr/local/bin/one"
 binary_source="${script_dir}/one"
 config_source="${script_dir}/config.yaml"
@@ -29,6 +31,8 @@ allow_unsupported=false
 purge=false
 assume_yes=false
 temporary_password_file=""
+terminal_user_runtime="one-terminal"
+terminal_home_runtime="/var/lib/one-terminal"
 
 usage() {
   cat <<'EOF'
@@ -237,6 +241,8 @@ prepare_paths() {
   install_dir="$(rooted_path "$install_dir_runtime")"
   service_file="$(rooted_path "$service_file_runtime")"
   update_service_file="$(rooted_path "$update_service_file_runtime")"
+  network_recovery_service_file="$(rooted_path "$network_recovery_service_file_runtime")"
+  panel_restore_service_file="$(rooted_path "$panel_restore_service_file_runtime")"
   link_path="$(rooted_path "$link_path_runtime")"
 }
 
@@ -263,6 +269,9 @@ check_host() {
   esac
 
   command -v systemctl >/dev/null 2>&1 || die "系统缺少 systemctl"
+  command -v setpriv >/dev/null 2>&1 || die "系统缺少 setpriv（util-linux），无法提供低权限 Web 终端"
+  command -v prlimit >/dev/null 2>&1 || die "系统缺少 prlimit（util-linux），无法限制 Web 终端资源"
+  command -v getent >/dev/null 2>&1 || die "系统缺少 getent，无法校验 Web 终端用户"
 }
 
 check_install_sources() {
@@ -280,6 +289,14 @@ check_managed_service() {
   fi
   if [[ -e "$update_service_file" ]] && ! grep -Fq "$MANAGED_MARKER" "$update_service_file"; then
     die "更新服务文件不属于 OneinStack 安装器，拒绝覆盖: ${update_service_file_runtime}"
+  fi
+  if [[ -e "$network_recovery_service_file" ]] &&
+    ! grep -Fq "$MANAGED_MARKER" "$network_recovery_service_file"; then
+    die "网络恢复服务文件不属于 OneinStack 安装器，拒绝覆盖: ${network_recovery_service_file_runtime}"
+  fi
+  if [[ -e "$panel_restore_service_file" ]] &&
+    ! grep -Fq "$MANAGED_MARKER" "$panel_restore_service_file"; then
+    die "恢复服务文件不属于 OneinStack 安装器，拒绝覆盖: ${panel_restore_service_file_runtime}"
   fi
 }
 
@@ -306,12 +323,18 @@ backup_existing() {
   [[ -f "$service_file" ]] && cp -p -- "$service_file" "${backup_dir}/one.service"
   [[ -f "$update_service_file" ]] &&
     cp -p -- "$update_service_file" "${backup_dir}/one-update.service"
+  [[ -f "$network_recovery_service_file" ]] &&
+    cp -p -- "$network_recovery_service_file" "${backup_dir}/one-network-recover.service"
+  [[ -f "$panel_restore_service_file" ]] &&
+    cp -p -- "$panel_restore_service_file" "${backup_dir}/one-panel-restore.service"
   log "现有安装已备份到 ${backup_dir}"
 }
 
 write_service_file() {
   local temporary_service="${service_file}.new.$$"
   local temporary_update_service="${update_service_file}.new.$$"
+  local temporary_network_recovery_service="${network_recovery_service_file}.new.$$"
+  local temporary_panel_restore_service="${panel_restore_service_file}.new.$$"
   mkdir -p -- "$(dirname "$service_file")"
   cat >"$temporary_service" <<EOF
 ${MANAGED_MARKER}
@@ -320,12 +343,16 @@ Description=OneinStack Panel
 Documentation=https://github.com/oneinstack/Oneinstack-Panel
 After=network-online.target
 Wants=network-online.target
+OnFailure=one-network-recover.service
+StartLimitIntervalSec=60
+StartLimitBurst=3
 
 [Service]
 Type=simple
 WorkingDirectory=${install_dir_runtime}
 Environment=ONEINSTACK_BASE_PATH=${install_dir_runtime}
 Environment=ONEINSTACK_CONFIG_PATH=${install_dir_runtime}/config.yaml
+ExecStartPre=${install_dir_runtime}/one backup recover --unless-restore-active
 ExecStart=${install_dir_runtime}/one server start
 Restart=on-failure
 RestartSec=5s
@@ -360,6 +387,48 @@ PrivateTmp=true
 EOF
   chmod 0644 "$temporary_update_service"
   mv -f -- "$temporary_update_service" "$update_service_file"
+
+  cat >"$temporary_network_recovery_service" <<EOF
+${MANAGED_MARKER}
+[Unit]
+Description=OneinStack Panel network configuration recovery
+Documentation=https://github.com/oneinstack/Oneinstack-Panel
+After=one.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=${install_dir_runtime}
+Environment=ONEINSTACK_BASE_PATH=${install_dir_runtime}
+Environment=ONEINSTACK_CONFIG_PATH=${install_dir_runtime}/config.yaml
+ExecStart=${install_dir_runtime}/one network recover
+TimeoutStartSec=2min
+UMask=0077
+PrivateTmp=true
+EOF
+  chmod 0644 "$temporary_network_recovery_service"
+  mv -f -- "$temporary_network_recovery_service" "$network_recovery_service_file"
+
+  cat >"$temporary_panel_restore_service" <<EOF
+${MANAGED_MARKER}
+[Unit]
+Description=OneinStack Panel encrypted backup restore transaction
+Documentation=https://github.com/oneinstack/Oneinstack-Panel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=${install_dir_runtime}
+Environment=ONEINSTACK_BASE_PATH=${install_dir_runtime}
+Environment=ONEINSTACK_CONFIG_PATH=${install_dir_runtime}/config.yaml
+ExecStartPre=/bin/sleep 2
+ExecStart=${install_dir_runtime}/one backup restore
+TimeoutStartSec=30min
+UMask=0077
+PrivateTmp=true
+EOF
+  chmod 0644 "$temporary_panel_restore_service"
+  mv -f -- "$temporary_panel_restore_service" "$panel_restore_service_file"
 }
 
 install_files() {
@@ -396,6 +465,46 @@ install_files() {
   if [[ ! -L "$link_path" ]]; then
     ln -s -- "${install_dir_runtime}/one" "$link_path"
   fi
+}
+
+ensure_terminal_user() {
+  [[ -z "$root_prefix" ]] || return 0
+
+  local nologin_shell="/usr/sbin/nologin"
+  [[ -x "$nologin_shell" ]] || nologin_shell="/sbin/nologin"
+  [[ -x "$nologin_shell" ]] || die "系统缺少 nologin，无法创建隔离终端用户"
+
+  if getent passwd "$terminal_user_runtime" >/dev/null 2>&1; then
+    local passwd_entry uid home shell groups
+    passwd_entry="$(getent passwd "$terminal_user_runtime")"
+    IFS=: read -r _ _ uid _ _ home shell <<<"$passwd_entry"
+    [[ "$uid" =~ ^[0-9]+$ && "$uid" -ne 0 ]] ||
+      die "终端用户 ${terminal_user_runtime} 的 UID 无效"
+    [[ "$home" == "$terminal_home_runtime" ]] ||
+      die "终端用户 ${terminal_user_runtime} 的主目录不是 ${terminal_home_runtime}"
+    [[ "$shell" == "/usr/sbin/nologin" || "$shell" == "/sbin/nologin" ]] ||
+      die "终端用户 ${terminal_user_runtime} 必须使用 nologin"
+    groups="$(id -nG "$terminal_user_runtime" 2>/dev/null || true)"
+    case " ${groups} " in
+      *" root "*|*" sudo "*|*" wheel "*|*" admin "*|*" docker "*|*" lxd "*|*" podman "*|*" systemd-journal "*)
+        die "终端用户 ${terminal_user_runtime} 不能属于特权用户组"
+        ;;
+    esac
+  else
+    command -v useradd >/dev/null 2>&1 ||
+      die "系统缺少 useradd，无法创建隔离终端用户"
+    useradd \
+      --system \
+      --user-group \
+      --home-dir "$terminal_home_runtime" \
+      --create-home \
+      --shell "$nologin_shell" \
+      --comment "OneinStack isolated web terminal" \
+      "$terminal_user_runtime"
+  fi
+
+  install -d -m 0750 -o "$terminal_user_runtime" -g "$terminal_user_runtime" \
+    "$terminal_home_runtime"
 }
 
 password_file_mode_is_safe() {
@@ -504,6 +613,7 @@ run_install() {
     backup_existing
   fi
   install_files
+  ensure_terminal_user
   initialize_admin
   start_service
   check_health
@@ -526,6 +636,16 @@ remove_managed_service_and_link() {
       die "更新服务文件不属于 OneinStack 安装器，拒绝删除: ${update_service_file_runtime}"
     rm -f -- "$update_service_file"
   fi
+  if [[ -f "$network_recovery_service_file" ]]; then
+    grep -Fq "$MANAGED_MARKER" "$network_recovery_service_file" ||
+      die "网络恢复服务文件不属于 OneinStack 安装器，拒绝删除: ${network_recovery_service_file_runtime}"
+    rm -f -- "$network_recovery_service_file"
+  fi
+  if [[ -f "$panel_restore_service_file" ]]; then
+    grep -Fq "$MANAGED_MARKER" "$panel_restore_service_file" ||
+      die "恢复服务文件不属于 OneinStack 安装器，拒绝删除: ${panel_restore_service_file_runtime}"
+    rm -f -- "$panel_restore_service_file"
+  fi
 
   if [[ -L "$link_path" ]]; then
     local target
@@ -542,7 +662,9 @@ run_uninstall() {
   fi
 
   if [[ -z "$root_prefix" ]] && command -v systemctl >/dev/null 2>&1; then
+    systemctl stop one-network-recover.service >/dev/null 2>&1 || true
     systemctl stop one-update.service >/dev/null 2>&1 || true
+    systemctl stop one-panel-restore.service >/dev/null 2>&1 || true
     systemctl disable --now one.service >/dev/null 2>&1 || true
   fi
   remove_managed_service_and_link

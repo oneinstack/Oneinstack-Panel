@@ -16,9 +16,12 @@ var (
 )
 
 type TicketClaims struct {
-	UserID   int64
-	Username string
-	ClientIP string
+	UserID          int64
+	Username        string
+	ClientIP        string
+	UserAgent       string
+	SourceSessionID string
+	SecurityVersion uint64
 }
 
 type ticketRecord struct {
@@ -45,7 +48,9 @@ func NewTicketStore(ttl time.Duration) *TicketStore {
 }
 
 func (store *TicketStore) Issue(claims TicketClaims) (string, time.Time, error) {
-	if store == nil || claims.UserID <= 0 || claims.Username == "" || claims.ClientIP == "" {
+	if store == nil || claims.UserID <= 0 || claims.Username == "" ||
+		claims.ClientIP == "" || claims.SourceSessionID == "" ||
+		claims.SecurityVersion == 0 {
 		return "", time.Time{}, ErrInvalidTicket
 	}
 	raw := make([]byte, 32)

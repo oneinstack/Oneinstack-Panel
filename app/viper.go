@@ -55,7 +55,7 @@ system:
     panelEntryEnabled: false
     panelEntryPath: ""
     remote: ""
-    defaultPath: "/data/"
+    defaultPath: "/"
     webPath: "/data/wwwroot/"
     logPath: "/data/wwwlogs/"
     dataPath: "/data/db/"
@@ -95,8 +95,11 @@ system:
     acmeIssueTimeoutMinutes: 15
     terminalEnabled: false
     terminalSessionMinutes: 15
-    allowInsecureWebSocketInDev: false
-    allowInlineStyle: false
+    terminalIdleMinutes: 5
+    terminalMaxConcurrent: 2
+    terminalMaxPerUser: 1
+    terminalUser: "one-terminal"
+    terminalWorkingDirectory: "/var/lib/one-terminal"
 `
 
 // LoadConfig reads the application configuration without panicking. When no
@@ -171,8 +174,11 @@ func LoadConfig(path ...string) (*viper.Viper, error) {
 	v.SetDefault("system.acmeIssueTimeoutMinutes", 15)
 	v.SetDefault("system.terminalEnabled", false)
 	v.SetDefault("system.terminalSessionMinutes", 15)
-	v.SetDefault("system.allowInsecureWebSocketInDev", false)
-	v.SetDefault("system.allowInlineStyle", false)
+	v.SetDefault("system.terminalIdleMinutes", 5)
+	v.SetDefault("system.terminalMaxConcurrent", 2)
+	v.SetDefault("system.terminalMaxPerUser", 1)
+	v.SetDefault("system.terminalUser", "one-terminal")
+	v.SetDefault("system.terminalWorkingDirectory", "/var/lib/one-terminal")
 	v.SetDefault("scriptCenter.enabled", false)
 	v.SetDefault("scriptCenter.allowInsecureHTTP", false)
 	v.SetDefault("scriptCenter.channel", "stable")
@@ -200,9 +206,6 @@ func LoadConfig(path ...string) (*viper.Viper, error) {
 		"system.httpsPrivateKeyFile":              "ONEINSTACK_SYSTEM_HTTPS_PRIVATE_KEY_FILE",
 		"system.panelEntryEnabled":                "ONEINSTACK_SYSTEM_PANEL_ENTRY_ENABLED",
 		"system.panelEntryPath":                   "ONEINSTACK_SYSTEM_PANEL_ENTRY_PATH",
-		"system.defaultPath":                      "ONEINSTACK_SYSTEM_DEFAULT_PATH",
-		"system.allowInsecureWebSocketInDev":      "ONEINSTACK_SYSTEM_ALLOW_INSECURE_WEBSOCKET_IN_DEV",
-		"system.allowInlineStyle":                 "ONEINSTACK_SYSTEM_ALLOW_INLINE_STYLE",
 		"system.fileUploadMaxBytes":               "ONEINSTACK_SYSTEM_FILE_UPLOAD_MAX_BYTES",
 		"system.fileEditMaxBytes":                 "ONEINSTACK_SYSTEM_FILE_EDIT_MAX_BYTES",
 		"system.fileRootQuotaBytes":               "ONEINSTACK_SYSTEM_FILE_ROOT_QUOTA_BYTES",
@@ -238,6 +241,11 @@ func LoadConfig(path ...string) (*viper.Viper, error) {
 		"system.acmeIssueTimeoutMinutes":          "ONEINSTACK_SYSTEM_ACME_ISSUE_TIMEOUT_MINUTES",
 		"system.terminalEnabled":                  "ONEINSTACK_SYSTEM_TERMINAL_ENABLED",
 		"system.terminalSessionMinutes":           "ONEINSTACK_SYSTEM_TERMINAL_SESSION_MINUTES",
+		"system.terminalIdleMinutes":              "ONEINSTACK_SYSTEM_TERMINAL_IDLE_MINUTES",
+		"system.terminalMaxConcurrent":            "ONEINSTACK_SYSTEM_TERMINAL_MAX_CONCURRENT",
+		"system.terminalMaxPerUser":               "ONEINSTACK_SYSTEM_TERMINAL_MAX_PER_USER",
+		"system.terminalUser":                     "ONEINSTACK_SYSTEM_TERMINAL_USER",
+		"system.terminalWorkingDirectory":         "ONEINSTACK_SYSTEM_TERMINAL_WORKING_DIRECTORY",
 		"scriptCenter.enabled":                    "ONEINSTACK_SCRIPT_CENTER_ENABLED",
 		"scriptCenter.allowInsecureHTTP":          "ONEINSTACK_SCRIPT_CENTER_ALLOW_INSECURE_HTTP",
 		"scriptCenter.url":                        "ONEINSTACK_SCRIPT_CENTER_URL",
@@ -582,7 +590,40 @@ func validateSystemConfig() error {
 	if system.TerminalSessionMins < 1 || system.TerminalSessionMins > 120 {
 		return fmt.Errorf("validate config: system.terminalSessionMinutes must be between 1 and 120")
 	}
+	if system.TerminalIdleMins < 1 || system.TerminalIdleMins > system.TerminalSessionMins {
+		return fmt.Errorf("validate config: system.terminalIdleMinutes must be between 1 and terminalSessionMinutes")
+	}
+	if system.TerminalMaxConcurrent < 1 || system.TerminalMaxConcurrent > 10 {
+		return fmt.Errorf("validate config: system.terminalMaxConcurrent must be between 1 and 10")
+	}
+	if system.TerminalMaxPerUser < 1 ||
+		system.TerminalMaxPerUser > system.TerminalMaxConcurrent {
+		return fmt.Errorf("validate config: system.terminalMaxPerUser must be between 1 and terminalMaxConcurrent")
+	}
+	if !validTerminalUsername(system.TerminalUser) || system.TerminalUser == "root" {
+		return fmt.Errorf("validate config: system.terminalUser must be a non-root Linux username")
+	}
+	terminalWorkingDirectory := filepath.Clean(strings.TrimSpace(system.TerminalWorkingDirectory))
+	if !filepath.IsAbs(terminalWorkingDirectory) || terminalWorkingDirectory == "/" {
+		return fmt.Errorf("validate config: system.terminalWorkingDirectory must be an absolute non-root path")
+	}
 	return nil
+}
+
+func validTerminalUsername(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) > 32 {
+		return false
+	}
+	for index, character := range value {
+		if character >= 'a' && character <= 'z' ||
+			character >= '0' && character <= '9' && index > 0 ||
+			(character == '-' || character == '_') && index > 0 {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func validatePanelNetworkConfig(

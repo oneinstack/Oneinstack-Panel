@@ -1,13 +1,13 @@
 package ssh
 
 import (
+	"errors"
+	"net/http"
 	"oneinstack/app"
 	"oneinstack/core"
 	sshservice "oneinstack/internal/services/ssh"
 	userservice "oneinstack/internal/services/user"
 	"oneinstack/router/middleware"
-	panelServer "oneinstack/server"
-	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -17,8 +17,17 @@ func CreateTicket(c *gin.Context) {
 		core.HandleError(c, core.NewError(core.ErrForbidden, "Web 终端未启用"))
 		return
 	}
-	if !requestAllowsTerminal(c) {
-		core.HandleError(c, core.NewError(core.ErrForbidden, "Web 终端仅支持 HTTPS/WSS 访问"))
+	securityStatus := sshservice.GetTerminalSecurityStatus()
+	if !securityStatus.IsolationAvailable {
+		core.HandleErrorWithStatus(
+			c,
+			http.StatusServiceUnavailable,
+			core.NewErrorWithDetail(
+				core.ErrSystemError,
+				"终端隔离环境不可用",
+				securityStatus.Reason,
+			),
+		)
 		return
 	}
 	var input struct {
@@ -44,11 +53,19 @@ func CreateTicket(c *gin.Context) {
 		core.HandleError(c, core.NewError(core.ErrInvalidPassword, "二次认证失败"))
 		return
 	}
+	sourceSessionID, ok := middleware.AuthenticatedSessionID(c)
+	if !ok {
+		core.HandleError(c, core.NewError(core.ErrUnauthorized, "主登录会话无效"))
+		return
+	}
 
 	ticket, expiresAt, err := sshservice.DefaultTickets.Issue(sshservice.TicketClaims{
-		UserID:   userID,
-		Username: account.Username,
-		ClientIP: c.ClientIP(),
+		UserID:          userID,
+		Username:        account.Username,
+		ClientIP:        c.ClientIP(),
+		UserAgent:       c.GetHeader("User-Agent"),
+		SourceSessionID: sourceSessionID,
+		SecurityVersion: account.EffectiveSecurityVersion(),
 	})
 	if err != nil {
 		core.HandleError(c, core.NewError(core.ErrInternalError, "创建终端票据失败"))
@@ -60,26 +77,64 @@ func CreateTicket(c *gin.Context) {
 	})
 }
 
+func Status(c *gin.Context) {
+	core.HandleSuccess(c, sshservice.GetTerminalSecurityStatus())
+}
+
+func Sessions(c *gin.Context) {
+	core.HandleSuccess(c, sshservice.DefaultSessions.List())
+}
+
 func OpenSSH(c *gin.Context) {
 	if !app.ONE_CONFIG.System.TerminalEnabled {
 		core.HandleError(c, core.NewError(core.ErrForbidden, "Web 终端未启用"))
 		return
 	}
-	if !requestAllowsTerminal(c) {
-		core.HandleError(c, core.NewError(core.ErrForbidden, "Web 终端仅支持 HTTPS/WSS 访问"))
-		return
-	}
-	if _, ok := middleware.AuthenticatedUserID(c); !ok {
+	userID, ok := middleware.AuthenticatedUserID(c)
+	if !ok {
 		core.HandleError(c, core.NewError(core.ErrUnauthorized, "终端票据无效"))
 		return
 	}
-	sessionDuration := time.Duration(app.ONE_CONFIG.System.TerminalSessionMins) * time.Minute
-	if sessionDuration <= 0 || sessionDuration > 2*time.Hour {
-		sessionDuration = 15 * time.Minute
+	usernameValue, _ := c.Get(middleware.ContextUsername)
+	username, _ := usernameValue.(string)
+	ticketValue, _ := c.Get(middleware.ContextTokenClaims)
+	ticket, ok := ticketValue.(sshservice.TicketClaims)
+	if !ok || ticket.UserID != userID || ticket.Username != username {
+		core.HandleError(c, core.NewError(core.ErrUnauthorized, "终端票据声明无效"))
+		return
 	}
-	sshservice.OpenWebShell(c, sessionDuration)
-}
-
-func requestAllowsTerminal(c *gin.Context) bool {
-	return panelServer.RequestIsHTTPS(c.Request, app.ONE_CONFIG.System.TrustedProxies)
+	err := sshservice.OpenWebShell(c, sshservice.CurrentTerminalPolicy(), sshservice.TerminalSessionClaims{
+		UserID: userID, Username: username, ClientIP: c.ClientIP(),
+		UserAgent:       c.GetHeader("User-Agent"),
+		SourceSessionID: ticket.SourceSessionID,
+		SecurityVersion: ticket.SecurityVersion,
+	})
+	if err == nil || c.Writer.Written() {
+		return
+	}
+	if errors.Is(err, sshservice.ErrTerminalCapacity) {
+		core.HandleErrorWithStatus(
+			c,
+			http.StatusTooManyRequests,
+			core.NewError(core.ErrRateLimitExceeded, "终端并发会话已达到上限"),
+		)
+		return
+	}
+	if errors.Is(err, sshservice.ErrTerminalIsolationUnavailable) {
+		core.HandleErrorWithStatus(
+			c,
+			http.StatusServiceUnavailable,
+			core.NewErrorWithDetail(core.ErrSystemError, "终端隔离环境不可用", err.Error()),
+		)
+		return
+	}
+	if errors.Is(err, sshservice.ErrTerminalAuditUnavailable) {
+		core.HandleErrorWithStatus(
+			c,
+			http.StatusServiceUnavailable,
+			core.NewError(core.ErrSystemError, "终端审计链不可用"),
+		)
+		return
+	}
+	core.HandleError(c, core.WrapError(err, core.ErrInternalError, "终端会话启动失败"))
 }

@@ -1,175 +1,346 @@
 package filemanager
 
 import (
+	"archive/tar"
+	"compress/gzip"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	pathpkg "path"
 	"strings"
+	"syscall"
 )
 
-func (m *Manager) Rename(virtualPath, newName string) (string, error) {
-	if err := ValidateName(newName); err != nil {
-		return "", err
-	}
+var ErrUnsupportedType = errors.New("unsupported file type")
 
-	source, err := m.Relative(virtualPath)
-	if err != nil {
-		return "", err
-	}
-	if source == "." {
-		return "", ErrRootOperation
-	}
-
-	target := newName
-	if parent := pathpkg.Dir(source); parent != "." {
-		target = pathpkg.Join(parent, newName)
-	}
-	if target == source {
-		return "", fs.ErrExist
-	}
-	if err := m.renameRelativeExclusive(source, target); err != nil {
-		return "", err
-	}
-	return m.VirtualPath(target), nil
+type OperationResult struct {
+	Path    string `json:"path"`
+	Bytes   int64  `json:"bytes"`
+	Entries int    `json:"entries"`
 }
 
-func (m *Manager) Move(sourcePath, targetPath string) (string, error) {
-	source, target, err := m.resolveMoveOrCopyPaths(sourcePath, targetPath)
+// Measure returns the regular-file bytes and entry count for a file tree.
+// Symbolic links and special files are rejected so copy/archive never follows
+// a link outside the managed root.
+func (m *Manager) Measure(virtualPath string) (OperationResult, error) {
+	relative, err := m.Relative(virtualPath)
 	if err != nil {
-		return "", err
+		return OperationResult{}, err
 	}
-	if err := m.renameRelativeExclusive(source, target); err != nil {
-		return "", err
+	if relative == "." {
+		return OperationResult{}, ErrRootOperation
 	}
-	return m.VirtualPath(target), nil
+	rootInfo, err := m.root.Lstat(relative)
+	if err != nil {
+		return OperationResult{}, err
+	}
+	if rootInfo.Mode()&os.ModeSymlink != 0 {
+		return OperationResult{}, fmt.Errorf("%w: symbolic links cannot be copied or archived", ErrUnsupportedType)
+	}
+	result := OperationResult{Path: m.VirtualPath(relative)}
+	err = fs.WalkDir(m.root.FS(), relative, func(_ string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("%w: symbolic links cannot be copied or archived", ErrUnsupportedType)
+		}
+		if !info.IsDir() && !info.Mode().IsRegular() {
+			return fmt.Errorf("%w: %s", ErrUnsupportedType, info.Mode().Type())
+		}
+		result.Entries++
+		if info.Mode().IsRegular() {
+			result.Bytes += info.Size()
+		}
+		return nil
+	})
+	return result, err
 }
 
-func (m *Manager) Copy(sourcePath, targetPath string) (string, error) {
-	source, target, err := m.resolveMoveOrCopyPaths(sourcePath, targetPath)
+// Copy copies source into targetDir using targetName. Existing targets are
+// never overwritten.
+func (m *Manager) Copy(source, targetDir, targetName string) (result OperationResult, err error) {
+	sourceRelative, targetRelative, err := m.resolveOperationTarget(source, targetDir, targetName)
 	if err != nil {
-		return "", err
+		return OperationResult{}, err
 	}
-	if err := m.copyRelative(source, target); err != nil {
-		_ = m.removeAllRelative(target)
-		return "", err
+	if targetRelative == sourceRelative ||
+		strings.HasPrefix(targetRelative, sourceRelative+"/") {
+		return OperationResult{}, fmt.Errorf("%w: target cannot be inside source", ErrInvalidPath)
 	}
-	return m.VirtualPath(target), nil
-}
-
-func (m *Manager) resolveMoveOrCopyPaths(sourcePath, targetPath string) (string, string, error) {
-	source, err := m.Relative(sourcePath)
-	if err != nil {
-		return "", "", err
-	}
-	if source == "." {
-		return "", "", ErrRootOperation
-	}
-
-	target, err := m.Relative(targetPath)
-	if err != nil {
-		return "", "", err
-	}
-	if target == "." {
-		return "", "", ErrRootOperation
-	}
-	if source == target {
-		return "", "", fs.ErrExist
-	}
-	if strings.HasPrefix(target, source+"/") {
-		return "", "", ErrInvalidPath
-	}
-
-	parent := pathpkg.Dir(target)
-	parentInfo, err := m.root.Stat(parent)
-	if err != nil {
-		return "", "", err
-	}
-	if !parentInfo.IsDir() {
-		return "", "", ErrInvalidPath
-	}
-	if _, err := m.root.Lstat(target); err == nil {
-		return "", "", fs.ErrExist
+	if _, err := m.root.Lstat(targetRelative); err == nil {
+		return OperationResult{}, fs.ErrExist
 	} else if !errors.Is(err, fs.ErrNotExist) {
-		return "", "", err
+		return OperationResult{}, err
 	}
-	return source, target, nil
+
+	sourceInfo, err := m.root.Lstat(sourceRelative)
+	if err != nil {
+		return OperationResult{}, err
+	}
+	if sourceInfo.Mode()&os.ModeSymlink != 0 {
+		return OperationResult{}, ErrUnsupportedType
+	}
+	keepTarget := false
+	defer func() {
+		if !keepTarget {
+			_ = m.removeAllRelative(targetRelative)
+		}
+	}()
+	result = OperationResult{Path: m.VirtualPath(targetRelative)}
+	if err := m.copyRelative(sourceRelative, targetRelative, &result); err != nil {
+		return OperationResult{}, err
+	}
+	keepTarget = true
+	return result, nil
 }
 
-func (m *Manager) copyRelative(source, target string) error {
+// Move moves source into targetDir using targetName without replacing an
+// existing target. Cross-filesystem moves fall back to a safe copy/delete.
+func (m *Manager) Move(source, targetDir, targetName string) (OperationResult, error) {
+	sourceRelative, targetRelative, err := m.resolveOperationTarget(source, targetDir, targetName)
+	if err != nil {
+		return OperationResult{}, err
+	}
+	if targetRelative == sourceRelative {
+		return OperationResult{Path: m.VirtualPath(sourceRelative)}, nil
+	}
+	if strings.HasPrefix(targetRelative, sourceRelative+"/") {
+		return OperationResult{}, fmt.Errorf("%w: target cannot be inside source", ErrInvalidPath)
+	}
+	measured, err := m.Measure(source)
+	if err != nil {
+		return OperationResult{}, err
+	}
+	if err := m.renameRelativeExclusive(sourceRelative, targetRelative); err == nil {
+		measured.Path = m.VirtualPath(targetRelative)
+		return measured, nil
+	} else if !errors.Is(err, syscall.EXDEV) {
+		return OperationResult{}, err
+	}
+
+	copied, err := m.Copy(source, targetDir, targetName)
+	if err != nil {
+		return OperationResult{}, err
+	}
+	if err := m.removeAllRelative(sourceRelative); err != nil {
+		_ = m.removeAllRelative(targetRelative)
+		return OperationResult{}, fmt.Errorf("remove source after cross-filesystem copy: %w", err)
+	}
+	return copied, nil
+}
+
+func (m *Manager) Rename(source, newName string) (OperationResult, error) {
+	relative, err := m.Relative(source)
+	if err != nil {
+		return OperationResult{}, err
+	}
+	if relative == "." {
+		return OperationResult{}, ErrRootOperation
+	}
+	return m.Move(source, m.VirtualPath(pathpkg.Dir(relative)), newName)
+}
+
+// Archive creates a gzip-compressed tar archive without following symbolic
+// links or including the archive itself.
+func (m *Manager) Archive(source, targetDir, archiveName string) (result OperationResult, err error) {
+	if !strings.HasSuffix(strings.ToLower(strings.TrimSpace(archiveName)), ".tar.gz") {
+		return OperationResult{}, fmt.Errorf("%w: archive name must end in .tar.gz", ErrInvalidName)
+	}
+	sourceRelative, targetRelative, err := m.resolveOperationTarget(source, targetDir, archiveName)
+	if err != nil {
+		return OperationResult{}, err
+	}
+	if targetRelative == sourceRelative ||
+		strings.HasPrefix(targetRelative, sourceRelative+"/") {
+		return OperationResult{}, fmt.Errorf("%w: archive cannot be created inside source", ErrInvalidPath)
+	}
+	if _, err := m.Measure(source); err != nil {
+		return OperationResult{}, err
+	}
+
+	output, err := m.root.OpenFile(targetRelative, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if err != nil {
+		return OperationResult{}, err
+	}
+	keepArchive := false
+	defer func() {
+		if closeErr := output.Close(); err == nil && closeErr != nil {
+			err = closeErr
+		}
+		if !keepArchive {
+			_ = m.root.Remove(targetRelative)
+		}
+	}()
+	gzipWriter := gzip.NewWriter(output)
+	tarWriter := tar.NewWriter(gzipWriter)
+	baseName := pathpkg.Base(sourceRelative)
+	result.Path = m.VirtualPath(targetRelative)
+
+	walkErr := fs.WalkDir(m.root.FS(), sourceRelative, func(current string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return ErrUnsupportedType
+		}
+		if !info.IsDir() && !info.Mode().IsRegular() {
+			return ErrUnsupportedType
+		}
+		relativeName := "."
+		if current != sourceRelative {
+			relativeName = strings.TrimPrefix(current, sourceRelative+"/")
+		}
+		archivePath := baseName
+		if relativeName != "." {
+			archivePath = pathpkg.Join(baseName, relativeName)
+		}
+		header, err := tar.FileInfoHeader(info, "")
+		if err != nil {
+			return err
+		}
+		header.Name = archivePath
+		header.Uid = 0
+		header.Gid = 0
+		header.Uname = ""
+		header.Gname = ""
+		if info.IsDir() && !strings.HasSuffix(header.Name, "/") {
+			header.Name += "/"
+		}
+		if err := tarWriter.WriteHeader(header); err != nil {
+			return err
+		}
+		result.Entries++
+		if !info.Mode().IsRegular() {
+			return nil
+		}
+		input, err := m.root.Open(current)
+		if err != nil {
+			return err
+		}
+		written, copyErr := io.Copy(tarWriter, input)
+		closeErr := input.Close()
+		result.Bytes += written
+		if copyErr != nil {
+			return copyErr
+		}
+		return closeErr
+	})
+	if walkErr != nil {
+		_ = tarWriter.Close()
+		_ = gzipWriter.Close()
+		return OperationResult{}, walkErr
+	}
+	if err := tarWriter.Close(); err != nil {
+		return OperationResult{}, err
+	}
+	if err := gzipWriter.Close(); err != nil {
+		return OperationResult{}, err
+	}
+	if err := output.Sync(); err != nil {
+		return OperationResult{}, err
+	}
+	keepArchive = true
+	return result, nil
+}
+
+func (m *Manager) resolveOperationTarget(source, targetDir, targetName string) (string, string, error) {
+	sourceRelative, err := m.Relative(source)
+	if err != nil {
+		return "", "", err
+	}
+	if sourceRelative == "." {
+		return "", "", ErrRootOperation
+	}
+	if strings.TrimSpace(targetName) == "" {
+		targetName = pathpkg.Base(sourceRelative)
+	}
+	if err := ValidateName(targetName); err != nil {
+		return "", "", err
+	}
+	targetRelative, err := m.Join(targetDir, targetName)
+	if err != nil {
+		return "", "", err
+	}
+	targetInfo, _, err := m.Stat(targetDir)
+	if err != nil {
+		return "", "", err
+	}
+	if !targetInfo.IsDir() {
+		return "", "", ErrInvalidPath
+	}
+	return sourceRelative, targetRelative, nil
+}
+
+func (m *Manager) copyRelative(source, target string, result *OperationResult) error {
 	info, err := m.root.Lstat(source)
 	if err != nil {
 		return err
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
-		return ErrInvalidPath
+		return ErrUnsupportedType
 	}
+	result.Entries++
 	if info.IsDir() {
-		return m.copyDirectoryRelative(source, target, info.Mode().Perm())
-	}
-	if !info.Mode().IsRegular() {
-		return ErrNotRegular
-	}
-	return m.copyFileRelative(source, target, info.Mode().Perm())
-}
-
-func (m *Manager) copyDirectoryRelative(source, target string, perm os.FileMode) error {
-	if err := m.root.Mkdir(target, perm); err != nil {
-		return err
-	}
-	entries, err := m.readPublicDirectory(source)
-	if err != nil {
-		return err
-	}
-	for _, entry := range entries {
-		childSource := pathpkg.Join(source, entry.Name())
-		childTarget := pathpkg.Join(target, entry.Name())
-		if err := m.copyRelative(childSource, childTarget); err != nil {
+		if err := m.root.Mkdir(target, info.Mode().Perm()); err != nil {
 			return err
 		}
+		directory, err := m.root.Open(source)
+		if err != nil {
+			return err
+		}
+		entries, readErr := directory.ReadDir(-1)
+		closeErr := directory.Close()
+		if readErr != nil {
+			return readErr
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+		for _, entry := range entries {
+			if err := m.copyRelative(
+				pathpkg.Join(source, entry.Name()),
+				pathpkg.Join(target, entry.Name()),
+				result,
+			); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
-	return nil
-}
-
-func (m *Manager) copyFileRelative(source, target string, perm os.FileMode) error {
-	input, err := m.OpenRelative(source)
+	if !info.Mode().IsRegular() {
+		return ErrUnsupportedType
+	}
+	input, err := m.root.Open(source)
 	if err != nil {
 		return err
 	}
 	defer input.Close()
-
-	output, err := m.OpenFileRelative(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, perm)
+	output, err := m.root.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, info.Mode().Perm())
 	if err != nil {
 		return err
 	}
-	defer output.Close()
-
-	if _, err := io.Copy(output, input); err != nil {
-		return err
+	written, copyErr := io.Copy(output, input)
+	if copyErr == nil {
+		copyErr = output.Sync()
 	}
-	return output.Sync()
-}
-
-func (m *Manager) readPublicDirectory(relative string) ([]os.DirEntry, error) {
-	file, err := m.OpenRelative(relative)
-	if err != nil {
-		return nil, err
+	closeErr := output.Close()
+	if copyErr != nil {
+		return copyErr
 	}
-	defer file.Close()
-
-	entries, err := file.ReadDir(-1)
-	if err != nil {
-		return nil, err
+	if closeErr != nil {
+		return closeErr
 	}
-	if relative == "." {
-		visible := entries[:0]
-		for _, entry := range entries {
-			if entry.Name() != internalDirectoryName {
-				visible = append(visible, entry)
-			}
-		}
-		entries = visible
-	}
-	return entries, nil
+	result.Bytes += written
+	return nil
 }

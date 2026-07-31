@@ -12,11 +12,12 @@ import (
 )
 
 var (
-	ErrInvalidPath   = errors.New("invalid file path")
-	ErrInvalidName   = errors.New("invalid file name")
-	ErrRootOperation = errors.New("operation on file root is not allowed")
-	ErrNotRegular    = errors.New("path is not a regular file")
-	ErrReservedPath  = errors.New("path is reserved for internal use")
+	ErrInvalidPath      = errors.New("invalid file path")
+	ErrInvalidName      = errors.New("invalid file name")
+	ErrRootOperation    = errors.New("operation on file root is not allowed")
+	ErrNotRegular       = errors.New("path is not a regular file")
+	ErrReservedPath     = errors.New("path is reserved for internal use")
+	ErrRevisionConflict = errors.New("file revision conflict")
 )
 
 const internalDirectoryName = ".oneinstack-trash"

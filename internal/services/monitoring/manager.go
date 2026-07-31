@@ -44,6 +44,8 @@ type EventFilter struct {
 	RuleID         uint
 	EventType      string
 	Severity       string
+	ResourceType   string
+	ResourceID     string
 }
 
 type EventPage struct {
@@ -63,12 +65,14 @@ type DeliveryPage struct {
 }
 
 type Summary struct {
-	Latest       *models.MetricSample `json:"latest,omitempty"`
-	RuleCount    int64                `json:"ruleCount"`
-	EnabledRules int64                `json:"enabledRules"`
-	FiringCount  int64                `json:"firingCount"`
-	PendingCount int64                `json:"pendingCount"`
-	Last24Hours  int64                `json:"last24Hours"`
+	Latest              *models.MetricSample `json:"latest,omitempty"`
+	RuleCount           int64                `json:"ruleCount"`
+	EnabledRules        int64                `json:"enabledRules"`
+	FiringCount         int64                `json:"firingCount"`
+	PendingCount        int64                `json:"pendingCount"`
+	ServiceFiringCount  int64                `json:"serviceFiringCount"`
+	ServicePendingCount int64                `json:"servicePendingCount"`
+	Last24Hours         int64                `json:"last24Hours"`
 }
 
 type Manager struct {
@@ -80,6 +84,8 @@ type Manager struct {
 	scheduler      *cron.Cron
 	now            func() time.Time
 	mu             sync.Mutex
+	healthMu       sync.Mutex
+	serviceHealth  ServiceHealthCollector
 	background     sync.WaitGroup
 	startOnce      sync.Once
 	stopOnce       sync.Once
@@ -120,6 +126,9 @@ func NewManager(
 		defer cancel()
 		if _, collectErr := manager.CollectNow(ctx); collectErr != nil {
 			log.Printf("monitor metric collection failed: %v", collectErr)
+		}
+		if healthErr := manager.CheckServiceHealth(ctx); healthErr != nil {
+			log.Printf("component service health collection failed: %v", healthErr)
 		}
 	}); err != nil {
 		return nil, fmt.Errorf("invalid monitor sample schedule: %w", err)
@@ -167,6 +176,9 @@ func (manager *Manager) Start() {
 			defer cancel()
 			if _, err := manager.CollectNow(ctx); err != nil {
 				log.Printf("initial monitor metric collection failed: %v", err)
+			}
+			if err := manager.CheckServiceHealth(ctx); err != nil {
+				log.Printf("initial component service health collection failed: %v", err)
 			}
 		}()
 	})
@@ -556,6 +568,12 @@ func (manager *Manager) Events(filter EventFilter) (*EventPage, error) {
 	if filter.Severity != "" {
 		query = query.Where("severity = ?", filter.Severity)
 	}
+	if filter.ResourceType != "" {
+		query = query.Where("resource_type = ?", filter.ResourceType)
+	}
+	if filter.ResourceID != "" {
+		query = query.Where("resource_id = ?", filter.ResourceID)
+	}
 	var total int64
 	if err := query.Count(&total).Error; err != nil {
 		return nil, err
@@ -619,6 +637,16 @@ func (manager *Manager) Summary() (*Summary, error) {
 	}
 	if err := manager.db.Model(&models.MonitorAlertState{}).
 		Where("state = ?", models.MonitorStatePending).Count(&summary.PendingCount).Error; err != nil {
+		return nil, err
+	}
+	if err := manager.db.Model(&models.ComponentHealthState{}).
+		Where("installed = ? AND health_state = ?", true, models.MonitorStateFiring).
+		Count(&summary.ServiceFiringCount).Error; err != nil {
+		return nil, err
+	}
+	if err := manager.db.Model(&models.ComponentHealthState{}).
+		Where("installed = ? AND health_state = ?", true, models.MonitorStatePending).
+		Count(&summary.ServicePendingCount).Error; err != nil {
 		return nil, err
 	}
 	if err := manager.db.Model(&models.MonitorAlertEvent{}).

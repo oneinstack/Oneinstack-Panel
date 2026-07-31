@@ -318,6 +318,7 @@ func (installer *Installer) ApplyServiceConfigurationTask(
 	if err != nil {
 		return "", err
 	}
+	reportPackageResolution(observer, scriptInfo)
 	params := (&serviceInstallParams{key: definition.SoftwareKey, version: strings.TrimSpace(version)}).input()
 	installer.setScriptParams(scriptInfo, params)
 	scriptInfo.Params["ONEINSTACK_CONFIG_OPERATION"] = "apply"

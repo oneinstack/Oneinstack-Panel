@@ -106,6 +106,90 @@ func TestUpdateSoftwareInstallInfoMovesInstalledVersion(t *testing.T) {
 	}
 }
 
+func TestUpdateSoftwareInstallInfoClearsInstalledCatalogRowBySoftwareKey(t *testing.T) {
+	if err := app.InitDB(filepath.Join(t.TempDir(), "panel.db")); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.DB().Where("`key` = ?", "webserver").Delete(&models.Software{}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := app.DB().Create([]models.Software{
+		{
+			Name:            "Nginx",
+			Key:             "webserver",
+			Component:       "nginx",
+			Version:         "1.31.0",
+			Installed:       true,
+			InstallVersion:  "1.26.2",
+			Status:          models.Soft_Status_Suc,
+			CatalogManaged:  true,
+			CatalogVisible:  false,
+			Installable:     false,
+			CatalogRevision: "old",
+		},
+		{
+			Name:            "Nginx",
+			Key:             "webserver",
+			Component:       "nginx",
+			Version:         "1.26.2",
+			Installed:       false,
+			Status:          models.Soft_Status_Default,
+			CatalogManaged:  true,
+			CatalogVisible:  true,
+			Installable:     true,
+			CatalogRevision: "current",
+		},
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	directory := t.TempDir()
+	action := filepath.Join(directory, "uninstall.sh")
+	if err := os.WriteFile(
+		action,
+		[]byte("#!/usr/bin/env bash\nset -euo pipefail\necho removed\n"),
+		0700,
+	); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewScriptManager()
+	manager.tempDir = directory
+	manager.logDir = directory
+	if _, err := manager.ExecuteScriptTask(
+		context.Background(),
+		&ScriptInfo{
+			Name:       "nginx",
+			Type:       ScriptTypeUninstall,
+			Path:       action,
+			WorkingDir: directory,
+			Params:     map[string]string{"SOFTWARE_VERSION": "1.26.2"},
+			ActionName: "uninstall",
+			Timeouts:   map[string]time.Duration{"uninstall": time.Second},
+		},
+		&input.InstallParams{Key: "webserver", Version: "1.26.2"},
+		filepath.Join(directory, "task.log"),
+		&recordingExecutionObserver{},
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	var rows []models.Software
+	if err := app.DB().Where("`key` = ?", "webserver").Order("version").Find(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("software rows = %d, want 2", len(rows))
+	}
+	for _, row := range rows {
+		if row.Installed || row.InstallVersion != "" {
+			t.Fatalf("uninstall retained installed state on catalog row: %#v", row)
+		}
+		if row.Version == "1.31.0" && row.Status != models.Soft_Status_Default {
+			t.Fatalf("uninstall retained success status on historical row: %#v", row)
+		}
+	}
+}
+
 func TestRedactingWriterRedactsSecretsAcrossWriteBoundaries(t *testing.T) {
 	var output bytes.Buffer
 	writer := newRedactingWriter(&output, []string{"repeat-a-secret", "xy"})

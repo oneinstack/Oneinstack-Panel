@@ -60,18 +60,49 @@ type MonitorAlertState struct {
 }
 
 type MonitorAlertEvent struct {
-	ID         uint64     `gorm:"primaryKey" json:"id"`
-	RuleID     uint       `gorm:"index;not null" json:"ruleId"`
-	RuleName   string     `gorm:"size:120;index;not null" json:"ruleName"`
-	Metric     string     `gorm:"size:32;index;not null" json:"metric"`
-	Severity   string     `gorm:"size:16;index;not null" json:"severity"`
-	EventType  string     `gorm:"size:16;index;not null" json:"eventType"`
-	Value      float64    `json:"value"`
-	Threshold  float64    `json:"threshold"`
-	StartedAt  time.Time  `gorm:"index;not null" json:"startedAt"`
-	OccurredAt time.Time  `gorm:"index;not null" json:"occurredAt"`
-	ResolvedAt *time.Time `gorm:"index" json:"resolvedAt,omitempty"`
-	Message    string     `gorm:"size:255" json:"message"`
+	ID           uint64     `gorm:"primaryKey" json:"id"`
+	RuleID       uint       `gorm:"index;not null" json:"ruleId"`
+	RuleName     string     `gorm:"size:120;index;not null" json:"ruleName"`
+	Metric       string     `gorm:"size:32;index;not null" json:"metric"`
+	ResourceType string     `gorm:"size:32;index" json:"resourceType,omitempty"`
+	ResourceID   string     `gorm:"size:64;index" json:"resourceId,omitempty"`
+	Severity     string     `gorm:"size:16;index;not null" json:"severity"`
+	EventType    string     `gorm:"size:16;index;not null" json:"eventType"`
+	Value        float64    `json:"value"`
+	Threshold    float64    `json:"threshold"`
+	StartedAt    time.Time  `gorm:"index;not null" json:"startedAt"`
+	OccurredAt   time.Time  `gorm:"index;not null" json:"occurredAt"`
+	ResolvedAt   *time.Time `gorm:"index" json:"resolvedAt,omitempty"`
+	Message      string     `gorm:"size:255" json:"message"`
+}
+
+// ComponentHealthState stores the durable service health state independently
+// from user-created numeric monitor rules. Installed services are evaluated by
+// consecutive probes, support silence windows, and generate normal monitor
+// events so existing notification channels can deliver them.
+type ComponentHealthState struct {
+	Component           string     `gorm:"primaryKey;size:64" json:"component"`
+	DisplayName         string     `gorm:"size:120;not null" json:"displayName"`
+	SoftwareKey         string     `gorm:"size:64;not null" json:"softwareKey"`
+	ServiceName         string     `gorm:"size:120;not null" json:"serviceName"`
+	SoftwareVersion     string     `gorm:"size:64" json:"softwareVersion,omitempty"`
+	RuntimeVersion      string     `gorm:"size:64" json:"runtimeVersion,omitempty"`
+	Installed           bool       `gorm:"index;not null" json:"installed"`
+	Busy                bool       `gorm:"index;not null" json:"busy"`
+	HealthState         string     `gorm:"size:16;index;not null" json:"healthState"`
+	ServiceState        string     `gorm:"size:32;index;not null" json:"serviceState"`
+	LoadState           string     `gorm:"size:32" json:"loadState,omitempty"`
+	ActiveState         string     `gorm:"size:32" json:"activeState,omitempty"`
+	SubState            string     `gorm:"size:32" json:"subState,omitempty"`
+	ConsecutiveFailures int        `gorm:"not null" json:"consecutiveFailures"`
+	LastError           string     `gorm:"size:512" json:"lastError,omitempty"`
+	LastCheckedAt       time.Time  `gorm:"index;not null" json:"lastCheckedAt"`
+	PendingSince        *time.Time `json:"pendingSince,omitempty"`
+	FiringSince         *time.Time `json:"firingSince,omitempty"`
+	LastNotifiedAt      *time.Time `json:"lastNotifiedAt,omitempty"`
+	SilencedUntil       *time.Time `gorm:"index" json:"silencedUntil,omitempty"`
+	CreatedAt           time.Time  `json:"createdAt"`
+	UpdatedAt           time.Time  `json:"updatedAt"`
 }
 
 type NotificationChannel struct {

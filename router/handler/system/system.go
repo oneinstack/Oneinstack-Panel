@@ -157,6 +157,19 @@ func GetPanelEntryStatus(c *gin.Context) {
 	core.HandleSuccess(c, system.GetPanelEntryStatus())
 }
 
+func GetPanelNetworkTransaction(c *gin.Context) {
+	transaction, err := system.GetPanelNetworkTransaction(c.Param("id"))
+	if err != nil {
+		if errors.Is(err, system.ErrNetworkTransactionNotFound) {
+			core.HandleError(c, core.WrapError(err, core.ErrNotFound, "访问配置应用任务不存在"))
+			return
+		}
+		core.HandleError(c, core.WrapError(err, core.ErrInternalError, "获取访问配置应用状态失败"))
+		return
+	}
+	core.HandleSuccess(c, transaction)
+}
+
 func UpdatePanelNetwork(c *gin.Context) {
 	var request input.UpdatePanelNetworkRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
@@ -178,6 +191,10 @@ func UpdatePanelNetwork(c *gin.Context) {
 	if err != nil {
 		if errors.Is(err, system.ErrNetworkConfigInvalid) {
 			core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "面板访问配置无效"))
+			return
+		}
+		if errors.Is(err, system.ErrNetworkApplyInProgress) {
+			core.HandleError(c, core.WrapError(err, core.ErrConflict, "已有访问配置正在应用，请稍后重试"))
 			return
 		}
 		core.HandleError(c, core.WrapError(err, core.ErrInternalError, "保存面板访问配置失败"))

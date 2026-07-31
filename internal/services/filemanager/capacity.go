@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"math"
+	"path/filepath"
 	"sync"
 
 	"github.com/shirou/gopsutil/v4/disk"
@@ -98,13 +99,23 @@ func (reservation *CapacityReservation) Release() {
 }
 
 func (m *Manager) capacityLocked(policy CapacityPolicy, reserved int64) (CapacityStatus, error) {
-	used, entries, err := m.scanUsage()
-	if err != nil {
-		return CapacityStatus{}, err
-	}
 	usage, err := disk.Usage(m.rootPath)
 	if err != nil {
 		return CapacityStatus{}, fmt.Errorf("read filesystem capacity: %w", err)
+	}
+	var used int64
+	var entries int64
+	if filepath.Clean(m.rootPath) == string(filepath.Separator) && policy.QuotaBytes == 0 {
+		// Walking an entire server root would enter millions of files and
+		// volatile pseudo filesystems. With no directory quota configured, the
+		// filesystem usage is the relevant value and is available in O(1).
+		used = clampUint64(usage.Used)
+		entries = -1
+	} else {
+		used, entries, err = m.scanUsage()
+		if err != nil {
+			return CapacityStatus{}, err
+		}
 	}
 	status := CapacityStatus{
 		UsedBytes:          used,
