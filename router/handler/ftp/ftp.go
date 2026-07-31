@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"oneinstack/app"
 	"oneinstack/core"
+	accessservice "oneinstack/internal/services/access"
 	"oneinstack/internal/services/filemanager"
 	"oneinstack/router/middleware"
 	"oneinstack/utils"
@@ -875,6 +876,20 @@ func managerForRequest(c *gin.Context) (*filemanager.Manager, bool) {
 	if err != nil {
 		core.HandleError(c, core.NewError(core.ErrInternalError, "文件服务初始化失败"))
 		return nil, false
+	}
+
+	access, accessOk := middleware.UserAccess(c)
+	if accessOk && !access.HasPermission(accessservice.PermissionFileScopeRoot) {
+		var allowedPrefixes []string
+		if access.HasPermission(accessservice.PermissionFileScopeWebsites) {
+			allowedPrefixes = append(allowedPrefixes, "/websites")
+		}
+		if access.HasPermission(accessservice.PermissionFileScopeBackups) {
+			allowedPrefixes = append(allowedPrefixes, "/backups")
+		}
+		if len(allowedPrefixes) > 0 {
+			manager.WithScope(allowedPrefixes)
+		}
 	}
 	return manager, true
 }

@@ -15,10 +15,22 @@ import (
 )
 
 const (
-	PermissionDashboardRead    = "dashboard.read"
-	PermissionRuntimeLogRead   = "runtime_log.read"
-	PermissionFileRead         = "file.read"
-	PermissionFileWrite        = "file.write"
+	PermissionDashboardRead  = "dashboard.read"
+	PermissionRuntimeLogRead = "runtime_log.read"
+	PermissionFileRead       = "file.read"
+	PermissionFileWrite      = "file.write" // deprecated: use fine-grained file.* permissions
+	PermissionFileCreate     = "file.create"
+	PermissionFileEdit       = "file.edit"
+	PermissionFileMove       = "file.move"
+	PermissionFileDelete     = "file.delete"
+	PermissionFileModify     = "file.modify"
+	PermissionFileArchive    = "file.archive"
+	PermissionFileShare      = "file.share"
+
+	PermissionFileScopeRoot     = "file.scope.root"
+	PermissionFileScopeWebsites = "file.scope.websites"
+	PermissionFileScopeBackups  = "file.scope.backups"
+
 	PermissionWebsiteRead      = "website.read"
 	PermissionWebsiteWrite     = "website.write"
 	PermissionWebsiteApproval  = "website.approval.request"
@@ -106,7 +118,17 @@ func builtinPermissions() []models.Permission {
 		{Code: PermissionDashboardRead, Name: "面板概览查看", Module: "dashboard"},
 		{Code: PermissionRuntimeLogRead, Name: "运行日志查看", Module: "log"},
 		{Code: PermissionFileRead, Name: "文件读取", Module: "file"},
-		{Code: PermissionFileWrite, Name: "文件修改", Module: "file"},
+		{Code: PermissionFileWrite, Name: "文件修改（已弃用）", Module: "file"},
+		{Code: PermissionFileCreate, Name: "文件创建/上传", Module: "file"},
+		{Code: PermissionFileEdit, Name: "文件编辑", Module: "file"},
+		{Code: PermissionFileMove, Name: "文件移动/重命名", Module: "file"},
+		{Code: PermissionFileDelete, Name: "文件删除", Module: "file"},
+		{Code: PermissionFileModify, Name: "文件属性修改", Module: "file"},
+		{Code: PermissionFileArchive, Name: "文件归档", Module: "file"},
+		{Code: PermissionFileShare, Name: "文件分享", Module: "file"},
+		{Code: PermissionFileScopeRoot, Name: "文件完整根目录", Module: "file"},
+		{Code: PermissionFileScopeWebsites, Name: "网站目录访问", Module: "file"},
+		{Code: PermissionFileScopeBackups, Name: "备份目录访问", Module: "file"},
 		{Code: PermissionWebsiteRead, Name: "网站读取", Module: "website"},
 		{Code: PermissionWebsiteWrite, Name: "网站修改", Module: "website"},
 		{Code: PermissionWebsiteApproval, Name: "网站审批申请", Module: "website"},
@@ -171,7 +193,14 @@ func builtinRoles() []struct {
 				PermissionDashboardRead,
 				PermissionRuntimeLogRead,
 				PermissionFileRead,
-				PermissionFileWrite,
+				PermissionFileCreate,
+				PermissionFileEdit,
+				PermissionFileMove,
+				PermissionFileDelete,
+				PermissionFileArchive,
+				PermissionFileShare,
+				PermissionFileScopeWebsites,
+				PermissionFileScopeBackups,
 				PermissionSoftwareRead,
 				PermissionServiceRead,
 				PermissionServiceWrite,
@@ -215,7 +244,14 @@ func builtinRoles() []struct {
 				PermissionDashboardRead,
 				PermissionRuntimeLogRead,
 				PermissionFileRead,
-				PermissionFileWrite,
+				PermissionFileCreate,
+				PermissionFileEdit,
+				PermissionFileMove,
+				PermissionFileDelete,
+				PermissionFileModify,
+				PermissionFileArchive,
+				PermissionFileShare,
+				PermissionFileScopeRoot,
 				PermissionSoftwareRead,
 				PermissionSoftwareWrite,
 				PermissionServiceRead,
@@ -397,6 +433,18 @@ func (service *Service) LoadUserAccess(userID int64) (*UserAccess, error) {
 	return access, nil
 }
 
+var legacyAliases = map[string][]string{
+	PermissionFileWrite: {
+		PermissionFileCreate,
+		PermissionFileEdit,
+		PermissionFileMove,
+		PermissionFileDelete,
+		PermissionFileModify,
+		PermissionFileArchive,
+		PermissionFileShare,
+	},
+}
+
 func (access *UserAccess) HasPermission(code string) bool {
 	if access == nil {
 		return false
@@ -404,8 +452,17 @@ func (access *UserAccess) HasPermission(code string) bool {
 	if access.IsSuperAdmin {
 		return true
 	}
-	_, ok := access.PermissionSet[code]
-	return ok
+	if _, ok := access.PermissionSet[code]; ok {
+		return true
+	}
+	if aliases, ok := legacyAliases[code]; ok {
+		for _, alias := range aliases {
+			if _, exists := access.PermissionSet[alias]; exists {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (service *Service) ListRoles() ([]RoleSummary, error) {

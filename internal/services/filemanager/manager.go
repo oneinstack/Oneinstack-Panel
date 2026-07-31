@@ -24,10 +24,12 @@ const internalDirectoryName = ".oneinstack-trash"
 
 // Manager confines filesystem access to a configured directory tree. Paths
 // accepted by its methods are virtual paths: "/" is the configured root and
-// "/sites/example" is a child beneath that root.
+// "/sites/example" is a child beneath that root. When scopePrefixes is set,
+// virtual paths outside the listed prefixes are rejected.
 type Manager struct {
-	root     *os.Root
-	rootPath string
+	root          *os.Root
+	rootPath      string
+	scopePrefixes []string
 }
 
 func New(rootPath string) (*Manager, error) {
@@ -63,6 +65,13 @@ func (m *Manager) Close() error {
 	return m.root.Close()
 }
 
+// WithScope restricts operations to virtual paths starting with one of the
+// given prefixes. A nil or empty slice means full access (no restriction).
+func (m *Manager) WithScope(prefixes []string) *Manager {
+	m.scopePrefixes = prefixes
+	return m
+}
+
 func (m *Manager) RootPath() string {
 	return m.rootPath
 }
@@ -96,7 +105,28 @@ func (m *Manager) Relative(virtualPath string) (string, error) {
 	if isInternalPath(relative) {
 		return "", ErrReservedPath
 	}
+	if len(m.scopePrefixes) > 0 {
+		virtual := m.VirtualPath(relative)
+		if !m.isInScope(virtual) {
+			return "", ErrInvalidPath
+		}
+	}
 	return relative, nil
+}
+
+func (m *Manager) isInScope(virtualPath string) bool {
+	if len(m.scopePrefixes) == 0 {
+		return true
+	}
+	if virtualPath == "/" {
+		return true
+	}
+	for _, prefix := range m.scopePrefixes {
+		if virtualPath == prefix || strings.HasPrefix(virtualPath, prefix+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *Manager) VirtualPath(relative string) string {
