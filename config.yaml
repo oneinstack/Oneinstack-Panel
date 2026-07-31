@@ -13,7 +13,7 @@ system:
     # Deprecated legacy catalog endpoint. Software catalog synchronization now
     # uses scriptCenter.url + /v1/software/catalog.
     remote: ''
-    defaultPath: '/data/'
+    defaultPath: '/'
     webPath: '/data/wwwroot/'
     logPath: '/data/wwwlogs/'
     dataPath: '/data/db/'

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -18,6 +19,7 @@ import (
 	"oneinstack/internal/services/software"
 	"oneinstack/internal/services/softwaretask"
 	systemservice "oneinstack/internal/services/system"
+	websiteService "oneinstack/internal/services/website"
 	"oneinstack/internal/services/websitetask"
 	web "oneinstack/router"
 	cronHandler "oneinstack/router/handler/cron"
@@ -416,60 +418,68 @@ func startServer() error {
 
 	websiteTaskManager, err := websiteHandler.DefaultWebsiteTaskManager()
 	if err != nil {
-		return fmt.Errorf("initialize website task manager: %w", err)
-	}
-	websiteBackupCleaner, err := websitetask.NewCleaner(
-		websiteTaskManager,
-		app.ONE_CONFIG.System.WebsiteBackupRetentionDays,
-		app.ONE_CONFIG.System.WebsiteBackupCleanupSchedule,
-	)
-	if err != nil {
-		return err
-	}
-	websiteBackupCleaner.Start()
-	defer func() {
-		stopContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if stopErr := websiteBackupCleaner.Stop(stopContext); stopErr != nil {
-			log.Printf("stop website backup cleaner: %v", stopErr)
+		if !errors.Is(err, websiteService.ErrNginxUnavailable) {
+			return fmt.Errorf("initialize website task manager: %w", err)
 		}
-	}()
-	defer func() {
-		stopContext, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if stopErr := websiteTaskManager.Stop(stopContext); stopErr != nil {
-			log.Printf("stop website task manager: %v", stopErr)
+		log.Printf("website task service disabled until Nginx is installed: %v", err)
+	} else {
+		websiteBackupCleaner, err := websitetask.NewCleaner(
+			websiteTaskManager,
+			app.ONE_CONFIG.System.WebsiteBackupRetentionDays,
+			app.ONE_CONFIG.System.WebsiteBackupCleanupSchedule,
+		)
+		if err != nil {
+			return err
 		}
-	}()
+		websiteBackupCleaner.Start()
+		defer func() {
+			stopContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if stopErr := websiteBackupCleaner.Stop(stopContext); stopErr != nil {
+				log.Printf("stop website backup cleaner: %v", stopErr)
+			}
+		}()
+		defer func() {
+			stopContext, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if stopErr := websiteTaskManager.Stop(stopContext); stopErr != nil {
+				log.Printf("stop website task manager: %v", stopErr)
+			}
+		}()
+	}
 
 	certificateManager, err := websiteHandler.DefaultCertificateManager()
 	if err != nil {
-		return fmt.Errorf("initialize certificate task manager: %w", err)
-	}
-	defer func() {
-		stopContext, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if stopErr := certificateManager.Stop(stopContext); stopErr != nil {
-			log.Printf("stop certificate task manager: %v", stopErr)
+		if !errors.Is(err, websiteService.ErrNginxUnavailable) {
+			return fmt.Errorf("initialize certificate task manager: %w", err)
 		}
-	}()
-	certificateRenewal, err := certificate.NewRenewalScheduler(
-		certificateManager,
-		app.ONE_CONFIG.System.ACMERenewSchedule,
-	)
-	if err != nil {
-		return err
-	}
-	if err := certificateRenewal.Start(); err != nil {
-		return err
-	}
-	defer func() {
-		stopContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if stopErr := certificateRenewal.Stop(stopContext); stopErr != nil {
-			log.Printf("stop certificate renewal scheduler: %v", stopErr)
+		log.Printf("certificate task service disabled until Nginx is installed: %v", err)
+	} else {
+		defer func() {
+			stopContext, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if stopErr := certificateManager.Stop(stopContext); stopErr != nil {
+				log.Printf("stop certificate task manager: %v", stopErr)
+			}
+		}()
+		certificateRenewal, err := certificate.NewRenewalScheduler(
+			certificateManager,
+			app.ONE_CONFIG.System.ACMERenewSchedule,
+		)
+		if err != nil {
+			return err
 		}
-	}()
+		if err := certificateRenewal.Start(); err != nil {
+			return err
+		}
+		defer func() {
+			stopContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if stopErr := certificateRenewal.Stop(stopContext); stopErr != nil {
+				log.Printf("stop certificate renewal scheduler: %v", stopErr)
+			}
+		}()
+	}
 	defer func() {
 		stopContext, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()

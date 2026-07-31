@@ -2,18 +2,25 @@ package ftp
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"oneinstack/app"
+	"oneinstack/internal/models"
+	auditservice "oneinstack/internal/services/audit"
 	"oneinstack/internal/services/filemanager"
+	"oneinstack/router/middleware"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"github.com/glebarez/sqlite"
+	"gorm.io/gorm"
 )
 
 func TestFileHandlersUseVirtualPaths(t *testing.T) {
@@ -57,6 +64,53 @@ func TestFileHandlersUseVirtualPaths(t *testing.T) {
 	}
 }
 
+func TestSaveFileRejectsStaleRevisionAndBinaryEditorInput(t *testing.T) {
+	rootPath := configureTestFileRoot(t)
+	target := filepath.Join(rootPath, "config.conf")
+	if err := os.WriteFile(target, []byte("old"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	contentResponse := performJSONRequest(t, Content, `{"path":"/config.conf"}`)
+	if contentResponse.Code != http.StatusOK {
+		t.Fatalf("content status = %d, body = %s", contentResponse.Code, contentResponse.Body.String())
+	}
+	var contentPayload struct {
+		Data FileDetail `json:"data"`
+	}
+	if err := json.Unmarshal(contentResponse.Body.Bytes(), &contentPayload); err != nil {
+		t.Fatal(err)
+	}
+	if contentPayload.Data.Revision == "" {
+		t.Fatal("content response did not include a revision")
+	}
+	if err := os.WriteFile(target, []byte("changed elsewhere"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	saveBody, err := json.Marshal(gin.H{
+		"path": "/config.conf", "content": "panel change", "revision": contentPayload.Data.Revision,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	saveResponse := performJSONRequest(t, SaveFile, string(saveBody))
+	if saveResponse.Code != http.StatusConflict {
+		t.Fatalf("stale save status = %d, body = %s", saveResponse.Code, saveResponse.Body.String())
+	}
+	current, err := os.ReadFile(target)
+	if err != nil || string(current) != "changed elsewhere" {
+		t.Fatalf("stale save changed file: content=%q error=%v", current, err)
+	}
+
+	if err := os.WriteFile(filepath.Join(rootPath, "binary.bin"), []byte{0, 1, 2}, 0600); err != nil {
+		t.Fatal(err)
+	}
+	binaryResponse := performJSONRequest(t, Content, `{"path":"/binary.bin"}`)
+	if binaryResponse.Code != http.StatusBadRequest {
+		t.Fatalf("binary content status = %d, body = %s", binaryResponse.Code, binaryResponse.Body.String())
+	}
+}
+
 func TestFileHandlersRejectParentTraversal(t *testing.T) {
 	configureTestFileRoot(t)
 
@@ -83,6 +137,261 @@ func TestFileHandlersRejectParentTraversal(t *testing.T) {
 				t.Fatalf("status = %d, want 400; body = %s", response.Code, response.Body.String())
 			}
 		})
+	}
+}
+
+func TestSearchFileReturnsBoundedMatches(t *testing.T) {
+	rootPath := configureTestFileRoot(t)
+	if err := os.MkdirAll(filepath.Join(rootPath, "sites", "demo"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(rootPath, "sites", "demo", "nginx.conf"), []byte("server {}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	response := performJSONRequest(t, SearchFile, `{
+		"path":"/",
+		"query":"NGINX",
+		"type":"file",
+		"maxResults":20
+	}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("search status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), `"path":"/sites/demo/nginx.conf"`) {
+		t.Fatalf("search result missing expected path: %s", response.Body.String())
+	}
+}
+
+func TestFileMutationCreatesDetailedOperationRecord(t *testing.T) {
+	configureTestFileRoot(t)
+	database, err := gorm.Open(sqlite.Open("file:ftp-operation-audit?mode=memory&cache=shared"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.AutoMigrate(&models.AuditEvent{}, &models.AuditCheckpoint{}, &models.AuditChainState{}); err != nil {
+		t.Fatal(err)
+	}
+	key := sha256.Sum256([]byte("ftp-operation-audit-key"))
+	manager, err := auditservice.ConfigureDefault(database, key[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { auditservice.ClearDefault(manager) })
+
+	response := performJSONRequest(t, CreateFileOrDir, `{"path":"/created.txt","type":"file"}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("create status = %d, body = %s", response.Code, response.Body.String())
+	}
+	result, err := manager.List(auditservice.Filter{EventType: "file"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Total != 1 || result.Items[0].Action != "file.create" ||
+		result.Items[0].Path != "/created.txt" || result.Items[0].Outcome != "success" {
+		t.Fatalf("unexpected operation record: %+v", result.Items)
+	}
+}
+
+func TestFileActionHandlersCopyMoveRenameArchiveAndProperties(t *testing.T) {
+	rootPath := configureTestFileRoot(t)
+	if err := os.MkdirAll(filepath.Join(rootPath, "source", "nested"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(rootPath, "source", "nested", "app.conf"), []byte("server"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	copyResponse := performJSONRequest(t, CopyFileOrDir, `{
+		"source":"/source",
+		"targetDir":"/",
+		"targetName":"copied"
+	}`)
+	if copyResponse.Code != http.StatusOK {
+		t.Fatalf("copy status=%d body=%s", copyResponse.Code, copyResponse.Body.String())
+	}
+	renameResponse := performJSONRequest(t, RenameFileOrDir, `{
+		"path":"/copied",
+		"newName":"renamed"
+	}`)
+	if renameResponse.Code != http.StatusOK {
+		t.Fatalf("rename status=%d body=%s", renameResponse.Code, renameResponse.Body.String())
+	}
+	if err := os.Mkdir(filepath.Join(rootPath, "target"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	moveResponse := performJSONRequest(t, MoveFileOrDir, `{
+		"source":"/renamed",
+		"targetDir":"/target"
+	}`)
+	if moveResponse.Code != http.StatusOK {
+		t.Fatalf("move status=%d body=%s", moveResponse.Code, moveResponse.Body.String())
+	}
+	propertiesResponse := performJSONRequest(t, GetFileProperties, `{
+		"path":"/target/renamed/nested/app.conf"
+	}`)
+	if propertiesResponse.Code != http.StatusOK ||
+		!strings.Contains(propertiesResponse.Body.String(), `"permissions":"0644"`) ||
+		!strings.Contains(propertiesResponse.Body.String(), `"owner":`) {
+		t.Fatalf("properties status=%d body=%s", propertiesResponse.Code, propertiesResponse.Body.String())
+	}
+	archiveResponse := performJSONRequest(t, ArchiveFileOrDir, `{
+		"path":"/target/renamed",
+		"targetDir":"/",
+		"archiveName":"renamed.tar.gz"
+	}`)
+	if archiveResponse.Code != http.StatusOK {
+		t.Fatalf("archive status=%d body=%s", archiveResponse.Code, archiveResponse.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(rootPath, "renamed.tar.gz")); err != nil {
+		t.Fatalf("archive was not created: %v", err)
+	}
+}
+
+func TestPreviewImageAcceptsVerifiedRasterAndRejectsUnsafeContent(t *testing.T) {
+	rootPath := configureTestFileRoot(t)
+	pngContent := append(
+		[]byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'},
+		make([]byte, 64)...,
+	)
+	if err := os.WriteFile(filepath.Join(rootPath, "preview.png"), pngContent, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(rootPath, "active.svg"), []byte(`<svg onload="alert(1)"/>`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	largePath := filepath.Join(rootPath, "large.png")
+	if err := os.WriteFile(largePath, pngContent, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(largePath, maxImagePreviewBytes+1); err != nil {
+		t.Fatal(err)
+	}
+
+	issueTicket := func(path string) string {
+		request := httptest.NewRequest(
+			http.MethodPost,
+			"/ftp/preview-ticket",
+			strings.NewReader(`{"path":"`+path+`"}`),
+		)
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		context, _ := gin.CreateTestContext(response)
+		context.Request = request
+		context.Set(middleware.ContextUserID, int64(1))
+		context.Set(middleware.ContextSessionID, "preview-test-session")
+		CreateImagePreviewTicket(context)
+		if response.Code != http.StatusOK {
+			t.Fatalf("issue preview ticket for %s status=%d body=%s", path, response.Code, response.Body.String())
+		}
+		var payload struct {
+			Data struct {
+				URL string `json:"url"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+			t.Fatal(err)
+		}
+		return payload.Data.URL
+	}
+	performPreview := func(path, sessionID string) *httptest.ResponseRecorder {
+		ticketURL := issueTicket(path)
+		token := ticketURL[strings.LastIndex(ticketURL, "/")+1:]
+		request := httptest.NewRequest(http.MethodGet, ticketURL, nil)
+		response := httptest.NewRecorder()
+		context, _ := gin.CreateTestContext(response)
+		context.Request = request
+		context.Params = gin.Params{{Key: "ticket", Value: token}}
+		context.Set(middleware.ContextUserID, int64(1))
+		context.Set(middleware.ContextSessionID, sessionID)
+		PreviewImage(context)
+		return response
+	}
+	valid := performPreview("/preview.png", "preview-test-session")
+	if valid.Code != http.StatusOK {
+		t.Fatalf("preview status=%d body=%s", valid.Code, valid.Body.String())
+	}
+	if contentType := valid.Header().Get("Content-Type"); contentType != "image/png" {
+		t.Fatalf("preview content type=%q", contentType)
+	}
+	if disposition := valid.Header().Get("Content-Disposition"); !strings.HasPrefix(disposition, "inline;") {
+		t.Fatalf("preview disposition=%q", disposition)
+	}
+	if valid.Header().Get("X-Content-Type-Options") != "nosniff" {
+		t.Fatal("preview response is missing nosniff")
+	}
+
+	for _, path := range []string{"/active.svg", "/large.png"} {
+		response := performPreview(path, "preview-test-session")
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("unsafe preview %s status=%d body=%s", path, response.Code, response.Body.String())
+		}
+	}
+	wrongSession := performPreview("/preview.png", "another-session")
+	if wrongSession.Code != http.StatusNotFound {
+		t.Fatalf("cross-session preview status=%d body=%s", wrongSession.Code, wrongSession.Body.String())
+	}
+}
+
+func TestFileShareStoresOnlyTokenHashAndRejectsChangedFile(t *testing.T) {
+	if err := app.InitDB("file:ftp-share-tests?mode=memory&cache=shared"); err != nil {
+		t.Fatal(err)
+	}
+	rootPath := configureTestFileRoot(t)
+	target := filepath.Join(rootPath, "release.zip")
+	if err := os.WriteFile(target, []byte("release"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	createResponse := performJSONRequest(t, CreateFileShare, `{
+		"path":"/release.zip",
+		"expiryHours":2
+	}`)
+	if createResponse.Code != http.StatusOK {
+		t.Fatalf("create share status=%d body=%s", createResponse.Code, createResponse.Body.String())
+	}
+	var payload struct {
+		Data struct {
+			Share       models.FileShare `json:"share"`
+			DownloadURL string           `json:"downloadUrl"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(createResponse.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := url.Parse(payload.Data.DownloadURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := parsed.Query().Get("token")
+	if token == "" {
+		t.Fatalf("share response missing token: %s", createResponse.Body.String())
+	}
+	var stored models.FileShare
+	if err := app.DB().First(&stored, "id = ?", payload.Data.Share.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.TokenHash == token || stored.TokenHash != shareTokenHash(token) {
+		t.Fatal("share token was not stored as a one-way hash")
+	}
+
+	download := func() *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodGet, payload.Data.DownloadURL, nil)
+		response := httptest.NewRecorder()
+		context, _ := gin.CreateTestContext(response)
+		context.Request = request
+		DownloadSharedFile(context)
+		return response
+	}
+	first := download()
+	if first.Code != http.StatusOK || first.Body.String() != "release" {
+		t.Fatalf("share download status=%d body=%q", first.Code, first.Body.String())
+	}
+	if err := os.WriteFile(target, []byte("changed release"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	changed := download()
+	if changed.Code != http.StatusNotFound {
+		t.Fatalf("changed share status=%d body=%s", changed.Code, changed.Body.String())
 	}
 }
 

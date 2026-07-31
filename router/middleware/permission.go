@@ -14,7 +14,10 @@ import (
 	"gorm.io/gorm"
 )
 
-const ContextUserAccess = "userAccess"
+const (
+	ContextUserAccess   = "userAccess"
+	ContextAuditHandled = "auditHandled"
+)
 
 type AuthorizationMatrix struct {
 	Menu             map[string]bool            `json:"menu"`
@@ -293,6 +296,9 @@ func AuditLog() gin.HandlerFunc {
 		c.Header("X-Request-ID", requestID)
 		c.Next()
 
+		if handled, _ := c.Get(ContextAuditHandled); handled == true {
+			return
+		}
 		status := c.Writer.Status()
 		path := c.Request.URL.Path
 		sensitive := isSensitiveOperation(c.Request.Method, path)
@@ -361,6 +367,7 @@ func isReadOnlyPost(path string) bool {
 		"/v1/storage/rklist",
 		"/v1/storage/info",
 		"/v1/ftp/list",
+		"/v1/ftp/search",
 		"/v1/ftp/content",
 		"/v1/ftp/tree",
 		"/v1/soft/list",

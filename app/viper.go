@@ -55,7 +55,7 @@ system:
     panelEntryEnabled: false
     panelEntryPath: ""
     remote: ""
-    defaultPath: "/data/"
+    defaultPath: "/"
     webPath: "/data/wwwroot/"
     logPath: "/data/wwwlogs/"
     dataPath: "/data/db/"

@@ -131,7 +131,7 @@ func (cm *ConfigManager) setDefaults() {
 	cm.viper.SetDefault("system.trustedProxies", []string{})
 	cm.viper.SetDefault("system.panelEntryEnabled", false)
 	cm.viper.SetDefault("system.panelEntryPath", "")
-	cm.viper.SetDefault("system.defaultPath", "/data/")
+	cm.viper.SetDefault("system.defaultPath", "/")
 	cm.viper.SetDefault("system.webPath", "/data/wwwroot/")
 	cm.viper.SetDefault("system.logPath", "/data/wwwlogs/")
 	cm.viper.SetDefault("system.dataPath", "/data/db/")
@@ -254,7 +254,7 @@ system:
   httpsPrivateKeyFile: ""
   trustedProxies: []
   remote: ""
-  defaultPath: "/data/"
+  defaultPath: "/"
   webPath: "/data/wwwroot/"
   logPath: "/data/wwwlogs/"
   dataPath: "/data/db/"

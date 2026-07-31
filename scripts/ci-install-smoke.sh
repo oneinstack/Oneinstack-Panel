@@ -55,7 +55,7 @@ port="${ONEINSTACK_SMOKE_PORT:-18089}"
 runtime_config="${runtime_dir}/config.yaml"
 sed \
   -e "s|port: 8089|port: ${port}|" \
-  -e "s|defaultPath: '/data/'|defaultPath: '${runtime_dir}/data/'|" \
+  -e "s|defaultPath: '/'|defaultPath: '${runtime_dir}/data/'|" \
   -e "s|webPath: '/data/wwwroot/'|webPath: '${runtime_dir}/data/wwwroot/'|" \
   -e "s|logPath: '/data/wwwlogs/'|logPath: '${runtime_dir}/data/wwwlogs/'|" \
   -e "s|dataPath: '/data/db/'|dataPath: '${runtime_dir}/data/db/'|" \

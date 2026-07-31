@@ -23,9 +23,10 @@ import (
 )
 
 var publicRoutes = map[string]struct{}{
-	http.MethodPost + " /v1/login":          {},
-	http.MethodGet + " /v1/panel-entry/status": {},
-	http.MethodGet + " /v1/sys/getbaseinfo": {},
+	http.MethodPost + " /v1/login":                     {},
+	http.MethodGet + " /v1/panel-entry/status":         {},
+	http.MethodGet + " /v1/sys/getbaseinfo":            {},
+	http.MethodGet + " /v1/public/file-share/download": {},
 }
 
 func TestMain(m *testing.M) {
@@ -106,6 +107,11 @@ func TestPublicRoutesDoNotRequireAuthentication(t *testing.T) {
 			name:   "panel entry status",
 			method: http.MethodGet,
 			path:   "/v1/panel-entry/status",
+		},
+		{
+			name:   "public file share download",
+			method: http.MethodGet,
+			path:   "/v1/public/file-share/download",
 		},
 		{
 			name:   "liveness",

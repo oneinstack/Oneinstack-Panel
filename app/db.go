@@ -219,6 +219,9 @@ func createTables() error {
 	if err := db.AutoMigrate(&models.RuntimeLogEntry{}); err != nil {
 		return err
 	}
+	if err := db.AutoMigrate(&models.FileShare{}); err != nil {
+		return err
+	}
 	if err := accessservice.SeedBuiltin(db); err != nil {
 		return err
 	}

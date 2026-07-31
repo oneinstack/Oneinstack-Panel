@@ -79,6 +79,10 @@ func SetupRouter() *gin.Engine {
 		)
 		api.GET("/panel-entry/status", system.GetPanelEntryStatus)
 		api.GET("/sys/getbaseinfo", middleware.PanelEntryGuard(), system.GetInfo)
+		api.GET("/public/file-share/download",
+			middleware.RateLimitMiddleware(30, time.Minute),
+			ftp.DownloadSharedFile,
+		)
 	}
 
 	// 除上述白名单外，所有 API 默认要求认证、限流并记录审计日志。
@@ -193,15 +197,27 @@ func SetupRouter() *gin.Engine {
 	ftpg := protected.Group("/ftp")
 	{
 		ftpg.POST("/list", middleware.RequirePermission(accessservice.PermissionFileRead), ftp.ListDirectory)
+		ftpg.POST("/search", middleware.RequirePermission(accessservice.PermissionFileRead), ftp.SearchFile)
+		ftpg.GET("/operations", middleware.RequirePermission(accessservice.PermissionFileRead), ftp.ListOperations)
 		ftpg.POST("/create", middleware.RequirePermission(accessservice.PermissionFileWrite), ftp.CreateFileOrDir)
 		ftpg.POST("/upload", middleware.RequirePermission(accessservice.PermissionFileWrite), ftp.UploadFile)
 		ftpg.POST("/download", middleware.RequirePermission(accessservice.PermissionFileRead), ftp.DownloadFile)
+		ftpg.POST("/preview-ticket", middleware.RequirePermission(accessservice.PermissionFileRead), ftp.CreateImagePreviewTicket)
+		ftpg.GET("/preview/:ticket", middleware.RequirePermission(accessservice.PermissionFileRead), ftp.PreviewImage)
 		ftpg.POST("/urldownload", middleware.RequirePermission(accessservice.PermissionFileWrite), ftp.UrlDownloadFile)
 		ftpg.POST("/content", middleware.RequirePermission(accessservice.PermissionFileRead), ftp.Content)
 		ftpg.POST("/tree", middleware.RequirePermission(accessservice.PermissionFileRead), ftp.GetDirectoryTreeHandler)
 		ftpg.POST("/delete", middleware.RequirePermission(accessservice.PermissionFileWrite), ftp.DeleteFileOrDir)
 		ftpg.POST("/modify", middleware.RequirePermission(accessservice.PermissionFileWrite), ftp.ModifyFileOrDirAttributes)
 		ftpg.POST("/save", middleware.RequirePermission(accessservice.PermissionFileWrite), ftp.SaveFile)
+		ftpg.POST("/copy", middleware.RequirePermission(accessservice.PermissionFileWrite), ftp.CopyFileOrDir)
+		ftpg.POST("/move", middleware.RequirePermission(accessservice.PermissionFileWrite), ftp.MoveFileOrDir)
+		ftpg.POST("/rename", middleware.RequirePermission(accessservice.PermissionFileWrite), ftp.RenameFileOrDir)
+		ftpg.POST("/archive", middleware.RequirePermission(accessservice.PermissionFileWrite), ftp.ArchiveFileOrDir)
+		ftpg.POST("/properties", middleware.RequirePermission(accessservice.PermissionFileRead), ftp.GetFileProperties)
+		ftpg.POST("/shares", middleware.RequirePermission(accessservice.PermissionFileWrite), ftp.CreateFileShare)
+		ftpg.GET("/shares", middleware.RequirePermission(accessservice.PermissionFileRead), ftp.ListFileShares)
+		ftpg.POST("/shares/:id/revoke", middleware.RequirePermission(accessservice.PermissionFileWrite), ftp.RevokeFileShare)
 		ftpg.GET("/capacity", middleware.RequirePermission(accessservice.PermissionFileRead), ftp.Capacity)
 		ftpg.GET("/trash/list", middleware.RequirePermission(accessservice.PermissionFileRead), ftp.ListTrash)
 		ftpg.POST("/trash/restore", middleware.RequirePermission(accessservice.PermissionFileWrite), ftp.RestoreTrash)
@@ -274,6 +290,10 @@ func SetupRouter() *gin.Engine {
 		websiteg.POST("/del", middleware.RequirePermission("website.write"), website.Delete)
 		websiteg.POST("/update", middleware.RequirePermission("website.write"), website.Update)
 		websiteg.POST("/info", middleware.RequirePermission("website.read"), website.Info)
+		websiteg.GET("/web-server", middleware.RequirePermission("website.read"), website.GetWebServerStatus)
+		websiteg.GET("/web-server/configs", middleware.RequirePermission("website.read"), website.ListWebServerConfigs)
+		websiteg.GET("/web-server/config", middleware.RequirePermission("website.read"), website.GetWebServerConfig)
+		websiteg.PUT("/web-server/config", middleware.RequirePermission("website.write"), website.UpdateWebServerConfig)
 		websiteg.POST("/backups", middleware.RequirePermission("website.write"), website.CreateWebsiteBackup)
 		websiteg.GET("/backups", middleware.RequirePermission("website.read"), website.ListWebsiteBackups)
 		websiteg.GET("/backups/:id/download", middleware.RequirePermission("website.read"), website.DownloadWebsiteBackup)

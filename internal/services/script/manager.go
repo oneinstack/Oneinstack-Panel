@@ -861,10 +861,12 @@ func (sm *ScriptManager) updateSoftwareInstallInfo(params *input.InstallParams, 
 		return
 	}
 	if err := app.DB().Model(&models.Software{}).
-		Where("`key` = ? AND version = ?", params.Key, params.Version).
+		Where("`key` = ? AND installed = ?", params.Key, true).
 		Updates(map[string]interface{}{
 			"installed":       false,
 			"install_version": "",
+			"is_update":       false,
+			"status":          models.Soft_Status_Default,
 		}).Error; err != nil {
 		fmt.Printf("Update software install state failed: %v\n", err)
 	}
