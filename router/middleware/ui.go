@@ -15,6 +15,8 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+const panelEntryHintStylesheetPath = "/__panel-entry_hint.css"
+
 // MidUiHandle serves the embedded SPA only for non-API routes that were not
 // matched by the router.
 func MidUiHandle(c *gin.Context) {
@@ -28,6 +30,13 @@ func MidUiHandle(c *gin.Context) {
 	}
 	if c.Request.Method != http.MethodGet && c.Request.Method != http.MethodHead {
 		c.Status(http.StatusNotFound)
+		return
+	}
+	if requestPath == panelEntryHintStylesheetPath {
+		c.Header("Cache-Control", "public, max-age=300")
+		c.Header("X-Content-Type-Options", "nosniff")
+		c.Header("Referrer-Policy", "same-origin")
+		c.Data(http.StatusOK, "text/css; charset=utf-8", []byte(panelEntryHintStylesheet()))
 		return
 	}
 
@@ -169,56 +178,7 @@ func panelEntryHintPage(command string) []byte {
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>暂时无法访问</title>
-    <style>
-      :root {
-        color-scheme: light;
-      }
-      * {
-        box-sizing: border-box;
-      }
-      body {
-        margin: 0;
-        min-height: 100vh;
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        background: #f5f7fb;
-        color: #4b5563;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        padding: 32px;
-      }
-      .card {
-        width: min(1280px, 100%%);
-        background: #fff;
-        border-radius: 28px;
-        box-shadow: 0 18px 60px rgba(15, 23, 42, 0.08);
-        padding: 72px 48px;
-        text-align: center;
-      }
-      h1 {
-        margin: 0 0 44px;
-        font-size: clamp(32px, 5vw, 64px);
-        line-height: 1.1;
-        color: #4b5563;
-        font-weight: 700;
-      }
-      p {
-        margin: 0 0 28px;
-        font-size: clamp(20px, 2.6vw, 34px);
-        line-height: 1.7;
-        color: #6b7280;
-      }
-      code {
-        display: inline-block;
-        margin-top: 18px;
-        padding: 16px 28px;
-        border-radius: 16px;
-        background: #f3f4f6;
-        color: #ef4444;
-        font-size: clamp(24px, 2.8vw, 42px);
-        font-weight: 600;
-      }
-    </style>
+    <link rel="stylesheet" href="%s" />
   </head>
   <body>
     <main class="card">
@@ -228,7 +188,58 @@ func panelEntryHintPage(command string) []byte {
       <code>%s</code>
     </main>
   </body>
-</html>`, command))
+</html>`, panelEntryHintStylesheetPath, command))
+}
+
+func panelEntryHintStylesheet() string {
+	return `:root {
+  color-scheme: light;
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: #f5f7fb;
+  color: #4b5563;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+}
+.card {
+  width: min(1280px, 100%);
+  background: #fff;
+  border-radius: 28px;
+  box-shadow: 0 18px 60px rgba(15, 23, 42, 0.08);
+  padding: 72px 48px;
+  text-align: center;
+}
+h1 {
+  margin: 0 0 44px;
+  font-size: clamp(32px, 5vw, 64px);
+  line-height: 1.1;
+  color: #4b5563;
+  font-weight: 700;
+}
+p {
+  margin: 0 0 28px;
+  font-size: clamp(20px, 2.6vw, 34px);
+  line-height: 1.7;
+  color: #6b7280;
+}
+code {
+  display: inline-block;
+  margin-top: 18px;
+  padding: 16px 28px;
+  border-radius: 16px;
+  background: #f3f4f6;
+  color: #ef4444;
+  font-size: clamp(24px, 2.8vw, 42px);
+  font-weight: 600;
+}`
 }
 
 func setCacheHeaders(c *gin.Context, filePath string) {

@@ -109,6 +109,7 @@ func TestEmbeddedUIRoutesWithPanelEntry(t *testing.T) {
 		contains string
 	}{
 		{name: "root hint", path: "/", status: http.StatusOK, contains: "当前环境已经开启了安全入口登录"},
+		{name: "hint stylesheet", path: panelEntryHintStylesheetPath, status: http.StatusOK, contains: ".card {"},
 		{name: "correct entry", path: "/AbCd123456", status: http.StatusOK, contains: `<base href="/AbCd123456/" />`},
 		{name: "spa child route", path: "/AbCd123456/settings/security", status: http.StatusOK, contains: `/AbCd123456/static/page/`},
 		{name: "asset under entry", path: "/AbCd123456" + assetPath, status: http.StatusOK},

@@ -12,6 +12,10 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+type publicBaseInfoResponse struct {
+	Title string `json:"title"`
+}
+
 func GetSystemInfo(c *gin.Context) {
 	info, err := system.GetSystemInfo()
 	if err != nil {
@@ -205,5 +209,5 @@ func GetInfo(c *gin.Context) {
 		core.HandleError(c, appErr)
 		return
 	}
-	core.HandleSuccess(c, info)
+	core.HandleSuccess(c, publicBaseInfoResponse{Title: info.Title})
 }

@@ -52,4 +52,6 @@ type System struct {
 	ACMEIssueTimeoutMinutes       int      `mapstructure:"acmeIssueTimeoutMinutes" json:"acmeIssueTimeoutMinutes" yaml:"acmeIssueTimeoutMinutes"`
 	TerminalEnabled               bool     `mapstructure:"terminalEnabled" json:"terminalEnabled" yaml:"terminalEnabled"`
 	TerminalSessionMins           int      `mapstructure:"terminalSessionMinutes" json:"terminalSessionMinutes" yaml:"terminalSessionMinutes"`
+	AllowInsecureWebSocketInDev   bool     `mapstructure:"allowInsecureWebSocketInDev" json:"allowInsecureWebSocketInDev" yaml:"allowInsecureWebSocketInDev"`
+	AllowInlineStyle              bool     `mapstructure:"allowInlineStyle" json:"allowInlineStyle" yaml:"allowInlineStyle"`
 }

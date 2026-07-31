@@ -53,6 +53,8 @@ system:
     acmeIssueTimeoutMinutes: 15
     terminalEnabled: false
     terminalSessionMinutes: 15
+    allowInsecureWebSocketInDev: false
+    allowInlineStyle: false
 scriptCenter:
     enabled: false
     allowInsecureHTTP: false

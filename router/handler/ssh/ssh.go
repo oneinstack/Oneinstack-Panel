@@ -6,6 +6,7 @@ import (
 	sshservice "oneinstack/internal/services/ssh"
 	userservice "oneinstack/internal/services/user"
 	"oneinstack/router/middleware"
+	panelServer "oneinstack/server"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -14,6 +15,10 @@ import (
 func CreateTicket(c *gin.Context) {
 	if !app.ONE_CONFIG.System.TerminalEnabled {
 		core.HandleError(c, core.NewError(core.ErrForbidden, "Web 终端未启用"))
+		return
+	}
+	if !requestAllowsTerminal(c) {
+		core.HandleError(c, core.NewError(core.ErrForbidden, "Web 终端仅支持 HTTPS/WSS 访问"))
 		return
 	}
 	var input struct {
@@ -60,6 +65,10 @@ func OpenSSH(c *gin.Context) {
 		core.HandleError(c, core.NewError(core.ErrForbidden, "Web 终端未启用"))
 		return
 	}
+	if !requestAllowsTerminal(c) {
+		core.HandleError(c, core.NewError(core.ErrForbidden, "Web 终端仅支持 HTTPS/WSS 访问"))
+		return
+	}
 	if _, ok := middleware.AuthenticatedUserID(c); !ok {
 		core.HandleError(c, core.NewError(core.ErrUnauthorized, "终端票据无效"))
 		return
@@ -69,4 +78,8 @@ func OpenSSH(c *gin.Context) {
 		sessionDuration = 15 * time.Minute
 	}
 	sshservice.OpenWebShell(c, sessionDuration)
+}
+
+func requestAllowsTerminal(c *gin.Context) bool {
+	return panelServer.RequestIsHTTPS(c.Request, app.ONE_CONFIG.System.TrustedProxies)
 }

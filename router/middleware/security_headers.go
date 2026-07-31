@@ -1,6 +1,9 @@
 package middleware
 
 import (
+	"oneinstack/app"
+	"strings"
+
 	"github.com/gin-gonic/gin"
 )
 
@@ -17,11 +20,25 @@ func SecurityHeaders() gin.HandlerFunc {
 		headers.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
 		headers.Set(
 			"Content-Security-Policy",
-			"default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; "+
-				"img-src 'self' data: blob:; font-src 'self' data:; "+
-				"style-src 'self' 'unsafe-inline'; script-src 'self'; "+
-				"connect-src 'self' ws: wss:",
+			contentSecurityPolicy(),
 		)
 		c.Next()
 	}
+}
+
+func contentSecurityPolicy() string {
+	styleSources := []string{"'self'"}
+	if app.ONE_CONFIG.System.AllowInlineStyle {
+		styleSources = append(styleSources, "'unsafe-inline'")
+	}
+
+	connectSources := []string{"'self'", "wss:"}
+	if app.ONE_CONFIG.System.AllowInsecureWebSocketInDev {
+		connectSources = append(connectSources, "ws:")
+	}
+
+	return "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; " +
+		"img-src 'self' data: blob:; font-src 'self' data:; " +
+		"style-src " + strings.Join(styleSources, " ") + "; " +
+		"script-src 'self'; connect-src " + strings.Join(connectSources, " ")
 }

@@ -3,6 +3,7 @@ package web
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -23,9 +24,9 @@ import (
 )
 
 var publicRoutes = map[string]struct{}{
-	http.MethodPost + " /v1/login":          {},
+	http.MethodPost + " /v1/login":             {},
 	http.MethodGet + " /v1/panel-entry/status": {},
-	http.MethodGet + " /v1/sys/getbaseinfo": {},
+	http.MethodGet + " /v1/sys/getbaseinfo":    {},
 }
 
 func TestMain(m *testing.M) {
@@ -134,6 +135,39 @@ func TestPublicRoutesDoNotRequireAuthentication(t *testing.T) {
 	}
 }
 
+func TestPublicBaseInfoReturnsOnlyTitle(t *testing.T) {
+	router := SetupRouter()
+	if err := app.DB().Exec("DELETE FROM system").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := app.DB().Create(&models.System{Title: "Secure Panel"}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/v1/sys/getbaseinfo", nil)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	var response struct {
+		Data map[string]interface{} `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if title, ok := response.Data["title"].(string); !ok || title != "Secure Panel" {
+		t.Fatalf("title = %#v, want %q", response.Data["title"], "Secure Panel")
+	}
+	for _, forbidden := range []string{"id", "created_at", "updated_at"} {
+		if _, exists := response.Data[forbidden]; exists {
+			t.Fatalf("public base info unexpectedly includes %q: %#v", forbidden, response.Data)
+		}
+	}
+}
+
 func TestSSHRouteRejectsLegacyQueryToken(t *testing.T) {
 	t.Setenv("JWT_SECRET_KEY", "test-only-jwt-secret-at-least-32-bytes")
 	token, err := utils.GenerateJWT("admin", 1)
@@ -153,12 +187,34 @@ func TestSSHRouteRejectsLegacyQueryToken(t *testing.T) {
 	}
 }
 
+func TestSSHRouteRejectsInsecureTransport(t *testing.T) {
+	previous := app.ONE_CONFIG.System
+	app.ONE_CONFIG.System.TerminalEnabled = true
+	t.Cleanup(func() {
+		app.ONE_CONFIG.System = previous
+	})
+
+	router := SetupRouter()
+	request := httptest.NewRequest(http.MethodGet, "/v1/ssh/open", nil)
+	request.Header.Set("Authorization", "Bearer "+testToken(t))
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body=%s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), "HTTPS/WSS") {
+		t.Fatalf("expected HTTPS requirement message, got %s", response.Body.String())
+	}
+}
+
 func TestSSHRouteAcceptsOneTimeTicketOnlyOnce(t *testing.T) {
 	previous := app.ONE_CONFIG.System.TerminalEnabled
 	app.ONE_CONFIG.System.TerminalEnabled = true
 	t.Cleanup(func() {
 		app.ONE_CONFIG.System.TerminalEnabled = previous
 	})
+	saveTestUser(t, "admin", "existing-password-hash")
 	ticket, _, err := sshservice.DefaultTickets.Issue(sshservice.TicketClaims{
 		UserID:   1,
 		Username: "admin",
@@ -171,14 +227,19 @@ func TestSSHRouteAcceptsOneTimeTicketOnlyOnce(t *testing.T) {
 	router := SetupRouter()
 	first := httptest.NewRequest(http.MethodGet, "/v1/ssh/open?ticket="+ticket, nil)
 	first.RemoteAddr = "192.0.2.1:1234"
+	first.TLS = &tls.ConnectionState{}
 	firstResponse := httptest.NewRecorder()
 	router.ServeHTTP(firstResponse, first)
 	if firstResponse.Code == http.StatusUnauthorized {
 		t.Fatalf("valid ticket was rejected: %s", firstResponse.Body.String())
 	}
+	if firstResponse.Code == http.StatusForbidden {
+		t.Fatalf("valid HTTPS ticket was rejected by transport policy: %s", firstResponse.Body.String())
+	}
 
 	second := httptest.NewRequest(http.MethodGet, "/v1/ssh/open?ticket="+ticket, nil)
 	second.RemoteAddr = "192.0.2.1:1234"
+	second.TLS = &tls.ConnectionState{}
 	secondResponse := httptest.NewRecorder()
 	router.ServeHTTP(secondResponse, second)
 	if secondResponse.Code != http.StatusUnauthorized {

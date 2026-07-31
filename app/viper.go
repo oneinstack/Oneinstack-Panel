@@ -95,6 +95,8 @@ system:
     acmeIssueTimeoutMinutes: 15
     terminalEnabled: false
     terminalSessionMinutes: 15
+    allowInsecureWebSocketInDev: false
+    allowInlineStyle: false
 `
 
 // LoadConfig reads the application configuration without panicking. When no
@@ -169,6 +171,8 @@ func LoadConfig(path ...string) (*viper.Viper, error) {
 	v.SetDefault("system.acmeIssueTimeoutMinutes", 15)
 	v.SetDefault("system.terminalEnabled", false)
 	v.SetDefault("system.terminalSessionMinutes", 15)
+	v.SetDefault("system.allowInsecureWebSocketInDev", false)
+	v.SetDefault("system.allowInlineStyle", false)
 	v.SetDefault("scriptCenter.enabled", false)
 	v.SetDefault("scriptCenter.allowInsecureHTTP", false)
 	v.SetDefault("scriptCenter.channel", "stable")
@@ -196,6 +200,9 @@ func LoadConfig(path ...string) (*viper.Viper, error) {
 		"system.httpsPrivateKeyFile":              "ONEINSTACK_SYSTEM_HTTPS_PRIVATE_KEY_FILE",
 		"system.panelEntryEnabled":                "ONEINSTACK_SYSTEM_PANEL_ENTRY_ENABLED",
 		"system.panelEntryPath":                   "ONEINSTACK_SYSTEM_PANEL_ENTRY_PATH",
+		"system.defaultPath":                      "ONEINSTACK_SYSTEM_DEFAULT_PATH",
+		"system.allowInsecureWebSocketInDev":      "ONEINSTACK_SYSTEM_ALLOW_INSECURE_WEBSOCKET_IN_DEV",
+		"system.allowInlineStyle":                 "ONEINSTACK_SYSTEM_ALLOW_INLINE_STYLE",
 		"system.fileUploadMaxBytes":               "ONEINSTACK_SYSTEM_FILE_UPLOAD_MAX_BYTES",
 		"system.fileEditMaxBytes":                 "ONEINSTACK_SYSTEM_FILE_EDIT_MAX_BYTES",
 		"system.fileRootQuotaBytes":               "ONEINSTACK_SYSTEM_FILE_ROOT_QUOTA_BYTES",

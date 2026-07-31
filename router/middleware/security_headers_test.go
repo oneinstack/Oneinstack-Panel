@@ -3,6 +3,8 @@ package middleware
 import (
 	"net/http"
 	"net/http/httptest"
+	"oneinstack/app"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -43,4 +45,66 @@ func TestSecurityHeadersDoNotMakeOptionalHTTPSHostWide(t *testing.T) {
 	if recorder.Header().Get("Strict-Transport-Security") != "" {
 		t.Fatal("optional HTTPS must not make the supported HTTP entry point unavailable through HSTS")
 	}
+}
+
+func TestSecurityHeadersDefaultToSecureCSP(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.Use(SecurityHeaders())
+	router.GET("/", func(c *gin.Context) {
+		c.Status(http.StatusNoContent)
+	})
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "http://panel.test/", nil))
+
+	csp := recorder.Header().Get("Content-Security-Policy")
+	if csp == "" {
+		t.Fatal("missing content security policy")
+	}
+	if containsToken(csp, "ws:") {
+		t.Fatalf("CSP must not allow insecure websocket connections by default: %q", csp)
+	}
+	if containsToken(csp, "'unsafe-inline'") {
+		t.Fatalf("CSP must not allow inline styles by default: %q", csp)
+	}
+	if !containsToken(csp, "wss:") {
+		t.Fatalf("CSP must allow secure websocket connections: %q", csp)
+	}
+}
+
+func TestSecurityHeadersAllowExplicitCompatibilityFlags(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	previous := app.ONE_CONFIG.System
+	app.ONE_CONFIG.System.AllowInsecureWebSocketInDev = true
+	app.ONE_CONFIG.System.AllowInlineStyle = true
+	t.Cleanup(func() {
+		app.ONE_CONFIG.System = previous
+	})
+
+	router := gin.New()
+	router.Use(SecurityHeaders())
+	router.GET("/", func(c *gin.Context) {
+		c.Status(http.StatusNoContent)
+	})
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "http://panel.test/", nil))
+
+	csp := recorder.Header().Get("Content-Security-Policy")
+	if !containsToken(csp, "ws:") {
+		t.Fatalf("explicit dev websocket flag should add ws: to CSP: %q", csp)
+	}
+	if !containsToken(csp, "'unsafe-inline'") {
+		t.Fatalf("explicit inline style flag should add unsafe-inline to CSP: %q", csp)
+	}
+}
+
+func containsToken(value, token string) bool {
+	for _, field := range strings.Fields(value) {
+		if strings.TrimRight(field, ";") == token {
+			return true
+		}
+	}
+	return false
 }
