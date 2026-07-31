@@ -31,7 +31,18 @@ func resolveBasePath() string {
 	if path := strings.TrimSpace(os.Getenv("ONEINSTACK_BASE_PATH")); path != "" {
 		return normalizeBasePath(path)
 	}
+	if os.Getenv("GO_ENV") == "development" {
+		return DefaultDevelopmentBasePath()
+	}
 	return normalizeBasePath("/usr/local/one")
+}
+
+func DefaultDevelopmentBasePath() string {
+	workingDirectory, err := os.Getwd()
+	if err != nil {
+		return normalizeBasePath(filepath.Join(os.TempDir(), "oneinstack-panel", "runtime"))
+	}
+	return normalizeBasePath(filepath.Join(workingDirectory, ".runtime"))
 }
 
 func normalizeBasePath(path string) string {

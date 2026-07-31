@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/user"
 	pathpkg "path"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -305,6 +306,78 @@ func DeleteFileOrDir(c *gin.Context) {
 		return
 	}
 	core.HandleSuccess(c, entry)
+}
+
+func CopyFileOrDir(c *gin.Context) {
+	var input struct {
+		SourcePath string `json:"sourcePath" binding:"required"`
+		TargetPath string `json:"targetPath" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		handleBadRequest(c, err, "请求参数错误")
+		return
+	}
+
+	manager, ok := managerForRequest(c)
+	if !ok {
+		return
+	}
+	defer manager.Close()
+
+	target, err := manager.Copy(input.SourcePath, input.TargetPath)
+	if err != nil {
+		handleFileError(c, err, "复制失败")
+		return
+	}
+	core.HandleSuccess(c, gin.H{"path": target})
+}
+
+func MoveFileOrDir(c *gin.Context) {
+	var input struct {
+		SourcePath string `json:"sourcePath" binding:"required"`
+		TargetPath string `json:"targetPath" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		handleBadRequest(c, err, "请求参数错误")
+		return
+	}
+
+	manager, ok := managerForRequest(c)
+	if !ok {
+		return
+	}
+	defer manager.Close()
+
+	target, err := manager.Move(input.SourcePath, input.TargetPath)
+	if err != nil {
+		handleFileError(c, err, "剪切失败")
+		return
+	}
+	core.HandleSuccess(c, gin.H{"path": target})
+}
+
+func RenameFileOrDir(c *gin.Context) {
+	var input struct {
+		Path    string `json:"path" binding:"required"`
+		NewName string `json:"newName" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		handleBadRequest(c, err, "请求参数错误")
+		return
+	}
+
+	manager, ok := managerForRequest(c)
+	if !ok {
+		return
+	}
+	defer manager.Close()
+
+	target, err := manager.Rename(input.Path, input.NewName)
+	if err != nil {
+		handleFileError(c, err, "重命名失败")
+		return
+	}
+	core.HandleSuccess(c, gin.H{"path": target})
 }
 
 func ListTrash(c *gin.Context) {
@@ -783,10 +856,25 @@ func managerForRequest(c *gin.Context) (*filemanager.Manager, bool) {
 	}
 	manager, err := filemanager.New(rootPath)
 	if err != nil {
+		if fallbackRoot, ok := developmentFileRootFallback(rootPath); ok {
+			manager, err = filemanager.New(fallbackRoot)
+		}
+	}
+	if err != nil {
 		core.HandleError(c, core.NewError(core.ErrInternalError, "文件服务初始化失败"))
 		return nil, false
 	}
 	return manager, true
+}
+
+func developmentFileRootFallback(rootPath string) (string, bool) {
+	if os.Getenv("GO_ENV") != "development" && app.ENV != "debug" {
+		return "", false
+	}
+	if filepath.Clean(rootPath) != "/data" {
+		return "", false
+	}
+	return filepath.Join(app.GetBasePath(), "file-root"), true
 }
 
 func handleFileError(c *gin.Context, err error, message string) {

@@ -24,3 +24,29 @@ func TestResolveBasePathFromEnvironment(t *testing.T) {
 		t.Fatalf("expected %q, got %q", want, got)
 	}
 }
+
+func TestResolveBasePathFromDevelopmentWorkingDirectory(t *testing.T) {
+	workspace := t.TempDir()
+	t.Setenv("ONEINSTACK_BASE_PATH", "")
+	t.Setenv("GO_ENV", "development")
+	previousWorkingDirectory, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd before chdir: %v", err)
+	}
+	if err := os.Chdir(workspace); err != nil {
+		t.Fatalf("chdir workspace: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(previousWorkingDirectory)
+	})
+	actualWorkingDirectory, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd after chdir: %v", err)
+	}
+
+	got := resolveBasePath()
+	want := normalizeBasePath(filepath.Join(actualWorkingDirectory, ".runtime"))
+	if got != want {
+		t.Fatalf("expected %q, got %q", want, got)
+	}
+}
