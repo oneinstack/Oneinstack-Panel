@@ -6,18 +6,23 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"oneinstack/internal/models"
 )
 
 type normalizedRule struct {
+	RuleType  string
 	Direction string
 	Protocol  string
 	Strategy  string
 	IPs       []string
 	Ports     []string
 	Remark    string
+	Location  string
+	ExpiresAt *time.Time
+	State     int
 }
 
 func normalizeRule(rule *models.IptablesRule, panelPort int) (normalizedRule, error) {
@@ -25,25 +30,50 @@ func normalizeRule(rule *models.IptablesRule, panelPort int) (normalizedRule, er
 		return normalizedRule{}, validationError("规则不能为空")
 	}
 	result := normalizedRule{
+		RuleType:  strings.ToLower(strings.TrimSpace(rule.RuleType)),
 		Direction: strings.ToLower(strings.TrimSpace(rule.Direction)),
 		Protocol:  strings.ToLower(strings.TrimSpace(rule.Protocol)),
 		Strategy:  strings.ToLower(strings.TrimSpace(rule.Strategy)),
 		Remark:    strings.TrimSpace(rule.Remark),
+		Location:  strings.TrimSpace(rule.Location),
+		ExpiresAt: rule.ExpiresAt,
+	}
+	if result.RuleType == "" {
+		result.RuleType = "port"
+	}
+	switch result.RuleType {
+	case "port", "ip", "region", "auto_block":
+	default:
+		return normalizedRule{}, validationError("规则类型必须是 port、ip、region 或 auto_block")
+	}
+	if rule.State != 0 {
+		result.State = 1
+	}
+	if result.RuleType != "port" {
+		result.Direction = "in"
+		result.Protocol = "all"
+		rule.Ports = ""
 	}
 	if result.Direction != "in" && result.Direction != "out" {
 		return normalizedRule{}, validationError("规则方向必须是 in 或 out")
 	}
-	if result.Protocol != "tcp" && result.Protocol != "udp" && result.Protocol != "icmp" {
-		return normalizedRule{}, validationError("协议必须是 tcp、udp 或 icmp")
+	if result.Protocol != "tcp" && result.Protocol != "udp" && result.Protocol != "icmp" && result.Protocol != "all" {
+		return normalizedRule{}, validationError("协议必须是 tcp、udp、icmp 或 all")
 	}
 	if result.Strategy != "allow" && result.Strategy != "deny" {
 		return normalizedRule{}, validationError("策略必须是 allow 或 deny")
 	}
-	if rule.State == 0 {
-		return normalizedRule{}, validationError("暂不支持创建禁用状态的规则")
-	}
 	if utf8.RuneCountInString(result.Remark) > 200 {
 		return normalizedRule{}, validationError("备注不能超过 200 个字符")
+	}
+	if utf8.RuneCountInString(result.Location) > 128 {
+		return normalizedRule{}, validationError("IP 归属地不能超过 128 个字符")
+	}
+	if result.RuleType == "region" && result.Location == "" {
+		return normalizedRule{}, validationError("地区规则必须填写地区名称")
+	}
+	if result.ExpiresAt != nil && !result.ExpiresAt.After(time.Now()) {
+		return normalizedRule{}, validationError("过期时间必须晚于当前时间")
 	}
 
 	var err error
@@ -57,6 +87,10 @@ func normalizeRule(rule *models.IptablesRule, panelPort int) (normalizedRule, er
 	}
 	if len(result.IPs)*max(1, len(result.Ports)) > 100 {
 		return normalizedRule{}, validationError("单条规则展开后不能超过 100 个 IP/端口组合")
+	}
+	if result.Direction == "in" && result.Strategy == "deny" &&
+		result.Protocol == "all" && containsAllIPv4(result.IPs) {
+		return normalizedRule{}, validationError("不能创建会阻断全部 IPv4 入站流量的规则")
 	}
 	if result.Direction == "in" && result.Strategy == "deny" &&
 		(result.Protocol == "tcp" || result.Protocol == "udp") &&
@@ -100,11 +134,11 @@ func normalizeIPs(raw string) ([]string, error) {
 
 func normalizePorts(raw, protocol string) ([]string, error) {
 	parts := splitValues(raw)
-	if protocol == "icmp" {
+	if protocol == "icmp" || protocol == "all" {
 		if len(parts) == 0 || (len(parts) == 1 && parts[0] == "0") {
 			return nil, nil
 		}
-		return nil, validationError("ICMP 规则不能指定端口")
+		return nil, validationError("ICMP 或全协议规则不能指定端口")
 	}
 	if len(parts) == 0 || (len(parts) == 1 && parts[0] == "0") {
 		return nil, nil
@@ -178,11 +212,23 @@ func validationError(message string) error {
 }
 
 func applyNormalized(rule *models.IptablesRule, normalized normalizedRule) {
+	rule.RuleType = normalized.RuleType
 	rule.Direction = normalized.Direction
 	rule.Protocol = normalized.Protocol
 	rule.Strategy = normalized.Strategy
 	rule.IPs = strings.Join(normalized.IPs, ",")
 	rule.Ports = strings.Join(normalized.Ports, ",")
 	rule.Remark = normalized.Remark
-	rule.State = 1
+	rule.Location = normalized.Location
+	rule.ExpiresAt = normalized.ExpiresAt
+	rule.State = normalized.State
+}
+
+func containsAllIPv4(ips []string) bool {
+	for _, value := range ips {
+		if value == "0.0.0.0/0" {
+			return true
+		}
+	}
+	return false
 }

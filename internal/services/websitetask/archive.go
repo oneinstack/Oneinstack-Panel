@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"oneinstack/internal/models"
+	websiteservice "oneinstack/internal/services/website"
 )
 
 const (
@@ -50,12 +51,13 @@ type archiveDatabase struct {
 }
 
 type archiveManifest struct {
-	Schema      int              `json:"schema"`
-	CreatedAt   time.Time        `json:"createdAt"`
-	Website     models.Website   `json:"website"`
-	NginxConfig string           `json:"nginxConfig"`
-	Files       []archiveFile    `json:"files"`
-	Database    *archiveDatabase `json:"database,omitempty"`
+	Schema          int                             `json:"schema"`
+	CreatedAt       time.Time                       `json:"createdAt"`
+	Website         models.Website                  `json:"website"`
+	WebsiteSettings *websiteservice.WebsiteSettings `json:"websiteSettings,omitempty"`
+	NginxConfig     string                          `json:"nginxConfig"`
+	Files           []archiveFile                   `json:"files"`
+	Database        *archiveDatabase                `json:"database,omitempty"`
 }
 
 type databaseDump struct {
@@ -67,6 +69,7 @@ type databaseDump struct {
 func buildArchive(
 	ctx context.Context,
 	site *models.Website,
+	settings *websiteservice.WebsiteSettings,
 	rootPath, configPath string,
 	database *databaseDump,
 	destination string,
@@ -105,7 +108,7 @@ func buildArchive(
 	tarWriter := tar.NewWriter(gzipWriter)
 	manifest := &archiveManifest{
 		Schema: archiveSchema, CreatedAt: time.Now().UTC(),
-		Website: *site, NginxConfig: string(config),
+		Website: *site, WebsiteSettings: settings, NginxConfig: string(config),
 	}
 	var totalBytes int64
 	fileCount := 0

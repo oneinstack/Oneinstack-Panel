@@ -234,6 +234,9 @@ func (m *Manager) submit(request InstallRequest, requestedBy int64) (*models.Sof
 		if err := m.validateCatalogInstall(request.Key, request.Version); err != nil {
 			return nil, err
 		}
+		if err := m.validateExclusiveComponentInstall(component); err != nil {
+			return nil, err
+		}
 	}
 
 	m.submitMu.Lock()
@@ -715,6 +718,47 @@ func (m *Manager) validateCatalogInstall(key, version string) error {
 	}
 	if !catalogRow.Installable {
 		return fmt.Errorf("software %s %s installation is disabled by Center", key, version)
+	}
+	return nil
+}
+
+func (m *Manager) validateExclusiveComponentInstall(component string) error {
+	component = strings.ToLower(strings.TrimSpace(component))
+	groups := [][]string{
+		{"nginx", "tengine", "openresty", "caddy", "apache"},
+		{"mysql", "mariadb", "percona"},
+	}
+	for _, group := range groups {
+		matched := false
+		for _, candidate := range group {
+			if component == candidate {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			continue
+		}
+		var installed models.Software
+		err := m.db.
+			Where("installed = ? AND component IN ? AND component <> ?", true, group, component).
+			Order("id DESC").
+			First(&installed).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("check mutually exclusive software: %w", err)
+		}
+		conflict := strings.TrimSpace(installed.Name)
+		if conflict == "" {
+			conflict = strings.TrimSpace(installed.Component)
+		}
+		return fmt.Errorf(
+			"cannot install %s while %s is installed; uninstall the conflicting component first",
+			component,
+			conflict,
+		)
 	}
 	return nil
 }

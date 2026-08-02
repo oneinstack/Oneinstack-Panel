@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"html"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"oneinstack/app"
 	"oneinstack/internal/models"
 	"oneinstack/internal/services"
+	safeservice "oneinstack/internal/services/safe"
 	"oneinstack/router/input"
 
 	"github.com/google/uuid"
@@ -27,6 +29,8 @@ type Service struct {
 	ChallengeRoot   string
 	CertificateRoot string
 	Publisher       *Publisher
+	ConfigManager   *WebServerConfigManager
+	Firewall        *safeservice.Service
 }
 
 func defaultService() (*Service, error) {
@@ -48,6 +52,8 @@ func defaultService() (*Service, error) {
 			NginxBinary: server.BinaryPath,
 			Runner:      OSCommandRunner{},
 		},
+		ConfigManager: newWebServerConfigManager(server),
+		Firewall:      safeservice.NewDefaultService(),
 	}, nil
 }
 
@@ -160,9 +166,24 @@ func List(param *input.WebsiteQueryParam) (*services.PaginatedResult[models.Webs
 	for _, certificate := range certificates {
 		certificatesByWebsite[certificate.WebsiteID] = certificate
 	}
+	var traffic []models.WebsiteTrafficDaily
+	today := time.Now().Format("2006-01-02")
+	if err := app.DB().
+		Where("website_id IN ? AND day = ?", websiteIDs, today).
+		Find(&traffic).Error; err != nil {
+		return nil, err
+	}
+	trafficByWebsite := make(map[int64]models.WebsiteTrafficDaily, len(traffic))
+	for _, record := range traffic {
+		trafficByWebsite[record.WebsiteID] = record
+	}
 	now := time.Now().UTC()
 	warningAt := now.Add(time.Duration(app.ONE_CONFIG.System.CertificateExpiryWarningDays) * 24 * time.Hour)
 	for i := range result.Data {
+		if record, exists := trafficByWebsite[result.Data[i].ID]; exists {
+			result.Data[i].TodayTrafficBytes = record.BytesSent
+			result.Data[i].TodayRequests = record.RequestCount
+		}
 		certificate, exists := certificatesByWebsite[result.Data[i].ID]
 		if !exists || certificate.Status == models.CertificateStatusDisabled {
 			continue
@@ -194,6 +215,14 @@ func (service *Service) Add(ctx context.Context, param *models.Website) error {
 	if err := service.validate(); err != nil {
 		return err
 	}
+	if param == nil {
+		return errors.New("website parameters are required")
+	}
+	param.Enabled = true
+	param.DisabledReason = ""
+	if err := normalizeWebsiteExpiration(param, time.Now()); err != nil {
+		return err
+	}
 	prepared, err := prepareWebsiteWithTLS(
 		param,
 		service.WebRoot,
@@ -207,6 +236,24 @@ func (service *Service) Add(ctx context.Context, param *models.Website) error {
 	createdRoot, err := ensureWebsiteRoot(prepared.model.Type, prepared.model.RootDir)
 	if err != nil {
 		return err
+	}
+	defaultPagePath, createdDefaultPage, err := ensureDefaultWebsitePage(&prepared.model)
+	if err != nil {
+		cleanupWebsiteAddFiles(prepared.model.RootDir, defaultPagePath, createdRoot, createdDefaultPage)
+		return err
+	}
+	var firewallRuleID int64
+	var createdFirewallRule bool
+	if service.Firewall != nil {
+		firewallRuleID, createdFirewallRule, err = service.Firewall.EnsureWebsitePort(
+			ctx,
+			prepared.listenPort,
+			prepared.model.Name,
+		)
+		if err != nil {
+			cleanupWebsiteAddFiles(prepared.model.RootDir, defaultPagePath, createdRoot, createdDefaultPage)
+			return fmt.Errorf("自动放行网站端口 %d 失败: %w", prepared.listenPort, err)
+		}
 	}
 	var publication *Publication
 	transactionErr := service.DB.Transaction(func(tx *gorm.DB) error {
@@ -236,9 +283,13 @@ func (service *Service) Add(ctx context.Context, param *models.Website) error {
 		if publication != nil {
 			transactionErr = errors.Join(transactionErr, publication.Rollback(context.Background()))
 		}
-		if createdRoot {
-			_ = os.Remove(prepared.model.RootDir)
+		if createdFirewallRule {
+			transactionErr = errors.Join(
+				transactionErr,
+				service.Firewall.Delete(context.Background(), firewallRuleID),
+			)
 		}
+		cleanupWebsiteAddFiles(prepared.model.RootDir, defaultPagePath, createdRoot, createdDefaultPage)
 		return transactionErr
 	}
 	*param = prepared.model
@@ -264,35 +315,51 @@ func (service *Service) Update(ctx context.Context, param *models.Website) error
 	if err := service.DB.First(&existing, "id = ?", param.ID).Error; err != nil {
 		return err
 	}
-	prepared, err := prepareWebsiteWithTLS(
+	_, settings, err := service.loadSettings(existing.ID)
+	if err != nil {
+		return err
+	}
+	prepared, err := prepareWebsiteWithTLSAndSettings(
 		param,
 		service.WebRoot,
 		service.LogRoot,
 		service.challengeRoot(),
 		TLSOptions{},
+		settings,
 	)
 	if err != nil {
 		return err
 	}
 	prepared.model.ID = existing.ID
 	prepared.model.CreateTime = existing.CreateTime
+	prepared.model.Enabled = existing.Enabled
+	prepared.model.DisabledReason = existing.DisabledReason
+	if err := normalizeWebsiteExpiration(&prepared.model, time.Now()); err != nil {
+		return err
+	}
 	tlsOptions, err := service.activeTLSOptions(existing.ID, prepared.model.Domain)
 	if err != nil {
 		return err
 	}
 	if tlsOptions.Enabled {
-		prepared, err = prepareWebsiteWithTLS(
+		prepared, err = prepareWebsiteWithTLSAndSettings(
 			param,
 			service.WebRoot,
 			service.LogRoot,
 			service.challengeRoot(),
 			tlsOptions,
+			settings,
 		)
 		if err != nil {
 			return err
 		}
 		prepared.model.ID = existing.ID
 		prepared.model.CreateTime = existing.CreateTime
+		prepared.model.Enabled = existing.Enabled
+		prepared.model.DisabledReason = existing.DisabledReason
+		if err := normalizeWebsiteExpiration(&prepared.model, time.Now()); err != nil {
+			return err
+		}
 	}
 	createdRoot, err := ensureWebsiteRoot(prepared.model.Type, prepared.model.RootDir)
 	if err != nil {
@@ -320,8 +387,11 @@ func (service *Service) Update(ctx context.Context, param *models.Website) error
 		if err := tx.Save(&prepared.model).Error; err != nil {
 			return err
 		}
-		content := prepared.config
-		changes := map[string]*string{prepared.configName: &content}
+		changes := map[string]*string{prepared.configName: nil}
+		if prepared.model.Enabled {
+			content := prepared.config
+			changes[prepared.configName] = &content
+		}
 		if oldName != prepared.configName {
 			changes[oldName] = nil
 		}
@@ -465,6 +535,15 @@ func (service *Service) DeleteWithOptions(ctx context.Context, id int64, deleteF
 			return err
 		}
 		if err := tx.Delete(&models.Certificate{}, "website_id = ?", id).Error; err != nil {
+			return err
+		}
+		if err := tx.Delete(&models.WebsiteSetting{}, "website_id = ?", id).Error; err != nil {
+			return err
+		}
+		if err := tx.Delete(&models.WebsiteTrafficDaily{}, "website_id = ?", id).Error; err != nil {
+			return err
+		}
+		if err := tx.Delete(&models.WebsiteTrafficCursor{}, "website_id = ?", id).Error; err != nil {
 			return err
 		}
 		published, err := service.Publisher.Publish(ctx, map[string]*string{
@@ -617,6 +696,13 @@ func (deployer *CertificateDeployer) EnsureChallenge(ctx context.Context, websit
 	if deployer == nil || deployer.service == nil {
 		return errors.New("certificate deployer is not configured")
 	}
+	var site models.Website
+	if err := deployer.service.DB.First(&site, "id = ?", websiteID).Error; err != nil {
+		return err
+	}
+	if !site.Enabled {
+		return errors.New("网站已停用，请先启用网站再申请或续签证书")
+	}
 	var certificate models.Certificate
 	tlsOptions := TLSOptions{}
 	err := deployer.service.DB.First(&certificate, "website_id = ?", websiteID).Error
@@ -681,12 +767,20 @@ func (deployer *CertificateDeployer) publish(
 	if err := deployer.service.DB.First(&site, "id = ?", websiteID).Error; err != nil {
 		return nil, err
 	}
-	prepared, err := prepareWebsiteWithTLS(
+	if !site.Enabled {
+		return &Publication{}, nil
+	}
+	_, settings, err := deployer.service.loadSettings(site.ID)
+	if err != nil {
+		return nil, err
+	}
+	prepared, err := prepareWebsiteWithTLSAndSettings(
 		&site,
 		deployer.service.WebRoot,
 		deployer.service.LogRoot,
 		deployer.service.challengeRoot(),
 		tlsOptions,
+		settings,
 	)
 	if err != nil {
 		return nil, err
@@ -695,6 +789,18 @@ func (deployer *CertificateDeployer) publish(
 	return deployer.service.Publisher.Publish(ctx, map[string]*string{
 		prepared.configName: &content,
 	})
+}
+
+func normalizeWebsiteExpiration(site *models.Website, now time.Time) error {
+	if site == nil || site.ExpiresAt == nil {
+		return nil
+	}
+	expiresAt := site.ExpiresAt.UTC()
+	if site.Enabled && !expiresAt.After(now.UTC()) {
+		return errors.New("到期时间必须晚于当前时间")
+	}
+	site.ExpiresAt = &expiresAt
+	return nil
 }
 
 func (service *Service) validateTLSFiles(options TLSOptions) error {
@@ -743,10 +849,85 @@ func ensureWebsiteRoot(siteType, root string) (bool, error) {
 	if !errors.Is(err, os.ErrNotExist) {
 		return false, fmt.Errorf("stat website root: %w", err)
 	}
-	if err := os.MkdirAll(root, 0750); err != nil {
+	if err := os.MkdirAll(root, 0755); err != nil {
 		return false, fmt.Errorf("create website root: %w", err)
 	}
 	return true, nil
+}
+
+func ensureDefaultWebsitePage(site *models.Website) (string, bool, error) {
+	if site == nil || site.Type == "proxy" || strings.TrimSpace(site.RootDir) == "" {
+		return "", false, nil
+	}
+	indexPath := filepath.Join(site.RootDir, "index.html")
+	file, err := os.OpenFile(indexPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
+	if errors.Is(err, os.ErrExist) {
+		return indexPath, false, nil
+	}
+	if err != nil {
+		return indexPath, false, fmt.Errorf("create default website page: %w", err)
+	}
+	page := defaultWebsitePage(site.Name, site.Domain)
+	if _, err := file.WriteString(page); err != nil {
+		_ = file.Close()
+		_ = os.Remove(indexPath)
+		return indexPath, false, fmt.Errorf("write default website page: %w", err)
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		_ = os.Remove(indexPath)
+		return indexPath, false, fmt.Errorf("sync default website page: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		_ = os.Remove(indexPath)
+		return indexPath, false, fmt.Errorf("close default website page: %w", err)
+	}
+	return indexPath, true, nil
+}
+
+func cleanupWebsiteAddFiles(root, defaultPagePath string, createdRoot, createdDefaultPage bool) {
+	if createdDefaultPage && defaultPagePath != "" {
+		_ = os.Remove(defaultPagePath)
+	}
+	if createdRoot && root != "" {
+		_ = os.Remove(root)
+	}
+}
+
+func defaultWebsitePage(name, domains string) string {
+	safeName := html.EscapeString(strings.TrimSpace(name))
+	safeDomains := html.EscapeString(strings.TrimSpace(domains))
+	return `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>` + safeName + ` · OneinStack</title>
+  <style>
+    :root { color-scheme: light; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    * { box-sizing: border-box; }
+    body { min-height: 100vh; margin: 0; display: grid; place-items: center; padding: 32px; color: #172033; background: radial-gradient(circle at 20% 0%, #fff1e8 0, transparent 34%), #f6f8fc; }
+    main { width: min(720px, 100%); padding: 52px; border: 1px solid #e7eaf0; border-radius: 24px; background: rgba(255,255,255,.92); box-shadow: 0 24px 70px rgba(36,45,70,.10); }
+    .brand { display: inline-flex; align-items: center; gap: 12px; color: #ff6b16; font-weight: 750; letter-spacing: .08em; text-transform: uppercase; }
+    .mark { display: grid; place-items: center; width: 42px; height: 42px; border-radius: 13px; color: #fff; background: linear-gradient(135deg, #ff8534, #ff5a0a); box-shadow: 0 10px 26px rgba(255,107,22,.28); }
+    h1 { margin: 30px 0 14px; font-size: clamp(32px, 7vw, 54px); line-height: 1.08; letter-spacing: -.04em; }
+    p { margin: 0; color: #68748a; font-size: 17px; line-height: 1.75; }
+    .site { margin-top: 30px; padding: 18px 20px; border: 1px solid #edf0f5; border-radius: 14px; background: #fafbfe; }
+    .site strong { display: block; margin-bottom: 5px; color: #20293a; }
+    footer { margin-top: 34px; color: #9aa3b3; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="brand"><span class="mark">1S</span><span>OneinStack Panel</span></div>
+    <h1>网站已经准备就绪</h1>
+    <p>站点配置已成功发布。请上传您的项目文件，或在面板的文件管理中替换此默认页面。</p>
+    <div class="site"><strong>` + safeName + `</strong><span>` + safeDomains + `</span></div>
+    <footer>Powered by OneinStack</footer>
+  </main>
+</body>
+</html>
+`
 }
 
 func Check() bool {

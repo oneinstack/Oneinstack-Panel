@@ -68,6 +68,15 @@ func List(ty string) ([]output.StorageConnection, error) {
 			list = append(list, restored)
 		}
 	}
+	if ty == "redis" && len(list) == 0 {
+		restored, restoreErr := ensureRecordedLocalRedisConnection()
+		if restoreErr != nil {
+			return nil, restoreErr
+		}
+		if restored != nil {
+			list = append(list, restored)
+		}
+	}
 	result := make([]output.StorageConnection, 0, len(list))
 	for _, item := range list {
 		result = append(result, storageConnectionOutput(item))
@@ -361,6 +370,13 @@ func EnsureManagedLocalMySQLConnection(port, username, password string) error {
 		Where("type = ? AND port = ? AND addr IN ?", "mysql", port, []string{"127.0.0.1", "localhost"}).
 		First(&existing)
 	if result.Error == nil {
+		connection, err := loadStorage(existing.ID)
+		if err != nil {
+			return fmt.Errorf("load managed local MySQL connection: %w", err)
+		}
+		if err := testStorageConnection(connection); err != nil {
+			return fmt.Errorf("verify existing managed local MySQL connection: %w", err)
+		}
 		return nil
 	}
 	if !errors.Is(result.Error, gorm.ErrRecordNotFound) {
@@ -376,6 +392,86 @@ func EnsureManagedLocalMySQLConnection(port, username, password string) error {
 	}
 	if err := testStorageConnection(candidate); err != nil {
 		return fmt.Errorf("verify managed local MySQL connection: %w", err)
+	}
+	encrypted, err := utils.EncryptCredential(
+		password,
+		utils.CredentialPurposeStoragePassword,
+	)
+	if err != nil {
+		return err
+	}
+	candidate.Password = encrypted
+	return app.DB().Create(candidate).Error
+}
+
+// ManagedLocalMySQLCredential returns the existing encrypted-at-rest root
+// credential for a Panel-managed local MySQL instance. Install retries and
+// binary repairs must reuse this credential: generating a new password while
+// retaining an existing data directory would record a password MySQL never
+// applied and make the database appear unreachable after a successful repair.
+func ManagedLocalMySQLCredential(port string) (username, password string, found bool, err error) {
+	port = strings.TrimSpace(port)
+	if port == "" {
+		port = "3306"
+	}
+	var existing models.Storage
+	result := app.DB().
+		Where("type = ? AND port = ? AND addr IN ?", "mysql", port, []string{"127.0.0.1", "localhost"}).
+		Order("id ASC").
+		First(&existing)
+	if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+		return "", "", false, nil
+	}
+	if result.Error != nil {
+		return "", "", false, result.Error
+	}
+	connection, err := loadStorage(existing.ID)
+	if err != nil {
+		return "", "", false, fmt.Errorf("load managed local MySQL credential: %w", err)
+	}
+	username = strings.TrimSpace(connection.Root)
+	if username == "" {
+		username = "root"
+	}
+	password = connection.Password
+	if username != "root" || strings.TrimSpace(password) == "" {
+		return "", "", false, fmt.Errorf("managed local MySQL credential is incomplete")
+	}
+	return username, password, true, nil
+}
+
+// EnsureManagedLocalRedisConnection records a local Redis instance installed
+// by Panel. Redis commonly runs without a password on loopback-only installs,
+// so an empty password is valid and is still verified before saving.
+func EnsureManagedLocalRedisConnection(port, username, password string) error {
+	port = strings.TrimSpace(port)
+	if port == "" {
+		port = "6379"
+	}
+	username = strings.TrimSpace(username)
+	if username == "" {
+		username = "default"
+	}
+	var existing models.Storage
+	result := app.DB().
+		Where("type = ? AND port = ? AND addr IN ?", "redis", port, []string{"127.0.0.1", "localhost"}).
+		First(&existing)
+	if result.Error == nil {
+		return nil
+	}
+	if !errors.Is(result.Error, gorm.ErrRecordNotFound) {
+		return result.Error
+	}
+	candidate := &models.Storage{
+		Addr:     "127.0.0.1",
+		Port:     port,
+		Root:     username,
+		Password: password,
+		Remark:   "本机 Redis（面板自动管理）",
+		Type:     "redis",
+	}
+	if err := testStorageConnection(candidate); err != nil {
+		return fmt.Errorf("verify managed local Redis connection: %w", err)
 	}
 	encrypted, err := utils.EncryptCredential(
 		password,
@@ -558,6 +654,40 @@ func ensureRecordedLocalMySQLConnection() (*models.Storage, error) {
 	var restored models.Storage
 	if err := app.DB().
 		Where("type = ? AND port = ? AND addr = ?", "mysql", "3306", "127.0.0.1").
+		First(&restored).Error; err != nil {
+		return nil, err
+	}
+	return &restored, nil
+}
+
+func ensureRecordedLocalRedisConnection() (*models.Storage, error) {
+	var installed models.Software
+	if err := app.DB().
+		Where("`key` = ? AND installed = ?", "redis", true).
+		Order("install_time DESC").
+		First(&installed).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	port := strings.TrimSpace(installed.HttpPort)
+	if port == "" {
+		port = "6379"
+	}
+	if err := EnsureManagedLocalRedisConnection(
+		port,
+		"default",
+		strings.TrimSpace(installed.RootPwd),
+	); err != nil {
+		// A manually changed password or ACL must not make remote connections
+		// disappear from the list. Administrators can add the local instance as
+		// a regular connection with the current credential.
+		return nil, nil
+	}
+	var restored models.Storage
+	if err := app.DB().
+		Where("type = ? AND port = ? AND addr = ?", "redis", port, "127.0.0.1").
 		First(&restored).Error; err != nil {
 		return nil, err
 	}

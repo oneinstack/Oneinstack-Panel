@@ -2,20 +2,29 @@ package output
 
 // IptablesStatus 结构体表示iptables的状态
 type IptablesStatus struct {
-	Install            bool   `json:"install"`
-	Enabled            bool   `json:"enabled"`
-	PingBlocked        bool   `json:"pingBlocked"`
-	Backend            string `json:"backend"`
-	RuntimeBackend     string `json:"runtimeBackend,omitempty"`
-	ManagedBackend     string `json:"managedBackend,omitempty"`
-	Persistent         bool   `json:"persistent"`
-	CanToggle          bool   `json:"canToggle"`
-	RepairRequired     bool   `json:"repairRequired"`
-	Warning            string `json:"warning,omitempty"`
-	PanelPort          int    `json:"panelPort"`
-	PanelPortProtected bool   `json:"panelPortProtected"`
-	ManagedPanelRule   bool   `json:"managedPanelRule"`
-	ManagedRuleCount   int64  `json:"managedRuleCount"`
+	Install            bool               `json:"install"`
+	Enabled            bool               `json:"enabled"`
+	PingBlocked        bool               `json:"pingBlocked"`
+	Backend            string             `json:"backend"`
+	RuntimeBackend     string             `json:"runtimeBackend,omitempty"`
+	ManagedBackend     string             `json:"managedBackend,omitempty"`
+	Persistent         bool               `json:"persistent"`
+	CanToggle          bool               `json:"canToggle"`
+	RepairRequired     bool               `json:"repairRequired"`
+	Warning            string             `json:"warning,omitempty"`
+	PanelPort          int                `json:"panelPort"`
+	PanelPortProtected bool               `json:"panelPortProtected"`
+	ManagedPanelRule   bool               `json:"managedPanelRule"`
+	ManagedRuleCount   int64              `json:"managedRuleCount"`
+	Counts             FirewallRuleCounts `json:"counts"`
+}
+
+type FirewallRuleCounts struct {
+	PortRules      int64 `json:"portRules"`
+	IPRules        int64 `json:"ipRules"`
+	PortForwards   int64 `json:"portForwards"`
+	RegionRules    int64 `json:"regionRules"`
+	AutoBlockRules int64 `json:"autoBlockRules"`
 }
 
 // IptablesRule 结构体表示单个iptables规则

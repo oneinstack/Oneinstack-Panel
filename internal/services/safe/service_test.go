@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
@@ -78,7 +79,11 @@ func openFirewallTestDB(t *testing.T) *gorm.DB {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&models.IptablesRule{}); err != nil {
+	if err := db.AutoMigrate(
+		&models.IptablesRule{},
+		&models.FirewallPortForward{},
+		&models.FirewallAutoBlockConfig{},
+	); err != nil {
 		t.Fatal(err)
 	}
 	return db
@@ -96,6 +101,151 @@ func TestNormalizeRuleRejectsUnsafeInputAndPanelLockout(t *testing.T) {
 		if _, err := normalizeRule(&tests[index], 8089); !errors.Is(err, ErrValidation) {
 			t.Fatalf("case %d: expected validation error, got %v", index, err)
 		}
+	}
+}
+
+func TestNormalizeIPRuleUsesAllProtocolsAndRejectsGlobalDeny(t *testing.T) {
+	rule := models.IptablesRule{
+		RuleType: "ip", Direction: "out", Protocol: "tcp", Strategy: "deny",
+		IPs: "203.0.113.8", Ports: "443", State: 1,
+	}
+	normalized, err := normalizeRule(&rule, 8089)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if normalized.Direction != "in" || normalized.Protocol != "all" || len(normalized.Ports) != 0 {
+		t.Fatalf("IP rule was not normalized as an inbound all-protocol rule: %#v", normalized)
+	}
+	global := rule
+	global.IPs = "0.0.0.0/0"
+	if _, err := normalizeRule(&global, 8089); !errors.Is(err, ErrValidation) {
+		t.Fatalf("expected global inbound deny to be rejected, got %v", err)
+	}
+}
+
+func TestDisabledRuleIsStoredWithoutChangingFirewall(t *testing.T) {
+	db := openFirewallTestDB(t)
+	runner := &fakeRunner{paths: map[string]bool{"ufw": true}, status: "Status: active"}
+	service := NewService(db, runner, 8089)
+	rule := &models.IptablesRule{
+		RuleType: "ip", Strategy: "deny", IPs: "203.0.113.9", State: 0,
+	}
+	if err := service.Add(context.Background(), rule); err != nil {
+		t.Fatal(err)
+	}
+	if rule.State != 0 {
+		t.Fatalf("disabled rule state changed: %#v", rule)
+	}
+	if runner.hasCommand("ufw deny in from 203.0.113.9") {
+		t.Fatalf("disabled rule changed the system firewall: %#v", runner.commands)
+	}
+	if err := service.SetRuleState(context.Background(), rule.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if !runner.hasCommand("ufw deny in from 203.0.113.9 to any") {
+		t.Fatalf("enabling IP rule did not apply the system rule: %#v", runner.commands)
+	}
+	for _, command := range runner.commands {
+		if strings.Contains(strings.Join(command.args, " "), "proto all") {
+			t.Fatalf("all-protocol UFW rule must omit invalid 'proto all': %#v", runner.commands)
+		}
+	}
+}
+
+func TestEnsureWebsitePortOnlyOpensEnabledFirewallAndReusesRule(t *testing.T) {
+	db := openFirewallTestDB(t)
+	runner := &fakeRunner{
+		paths: map[string]bool{"ufw": true}, status: "Status: inactive",
+		outputs: map[string]string{},
+	}
+	service := NewService(db, runner, 8089)
+	if id, created, err := service.EnsureWebsitePort(
+		context.Background(), 8080, "demo.example.com",
+	); err != nil || id != 0 || created {
+		t.Fatalf("disabled firewall changed: id=%d created=%v err=%v", id, created, err)
+	}
+
+	runner.status = "Status: active"
+	id, created, err := service.EnsureWebsitePort(
+		context.Background(), 8080, "demo.example.com",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id < 1 || !created {
+		t.Fatalf("website port rule was not created: id=%d created=%v", id, created)
+	}
+	var stored models.IptablesRule
+	if err := db.First(&stored, id).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.Ports != "8080" || stored.Remark != "demo.example.com" ||
+		stored.RuleType != "port" || stored.State != 1 {
+		t.Fatalf("unexpected website port rule: %#v", stored)
+	}
+	runner.outputs["ufw show added"] = "ufw allow 8080/tcp comment 'oneinstack:" + stored.Token + "'"
+
+	reusedID, reusedCreated, err := service.EnsureWebsitePort(
+		context.Background(), 8080, "second.example.com",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reusedID != id || reusedCreated {
+		t.Fatalf("existing rule was not reused: id=%d created=%v", reusedID, reusedCreated)
+	}
+	var count int64
+	if err := db.Model(&models.IptablesRule{}).Count(&count).Error; err != nil || count != 1 {
+		t.Fatalf("duplicate website port rule created: count=%d err=%v", count, err)
+	}
+}
+
+func TestCleanupExpiredRemovesRuleAndSystemState(t *testing.T) {
+	db := openFirewallTestDB(t)
+	expired := time.Now().Add(-time.Minute)
+	rule := models.IptablesRule{
+		RuleType: "ip", Direction: "in", Protocol: "all", Strategy: "deny",
+		IPs: "203.0.113.10", State: 1, Backend: BackendUFW, Token: "expired",
+		ExpiresAt: &expired,
+	}
+	if err := db.Create(&rule).Error; err != nil {
+		t.Fatal(err)
+	}
+	runner := &fakeRunner{paths: map[string]bool{"ufw": true}, status: "Status: active"}
+	cleaned, err := NewService(db, runner, 8089).CleanupExpired(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cleaned != 1 {
+		t.Fatalf("expected one cleaned rule, got %d", cleaned)
+	}
+	var count int64
+	if err := db.Model(&models.IptablesRule{}).Count(&count).Error; err != nil || count != 0 {
+		t.Fatalf("expired record remains: count=%d err=%v", count, err)
+	}
+}
+
+func TestFirewalldPortForwardLifecycle(t *testing.T) {
+	db := openFirewallTestDB(t)
+	runner := &fakeRunner{
+		paths: map[string]bool{"firewall-cmd": true, "systemctl": true},
+	}
+	service := NewService(db, runner, 8089)
+	forward := &models.FirewallPortForward{
+		Protocol: "tcp", SourcePort: 8443, DestinationIP: "192.168.1.20",
+		DestinationPort: 443, State: 1,
+	}
+	if err := service.AddPortForward(context.Background(), forward); err != nil {
+		t.Fatal(err)
+	}
+	if !runner.hasCommand("firewall-cmd --permanent --add-forward-port=port=8443:proto=tcp:toport=443:toaddr=192.168.1.20") {
+		t.Fatalf("forward command was not applied: %#v", runner.commands)
+	}
+	if err := service.DeletePortForward(context.Background(), forward.ID); err != nil {
+		t.Fatal(err)
+	}
+	if !runner.hasCommand("firewall-cmd --permanent --remove-forward-port=port=8443:proto=tcp:toport=443:toaddr=192.168.1.20") {
+		t.Fatalf("forward command was not removed: %#v", runner.commands)
 	}
 }
 

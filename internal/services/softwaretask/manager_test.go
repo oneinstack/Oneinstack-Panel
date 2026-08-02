@@ -109,6 +109,44 @@ func TestManagerCancelsRunningTask(t *testing.T) {
 	}
 }
 
+func TestManagerRejectsMutuallyExclusiveDatabaseInstall(t *testing.T) {
+	db := openTaskTestDB(t)
+	if err := db.Create(&models.Software{
+		Name:      "MySQL",
+		Key:       "db",
+		Component: "mysql",
+		Version:   "8.0",
+		Installed: true,
+		Status:    models.Soft_Status_Suc,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.Software{
+		Name:        "MariaDB",
+		Key:         "mariadb",
+		Component:   "mariadb",
+		Version:     "10.11",
+		Installable: true,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(db, t.TempDir(), func(
+		context.Context,
+		InstallRequest,
+		string,
+		*Reporter,
+	) error {
+		t.Fatal("conflicting install reached executor")
+		return nil
+	})
+	_, err := manager.Submit(InstallRequest{
+		Key: "mariadb", Version: "10.11",
+	}, 9)
+	if err == nil || !strings.Contains(err.Error(), "MySQL") {
+		t.Fatalf("expected MySQL conflict, got %v", err)
+	}
+}
+
 func TestManagerRunsUninstallAsDurableTask(t *testing.T) {
 	db := openTaskTestDB(t)
 	if err := db.Create(&models.Software{

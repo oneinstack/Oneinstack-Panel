@@ -37,6 +37,7 @@ func NewRedisOP(p *models.Storage) *RedisOP {
 func (s *RedisOP) Connect() error {
 	rdb := redis.NewClient(&redis.Options{
 		Addr:         fmt.Sprintf("%v:%v", s.Addr, s.Port),
+		Username:     s.Root,
 		Password:     s.Password,
 		DB:           0,
 		DialTimeout:  5 * time.Second,
@@ -72,15 +73,12 @@ func (s *RedisOP) GetLibs() ([]models.Library, error) {
 	ctx := context.Background()
 
 	// 获取配置中的数据库数量
+	dbCount := "16"
 	config, err := s.DB.ConfigGet(ctx, "databases").Result()
-	if err != nil {
-		return nil, fmt.Errorf("read Redis database count: %w", err)
-	}
-
-	// 输出数据库数量
-	dbCount, ok := config["databases"]
-	if !ok {
-		dbCount = "16"
+	if err == nil {
+		if configured, ok := config["databases"]; ok && configured != "" {
+			dbCount = configured
+		}
 	}
 	parseInt, err := strconv.ParseInt(dbCount, 10, 64)
 	if err != nil {

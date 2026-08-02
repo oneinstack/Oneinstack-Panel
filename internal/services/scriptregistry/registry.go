@@ -72,6 +72,31 @@ func (r *Registry) Resolve(ctx context.Context, component, softwareVersion strin
 	return Package{}, bundledErr
 }
 
+// ResolveChannel resolves a new installation from the channel assigned to the
+// exact software version by the signed Center catalog. A Panel may retain rows
+// from more than one catalog channel in its offline snapshot, so using only the
+// globally configured channel can make an otherwise published version appear
+// unavailable.
+func (r *Registry) ResolveChannel(
+	ctx context.Context,
+	component string,
+	softwareVersion string,
+	channel string,
+) (Package, error) {
+	channel = strings.ToLower(strings.TrimSpace(channel))
+	if channel == "" || channel == r.config.Channel {
+		return r.Resolve(ctx, component, softwareVersion)
+	}
+	switch channel {
+	case "stable", "beta", "development":
+		selected := *r
+		selected.config.Channel = channel
+		return selected.Resolve(ctx, component, softwareVersion)
+	default:
+		return Package{}, fmt.Errorf("invalid package channel %q", channel)
+	}
+}
+
 // ResolveInstalled resolves a package for an already installed software
 // version. New installations remain pinned to the configured channel through
 // Resolve, while lifecycle and configuration operations may reuse a verified

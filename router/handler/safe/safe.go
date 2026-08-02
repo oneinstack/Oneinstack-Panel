@@ -3,6 +3,9 @@ package safe
 import (
 	"errors"
 	"net/http"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -77,6 +80,188 @@ func DeleteFirewallRule(c *gin.Context) {
 		return
 	}
 	core.HandleSuccess(c, nil)
+}
+
+func SetFirewallRuleState(c *gin.Context) {
+	var param input.FirewallRuleStateParam
+	if err := c.ShouldBindJSON(&param); err != nil {
+		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "请求参数错误"))
+		return
+	}
+	if err := safeservice.NewDefaultService().SetRuleState(c.Request.Context(), param.ID, param.Enabled); err != nil {
+		handleServiceError(c, err)
+		return
+	}
+	core.HandleSuccess(c, nil)
+}
+
+func BatchFirewallRules(c *gin.Context) {
+	var param input.FirewallRuleBatchParam
+	if err := c.ShouldBindJSON(&param); err != nil {
+		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "请求参数错误"))
+		return
+	}
+	completed, err := safeservice.NewDefaultService().Batch(c.Request.Context(), param.IDs, param.Action)
+	if err != nil {
+		handleServiceError(c, err)
+		return
+	}
+	core.HandleSuccess(c, gin.H{"completed": completed})
+}
+
+func CleanupFirewallRules(c *gin.Context) {
+	cleaned, err := safeservice.NewDefaultService().CleanupExpired(c.Request.Context())
+	if err != nil {
+		handleServiceError(c, err)
+		return
+	}
+	core.HandleSuccess(c, gin.H{"cleaned": cleaned})
+}
+
+func ExportFirewallRules(c *gin.Context) {
+	rules, err := safeservice.NewDefaultService().ExportRules(c.Query("ruleType"))
+	if err != nil {
+		handleServiceError(c, err)
+		return
+	}
+	c.Header("Content-Disposition", `attachment; filename="oneinstack-firewall-rules.json"`)
+	c.JSON(http.StatusOK, gin.H{
+		"version": 1, "exportedAt": time.Now().UTC().Format(time.RFC3339), "rules": rules,
+	})
+}
+
+func ImportFirewallRules(c *gin.Context) {
+	var param input.FirewallRuleImportParam
+	if err := c.ShouldBindJSON(&param); err != nil {
+		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "导入文件格式错误"))
+		return
+	}
+	rules := make([]models.IptablesRule, 0, len(param.Rules))
+	for index, item := range param.Rules {
+		var expiresAt *time.Time
+		if item.ExpiresAt != nil && strings.TrimSpace(*item.ExpiresAt) != "" {
+			value, err := time.Parse(time.RFC3339, strings.TrimSpace(*item.ExpiresAt))
+			if err != nil {
+				core.HandleError(c, core.NewError(
+					core.ErrBadRequest,
+					"第 "+strconv.Itoa(index+1)+" 条规则的过期时间格式错误",
+				))
+				return
+			}
+			expiresAt = &value
+		}
+		rules = append(rules, models.IptablesRule{
+			RuleType: item.RuleType, Direction: item.Direction, Protocol: item.Protocol,
+			Strategy: item.Strategy, IPs: item.IPs, Ports: item.Ports, State: item.State,
+			Remark: item.Remark, Location: item.Location, ExpiresAt: expiresAt,
+		})
+	}
+	imported, err := safeservice.NewDefaultService().ImportRules(c.Request.Context(), rules)
+	if err != nil {
+		handleServiceError(c, err)
+		return
+	}
+	core.HandleSuccess(c, gin.H{"imported": imported})
+}
+
+func ListPortForwards(c *gin.Context) {
+	var param input.FirewallPortForwardParam
+	if err := c.ShouldBindJSON(&param); err != nil {
+		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "请求参数错误"))
+		return
+	}
+	result, err := safeservice.NewDefaultService().ListPortForwards(&param)
+	if err != nil {
+		handleServiceError(c, err)
+		return
+	}
+	core.HandleSuccess(c, result)
+}
+
+func AddPortForward(c *gin.Context) {
+	var param models.FirewallPortForward
+	if err := c.ShouldBindJSON(&param); err != nil {
+		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "请求参数错误"))
+		return
+	}
+	if err := safeservice.NewDefaultService().AddPortForward(c.Request.Context(), &param); err != nil {
+		handleServiceError(c, err)
+		return
+	}
+	core.HandleSuccess(c, param)
+}
+
+func UpdatePortForward(c *gin.Context) {
+	var param models.FirewallPortForward
+	if err := c.ShouldBindJSON(&param); err != nil {
+		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "请求参数错误"))
+		return
+	}
+	if err := safeservice.NewDefaultService().UpdatePortForward(c.Request.Context(), &param); err != nil {
+		handleServiceError(c, err)
+		return
+	}
+	core.HandleSuccess(c, param)
+}
+
+func DeletePortForward(c *gin.Context) {
+	var param struct {
+		ID int64 `json:"id" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&param); err != nil {
+		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "请求参数错误"))
+		return
+	}
+	if err := safeservice.NewDefaultService().DeletePortForward(c.Request.Context(), param.ID); err != nil {
+		handleServiceError(c, err)
+		return
+	}
+	core.HandleSuccess(c, nil)
+}
+
+func SetPortForwardState(c *gin.Context) {
+	var param input.FirewallPortForwardStateParam
+	if err := c.ShouldBindJSON(&param); err != nil {
+		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "请求参数错误"))
+		return
+	}
+	if err := safeservice.NewDefaultService().SetPortForwardState(c.Request.Context(), param.ID, param.Enabled); err != nil {
+		handleServiceError(c, err)
+		return
+	}
+	core.HandleSuccess(c, nil)
+}
+
+func GetAutoBlockConfig(c *gin.Context) {
+	config, err := safeservice.NewDefaultService().GetAutoBlockConfig()
+	if err != nil {
+		handleServiceError(c, err)
+		return
+	}
+	core.HandleSuccess(c, gin.H{"config": config})
+}
+
+func SaveAutoBlockConfig(c *gin.Context) {
+	var param input.FirewallAutoBlockParam
+	if err := c.ShouldBindJSON(&param); err != nil {
+		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "请求参数错误"))
+		return
+	}
+	config, err := safeservice.NewDefaultService().SaveAutoBlockConfig(&param)
+	if err != nil {
+		handleServiceError(c, err)
+		return
+	}
+	core.HandleSuccess(c, gin.H{"config": config})
+}
+
+func RunAutoBlock(c *gin.Context) {
+	blocked, err := safeservice.NewDefaultService().RunAutoBlock(c.Request.Context())
+	if err != nil {
+		handleServiceError(c, err)
+		return
+	}
+	core.HandleSuccess(c, gin.H{"blocked": blocked})
 }
 
 // StopFirewall 保留历史路由名称，实际按 enabled 字段设置目标状态，不再执行不确定的 toggle。

@@ -136,7 +136,12 @@ func createTables() error {
 	if err != nil {
 		return err
 	}
-	err = db.AutoMigrate(&models.Website{})
+	err = db.AutoMigrate(
+		&models.Website{},
+		&models.WebsiteSetting{},
+		&models.WebsiteTrafficDaily{},
+		&models.WebsiteTrafficCursor{},
+	)
 	if err != nil {
 		return err
 	}
@@ -164,8 +169,17 @@ func createTables() error {
 	if err != nil {
 		return err
 	}
-	err = db.AutoMigrate(&models.IptablesRule{})
+	err = db.AutoMigrate(
+		&models.IptablesRule{},
+		&models.FirewallPortForward{},
+		&models.FirewallAutoBlockConfig{},
+	)
 	if err != nil {
+		return err
+	}
+	if err = db.Model(&models.IptablesRule{}).
+		Where("rule_type IS NULL OR rule_type = ''").
+		Update("rule_type", "port").Error; err != nil {
 		return err
 	}
 	err = db.AutoMigrate(&models.CronJob{})
@@ -538,6 +552,7 @@ func syncCenterSoftwareCatalog() error {
 		template.InstallTime = time.Time{}
 		template.Log = ""
 		template.IsUpdate = false
+		template.CatalogChannel = "stable"
 		if err := db.Create(&template).Error; err != nil {
 			return fmt.Errorf("create %s %s catalog entry: %w", item.name, item.version, err)
 		}
@@ -550,14 +565,15 @@ func syncCenterSoftwareCatalog() error {
 	}
 	if firewallCount == 0 {
 		if err := db.Create(&models.Software{
-			Name:      "firewalld",
-			Key:       "firewalld",
-			Describe:  "Linux 动态防火墙管理服务",
-			Status:    models.Soft_Status_Default,
-			Resource:  "local",
-			Installed: false,
-			Version:   "1.0.0",
-			Tags:      "安全",
+			Name:           "firewalld",
+			Key:            "firewalld",
+			Describe:       "Linux 动态防火墙管理服务",
+			Status:         models.Soft_Status_Default,
+			Resource:       "local",
+			Installed:      false,
+			Version:        "1.0.0",
+			Tags:           "安全",
+			CatalogChannel: "stable",
 		}).Error; err != nil {
 			return fmt.Errorf("create firewalld catalog entry: %w", err)
 		}
@@ -568,6 +584,7 @@ func syncCenterSoftwareCatalog() error {
 func hideUnsupportedBundledVersions() error {
 	for key, versions := range bundledCatalogVersions {
 		if err := db.Model(&models.Software{}).
+			Where("catalog_managed = ?", false).
 			Where("`key` = ? AND installed = ?", key, false).
 			Where("`version` NOT IN ?", versions).
 			Updates(map[string]any{
@@ -577,10 +594,12 @@ func hideUnsupportedBundledVersions() error {
 			return fmt.Errorf("hide unsupported %s catalog versions: %w", key, err)
 		}
 		if err := db.Model(&models.Software{}).
+			Where("catalog_managed = ?", false).
 			Where("`key` = ? AND version IN ?", key, versions).
 			Updates(map[string]any{
 				"catalog_visible": true,
 				"installable":     true,
+				"catalog_channel": "stable",
 			}).Error; err != nil {
 			return fmt.Errorf("normalize supported %s catalog versions: %w", key, err)
 		}

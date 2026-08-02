@@ -459,6 +459,7 @@ func (m *Manager) runRestore(
 		return errors.New("website archive manifest does not match backup metadata")
 	}
 	var previous *models.Website
+	var previousSettings *website.WebsiteSettings
 	previous, err = m.sites.Get(task.WebsiteID)
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		previous = nil
@@ -466,6 +467,12 @@ func (m *Manager) runRestore(
 		return err
 	}
 	if previous != nil {
+		settingsDocument, settingsErr := m.sites.GetSettings(previous.ID)
+		if settingsErr != nil {
+			return fmt.Errorf("read current website settings: %w", settingsErr)
+		}
+		settingsCopy := settingsDocument.Settings
+		previousSettings = &settingsCopy
 		report(20, "正在创建恢复前安全快照")
 		safety, err := m.createAndRegisterBackup(
 			ctx, task, models.WebsiteBackupSourcePreRestore, log,
@@ -495,6 +502,11 @@ func (m *Manager) runRestore(
 		if rollbackNeeded {
 			if previous != nil {
 				_ = m.sites.RestoreSnapshot(context.Background(), previous)
+				if previousSettings != nil {
+					_, _ = m.sites.UpdateSettings(
+						context.Background(), previous.ID, *previousSettings,
+					)
+				}
 			} else {
 				_ = m.sites.DeleteWithOptions(context.Background(), task.WebsiteID, false)
 			}
@@ -504,6 +516,15 @@ func (m *Manager) runRestore(
 	report(68, "正在重新生成并发布 Nginx 配置")
 	if err := m.sites.RestoreSnapshot(ctx, &extracted.Manifest.Website); err != nil {
 		return err
+	}
+	if extracted.Manifest.WebsiteSettings != nil {
+		if _, err := m.sites.UpdateSettings(
+			ctx,
+			extracted.Manifest.Website.ID,
+			*extracted.Manifest.WebsiteSettings,
+		); err != nil {
+			return fmt.Errorf("restore website settings: %w", err)
+		}
 	}
 	if extracted.Manifest.Database != nil {
 		if extracted.Manifest.Database.ID != task.DatabaseID ||
@@ -603,6 +624,11 @@ func (m *Manager) createAndRegisterBackup(
 	if err != nil {
 		return nil, err
 	}
+	settingsDocument, err := m.sites.GetSettings(site.ID)
+	if err != nil {
+		return nil, fmt.Errorf("read website settings: %w", err)
+	}
+	settings := settingsDocument.Settings
 	if err := m.checkDiskSpace(); err != nil {
 		return nil, err
 	}
@@ -639,7 +665,7 @@ func (m *Manager) createAndRegisterBackup(
 	}
 	report(50, "正在打包网站文件与配置")
 	_, size, checksum, err := buildArchive(
-		ctx, site, rootPath, configPath, dump, artifact, m.limits,
+		ctx, site, &settings, rootPath, configPath, dump, artifact, m.limits,
 	)
 	if err != nil {
 		return nil, err

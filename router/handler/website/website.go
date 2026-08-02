@@ -29,6 +29,30 @@ func List(c *gin.Context) {
 	core.HandleSuccess(c, list)
 }
 
+func SetStatus(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || id <= 0 {
+		core.HandleError(c, core.NewError(core.ErrBadRequest, "网站 ID 无效"))
+		return
+	}
+	var request input.WebsiteStatusParam
+	if err := c.ShouldBindJSON(&request); err != nil {
+		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "请求参数格式错误"))
+		return
+	}
+	service, err := website.DefaultService()
+	if err != nil {
+		core.HandleError(c, core.WrapError(err, core.ErrConfigError, "网站服务不可用"))
+		return
+	}
+	site, err := service.SetEnabled(c.Request.Context(), id, request.Enabled)
+	if err != nil {
+		core.HandleError(c, core.WrapError(err, core.ErrConfigError, "网站状态切换失败"))
+		return
+	}
+	core.HandleSuccess(c, site)
+}
+
 func Add(c *gin.Context) {
 	input := &models.Website{}
 	if err := c.ShouldBindJSON(&input); err != nil {

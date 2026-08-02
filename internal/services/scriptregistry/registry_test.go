@@ -100,6 +100,44 @@ func TestResolveRemoteVerifiesAndCachesPackage(t *testing.T) {
 	}
 }
 
+func TestResolveChannelUsesCatalogVersionChannel(t *testing.T) {
+	var requestedChannel string
+	registry, err := New(config.ScriptCenter{
+		Enabled:               true,
+		URL:                   "http://127.0.0.1:8189",
+		Channel:               "development",
+		RequestTimeoutSeconds: 5,
+		CachePath:             t.TempDir(),
+		BundledPath:           filepath.Join(t.TempDir(), "missing"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry.client.Transport = handlerTransport{handler: http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/health/ready":
+			response.WriteHeader(http.StatusOK)
+		case "/v1/packages/resolve":
+			var payload ResolveRequest
+			if decodeErr := json.NewDecoder(request.Body).Decode(&payload); decodeErr != nil {
+				t.Fatal(decodeErr)
+			}
+			requestedChannel = payload.Channel
+			http.Error(response, "not published", http.StatusNotFound)
+		default:
+			http.NotFound(response, request)
+		}
+	})}
+
+	_, _ = registry.ResolveChannel(context.Background(), "nginx", "1.28.2", "stable")
+	if requestedChannel != "stable" {
+		t.Fatalf("resolved channel = %q, want stable", requestedChannel)
+	}
+	if registry.config.Channel != "development" {
+		t.Fatalf("registry default channel was mutated to %q", registry.config.Channel)
+	}
+}
+
 func TestResolveRejectsUntrustedSignature(t *testing.T) {
 	archive := testPackageArchive(t)
 	digest := sha256.Sum256(archive)

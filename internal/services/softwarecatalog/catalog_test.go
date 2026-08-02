@@ -90,7 +90,7 @@ func TestSyncAppliesSignedCenterCatalogAndPreservesOfflineSnapshot(t *testing.T)
 		t.Fatal(err)
 	}
 	if !published.CatalogManaged || !published.CatalogVisible || !published.Installable ||
-		!published.Recommended || published.Component != "nginx" {
+		!published.Recommended || published.Component != "nginx" || published.CatalogChannel != "stable" {
 		t.Fatalf("unexpected published row: %+v", published)
 	}
 	var disabled models.Software

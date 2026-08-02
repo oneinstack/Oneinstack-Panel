@@ -109,6 +109,30 @@ func TestConnectionCredentialsAreEncryptedAndNeverListed(t *testing.T) {
 	}
 }
 
+func TestManagedLocalMySQLCredentialDecryptsExistingCredential(t *testing.T) {
+	prepareStorageTest(t)
+	encrypted, err := utils.EncryptCredential(
+		"existing-root-secret",
+		utils.CredentialPurposeStoragePassword,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := app.DB().Create(&models.Storage{
+		Addr: "127.0.0.1", Port: "3306", Root: "root",
+		Password: encrypted, Type: "mysql", Remark: "本机 MySQL（面板自动管理）",
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	username, password, found, err := ManagedLocalMySQLCredential("3306")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found || username != "root" || password != "existing-root-secret" {
+		t.Fatalf("unexpected managed MySQL credential: %q %q %v", username, password, found)
+	}
+}
+
 func TestUpdateWithBlankPasswordRetainsExistingCredential(t *testing.T) {
 	prepareStorageTest(t)
 	newStorageOP = func(_ *models.Storage, _ string) (StorageOPI, error) {
@@ -144,6 +168,44 @@ func TestUpdateWithBlankPasswordRetainsExistingCredential(t *testing.T) {
 	}
 	if reloaded.Password != "redis-secret" || reloaded.Remark != "updated" {
 		t.Fatalf("unexpected updated connection: %#v", reloaded)
+	}
+}
+
+func TestListRestoresManagedLocalRedisConnection(t *testing.T) {
+	prepareStorageTest(t)
+	operation := &fakeStorageOperation{}
+	var connected *models.Storage
+	newStorageOP = func(candidate *models.Storage, _ string) (StorageOPI, error) {
+		copy := *candidate
+		connected = &copy
+		return operation, nil
+	}
+	if err := app.DB().Create(&models.Software{
+		Name: "Redis", Key: "redis", Component: "redis", Version: "8.4.0",
+		Installed: true, Status: models.Soft_Status_Suc,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	connections, err := List("redis")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(connections) != 1 {
+		t.Fatalf("expected one restored Redis connection, got %#v", connections)
+	}
+	if connected == nil || connected.Addr != "127.0.0.1" ||
+		connected.Port != "6379" || connected.Root != "default" || connected.Password != "" {
+		t.Fatalf("unexpected Redis connection probe: %#v", connected)
+	}
+	if !operation.connected || !operation.closed {
+		t.Fatal("restored Redis connection was not verified")
+	}
+	var stored models.Storage
+	if err := app.DB().Where("type = ?", "redis").First(&stored).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.Remark != "本机 Redis（面板自动管理）" || stored.Password != "" {
+		t.Fatalf("unexpected stored Redis connection: %#v", stored)
 	}
 }
 

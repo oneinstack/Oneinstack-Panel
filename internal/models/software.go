@@ -36,6 +36,7 @@ type Software struct {
 	InstallVersion  string    `json:"install_version"`
 	IsUpdate        bool      `json:"is_update"`
 	CatalogManaged  bool      `json:"catalog_managed" gorm:"not null;default:false;index"`
+	CatalogChannel  string    `json:"catalog_channel" gorm:"size:32;index"`
 	CatalogVisible  bool      `json:"catalog_visible" gorm:"not null;default:true;index"`
 	Installable     bool      `json:"installable" gorm:"not null;default:true"`
 	Recommended     bool      `json:"recommended" gorm:"not null;default:false"`

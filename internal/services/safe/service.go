@@ -4,10 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -56,6 +59,9 @@ func (s *Service) Status(ctx context.Context) (*output.IptablesStatus, error) {
 	}
 	if s.db != nil {
 		if err := s.db.Model(&models.IptablesRule{}).Count(&status.ManagedRuleCount).Error; err != nil {
+			return nil, err
+		}
+		if err := s.loadRuleCounts(&status.Counts); err != nil {
 			return nil, err
 		}
 		var managedProtectedRule models.IptablesRule
@@ -108,21 +114,42 @@ func (s *Service) Status(ctx context.Context) (*output.IptablesStatus, error) {
 func (s *Service) List(param *input.IptablesRuleParam) (*services.PaginatedResult[models.IptablesRule], error) {
 	tx := s.db.Model(&models.IptablesRule{})
 	if query := strings.TrimSpace(param.Q); query != "" {
-		tx = tx.Where("remark LIKE ?", "%"+query+"%")
+		like := "%" + query + "%"
+		tx = tx.Where("remark LIKE ? OR ips LIKE ? OR location LIKE ?", like, like, like)
 	}
 	if direction := strings.TrimSpace(param.Direction); direction != "" {
 		tx = tx.Where("direction = ?", direction)
 	}
+	if ruleType := strings.TrimSpace(param.RuleType); ruleType != "" {
+		if ruleType == "port" {
+			tx = tx.Where("rule_type = ? OR rule_type IS NULL OR rule_type = ''", ruleType)
+		} else {
+			tx = tx.Where("rule_type = ?", ruleType)
+		}
+	}
+	if param.State != nil {
+		tx = tx.Where("state = ?", *param.State)
+	}
 	tx = tx.Order("protected DESC, id DESC")
-	return services.Paginate[models.IptablesRule](tx, &models.IptablesRule{}, &input.Page{
+	result, err := services.Paginate[models.IptablesRule](tx, &models.IptablesRule{}, &input.Page{
 		Page: param.Page.Page, PageSize: param.Page.PageSize,
 	})
+	if err != nil {
+		return nil, err
+	}
+	for index := range result.Data {
+		normalizeStoredRule(&result.Data[index])
+	}
+	return result, nil
 }
 
 func (s *Service) Add(ctx context.Context, rule *models.IptablesRule) error {
 	operationMu.Lock()
 	defer operationMu.Unlock()
+	return s.addLocked(ctx, rule)
+}
 
+func (s *Service) addLocked(ctx context.Context, rule *models.IptablesRule) error {
 	normalized, err := normalizeRule(rule, s.panelPort)
 	if err != nil {
 		return err
@@ -136,19 +163,84 @@ func (s *Service) Add(ctx context.Context, rule *models.IptablesRule) error {
 	rule.Backend = state.Name
 	rule.Token = uuid.NewString()
 	rule.Protected = false
-	operations, err := s.ruleOperations(rule)
-	if err != nil {
-		return err
+	if rule.Location == "" {
+		rule.Location = describeIPLocation(rule.IPs)
 	}
-	if err := s.runOperations(ctx, rule.Backend, operations); err != nil {
-		return fmt.Errorf("应用防火墙规则失败: %w", err)
+	var operations []commandOperation
+	if rule.State == 1 {
+		operations, err = s.ruleOperations(rule)
+		if err != nil {
+			return err
+		}
+		if err := s.runOperations(ctx, rule.Backend, operations); err != nil {
+			return fmt.Errorf("应用防火墙规则失败: %w", err)
+		}
 	}
 	if err := s.db.Create(rule).Error; err != nil {
-		s.rollbackOperations(ctx, operations)
-		_ = s.persist(ctx, rule.Backend)
+		if rule.State == 1 {
+			s.rollbackOperations(ctx, operations)
+			_ = s.persist(ctx, rule.Backend)
+		}
 		return fmt.Errorf("保存规则失败，系统规则已回滚: %w", err)
 	}
 	return nil
+}
+
+// EnsureWebsitePort opens an inbound TCP port only when the detected firewall
+// is already enabled. Existing active rules that allow the port from all IPv4
+// addresses are reused so creating several virtual hosts on port 80/443 does
+// not create duplicate host rules.
+func (s *Service) EnsureWebsitePort(
+	ctx context.Context,
+	port int,
+	websiteName string,
+) (int64, bool, error) {
+	if port < 1 || port > 65535 {
+		return 0, false, validationError("网站端口必须在 1-65535 之间")
+	}
+	websiteName = strings.TrimSpace(websiteName)
+	if websiteName == "" {
+		return 0, false, validationError("网站名称不能为空")
+	}
+
+	operationMu.Lock()
+	defer operationMu.Unlock()
+
+	state := s.detectBackend(ctx)
+	if !state.Installed || !state.Enabled {
+		return 0, false, nil
+	}
+
+	var candidates []models.IptablesRule
+	if err := s.db.Where(
+		"state = ? AND direction = ? AND strategy = ? AND protocol IN ?",
+		1, "in", "allow", []string{"tcp", "all"},
+	).Order("protected DESC, id DESC").Find(&candidates).Error; err != nil {
+		return 0, false, err
+	}
+	for index := range candidates {
+		candidate := &candidates[index]
+		normalized, err := normalizeRule(candidate, s.panelPort)
+		if err != nil || !containsAllIPv4(normalized.IPs) ||
+			!portSetContains(normalized.Ports, port) {
+			continue
+		}
+		if candidate.Backend != "" && candidate.Backend != state.Name {
+			continue
+		}
+		if s.ruleExists(ctx, candidate, state) {
+			return candidate.ID, false, nil
+		}
+	}
+
+	rule := &models.IptablesRule{
+		RuleType: "port", Direction: "in", Protocol: "tcp", Strategy: "allow",
+		IPs: "0.0.0.0/0", Ports: strconv.Itoa(port), State: 1, Remark: websiteName,
+	}
+	if err := s.addLocked(ctx, rule); err != nil {
+		return 0, false, err
+	}
+	return rule.ID, true, nil
 }
 
 func (s *Service) Update(ctx context.Context, requested *models.IptablesRule) error {
@@ -179,32 +271,51 @@ func (s *Service) Update(ctx context.Context, requested *models.IptablesRule) er
 		requested.Token = uuid.NewString()
 	}
 	requested.Protected = false
+	if requested.Location == "" {
+		requested.Location = describeIPLocation(requested.IPs)
+	}
 
 	old.Backend = requested.Backend
-	oldOperations, err := s.ruleOperations(&old)
-	if err != nil {
-		return err
+	var oldOperations, newOperations []commandOperation
+	if old.State == 1 {
+		oldOperations, err = s.ruleOperations(&old)
+		if err != nil {
+			return err
+		}
+		if err := s.runOperations(ctx, old.Backend, reverseOperations(oldOperations)); err != nil {
+			return fmt.Errorf("删除旧系统规则失败，原规则已恢复: %w", err)
+		}
 	}
-	newOperations, err := s.ruleOperations(requested)
-	if err != nil {
-		return err
-	}
-	if err := s.runOperations(ctx, old.Backend, reverseOperations(oldOperations)); err != nil {
-		return fmt.Errorf("删除旧系统规则失败，原规则已恢复: %w", err)
-	}
-	if err := s.runOperations(ctx, requested.Backend, newOperations); err != nil {
-		_ = s.runOperations(ctx, old.Backend, oldOperations)
-		return fmt.Errorf("应用新规则失败，原规则已恢复: %w", err)
+	if requested.State == 1 {
+		newOperations, err = s.ruleOperations(requested)
+		if err != nil {
+			if old.State == 1 {
+				_ = s.runOperations(ctx, old.Backend, oldOperations)
+			}
+			return err
+		}
+		if err := s.runOperations(ctx, requested.Backend, newOperations); err != nil {
+			if old.State == 1 {
+				_ = s.runOperations(ctx, old.Backend, oldOperations)
+			}
+			return fmt.Errorf("应用新规则失败，原规则已恢复: %w", err)
+		}
 	}
 	updates := map[string]any{
+		"rule_type": requested.RuleType,
 		"direction": requested.Direction, "protocol": requested.Protocol,
 		"strategy": requested.Strategy, "ips": requested.IPs, "ports": requested.Ports,
-		"state": 1, "remark": requested.Remark, "backend": requested.Backend,
+		"state": requested.State, "remark": requested.Remark, "location": requested.Location,
+		"expires_at": requested.ExpiresAt, "backend": requested.Backend,
 		"token": requested.Token,
 	}
 	if err := s.db.Model(&models.IptablesRule{}).Where("id = ?", old.ID).Updates(updates).Error; err != nil {
-		_ = s.runOperations(ctx, requested.Backend, reverseOperations(newOperations))
-		_ = s.runOperations(ctx, old.Backend, oldOperations)
+		if requested.State == 1 {
+			_ = s.runOperations(ctx, requested.Backend, reverseOperations(newOperations))
+		}
+		if old.State == 1 {
+			_ = s.runOperations(ctx, old.Backend, oldOperations)
+		}
 		return fmt.Errorf("保存规则失败，原规则已恢复: %w", err)
 	}
 	return nil
@@ -213,7 +324,10 @@ func (s *Service) Update(ctx context.Context, requested *models.IptablesRule) er
 func (s *Service) Delete(ctx context.Context, id int64) error {
 	operationMu.Lock()
 	defer operationMu.Unlock()
+	return s.deleteLocked(ctx, id)
+}
 
+func (s *Service) deleteLocked(ctx context.Context, id int64) error {
 	if id < 1 {
 		return validationError("规则 ID 无效")
 	}
@@ -227,18 +341,170 @@ func (s *Service) Delete(ctx context.Context, id int64) error {
 	if rule.Backend == "" {
 		rule.Backend = s.detectBackend(ctx).Name
 	}
+	var operations []commandOperation
+	var err error
+	if rule.State == 1 {
+		operations, err = s.ruleOperations(&rule)
+		if err != nil {
+			return err
+		}
+		if err := s.runOperations(ctx, rule.Backend, reverseOperations(operations)); err != nil {
+			return fmt.Errorf("删除系统规则失败，原规则已恢复: %w", err)
+		}
+	}
+	if err := s.db.Delete(&models.IptablesRule{}, rule.ID).Error; err != nil {
+		if rule.State == 1 {
+			_ = s.runOperations(ctx, rule.Backend, operations)
+		}
+		return fmt.Errorf("删除规则记录失败，系统规则已恢复: %w", err)
+	}
+	return nil
+}
+
+func (s *Service) SetRuleState(ctx context.Context, id int64, enabled bool) error {
+	operationMu.Lock()
+	defer operationMu.Unlock()
+	return s.setRuleStateLocked(ctx, id, enabled)
+}
+
+func (s *Service) setRuleStateLocked(ctx context.Context, id int64, enabled bool) error {
+	if id < 1 {
+		return validationError("规则 ID 无效")
+	}
+	var rule models.IptablesRule
+	if err := s.db.First(&rule, id).Error; err != nil {
+		return err
+	}
+	if rule.Protected {
+		return fmt.Errorf("%w: 面板端口保护规则不能停用", ErrProtected)
+	}
+	target := 0
+	if enabled {
+		target = 1
+	}
+	if rule.State == target {
+		return nil
+	}
+	if enabled && rule.ExpiresAt != nil && !rule.ExpiresAt.After(time.Now()) {
+		return validationError("过期规则不能重新启用，请先修改过期时间")
+	}
+	if rule.Backend == "" {
+		rule.Backend = s.detectBackend(ctx).Name
+	}
 	operations, err := s.ruleOperations(&rule)
 	if err != nil {
 		return err
 	}
-	if err := s.runOperations(ctx, rule.Backend, reverseOperations(operations)); err != nil {
-		return fmt.Errorf("删除系统规则失败，原规则已恢复: %w", err)
+	run := operations
+	if !enabled {
+		run = reverseOperations(operations)
 	}
-	if err := s.db.Delete(&models.IptablesRule{}, rule.ID).Error; err != nil {
-		_ = s.runOperations(ctx, rule.Backend, operations)
-		return fmt.Errorf("删除规则记录失败，系统规则已恢复: %w", err)
+	if err := s.runOperations(ctx, rule.Backend, run); err != nil {
+		return fmt.Errorf("更新系统规则状态失败: %w", err)
+	}
+	if err := s.db.Model(&models.IptablesRule{}).Where("id = ?", id).Update("state", target).Error; err != nil {
+		s.rollbackOperations(ctx, run)
+		_ = s.persist(ctx, rule.Backend)
+		return fmt.Errorf("保存规则状态失败，系统规则已回滚: %w", err)
 	}
 	return nil
+}
+
+func (s *Service) Batch(ctx context.Context, ids []int64, action string) (int, error) {
+	operationMu.Lock()
+	defer operationMu.Unlock()
+	if len(ids) == 0 {
+		return 0, validationError("请选择至少一条规则")
+	}
+	if len(ids) > 500 {
+		return 0, validationError("单次批量操作不能超过 500 条规则")
+	}
+	action = strings.ToLower(strings.TrimSpace(action))
+	completed := 0
+	for _, id := range uniqueIDs(ids) {
+		var err error
+		switch action {
+		case "enable":
+			err = s.setRuleStateLocked(ctx, id, true)
+		case "disable":
+			err = s.setRuleStateLocked(ctx, id, false)
+		case "delete":
+			err = s.deleteLocked(ctx, id)
+		default:
+			return completed, validationError("批量操作仅支持 enable、disable 或 delete")
+		}
+		if err != nil {
+			return completed, fmt.Errorf("已完成 %d 条，第 %d 条失败: %w", completed, id, err)
+		}
+		completed++
+	}
+	return completed, nil
+}
+
+func (s *Service) CleanupExpired(ctx context.Context) (int, error) {
+	operationMu.Lock()
+	defer operationMu.Unlock()
+	var rules []models.IptablesRule
+	if err := s.db.Where("expires_at IS NOT NULL AND expires_at <= ?", time.Now()).
+		Order("id ASC").Find(&rules).Error; err != nil {
+		return 0, err
+	}
+	cleaned := 0
+	for _, rule := range rules {
+		if rule.Protected {
+			continue
+		}
+		if err := s.deleteLocked(ctx, rule.ID); err != nil {
+			return cleaned, err
+		}
+		cleaned++
+	}
+	return cleaned, nil
+}
+
+func (s *Service) ExportRules(ruleType string) ([]models.IptablesRule, error) {
+	tx := s.db.Where("protected = ?", false)
+	if ruleType = strings.TrimSpace(ruleType); ruleType != "" {
+		if ruleType == "port" {
+			tx = tx.Where("rule_type = ? OR rule_type IS NULL OR rule_type = ''", ruleType)
+		} else {
+			tx = tx.Where("rule_type = ?", ruleType)
+		}
+	}
+	var rules []models.IptablesRule
+	if err := tx.Order("id ASC").Find(&rules).Error; err != nil {
+		return nil, err
+	}
+	for index := range rules {
+		normalizeStoredRule(&rules[index])
+		rules[index].ID = 0
+		rules[index].Backend = ""
+		rules[index].Token = ""
+		rules[index].Protected = false
+	}
+	return rules, nil
+}
+
+func (s *Service) ImportRules(ctx context.Context, rules []models.IptablesRule) (int, error) {
+	if len(rules) == 0 {
+		return 0, validationError("导入文件中没有规则")
+	}
+	if len(rules) > 500 {
+		return 0, validationError("单次最多导入 500 条规则")
+	}
+	created := make([]int64, 0, len(rules))
+	for index := range rules {
+		rules[index].ID = 0
+		rules[index].Protected = false
+		if err := s.Add(ctx, &rules[index]); err != nil {
+			for rollback := len(created) - 1; rollback >= 0; rollback-- {
+				_ = s.Delete(ctx, created[rollback])
+			}
+			return 0, fmt.Errorf("第 %d 条规则导入失败，已回滚本次导入: %w", index+1, err)
+		}
+		created = append(created, rules[index].ID)
+	}
+	return len(created), nil
 }
 
 func (s *Service) SetEnabled(ctx context.Context, enabled bool, confirmation string) error {
@@ -607,4 +873,85 @@ func appendWarning(current, message string) string {
 		return message
 	}
 	return current + "；" + message
+}
+
+func (s *Service) loadRuleCounts(counts *output.FirewallRuleCounts) error {
+	if counts == nil {
+		return nil
+	}
+	type countRow struct {
+		RuleType string
+		Total    int64
+	}
+	var rows []countRow
+	if err := s.db.Model(&models.IptablesRule{}).
+		Select("COALESCE(NULLIF(rule_type, ''), 'port') AS rule_type, COUNT(*) AS total").
+		Group("COALESCE(NULLIF(rule_type, ''), 'port')").
+		Scan(&rows).Error; err != nil {
+		return err
+	}
+	for _, row := range rows {
+		switch row.RuleType {
+		case "port":
+			counts.PortRules = row.Total
+		case "ip":
+			counts.IPRules = row.Total
+		case "region":
+			counts.RegionRules = row.Total
+		case "auto_block":
+			counts.AutoBlockRules = row.Total
+		}
+	}
+	return s.db.Model(&models.FirewallPortForward{}).Count(&counts.PortForwards).Error
+}
+
+func normalizeStoredRule(rule *models.IptablesRule) {
+	if rule.RuleType == "" {
+		rule.RuleType = "port"
+	}
+	if rule.Location == "" {
+		rule.Location = describeIPLocation(rule.IPs)
+	}
+}
+
+func describeIPLocation(raw string) string {
+	values := splitValues(raw)
+	if len(values) != 1 {
+		if len(values) > 1 {
+			return "多个地址"
+		}
+		return "全部 IPv4"
+	}
+	value := values[0]
+	if value == "0.0.0.0/0" {
+		return "全部 IPv4"
+	}
+	host := strings.SplitN(value, "/", 2)[0]
+	ip := net.ParseIP(host)
+	switch {
+	case ip == nil:
+		return "未知"
+	case ip.IsLoopback():
+		return "本机"
+	case ip.IsPrivate():
+		return "内网"
+	default:
+		return "公网地址"
+	}
+}
+
+func uniqueIDs(ids []int64) []int64 {
+	seen := make(map[int64]struct{}, len(ids))
+	result := make([]int64, 0, len(ids))
+	for _, id := range ids {
+		if id < 1 {
+			continue
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		result = append(result, id)
+	}
+	return result
 }

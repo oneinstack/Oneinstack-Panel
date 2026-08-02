@@ -43,6 +43,10 @@ type WebsiteDeleteParam struct {
 	ConfirmName string `json:"confirmName"`
 }
 
+type WebsiteStatusParam struct {
+	Enabled bool `json:"enabled"`
+}
+
 type DeleteWebsiteBackupParam struct {
 	ConfirmName string `json:"confirmName"`
 }

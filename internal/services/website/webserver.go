@@ -174,12 +174,15 @@ func NewDefaultWebServerConfigManager() (*WebServerConfigManager, error) {
 			server.Name,
 		)
 	}
-	backupRoot := filepath.Join(app.GetBasePath(), "backups", "web-server-config")
+	return newWebServerConfigManager(server), nil
+}
+
+func newWebServerConfigManager(server WebServerInfo) *WebServerConfigManager {
 	return &WebServerConfigManager{
 		Server:     server,
 		Runner:     OSCommandRunner{},
-		BackupRoot: backupRoot,
-	}, nil
+		BackupRoot: filepath.Join(app.GetBasePath(), "backups", "web-server-config"),
+	}
 }
 
 func (manager *WebServerConfigManager) List() ([]WebServerConfigFile, error) {

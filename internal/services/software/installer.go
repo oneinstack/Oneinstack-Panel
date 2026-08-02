@@ -218,6 +218,7 @@ func (installer *Installer) getInstallScript(ctx context.Context, params *input.
 	var componentName string
 	var legacyScriptName string
 	var catalogManaged bool
+	var catalogChannel string
 	if app.DB() != nil {
 		var catalogRow models.Software
 		if err := app.DB().
@@ -225,6 +226,7 @@ func (installer *Installer) getInstallScript(ctx context.Context, params *input.
 			First(&catalogRow).Error; err == nil {
 			componentName = strings.ToLower(strings.TrimSpace(catalogRow.Component))
 			catalogManaged = catalogRow.CatalogManaged
+			catalogChannel = strings.ToLower(strings.TrimSpace(catalogRow.CatalogChannel))
 		}
 	}
 
@@ -298,7 +300,12 @@ func (installer *Installer) getInstallScript(ctx context.Context, params *input.
 
 	registry, registryErr := scriptregistry.New(app.ONE_CONFIG.ScriptCenter)
 	if registryErr == nil {
-		componentPackage, resolveErr := registry.Resolve(ctx, componentName, params.Version)
+		componentPackage, resolveErr := registry.ResolveChannel(
+			ctx,
+			componentName,
+			params.Version,
+			catalogChannel,
+		)
 		if resolveErr == nil {
 			if actionName == "upgrade" && componentPackage.Manifest.Actions.Upgrade == "" {
 				actionName = "install"
@@ -314,9 +321,9 @@ func (installer *Installer) getInstallScript(ctx context.Context, params *input.
 	// catalog version, leaving every subsequent lifecycle action unresolvable.
 	if catalogManaged {
 		return nil, fmt.Errorf(
-			"resolve Center-managed %s %s installer: %w",
+			"resolve %s %s package: %w",
 			componentName,
-			params.Version,
+			actionName,
 			registryErr,
 		)
 	}

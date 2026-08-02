@@ -111,6 +111,15 @@ func getTaskManager() (*softwaretask.Manager, error) {
 						return fmt.Errorf("register managed local MySQL connection: %w", err)
 					}
 				}
+				if params.Key == "redis" {
+					if err := storageService.EnsureManagedLocalRedisConnection(
+						params.Port,
+						"default",
+						params.Pwd,
+					); err != nil {
+						return fmt.Errorf("register managed local Redis connection: %w", err)
+					}
+				}
 				return nil
 			},
 		)
@@ -153,13 +162,23 @@ func SubmitInstallationTask(
 		req.Port = "3306"
 		req.Username = "root"
 		if strings.TrimSpace(req.Pwd) == "" {
-			var installed int64
-			if err := app.DB().Model(&models.Software{}).
-				Where("`key` = ? AND installed = ?", "db", true).
-				Count(&installed).Error; err != nil {
-				return nil, fmt.Errorf("check current MySQL installation: %w", err)
+			username, password, found, err := storageService.ManagedLocalMySQLCredential(req.Port)
+			if err != nil {
+				return nil, err
 			}
-			if installed == 0 {
+			if found {
+				req.Username = username
+				req.Pwd = password
+			} else {
+				var installed int64
+				if err := app.DB().Model(&models.Software{}).
+					Where("`key` = ? AND installed = ?", "db", true).
+					Count(&installed).Error; err != nil {
+					return nil, fmt.Errorf("check current MySQL installation: %w", err)
+				}
+				if installed > 0 {
+					return nil, fmt.Errorf("MySQL is installed but its managed root credential is unavailable")
+				}
 				password, err := utils.GenerateSecurePassword(24)
 				if err != nil {
 					return nil, err

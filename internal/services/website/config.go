@@ -43,20 +43,28 @@ func resolveNginxBinary() (string, error) {
 }
 
 type siteTemplateData struct {
-	Name          string
-	ListenPort    int
-	ServerNames   string
-	RootDir       string
-	ProxyURL      string
-	ProxyHost     string
-	Remark        string
-	LogDir        string
-	LogName       string
-	ChallengeRoot string
-	TLSEnabled    bool
-	ForceHTTPS    bool
-	CertPath      string
-	KeyPath       string
+	Name              string
+	ListenPort        int
+	ServerNames       string
+	RootDir           string
+	ProxyURL          string
+	ProxyHost         string
+	Remark            string
+	LogDir            string
+	LogName           string
+	ChallengeRoot     string
+	TLSEnabled        bool
+	ForceHTTPS        bool
+	CertPath          string
+	KeyPath           string
+	DefaultDocuments  string
+	AutoIndex         string
+	PHPBackend        string
+	RewriteDirectives string
+	ServerDirectives  string
+	ExtraLocations    string
+	AccessLogEnabled  bool
+	ErrorLogEnabled   bool
 }
 
 var siteTemplates = template.Must(template.New("nginx-sites").Parse(`
@@ -64,6 +72,7 @@ var siteTemplates = template.Must(template.New("nginx-sites").Parse(`
     location ^~ /.well-known/acme-challenge/ {
         root {{.ChallengeRoot}};
         default_type text/plain;
+        allow all;
         try_files $uri =404;
     }
 {{end}}
@@ -80,16 +89,30 @@ var siteTemplates = template.Must(template.New("nginx-sites").Parse(`
 {{end}}
 {{define "logs"}}
     # {{.Remark}}
+{{if .AccessLogEnabled}}
     access_log {{.LogDir}}/{{.LogName}}_access.log;
+{{else}}
+    access_log off;
+{{end}}
+{{if .ErrorLogEnabled}}
     error_log {{.LogDir}}/{{.LogName}}_error.log;
+{{else}}
+    error_log /dev/null crit;
+{{end}}
 {{end}}
 {{define "php-content"}}
     root {{.RootDir}};
-    index index.php index.html index.htm;
+    index {{.DefaultDocuments}};
+    autoindex {{.AutoIndex}};
+
+    location / {
+        try_files $uri $uri/ =404;
+{{.RewriteDirectives}}
+    }
 
     location ~ \.php$ {
         try_files $uri =404;
-        fastcgi_pass unix:/dev/shm/php-cgi.sock;
+        fastcgi_pass {{.PHPBackend}};
         fastcgi_index index.php;
         include fastcgi_params;
         fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
@@ -108,10 +131,12 @@ var siteTemplates = template.Must(template.New("nginx-sites").Parse(`
 {{end}}
 {{define "static-content"}}
     root {{.RootDir}};
-    index index.html index.htm;
+    index {{.DefaultDocuments}};
+    autoindex {{.AutoIndex}};
 
     location / {
         try_files $uri $uri/ =404;
+{{.RewriteDirectives}}
     }
 {{end}}
 {{define "php"}}# Managed by OneinStack Panel - {{.Name}}
@@ -125,6 +150,8 @@ server {
     }
 {{else}}
 {{template "php-content" .}}
+{{.ServerDirectives}}
+{{.ExtraLocations}}
 {{end}}
 {{template "logs" .}}
 }
@@ -135,6 +162,8 @@ server {
 {{template "tls" .}}
 {{template "challenge" .}}
 {{template "php-content" .}}
+{{.ServerDirectives}}
+{{.ExtraLocations}}
 {{template "logs" .}}
 }
 {{end}}
@@ -150,6 +179,8 @@ server {
     }
 {{else}}
 {{template "proxy-content" .}}
+{{.ServerDirectives}}
+{{.ExtraLocations}}
 {{end}}
 {{template "logs" .}}
 }
@@ -160,6 +191,8 @@ server {
 {{template "tls" .}}
 {{template "challenge" .}}
 {{template "proxy-content" .}}
+{{.ServerDirectives}}
+{{.ExtraLocations}}
 {{template "logs" .}}
 }
 {{end}}
@@ -175,6 +208,8 @@ server {
     }
 {{else}}
 {{template "static-content" .}}
+{{.ServerDirectives}}
+{{.ExtraLocations}}
 {{end}}
 {{template "logs" .}}
 }
@@ -185,6 +220,8 @@ server {
 {{template "tls" .}}
 {{template "challenge" .}}
 {{template "static-content" .}}
+{{.ServerDirectives}}
+{{.ExtraLocations}}
 {{template "logs" .}}
 }
 {{end}}
@@ -202,6 +239,7 @@ type preparedWebsite struct {
 	model      models.Website
 	config     string
 	configName string
+	listenPort int
 }
 
 func prepareWebsite(input *models.Website, webRoot, logRoot string) (*preparedWebsite, error) {
@@ -212,6 +250,17 @@ func prepareWebsiteWithTLS(
 	input *models.Website,
 	webRoot, logRoot, challengeRoot string,
 	tlsOptions TLSOptions,
+) (*preparedWebsite, error) {
+	return prepareWebsiteWithTLSAndSettings(
+		input, webRoot, logRoot, challengeRoot, tlsOptions, nil,
+	)
+}
+
+func prepareWebsiteWithTLSAndSettings(
+	input *models.Website,
+	webRoot, logRoot, challengeRoot string,
+	tlsOptions TLSOptions,
+	settings *models.WebsiteSetting,
 ) (*preparedWebsite, error) {
 	if input == nil {
 		return nil, errors.New("website parameters are required")
@@ -292,21 +341,36 @@ func prepareWebsiteWithTLS(
 		}
 	}
 
+	runtimeSettings, err := renderWebsiteSettings(input, rootDir, settings)
+	if err != nil {
+		return nil, err
+	}
+	if runtimeSettings.RootDir != "" {
+		rootDir = runtimeSettings.RootDir
+	}
 	data := siteTemplateData{
-		Name:          name,
-		ListenPort:    port,
-		ServerNames:   strings.Join(domains, " "),
-		RootDir:       rootDir,
-		ProxyURL:      proxyURL,
-		ProxyHost:     proxyHost,
-		Remark:        remark,
-		LogDir:        strings.TrimSuffix(logRoot, string(filepath.Separator)),
-		LogName:       logName,
-		ChallengeRoot: strings.TrimSuffix(challengeRoot, string(filepath.Separator)),
-		TLSEnabled:    tlsOptions.Enabled,
-		ForceHTTPS:    tlsOptions.ForceHTTPS,
-		CertPath:      certPath,
-		KeyPath:       keyPath,
+		Name:              name,
+		ListenPort:        port,
+		ServerNames:       strings.Join(domains, " "),
+		RootDir:           rootDir,
+		ProxyURL:          proxyURL,
+		ProxyHost:         proxyHost,
+		Remark:            remark,
+		LogDir:            strings.TrimSuffix(logRoot, string(filepath.Separator)),
+		LogName:           logName,
+		ChallengeRoot:     strings.TrimSuffix(challengeRoot, string(filepath.Separator)),
+		TLSEnabled:        tlsOptions.Enabled,
+		ForceHTTPS:        tlsOptions.ForceHTTPS,
+		CertPath:          certPath,
+		KeyPath:           keyPath,
+		DefaultDocuments:  runtimeSettings.DefaultDocuments,
+		AutoIndex:         runtimeSettings.AutoIndex,
+		PHPBackend:        runtimeSettings.PHPBackend,
+		RewriteDirectives: runtimeSettings.RewriteDirectives,
+		ServerDirectives:  runtimeSettings.ServerDirectives,
+		ExtraLocations:    runtimeSettings.ExtraLocations,
+		AccessLogEnabled:  runtimeSettings.AccessLogEnabled,
+		ErrorLogEnabled:   runtimeSettings.ErrorLogEnabled,
 	}
 	var rendered bytes.Buffer
 	if err := siteTemplates.ExecuteTemplate(&rendered, siteType, data); err != nil {
@@ -327,6 +391,7 @@ func prepareWebsiteWithTLS(
 		model:      result,
 		config:     strings.TrimSpace(rendered.String()) + "\n",
 		configName: configName,
+		listenPort: port,
 	}, nil
 }
 

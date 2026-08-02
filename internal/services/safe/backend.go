@@ -109,10 +109,12 @@ func ufwRuleOperations(rule *models.IptablesRule) []commandOperation {
 			} else {
 				args = append(args, "to", ufwAddress(ip))
 			}
-			if rule.Protocol != "icmp" && port != "" {
+			if rule.Protocol != "icmp" && rule.Protocol != "all" && port != "" {
 				args = append(args, "port", strings.ReplaceAll(port, "-", ":"))
 			}
-			args = append(args, "proto", rule.Protocol)
+			if rule.Protocol != "all" {
+				args = append(args, "proto", rule.Protocol)
+			}
 			addArgs := append([]string{}, args...)
 			if rule.Token != "" {
 				addArgs = append(addArgs, "comment", "oneinstack:"+rule.Token)
@@ -162,7 +164,9 @@ func firewalldRichRule(rule *models.IptablesRule, ip, port string) string {
 		}
 		parts = append(parts, fmt.Sprintf(`%s address="%s"`, kind, ip))
 	}
-	if rule.Protocol == "icmp" {
+	if rule.Protocol == "all" {
+		// A rich rule without a protocol or port clause matches every protocol.
+	} else if rule.Protocol == "icmp" {
 		parts = append(parts, `protocol value="icmp"`)
 	} else if port == "" {
 		parts = append(parts, fmt.Sprintf(`protocol value="%s"`, rule.Protocol))
@@ -182,8 +186,12 @@ func firewalldDirectOperations(rule *models.IptablesRule, command string, perman
 	result := make([]commandOperation, 0, len(ips)*max(1, len(ports)))
 	for _, ip := range ips {
 		for _, port := range ports {
-			base := []string{"--direct", "--add-rule", "ipv4", "filter", "OUTPUT", "0", "-p", rule.Protocol, "-d", ip}
-			if rule.Protocol != "icmp" && port != "" {
+			base := []string{"--direct", "--add-rule", "ipv4", "filter", "OUTPUT", "0"}
+			if rule.Protocol != "all" {
+				base = append(base, "-p", rule.Protocol)
+			}
+			base = append(base, "-d", ip)
+			if rule.Protocol != "icmp" && rule.Protocol != "all" && port != "" {
 				base = append(base, "--dport", strings.ReplaceAll(port, "-", ":"))
 			}
 			if rule.Token != "" {
@@ -220,8 +228,12 @@ func iptablesRuleOperations(rule *models.IptablesRule) []commandOperation {
 				chain = "OUTPUT"
 				addressFlag = "-d"
 			}
-			args := []string{"-A", chain, "-p", rule.Protocol, addressFlag, ip}
-			if rule.Protocol != "icmp" && port != "" {
+			args := []string{"-A", chain}
+			if rule.Protocol != "all" {
+				args = append(args, "-p", rule.Protocol)
+			}
+			args = append(args, addressFlag, ip)
+			if rule.Protocol != "icmp" && rule.Protocol != "all" && port != "" {
 				args = append(args, "--dport", strings.ReplaceAll(port, "-", ":"))
 			}
 			if rule.Token != "" {

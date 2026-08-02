@@ -39,6 +39,13 @@ dist
 /coverage.out
 /coverage.html
 
+# Source archives downloaded during software-store compatibility audits are
+# operator upload artifacts and exceed normal GitHub repository limits. Keep
+# their checksums and instructions versioned, but never commit the archives.
+/artifacts/software-source-packages/**/*.tar.gz
+/artifacts/software-source-packages/**/*.tgz
+/artifacts/software-source-packages/**/*.zip
+
 /docker/secrets/*
 !/docker/secrets/README.md
 

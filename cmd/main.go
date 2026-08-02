@@ -16,8 +16,10 @@ import (
 	runtimelog "oneinstack/internal/services/log"
 	"oneinstack/internal/services/monitoring"
 	"oneinstack/internal/services/panelupdate"
+	safeservice "oneinstack/internal/services/safe"
 	"oneinstack/internal/services/software"
 	"oneinstack/internal/services/softwaretask"
+	storageService "oneinstack/internal/services/storage"
 	systemservice "oneinstack/internal/services/system"
 	websiteService "oneinstack/internal/services/website"
 	"oneinstack/internal/services/websitetask"
@@ -279,6 +281,12 @@ func startServer() error {
 		runtimelog.ClearRuntimeDefault(runtimeLogManager)
 	}()
 
+	for _, storageType := range []string{"mysql", "redis"} {
+		if _, reconcileErr := storageService.List(storageType); reconcileErr != nil {
+			log.Printf("reconcile managed local %s connection: %v", storageType, reconcileErr)
+		}
+	}
+
 	auditKey, err := utils.DeriveCredentialSubkey("audit-log-hmac-v1")
 	if err != nil {
 		return fmt.Errorf("derive audit signing key: %w", err)
@@ -439,6 +447,22 @@ func startServer() error {
 			}
 		}()
 	}
+	websiteLifecycleManager, err := websiteService.NewDefaultLifecycleManager(time.Minute)
+	if err != nil {
+		if !errors.Is(err, websiteService.ErrNginxUnavailable) {
+			return fmt.Errorf("initialize website lifecycle manager: %w", err)
+		}
+		log.Printf("website lifecycle service disabled until Nginx is installed: %v", err)
+	} else {
+		websiteLifecycleManager.Start()
+		defer func() {
+			stopContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if stopErr := websiteLifecycleManager.Stop(stopContext); stopErr != nil {
+				log.Printf("stop website lifecycle manager: %v", stopErr)
+			}
+		}()
+	}
 
 	certificateManager, err := websiteHandler.DefaultCertificateManager()
 	if err != nil {
@@ -487,6 +511,7 @@ func startServer() error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	go safeservice.RunMaintenance(ctx)
 
 	httpAddress, _ := panelServer.NetworkAddress(networkConfig.BindAddress, networkConfig.HTTPPort)
 	log.Printf("OneinStack Panel HTTP listening on %s", httpAddress)

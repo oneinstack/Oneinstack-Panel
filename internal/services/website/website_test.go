@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"oneinstack/internal/models"
+	safeservice "oneinstack/internal/services/safe"
 
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
@@ -24,6 +25,30 @@ type fakeNginxRunner struct {
 	mu      sync.Mutex
 	results []runnerResult
 	calls   [][]string
+}
+
+type fakeWebsiteFirewallRunner struct {
+	commands []string
+}
+
+func (runner *fakeWebsiteFirewallRunner) LookPath(name string) (string, error) {
+	if name == "ufw" {
+		return "/usr/sbin/ufw", nil
+	}
+	return "", errors.New("not found")
+}
+
+func (runner *fakeWebsiteFirewallRunner) Run(
+	_ context.Context,
+	name string,
+	args ...string,
+) ([]byte, error) {
+	call := name + " " + strings.Join(args, " ")
+	runner.commands = append(runner.commands, call)
+	if call == "ufw status" {
+		return []byte("Status: active"), nil
+	}
+	return nil, nil
 }
 
 func (runner *fakeNginxRunner) Run(
@@ -233,6 +258,14 @@ func TestWebsiteServiceLifecyclePreservesWebsiteFiles(t *testing.T) {
 		t.Fatalf("site config was not published: %v", err)
 	}
 	sentinel := filepath.Join(site.RootDir, "index.html")
+	defaultPage, err := os.ReadFile(sentinel)
+	if err != nil {
+		t.Fatalf("default website page was not created: %v", err)
+	}
+	if !strings.Contains(string(defaultPage), "OneinStack") ||
+		!strings.Contains(string(defaultPage), "example.com") {
+		t.Fatalf("unexpected default website page: %s", defaultPage)
+	}
 	if err := os.WriteFile(sentinel, []byte("keep me"), 0640); err != nil {
 		t.Fatal(err)
 	}
@@ -264,14 +297,61 @@ func TestWebsiteServiceLifecyclePreservesWebsiteFiles(t *testing.T) {
 	}
 }
 
+func TestWebsiteServiceCreatesDefaultPageAndOpensCustomPort(t *testing.T) {
+	db := openWebsiteTestDB(t)
+	if err := db.AutoMigrate(&models.IptablesRule{}); err != nil {
+		t.Fatal(err)
+	}
+	webRoot := filepath.Join(t.TempDir(), "www")
+	firewallRunner := &fakeWebsiteFirewallRunner{}
+	service := &Service{
+		DB: db, WebRoot: webRoot, LogRoot: filepath.Join(t.TempDir(), "logs"),
+		Publisher: &Publisher{
+			ConfigDir: t.TempDir(), NginxBinary: "nginx", Runner: &fakeNginxRunner{},
+		},
+		Firewall: safeservice.NewService(db, firewallRunner, 8089),
+	}
+	site := &models.Website{
+		Domain: "custom.example.com:8181", Type: "static", RootDir: "/custom",
+	}
+	if err := service.Add(context.Background(), site); err != nil {
+		t.Fatal(err)
+	}
+	page, err := os.ReadFile(filepath.Join(site.RootDir, "index.html"))
+	if err != nil || !strings.Contains(string(page), "网站已经准备就绪") {
+		t.Fatalf("default page missing: %v %q", err, page)
+	}
+	var rule models.IptablesRule
+	if err := db.Where("ports = ?", "8181").First(&rule).Error; err != nil {
+		t.Fatal(err)
+	}
+	if rule.Remark != "custom.example.com" || rule.State != 1 || rule.Protocol != "tcp" {
+		t.Fatalf("unexpected website firewall rule: %#v", rule)
+	}
+	foundCommand := false
+	for _, command := range firewallRunner.commands {
+		if strings.Contains(command, "port 8181") {
+			foundCommand = true
+			break
+		}
+	}
+	if !foundCommand {
+		t.Fatalf("website port was not applied to UFW: %#v", firewallRunner.commands)
+	}
+}
+
 func TestWebsiteServiceRollsBackDatabaseAndNewDirectoryOnConfigFailure(t *testing.T) {
 	db := openWebsiteTestDB(t)
+	if err := db.AutoMigrate(&models.IptablesRule{}); err != nil {
+		t.Fatal(err)
+	}
 	webRoot := filepath.Join(t.TempDir(), "www")
 	runner := &fakeNginxRunner{results: []runnerResult{
 		{output: "nginx validation failed", err: errors.New("exit 1")},
 		{},
 		{},
 	}}
+	firewallRunner := &fakeWebsiteFirewallRunner{}
 	service := &Service{
 		DB:      db,
 		WebRoot: webRoot,
@@ -281,6 +361,7 @@ func TestWebsiteServiceRollsBackDatabaseAndNewDirectoryOnConfigFailure(t *testin
 			NginxBinary: "nginx",
 			Runner:      runner,
 		},
+		Firewall: safeservice.NewService(db, firewallRunner, 8089),
 	}
 	site := &models.Website{
 		Domain:  "broken.example.com",
@@ -297,8 +378,24 @@ func TestWebsiteServiceRollsBackDatabaseAndNewDirectoryOnConfigFailure(t *testin
 	if count != 0 {
 		t.Fatalf("rolled-back website rows = %d, want 0", count)
 	}
+	if err := db.Model(&models.IptablesRule{}).Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("rolled-back firewall rules = %d, want 0", count)
+	}
 	if _, err := os.Stat(filepath.Join(webRoot, "broken.example.com")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("new empty root was not compensated: %v", err)
+	}
+	removedPort := false
+	for _, command := range firewallRunner.commands {
+		if strings.Contains(command, "delete allow") && strings.Contains(command, "port 80") {
+			removedPort = true
+			break
+		}
+	}
+	if !removedPort {
+		t.Fatalf("website firewall rule was not compensated: %#v", firewallRunner.commands)
 	}
 }
 
@@ -380,6 +477,9 @@ func TestWebsiteDeleteRejectsStoredSymlinkRoot(t *testing.T) {
 	if err := os.MkdirAll(outside, 0750); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Remove(filepath.Join(site.RootDir, "index.html")); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.Remove(site.RootDir); err != nil {
 		t.Fatal(err)
 	}
@@ -403,6 +503,9 @@ func openWebsiteTestDB(t *testing.T) *gorm.DB {
 	}
 	if err := db.AutoMigrate(
 		&models.Website{},
+		&models.WebsiteSetting{},
+		&models.WebsiteTrafficDaily{},
+		&models.WebsiteTrafficCursor{},
 		&models.Certificate{},
 		&models.CertificateTask{},
 		&models.CertificateOperationLock{},

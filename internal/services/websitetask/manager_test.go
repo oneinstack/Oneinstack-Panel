@@ -110,6 +110,17 @@ func TestWebsiteBackupRestoreDeleteLifecycle(t *testing.T) {
 	if err := siteService.Add(context.Background(), site); err != nil {
 		t.Fatal(err)
 	}
+	backedUpSettings := website.WebsiteSettings{
+		DirectoryListing: true,
+		DefaultDocuments: "home.html index.html",
+		SecurityHeaders:  true,
+		PHPBackend:       "unix:/dev/shm/php-cgi.sock",
+		AccessLogEnabled: true,
+		ErrorLogEnabled:  true,
+	}
+	if _, err := siteService.UpdateSettings(context.Background(), site.ID, backedUpSettings); err != nil {
+		t.Fatal(err)
+	}
 	indexPath := filepath.Join(site.RootDir, "index.html")
 	if err := os.WriteFile(indexPath, []byte("version-one"), 0640); err != nil {
 		t.Fatal(err)
@@ -166,6 +177,12 @@ func TestWebsiteBackupRestoreDeleteLifecycle(t *testing.T) {
 	if err := os.WriteFile(indexPath, []byte("version-two"), 0640); err != nil {
 		t.Fatal(err)
 	}
+	changedSettings := backedUpSettings
+	changedSettings.DirectoryListing = false
+	changedSettings.DefaultDocuments = "changed.html"
+	if _, err := siteService.UpdateSettings(context.Background(), site.ID, changedSettings); err != nil {
+		t.Fatal(err)
+	}
 	databaseOperator.backupValue = []byte("database-before-restore")
 	restoreTask, err := manager.SubmitRestore(backup.ID, site.Name, 1)
 	if err != nil {
@@ -185,6 +202,14 @@ func TestWebsiteBackupRestoreDeleteLifecycle(t *testing.T) {
 	databaseOperator.mu.Unlock()
 	if restoredDatabase != "database-version-one" {
 		t.Fatalf("database restore value = %q", restoredDatabase)
+	}
+	restoredSettings, err := siteService.GetSettings(site.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !restoredSettings.Settings.DirectoryListing ||
+		restoredSettings.Settings.DefaultDocuments != backedUpSettings.DefaultDocuments {
+		t.Fatalf("website settings were not restored: %#v", restoredSettings.Settings)
 	}
 
 	databaseOperator.backupValue = []byte("database-before-delete")
@@ -223,6 +248,14 @@ func TestWebsiteBackupRestoreDeleteLifecycle(t *testing.T) {
 	value, err = os.ReadFile(indexPath)
 	if err != nil || string(value) != "version-one" {
 		t.Fatalf("deleted website was not recovered: %q, %v", value, err)
+	}
+	recoveredSettings, err := siteService.GetSettings(site.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !recoveredSettings.Settings.DirectoryListing ||
+		recoveredSettings.Settings.DefaultDocuments != backedUpSettings.DefaultDocuments {
+		t.Fatalf("deleted website settings were not recovered: %#v", recoveredSettings.Settings)
 	}
 }
 
@@ -548,6 +581,9 @@ func openWebsiteTaskTestDB(t *testing.T) *gorm.DB {
 	}
 	if err := db.AutoMigrate(
 		&models.Website{},
+		&models.WebsiteSetting{},
+		&models.WebsiteTrafficDaily{},
+		&models.WebsiteTrafficCursor{},
 		&models.Storage{},
 		&models.Library{},
 		&models.DatabaseTask{},

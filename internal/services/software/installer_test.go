@@ -72,6 +72,7 @@ func TestCenterManagedInstallDoesNotFallBackToLegacyScript(t *testing.T) {
 		Name:           "Nginx",
 		Version:        "1.31.0",
 		Component:      "nginx",
+		CatalogChannel: "stable",
 		CatalogManaged: true,
 		CatalogVisible: true,
 		Installable:    true,

@@ -279,6 +279,7 @@ func (m *Manager) apply(document Document) error {
 					"params":           string(parameters),
 					"resource":         "center",
 					"catalog_managed":  true,
+					"catalog_channel":  version.Channel,
 					"catalog_visible":  product.Visible && version.Enabled,
 					"installable":      product.Installable && version.Enabled,
 					"recommended":      version.Recommended,
