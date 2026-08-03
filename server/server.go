@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"oneinstack/app"
+	bastionservice "oneinstack/internal/services/bastion"
 	"oneinstack/internal/services/software"
 	"oneinstack/internal/services/user"
 )
@@ -16,6 +17,39 @@ func Start() {
 	initializeDefaultUser()
 
 	go software.StartCatalogSync()
+
+	// 初始化堡垒机模块（可选安装项）
+	initializeBastion()
+}
+
+// initializeBastion 根据配置初始化堡垒机管理器
+func initializeBastion() {
+	cfg := app.ONE_CONFIG.Bastion
+	if !cfg.Enabled {
+		return
+	}
+	db := app.DB()
+	if db == nil {
+		log.Printf("堡垒机: 数据库未初始化，跳过")
+		return
+	}
+	collector := bastionservice.NewSSHCollector(cfg.CollectTimeoutSeconds)
+	manager, err := bastionservice.NewManager(
+		db,
+		collector,
+		cfg.CollectTimeoutSeconds,
+		cfg.MaxConcurrentCollects,
+		cfg.RetentionDays,
+		cfg.CollectSchedule,
+		cfg.CleanupSchedule,
+	)
+	if err != nil {
+		log.Printf("堡垒机: 初始化失败: %v", err)
+		return
+	}
+	bastionservice.ConfigureDefault(manager)
+	manager.Start()
+	log.Printf("堡垒机: 模块已启用 (采集: %s, 保留: %d 天)", cfg.CollectSchedule, cfg.RetentionDays)
 }
 
 // initializeDefaultUser 初始化默认用户

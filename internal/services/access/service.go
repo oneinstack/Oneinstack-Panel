@@ -60,6 +60,8 @@ const (
 	PermissionTaskReadSelf     = "task.read.self"
 	PermissionTaskReadAll      = "task.read.all"
 	PermissionTaskCancelSelf   = "task.cancel.self"
+	PermissionBastionRead      = "bastion.read"
+	PermissionBastionWrite     = "bastion.write"
 )
 
 const (
@@ -158,6 +160,8 @@ func builtinPermissions() []models.Permission {
 		{Code: PermissionTaskReadSelf, Name: "本人任务查看", Module: "task"},
 		{Code: PermissionTaskReadAll, Name: "全部任务查看", Module: "task"},
 		{Code: PermissionTaskCancelSelf, Name: "本人任务取消", Module: "task"},
+		{Code: PermissionBastionRead, Name: "堡垒机读取", Module: "bastion"},
+		{Code: PermissionBastionWrite, Name: "堡垒机管理", Module: "bastion"},
 	}
 }
 
@@ -180,6 +184,7 @@ func builtinRoles() []struct {
 				PermissionDashboardRead,
 				PermissionRuntimeLogRead,
 				PermissionTaskReadSelf,
+				PermissionBastionRead,
 			},
 		},
 		{
@@ -268,6 +273,8 @@ func builtinRoles() []struct {
 				PermissionTaskReadSelf,
 				PermissionTaskReadAll,
 				PermissionTaskCancelSelf,
+				PermissionBastionRead,
+				PermissionBastionWrite,
 			},
 		},
 		{
@@ -286,6 +293,7 @@ func builtinRoles() []struct {
 				PermissionAuditExport,
 				PermissionAuditVerify,
 				PermissionApprovalRead,
+				PermissionBastionRead,
 			},
 		},
 		{

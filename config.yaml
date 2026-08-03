@@ -88,3 +88,10 @@ updateCenter:
     backupRetention: 5
     # keyId: Base64-encoded Ed25519 public key. Required before enabling updates.
     trustedKeys: {}
+bastion:
+  enabled: true
+  collectSchedule: "*/1 * * * *"
+  collectTimeoutSeconds: 15
+  maxConcurrentCollects: 5
+  retentionDays: 30
+  cleanupSchedule: "30 4 * * *"

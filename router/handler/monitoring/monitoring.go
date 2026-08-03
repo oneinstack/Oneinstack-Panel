@@ -105,6 +105,30 @@ func Metrics(c *gin.Context) {
 	writeResult(c, result, err)
 }
 
+func History(c *gin.Context) {
+	manager, ok := managerOrUnavailable(c)
+	if !ok {
+		return
+	}
+	from, err := optionalTime(c.Query("from"))
+	if err != nil {
+		writeBadRequest(c, err)
+		return
+	}
+	to, err := optionalTime(c.Query("to"))
+	if err != nil {
+		writeBadRequest(c, err)
+		return
+	}
+	from, to, err = resolveHistoryRange(from, to, time.Now().UTC())
+	if err != nil {
+		writeBadRequest(c, err)
+		return
+	}
+	result, err := manager.History(from, to)
+	writeResult(c, result, err)
+}
+
 func ListRules(c *gin.Context) {
 	manager, ok := managerOrUnavailable(c)
 	if !ok {
@@ -381,6 +405,28 @@ func optionalTime(value string) (time.Time, error) {
 		return time.Time{}, errors.New("时间必须使用 RFC3339 格式")
 	}
 	return parsed, nil
+}
+
+func resolveHistoryRange(from, to, now time.Time) (time.Time, time.Time, error) {
+	now = now.UTC().Truncate(time.Second)
+	from = from.UTC().Truncate(time.Second)
+	to = to.UTC().Truncate(time.Second)
+	switch {
+	case from.IsZero() && to.IsZero():
+		to = now
+		from = to.Add(-24 * time.Hour)
+	case from.IsZero():
+		from = to.Add(-24 * time.Hour)
+	case to.IsZero():
+		to = now
+	}
+	if to.Before(from) {
+		return time.Time{}, time.Time{}, errors.New("历史样本查询结束时间不能早于开始时间")
+	}
+	if to.Sub(from) > 31*24*time.Hour {
+		return time.Time{}, time.Time{}, errors.New("历史样本查询范围不能超过 31 天")
+	}
+	return from, to, nil
 }
 
 func writeResult(c *gin.Context, result interface{}, err error) {

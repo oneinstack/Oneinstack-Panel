@@ -88,7 +88,7 @@ func TestCenterManagedInstallDoesNotFallBackToLegacyScript(t *testing.T) {
 	if err == nil {
 		t.Fatal("Center-managed install unexpectedly used a legacy fallback")
 	}
-	if !strings.Contains(err.Error(), "resolve nginx install package") {
+	if !strings.Contains(err.Error(), "resolve Center-managed nginx 1.31.0 installer") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if strings.Contains(err.Error(), "legacy fallback") {

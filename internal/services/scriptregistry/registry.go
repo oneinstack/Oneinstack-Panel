@@ -154,6 +154,38 @@ func (r *Registry) ResolveInstalled(
 	)
 }
 
+// ResolveInstalledUninstall resolves the uninstall action for an installed
+// component. Uninstall must remain possible after a host upgrade or a Center
+// package is retired, so a previously verified local package may be reused
+// without re-evaluating its installation-time host compatibility.
+func (r *Registry) ResolveInstalledUninstall(
+	ctx context.Context,
+	component string,
+	softwareVersion string,
+) (Package, error) {
+	resolved, err := r.ResolveInstalled(ctx, component, softwareVersion, "uninstall")
+	if err == nil {
+		return resolved, nil
+	}
+
+	cached, cacheErr := r.resolveCachedInstalled(component, softwareVersion, []string{"uninstall"}, false)
+	if cacheErr == nil {
+		return cached, nil
+	}
+	bundled, bundledErr := r.resolveBundledInstalled(component, softwareVersion, []string{"uninstall"}, false)
+	if bundledErr == nil {
+		return bundled, nil
+	}
+	return Package{}, fmt.Errorf(
+		"no verified uninstall package for installed %s %s (lifecycle: %v; cache: %v; bundled: %v)",
+		component,
+		softwareVersion,
+		err,
+		cacheErr,
+		bundledErr,
+	)
+}
+
 // ResolveInstalledLocal resolves an already verified installed-component
 // package without contacting Center. It is intended for frequent local health
 // probes where a temporary Center outage must not make a running service look
@@ -185,7 +217,12 @@ func (r *Registry) resolveCachedInstalled(
 	component string,
 	softwareVersion string,
 	requiredActions []string,
+	compatibilityRequired ...bool,
 ) (Package, error) {
+	checkCompatibility := true
+	if len(compatibilityRequired) > 0 {
+		checkCompatibility = compatibilityRequired[0]
+	}
 	componentRoot := filepath.Join(r.config.CachePath, "components", component)
 	versions, err := os.ReadDir(componentRoot)
 	if err != nil {
@@ -210,7 +247,7 @@ func (r *Registry) resolveCachedInstalled(
 			if validateErr != nil ||
 				manifest.Component.ID != component ||
 				!manifest.supportsSoftwareVersion(softwareVersion) ||
-				!compatibleWithHost(manifest, r.host) ||
+				(checkCompatibility && !compatibleWithHost(manifest, r.host)) ||
 				!packageSupportsActions(manifest, requiredActions) {
 				continue
 			}
@@ -230,7 +267,12 @@ func (r *Registry) resolveBundledInstalled(
 	component string,
 	softwareVersion string,
 	requiredActions []string,
+	compatibilityRequired ...bool,
 ) (Package, error) {
+	checkCompatibility := true
+	if len(compatibilityRequired) > 0 {
+		checkCompatibility = compatibilityRequired[0]
+	}
 	componentRoot := filepath.Join(r.config.BundledPath, component)
 	entries, err := os.ReadDir(componentRoot)
 	if err != nil {
@@ -246,7 +288,7 @@ func (r *Registry) resolveBundledInstalled(
 		if validateErr != nil ||
 			manifest.Component.ID != component ||
 			!manifest.supportsSoftwareVersion(softwareVersion) ||
-			!compatibleWithHost(manifest, r.host) ||
+			(checkCompatibility && !compatibleWithHost(manifest, r.host)) ||
 			!packageSupportsActions(manifest, requiredActions) {
 			continue
 		}

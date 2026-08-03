@@ -23,6 +23,7 @@ const (
 	CredentialPurposeTOTPPending     = "security.totp.pending"
 	CredentialPurposeRecoveryCode    = "security.recovery-code"
 	CredentialPurposeNotification    = "monitor.notification-channel"
+	CredentialPurposeBastionPassword = "bastion.password"
 )
 
 var (

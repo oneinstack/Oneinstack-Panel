@@ -215,6 +215,10 @@ func createTables() error {
 	if err != nil {
 		return err
 	}
+	err = db.AutoMigrate(&models.OperationPreview{})
+	if err != nil {
+		return err
+	}
 	if err := db.AutoMigrate(&models.ApprovalRequest{}); err != nil {
 		return err
 	}
@@ -237,6 +241,9 @@ func createTables() error {
 		return err
 	}
 	if err := db.AutoMigrate(&models.FileFavorite{}); err != nil {
+		return err
+	}
+	if err := db.AutoMigrate(&models.BastionServer{}, &models.BastionMetricSample{}); err != nil {
 		return err
 	}
 	if err := accessservice.SeedBuiltin(db); err != nil {

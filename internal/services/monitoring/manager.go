@@ -27,6 +27,75 @@ const (
 	MetricDiskWrite  = "disk_write"
 )
 
+const monitorHistoryTargetPoints = 1440
+
+type HistoryPoint struct {
+	CapturedAt time.Time `json:"capturedAt"`
+	Value      float64   `json:"value"`
+}
+
+type HistorySeries struct {
+	Group  string         `json:"group"`
+	Key    string         `json:"key"`
+	Label  string         `json:"label"`
+	Unit   string         `json:"unit,omitempty"`
+	Points []HistoryPoint `json:"points"`
+}
+
+type HistoryRange struct {
+	From          time.Time `json:"from"`
+	To            time.Time `json:"to"`
+	BucketSeconds int64     `json:"bucketSeconds"`
+	SampleCount   int       `json:"sampleCount"`
+	BucketCount   int       `json:"bucketCount"`
+}
+
+type HistoryResponse struct {
+	Range  HistoryRange    `json:"range"`
+	Series []HistorySeries `json:"series"`
+}
+
+type historySeriesDefinition struct {
+	Group string
+	Key   string
+	Label string
+	Unit  string
+	Value func(*models.MetricSample) float64
+}
+
+var metricHistorySeriesDefinitions = []historySeriesDefinition{
+	{Group: "cpu", Key: "cpuPercent", Label: "CPU 使用率", Unit: "%", Value: func(sample *models.MetricSample) float64 {
+		return sample.CPUPercent
+	}},
+	{Group: "memory", Key: "memoryPercent", Label: "内存使用率", Unit: "%", Value: func(sample *models.MetricSample) float64 {
+		return sample.MemoryPercent
+	}},
+	{Group: "load", Key: "load1", Label: "1 分钟负载", Value: func(sample *models.MetricSample) float64 {
+		return sample.Load1
+	}},
+	{Group: "load", Key: "load5", Label: "5 分钟负载", Value: func(sample *models.MetricSample) float64 {
+		return sample.Load5
+	}},
+	{Group: "load", Key: "load15", Label: "15 分钟负载", Value: func(sample *models.MetricSample) float64 {
+		return sample.Load15
+	}},
+	{Group: "network", Key: "networkReceiveBps", Label: "网络接收", Unit: "B/s", Value: func(sample *models.MetricSample) float64 {
+		return sample.NetworkReceiveBPS
+	}},
+	{Group: "network", Key: "networkSendBps", Label: "网络发送", Unit: "B/s", Value: func(sample *models.MetricSample) float64 {
+		return sample.NetworkSendBPS
+	}},
+	{Group: "disk", Key: "diskPercent", Label: "磁盘使用率", Unit: "%", Value: func(sample *models.MetricSample) float64 {
+		return sample.DiskPercent
+	}},
+	{Group: "disk", Key: "diskReadBps", Label: "磁盘读取", Unit: "B/s", Value: func(sample *models.MetricSample) float64 {
+		return sample.DiskReadBPS
+	}},
+	{Group: "disk", Key: "diskWriteBps", Label: "磁盘写入", Unit: "B/s", Value: func(sample *models.MetricSample) float64 {
+		return sample.DiskWriteBPS
+	}},
+}
+
 type RuleInput struct {
 	Name               string  `json:"name"`
 	Metric             string  `json:"metric"`
@@ -546,6 +615,97 @@ func (manager *Manager) Metrics(from, to time.Time, limit int) ([]models.MetricS
 		samples[left], samples[right] = samples[right], samples[left]
 	}
 	return samples, err
+}
+
+func (manager *Manager) History(from, to time.Time) (*HistoryResponse, error) {
+	from = from.UTC().Truncate(time.Second)
+	to = to.UTC().Truncate(time.Second)
+	if from.IsZero() || to.IsZero() {
+		return nil, errors.New("history range is required")
+	}
+	if to.Before(from) {
+		return nil, errors.New("history range end must not be before start")
+	}
+	if to.Sub(from) > 31*24*time.Hour {
+		return nil, errors.New("history range must not exceed 31 days")
+	}
+
+	query := manager.db.Order("captured_at ASC").Order("id ASC")
+	query = query.Where("captured_at >= ?", from)
+	query = query.Where("captured_at <= ?", to)
+
+	var samples []models.MetricSample
+	if err := query.Find(&samples).Error; err != nil {
+		return nil, err
+	}
+
+	bucketSeconds := int64(math.Ceil(to.Sub(from).Seconds() / monitorHistoryTargetPoints))
+	if bucketSeconds < int64(time.Minute/time.Second) {
+		bucketSeconds = int64(time.Minute / time.Second)
+	}
+	bucketDuration := time.Duration(bucketSeconds) * time.Second
+	series := make([]HistorySeries, len(metricHistorySeriesDefinitions))
+	seriesByKey := make(map[string]*HistorySeries, len(metricHistorySeriesDefinitions))
+	for index, definition := range metricHistorySeriesDefinitions {
+		series[index] = HistorySeries{
+			Group: definition.Group,
+			Key:   definition.Key,
+			Label: definition.Label,
+			Unit:  definition.Unit,
+		}
+		seriesByKey[definition.Key] = &series[index]
+	}
+
+	type historyBucket struct {
+		start  time.Time
+		count  int
+		totals map[string]float64
+	}
+
+	buckets := make([]historyBucket, 0)
+	var current *historyBucket
+	var currentStart time.Time
+	for index := range samples {
+		sample := &samples[index]
+		bucketOffset := int64(sample.CapturedAt.Sub(from) / bucketDuration)
+		if bucketOffset < 0 {
+			bucketOffset = 0
+		}
+		startAt := from.Add(time.Duration(bucketOffset) * bucketDuration)
+		if current == nil || !startAt.Equal(currentStart) {
+			buckets = append(buckets, historyBucket{
+				start:  startAt,
+				totals: make(map[string]float64, len(metricHistorySeriesDefinitions)),
+			})
+			current = &buckets[len(buckets)-1]
+			currentStart = startAt
+		}
+		current.count++
+		for _, definition := range metricHistorySeriesDefinitions {
+			current.totals[definition.Key] += definition.Value(sample)
+		}
+	}
+
+	for _, bucket := range buckets {
+		for _, definition := range metricHistorySeriesDefinitions {
+			item := seriesByKey[definition.Key]
+			item.Points = append(item.Points, HistoryPoint{
+				CapturedAt: bucket.start,
+				Value:      bucket.totals[definition.Key] / float64(bucket.count),
+			})
+		}
+	}
+
+	return &HistoryResponse{
+		Range: HistoryRange{
+			From:          from,
+			To:            to,
+			BucketSeconds: bucketSeconds,
+			SampleCount:   len(samples),
+			BucketCount:   len(buckets),
+		},
+		Series: series,
+	}, nil
 }
 
 func (manager *Manager) Events(filter EventFilter) (*EventPage, error) {

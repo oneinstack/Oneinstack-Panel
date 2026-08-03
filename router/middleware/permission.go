@@ -120,11 +120,17 @@ var authorizationMenuRules = []menuVisibilityRule{
 		},
 	},
 	{
-		key: "systemAccess",
+		key: "terminal",
 		visible: func(has func(string) bool, access *accessservice.UserAccess) bool {
-			return has(accessservice.PermissionSystemRead) ||
-				has(accessservice.PermissionSystemWrite) ||
+			return app.ONE_CONFIG.System.TerminalEnabled &&
 				has(accessservice.PermissionTerminalAccess)
+		},
+	},
+	{
+		key: "bastion",
+		visible: func(has func(string) bool, access *accessservice.UserAccess) bool {
+			return app.ONE_CONFIG.Bastion.Enabled &&
+				(has(accessservice.PermissionBastionRead) || has(accessservice.PermissionBastionWrite))
 		},
 	},
 }
@@ -246,25 +252,29 @@ func BuildAuthorizationMatrix(access *accessservice.UserAccess) AuthorizationMat
 	for _, rule := range authorizationMenuRules {
 		menu[rule.key] = rule.visible(has, access)
 	}
+	actions := map[string]bool{
+		"website.delete":             has(accessservice.PermissionWebsiteWrite),
+		"website.restore":            has(accessservice.PermissionWebsiteWrite),
+		"database.restore":           has(accessservice.PermissionDatabaseWrite),
+		"database.connection.delete": has(accessservice.PermissionDatabaseWrite),
+		"audit.export":               has(accessservice.PermissionAuditExport),
+		"database.credential.reveal": has(accessservice.PermissionDatabaseWrite),
+		"certificate.issue":          has(accessservice.PermissionWebsiteWrite),
+		"file.create":                has(accessservice.PermissionFileCreate),
+		"file.edit":                  has(accessservice.PermissionFileEdit),
+		"file.move":                  has(accessservice.PermissionFileMove),
+		"file.delete":                has(accessservice.PermissionFileDelete),
+		"file.modify":                has(accessservice.PermissionFileModify),
+		"file.archive":               has(accessservice.PermissionFileArchive),
+		"file.share.create":          has(accessservice.PermissionFileShare),
+		"file.share.revoke":          has(accessservice.PermissionFileShare),
+	}
+	for operation, permission := range accessservice.OperationPermissions() {
+		actions[operation] = has(permission)
+	}
 	return AuthorizationMatrix{
-		Menu: menu,
-		Actions: map[string]bool{
-			"website.delete":             has(accessservice.PermissionWebsiteWrite),
-			"website.restore":            has(accessservice.PermissionWebsiteWrite),
-			"database.restore":           has(accessservice.PermissionDatabaseWrite),
-			"database.connection.delete": has(accessservice.PermissionDatabaseWrite),
-			"audit.export":               has(accessservice.PermissionAuditExport),
-			"database.credential.reveal": has(accessservice.PermissionDatabaseWrite),
-			"certificate.issue":          has(accessservice.PermissionWebsiteWrite),
-			"file.create":                has(accessservice.PermissionFileCreate),
-			"file.edit":                  has(accessservice.PermissionFileEdit),
-			"file.move":                  has(accessservice.PermissionFileMove),
-			"file.delete":                has(accessservice.PermissionFileDelete),
-			"file.modify":                has(accessservice.PermissionFileModify),
-			"file.archive":               has(accessservice.PermissionFileArchive),
-			"file.share.create":          has(accessservice.PermissionFileShare),
-			"file.share.revoke":          has(accessservice.PermissionFileShare),
-		},
+		Menu:    menu,
+		Actions: actions,
 		ApprovalPolicies: map[string]bool{
 			"website.delete":             true,
 			"website.restore":            true,

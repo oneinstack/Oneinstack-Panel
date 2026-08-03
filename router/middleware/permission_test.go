@@ -162,7 +162,8 @@ func TestBuildAuthorizationMatrixIncludesFullMenuForScopedRole(t *testing.T) {
 		"security",
 		"panelSettings",
 		"userManagement",
-		"systemAccess",
+		"terminal",
+		"bastion",
 	}
 	for _, key := range expectedHidden {
 		if matrix.Menu[key] {
@@ -178,7 +179,7 @@ func TestBuildAuthorizationMatrixGrantsAdminMenusToSuperAdmin(t *testing.T) {
 		IsSuperAdmin: true,
 	})
 
-	for _, key := range []string{"security", "panelSettings", "userManagement", "systemAccess"} {
+	for _, key := range []string{"security", "panelSettings", "userManagement"} {
 		if !matrix.Menu[key] {
 			t.Fatalf("menu %q should be visible for super admin", key)
 		}

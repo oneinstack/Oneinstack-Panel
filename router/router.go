@@ -11,11 +11,13 @@ import (
 
 	logservice "oneinstack/internal/services/log"
 	auditHandler "oneinstack/router/handler/audit"
+	bastionHandler "oneinstack/router/handler/bastion"
 	"oneinstack/router/handler/cron"
 	"oneinstack/router/handler/ftp"
 	"oneinstack/router/handler/health"
 	logHandler "oneinstack/router/handler/log"
 	monitoringHandler "oneinstack/router/handler/monitoring"
+	operationpreviewHandler "oneinstack/router/handler/operationpreview"
 	"oneinstack/router/handler/safe"
 	securityHandler "oneinstack/router/handler/security"
 	"oneinstack/router/handler/software"
@@ -94,6 +96,8 @@ func SetupRouter() *gin.Engine {
 	protected.Use(middleware.CSRFMiddleware())
 	protected.Use(middleware.RequirePasswordChange())
 	protected.POST("/logout", user.LogoutHandler)
+	protected.POST("/operations/preview", operationpreviewHandler.Preview)
+	protected.POST("/operations/:previewId/execute", operationpreviewHandler.Execute)
 	protected.GET("/auth/me", authzHandler.Me)
 	protected.GET("/access/matrix", authzHandler.Matrix)
 	protected.GET("/sessions", securityHandler.ListSessions)
@@ -382,6 +386,7 @@ func SetupRouter() *gin.Engine {
 		monitoringg.POST("/services/check", middleware.RequirePermission(accessservice.PermissionMonitoringWrite), monitoringHandler.CheckServiceHealth)
 		monitoringg.POST("/services/:component/silence", middleware.RequirePermission(accessservice.PermissionMonitoringWrite), monitoringHandler.SilenceServiceHealth)
 		monitoringg.GET("/metrics", middleware.RequirePermission(accessservice.PermissionMonitoringRead), monitoringHandler.Metrics)
+		monitoringg.GET("/history", middleware.RequirePermission(accessservice.PermissionMonitoringRead), monitoringHandler.History)
 		monitoringg.GET("/rules", middleware.RequirePermission(accessservice.PermissionMonitoringRead), monitoringHandler.ListRules)
 		monitoringg.POST("/rules", middleware.RequirePermission(accessservice.PermissionMonitoringWrite), monitoringHandler.CreateRule)
 		monitoringg.PUT("/rules/:id", middleware.RequirePermission(accessservice.PermissionMonitoringWrite), monitoringHandler.UpdateRule)
@@ -398,6 +403,19 @@ func SetupRouter() *gin.Engine {
 		monitoringg.POST("/channels/:id/update", middleware.RequirePermission(accessservice.PermissionMonitoringWrite), monitoringHandler.UpdateChannel)
 		monitoringg.POST("/channels/:id/delete", middleware.RequirePermission(accessservice.PermissionMonitoringWrite), monitoringHandler.DeleteChannel)
 		monitoringg.POST("/channels/:id/test", middleware.RequirePermission(accessservice.PermissionMonitoringWrite), monitoringHandler.TestChannel)
+	}
+
+	// 堡垒机管理
+	bastiong := protected.Group("/bastion")
+	{
+		bastiong.GET("/overview", middleware.RequirePermission(accessservice.PermissionBastionRead), bastionHandler.Overview)
+		bastiong.GET("/servers", middleware.RequirePermission(accessservice.PermissionBastionRead), bastionHandler.ListServers)
+		bastiong.GET("/servers/:id", middleware.RequirePermission(accessservice.PermissionBastionRead), bastionHandler.GetServer)
+		bastiong.POST("/servers", middleware.RequirePermission(accessservice.PermissionBastionWrite), bastionHandler.CreateServer)
+		bastiong.PUT("/servers/:id", middleware.RequirePermission(accessservice.PermissionBastionWrite), bastionHandler.UpdateServer)
+		bastiong.DELETE("/servers/:id", middleware.RequirePermission(accessservice.PermissionBastionWrite), bastionHandler.DeleteServer)
+		bastiong.POST("/servers/:id/test", middleware.RequirePermission(accessservice.PermissionBastionRead), bastionHandler.TestConnection)
+		bastiong.GET("/servers/:id/metrics", middleware.RequirePermission(accessservice.PermissionBastionRead), bastionHandler.GetMetrics)
 	}
 
 	return r

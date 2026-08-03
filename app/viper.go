@@ -102,6 +102,13 @@ system:
     terminalMaxPerUser: 1
     terminalUser: "one-terminal"
     terminalWorkingDirectory: "/var/lib/one-terminal"
+bastion:
+    enabled: false
+    collectSchedule: "*/1 * * * *"
+    collectTimeoutSeconds: 15
+    maxConcurrentCollects: 5
+    retentionDays: 30
+    cleanupSchedule: "30 4 * * *"
 `
 
 // LoadConfig reads the application configuration without panicking. When no
@@ -201,6 +208,12 @@ func LoadConfig(path ...string) (*viper.Viper, error) {
 	v.SetDefault("updateCenter.maxExpandedBytes", int64(512<<20))
 	v.SetDefault("updateCenter.healthTimeoutSeconds", 60)
 	v.SetDefault("updateCenter.backupRetention", 5)
+	v.SetDefault("bastion.enabled", false)
+	v.SetDefault("bastion.collectSchedule", "*/1 * * * *")
+	v.SetDefault("bastion.collectTimeoutSeconds", 15)
+	v.SetDefault("bastion.maxConcurrentCollects", 5)
+	v.SetDefault("bastion.retentionDays", 30)
+	v.SetDefault("bastion.cleanupSchedule", "30 4 * * *")
 	for key, environmentName := range map[string]string{
 		"system.port":                             "ONEINSTACK_SYSTEM_PORT",
 		"system.bindAddress":                      "ONEINSTACK_SYSTEM_BIND_ADDRESS",
@@ -273,6 +286,12 @@ func LoadConfig(path ...string) (*viper.Viper, error) {
 		"updateCenter.maxExpandedBytes":           "ONEINSTACK_UPDATE_CENTER_MAX_EXPANDED_BYTES",
 		"updateCenter.healthTimeoutSeconds":       "ONEINSTACK_UPDATE_CENTER_HEALTH_TIMEOUT_SECONDS",
 		"updateCenter.backupRetention":            "ONEINSTACK_UPDATE_CENTER_BACKUP_RETENTION",
+		"bastion.enabled":                         "ONEINSTACK_BASTION_ENABLED",
+		"bastion.collectSchedule":                 "ONEINSTACK_BASTION_COLLECT_SCHEDULE",
+		"bastion.collectTimeoutSeconds":           "ONEINSTACK_BASTION_COLLECT_TIMEOUT_SECONDS",
+		"bastion.maxConcurrentCollects":           "ONEINSTACK_BASTION_MAX_CONCURRENT_COLLECTS",
+		"bastion.retentionDays":                   "ONEINSTACK_BASTION_RETENTION_DAYS",
+		"bastion.cleanupSchedule":                 "ONEINSTACK_BASTION_CLEANUP_SCHEDULE",
 	} {
 		if err := v.BindEnv(key, environmentName); err != nil {
 			return nil, fmt.Errorf("bind environment %s: %w", environmentName, err)

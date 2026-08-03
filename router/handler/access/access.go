@@ -127,6 +127,7 @@ func buildMeResponse(access *accessservice.UserAccess) gin.H {
 			"database":   matrix.Scopes["database"],
 			"approval":   matrix.Scopes["approval"],
 			"file":       matrix.Scopes["file"],
+			"bastion":    matrix.Menu["bastion"],
 		},
 	}
 }

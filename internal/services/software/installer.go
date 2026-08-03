@@ -192,11 +192,10 @@ func (installer *Installer) getUninstallScript(
 	if err != nil {
 		return nil, nil, err
 	}
-	componentPackage, err := registry.ResolveInstalled(
+	componentPackage, err := registry.ResolveInstalledUninstall(
 		ctx,
 		componentName,
 		params.Version,
-		"uninstall",
 	)
 	if err != nil {
 		return nil, nil, fmt.Errorf("resolve %s uninstall package: %w", componentName, err)
