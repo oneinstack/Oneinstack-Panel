@@ -88,10 +88,10 @@ updateCenter:
     backupRetention: 5
     # keyId: Base64-encoded Ed25519 public key. Required before enabling updates.
     trustedKeys: {}
-bastion:
-  enabled: true
-  collectSchedule: "*/1 * * * *"
-  collectTimeoutSeconds: 15
-  maxConcurrentCollects: 5
-  retentionDays: 30
-  cleanupSchedule: "30 4 * * *"
+bastion:                              # 堡垒机（Bastion Host）配置
+  enabled: true                       # 是否启用堡垒机功能
+  collectSchedule: "*/1 * * * *"      # 会话采集调度频率（cron 表达式），每分钟采集一次
+  collectTimeoutSeconds: 15           # 单次采集超时时间（秒）
+  maxConcurrentCollects: 5            # 最大并发采集数
+  retentionDays: 30                   # 会话记录保留天数
+  cleanupSchedule: "30 4 * * *"       # 过期记录清理调度（cron 表达式），每天凌晨 4:30 执行

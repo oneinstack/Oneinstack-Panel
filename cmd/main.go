@@ -10,6 +10,7 @@ import (
 	"oneinstack/app"
 	"oneinstack/internal/buildinfo"
 	"oneinstack/internal/services/audit"
+	bastionservice "oneinstack/internal/services/bastion"
 	"oneinstack/internal/services/certificate"
 	"oneinstack/internal/services/databasetask"
 	"oneinstack/internal/services/filemanager"
@@ -339,6 +340,8 @@ func startServer() error {
 		monitoring.ClearDefault(monitorManager)
 	}()
 
+	initializeBastion()
+
 	if err := cronHandler.InitializeService(); err != nil {
 		return fmt.Errorf("initialize cron service: %w", err)
 	}
@@ -528,6 +531,36 @@ func startServer() error {
 	}
 	log.Printf("OneinStack Panel stopped")
 	return nil
+}
+
+// initializeBastion 根据配置初始化堡垒机管理器
+func initializeBastion() {
+	cfg := app.ONE_CONFIG.Bastion
+	if !cfg.Enabled {
+		return
+	}
+	db := app.DB()
+	if db == nil {
+		log.Printf("堡垒机: 数据库未初始化，跳过")
+		return
+	}
+	collector := bastionservice.NewSSHCollector(cfg.CollectTimeoutSeconds)
+	manager, err := bastionservice.NewManager(
+		db,
+		collector,
+		cfg.CollectTimeoutSeconds,
+		cfg.MaxConcurrentCollects,
+		cfg.RetentionDays,
+		cfg.CollectSchedule,
+		cfg.CleanupSchedule,
+	)
+	if err != nil {
+		log.Printf("堡垒机: 初始化失败: %v", err)
+		return
+	}
+	bastionservice.ConfigureDefault(manager)
+	manager.Start()
+	log.Printf("堡垒机: 模块已启用 (采集: %s, 保留: %d 天)", cfg.CollectSchedule, cfg.RetentionDays)
 }
 
 // 重启服务器

@@ -142,13 +142,22 @@ load_1=$(awk '{print $1}' /proc/loadavg)
 load_5=$(awk '{print $2}' /proc/loadavg)
 load_15=$(awk '{print $3}' /proc/loadavg)
 
-# Network (first non-loopback interface)
+# Network throughput (first non-loopback interface), sampled over 1s
 iface=$(awk 'NR>2 && $2 !~ /^0+:/ && $1 !~ /^lo/' /proc/net/dev | head -1 | cut -d: -f1 | xargs)
 net_recv=0
 net_send=0
 if [ -n "$iface" ]; then
-  read -r _ recv1 _ _ _ _ _ _ _ _ < /sys/class/net/$iface/statistics/tx_rx_1 2>/dev/null || true
-  read -r _ send1 _ _ _ _ _ _ _ _ < /sys/class/net/$iface/statistics/tx_rx_1 2>/dev/null || true
+  rx_file=/sys/class/net/$iface/statistics/rx_bytes
+  tx_file=/sys/class/net/$iface/statistics/tx_bytes
+  rx1=$(awk 'NR==1 {print $1+0}' "$rx_file" 2>/dev/null || echo 0)
+  tx1=$(awk 'NR==1 {print $1+0}' "$tx_file" 2>/dev/null || echo 0)
+  sleep 1
+  rx2=$(awk 'NR==1 {print $1+0}' "$rx_file" 2>/dev/null || echo 0)
+  tx2=$(awk 'NR==1 {print $1+0}' "$tx_file" 2>/dev/null || echo 0)
+  net_recv=$((rx2 - rx1))
+  net_send=$((tx2 - tx1))
+  if [ "$net_recv" -lt 0 ]; then net_recv=0; fi
+  if [ "$net_send" -lt 0 ]; then net_send=0; fi
 fi
 
 # Disk I/O (first non-loopback, non-ram block device)
