@@ -191,10 +191,14 @@ func (m *Manager) collectAllServers() {
 }
 
 func (m *Manager) collectOne(server *models.BastionServer) {
-	password, err := decryptPassword(server.PasswordEnc)
-	if err != nil {
-		m.updateServerStatus(server, models.BastionStatusError, fmt.Sprintf("password decrypt: %v", err))
-		return
+	var password string
+	if server.AuthMethod == models.BastionAuthPassword {
+		decrypted, err := decryptPassword(server.PasswordEnc)
+		if err != nil {
+			m.updateServerStatus(server, models.BastionStatusError, fmt.Sprintf("password decrypt: %v", err))
+			return
+		}
+		password = decrypted
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(m.collectTimeout)*time.Second)
@@ -287,8 +291,14 @@ func (m *Manager) GetServer(id uint) (*models.BastionServer, error) {
 
 // CreateServer 添加远端服务器
 func (m *Manager) CreateServer(input CreateServerInput) (*models.BastionServer, error) {
-	if err := validateServerInput(input.Name, input.Host, input.Port, input.Username, input.AuthMethod, input.Password); err != nil {
+	if input.AuthMethod == "" {
+		input.AuthMethod = models.BastionAuthPassword
+	}
+	if err := validateServerInput(input.Name, input.Host, input.Port, input.Username, input.AuthMethod); err != nil {
 		return nil, err
+	}
+	if input.AuthMethod == models.BastionAuthPassword && input.Password == "" {
+		return nil, errors.New("密码不能为空")
 	}
 	passwordEnc, err := encryptPassword(input.Password)
 	if err != nil {
@@ -296,9 +306,6 @@ func (m *Manager) CreateServer(input CreateServerInput) (*models.BastionServer, 
 	}
 	if input.Port == 0 {
 		input.Port = 22
-	}
-	if input.AuthMethod == "" {
-		input.AuthMethod = models.BastionAuthPassword
 	}
 	server := &models.BastionServer{
 		Name:        input.Name,
@@ -324,8 +331,14 @@ func (m *Manager) UpdateServer(id uint, input UpdateServerInput) (*models.Bastio
 	if err := m.db.First(&server, id).Error; err != nil {
 		return nil, err
 	}
-	if err := validateServerInput(input.Name, input.Host, input.Port, input.Username, input.AuthMethod, ""); err != nil {
+	if input.AuthMethod == "" {
+		input.AuthMethod = server.AuthMethod
+	}
+	if err := validateServerInput(input.Name, input.Host, input.Port, input.Username, input.AuthMethod); err != nil {
 		return nil, err
+	}
+	if input.AuthMethod == models.BastionAuthPassword && input.Password == "" && server.PasswordEnc == "" {
+		return nil, errors.New("密码不能为空")
 	}
 	server.Name = input.Name
 	server.Host = input.Host
@@ -334,9 +347,6 @@ func (m *Manager) UpdateServer(id uint, input UpdateServerInput) (*models.Bastio
 	server.AuthMethod = input.AuthMethod
 	server.KeyPath = input.KeyPath
 	server.Tags = input.Tags
-	if input.AuthMethod == "" {
-		server.AuthMethod = models.BastionAuthPassword
-	}
 	if input.Password != "" {
 		passwordEnc, err := encryptPassword(input.Password)
 		if err != nil {
@@ -366,11 +376,19 @@ func (m *Manager) DeleteServer(id uint) error {
 	})
 }
 
-// TestConnection 测试与指定服务器的连通性
+// TestConnection 测试与指定服务器的连通性。
+// password 为空时回退到库中已保存的密码（key 认证使用已配置的私钥路径）。
 func (m *Manager) TestConnection(id uint, password string) (*ProbeResult, error) {
 	var server models.BastionServer
 	if err := m.db.First(&server, id).Error; err != nil {
 		return nil, err
+	}
+	if password == "" && server.AuthMethod == models.BastionAuthPassword {
+		decrypted, err := decryptPassword(server.PasswordEnc)
+		if err != nil {
+			return nil, fmt.Errorf("读取已保存的密码失败: %w", err)
+		}
+		password = decrypted
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -396,7 +414,7 @@ func (m *Manager) GetMetrics(serverID uint, from, to time.Time, limit int) ([]mo
 	return samples, nil
 }
 
-func validateServerInput(name, host string, port int, username, authMethod, password string) error {
+func validateServerInput(name, host string, port int, username, authMethod string) error {
 	if name == "" {
 		return errors.New("服务器名称不能为空")
 	}
@@ -411,11 +429,6 @@ func validateServerInput(name, host string, port int, username, authMethod, pass
 	}
 	if authMethod != "" && authMethod != models.BastionAuthPassword && authMethod != models.BastionAuthKey {
 		return errors.New("认证方式必须是 password 或 key")
-	}
-	if authMethod == "" || authMethod == models.BastionAuthPassword {
-		if password == "" {
-			return errors.New("密码不能为空")
-		}
 	}
 	return nil
 }

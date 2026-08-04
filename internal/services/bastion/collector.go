@@ -29,11 +29,9 @@ func NewSSHCollector(timeoutSeconds int) *SSHCollector {
 
 // Collect 连接到远端服务器，执行采集脚本并解析结果
 func (c *SSHCollector) Collect(ctx context.Context, server *models.BastionServer, password string) (*models.BastionMetricSample, error) {
-	config := &ssh.ClientConfig{
-		User:            server.Username,
-		Auth:            []ssh.AuthMethod{ssh.Password(password)},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-		Timeout:         c.timeout,
+	config, err := buildSSHClientConfig(server, password, c.timeout)
+	if err != nil {
+		return nil, err
 	}
 
 	addr := net.JoinHostPort(server.Host, fmt.Sprintf("%d", server.Port))

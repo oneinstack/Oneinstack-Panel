@@ -34,11 +34,10 @@ func Probe(ctx context.Context, server *models.BastionServer, password string) *
 	conn.Close()
 
 	// SSH 握手 + 系统信息采集
-	config := &ssh.ClientConfig{
-		User:            server.Username,
-		Auth:            []ssh.AuthMethod{ssh.Password(password)},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-		Timeout:         10 * time.Second,
+	config, err := buildSSHClientConfig(server, password, 10*time.Second)
+	if err != nil {
+		result.Error = fmt.Sprintf("SSH 配置无效: %v", err)
+		return result
 	}
 
 	client, err := ssh.Dial("tcp", addr, config)

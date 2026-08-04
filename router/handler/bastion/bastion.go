@@ -128,7 +128,7 @@ func TestConnection(c *gin.Context) {
 		return
 	}
 	var input struct {
-		Password string `json:"password" binding:"required"`
+		Password string `json:"password"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
 		writeBadRequest(c, err)
