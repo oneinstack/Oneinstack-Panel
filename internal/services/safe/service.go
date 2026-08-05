@@ -507,6 +507,38 @@ func (s *Service) ImportRules(ctx context.Context, rules []models.IptablesRule) 
 	return len(created), nil
 }
 
+// ReplaceRules restores the non-protected managed rules as one compensated
+// operation. The panel protection rule is never removed by this method.
+func (s *Service) ReplaceRules(ctx context.Context, rules []models.IptablesRule) error {
+	operationMu.Lock()
+	defer operationMu.Unlock()
+	var current []models.IptablesRule
+	if err := s.db.Where("protected = ?", false).Order("id ASC").Find(&current).Error; err != nil {
+		return err
+	}
+	for _, rule := range current {
+		if err := s.deleteLocked(ctx, rule.ID); err != nil {
+			return err
+		}
+	}
+	created := make([]int64, 0, len(rules))
+	for i := range rules {
+		rules[i].ID = 0
+		rules[i].Protected = false
+		if err := s.addLocked(ctx, &rules[i]); err != nil {
+			for j := len(created) - 1; j >= 0; j-- {
+				_ = s.deleteLocked(ctx, created[j])
+			}
+			for j := range current {
+				_ = s.addLocked(ctx, &current[j])
+			}
+			return fmt.Errorf("restore firewall rules at %d: %w", i+1, err)
+		}
+		created = append(created, rules[i].ID)
+	}
+	return nil
+}
+
 func (s *Service) SetEnabled(ctx context.Context, enabled bool, confirmation string) error {
 	operationMu.Lock()
 	defer operationMu.Unlock()

@@ -28,11 +28,12 @@ const (
 	ErrWeakPassword    ErrorCode = "WEAK_PASSWORD"
 
 	// 系统相关错误码
-	ErrSystemError         ErrorCode = "SYSTEM_ERROR"
-	ErrCommandFailed       ErrorCode = "COMMAND_FAILED"
-	ErrFileNotFound        ErrorCode = "FILE_NOT_FOUND"
-	ErrPermissionDenied    ErrorCode = "PERMISSION_DENIED"
-	ErrInsufficientStorage ErrorCode = "INSUFFICIENT_STORAGE"
+	ErrSystemError                 ErrorCode = "SYSTEM_ERROR"
+	ErrCommandFailed               ErrorCode = "COMMAND_FAILED"
+	ErrFileNotFound                ErrorCode = "FILE_NOT_FOUND"
+	ErrPermissionDenied            ErrorCode = "PERMISSION_DENIED"
+	ErrInsufficientStorage         ErrorCode = "INSUFFICIENT_STORAGE"
+	ErrContainerRuntimeUnavailable ErrorCode = "CONTAINER_RUNTIME_UNAVAILABLE"
 
 	// 业务相关错误码
 	ErrUserNotFound     ErrorCode = "USER_NOT_FOUND"
@@ -146,6 +147,8 @@ func getHTTPStatusCode(code ErrorCode) int {
 		return http.StatusTooManyRequests
 	case ErrInsufficientStorage:
 		return http.StatusInsufficientStorage
+	case ErrContainerRuntimeUnavailable:
+		return http.StatusServiceUnavailable
 	case ErrInternalError, ErrSystemError, ErrCommandFailed:
 		return http.StatusInternalServerError
 	default:

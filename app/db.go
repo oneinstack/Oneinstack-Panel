@@ -108,6 +108,17 @@ func createTables() error {
 	if err != nil {
 		return err
 	}
+	err = db.AutoMigrate(&models.ContainerRegistry{})
+	if err != nil {
+		return err
+	}
+	if err := initContainerRegistry(); err != nil {
+		return err
+	}
+	err = db.AutoMigrate(&models.ContainerComposeTemplate{})
+	if err != nil {
+		return err
+	}
 	err = db.AutoMigrate(&models.Library{})
 	if err != nil {
 		return err
@@ -219,6 +230,10 @@ func createTables() error {
 	if err != nil {
 		return err
 	}
+	err = db.AutoMigrate(&models.ConfigurationSnapshot{})
+	if err != nil {
+		return err
+	}
 	if err := db.AutoMigrate(&models.ApprovalRequest{}); err != nil {
 		return err
 	}
@@ -250,6 +265,21 @@ func createTables() error {
 		return err
 	}
 	return nil
+}
+
+func initContainerRegistry() error {
+	var registry models.ContainerRegistry
+	result := db.Where("name = ?", "Docker Hub").First(&registry)
+	if result.Error == nil {
+		return nil
+	}
+	if !errors.Is(result.Error, gorm.ErrRecordNotFound) {
+		return result.Error
+	}
+	return db.Create(&models.ContainerRegistry{
+		Name: "Docker Hub", Address: "docker.io", Protocol: "https",
+		Status: models.RegistryStatusSuccess,
+	}).Error
 }
 
 func migrateStoredCredentials() error {

@@ -7,11 +7,13 @@ import (
 	accessservice "oneinstack/internal/services/access"
 	authzHandler "oneinstack/router/handler/access"
 	approvalHandler "oneinstack/router/handler/approval"
+	configsnapshotHandler "oneinstack/router/handler/configsnapshot"
 	"time"
 
 	logservice "oneinstack/internal/services/log"
 	auditHandler "oneinstack/router/handler/audit"
 	bastionHandler "oneinstack/router/handler/bastion"
+	containerHandler "oneinstack/router/handler/container"
 	"oneinstack/router/handler/cron"
 	"oneinstack/router/handler/ftp"
 	"oneinstack/router/handler/health"
@@ -98,6 +100,17 @@ func SetupRouter() *gin.Engine {
 	protected.POST("/logout", user.LogoutHandler)
 	protected.POST("/operations/preview", operationpreviewHandler.Preview)
 	protected.POST("/operations/:previewId/execute", operationpreviewHandler.Execute)
+	// 配置快照
+	snapshotg := protected.Group("/config-snapshots")
+	{
+		snapshotg.GET("", middleware.RequirePermission(accessservice.PermissionConfigSnapshotRead), configsnapshotHandler.List)
+		snapshotg.POST("", middleware.RequirePermission(accessservice.PermissionConfigSnapshotWrite), configsnapshotHandler.Create)
+		snapshotg.GET("/:id", middleware.RequirePermission(accessservice.PermissionConfigSnapshotRead), configsnapshotHandler.Get)
+		snapshotg.GET("/:id/diff", middleware.RequirePermission(accessservice.PermissionConfigSnapshotRead), configsnapshotHandler.Diff)
+		snapshotg.POST("/:id/restore/preview", middleware.RequirePermission(accessservice.PermissionConfigSnapshotRead), configsnapshotHandler.RestorePreview)
+		snapshotg.POST("/:id/restore", middleware.RequirePermission(accessservice.PermissionConfigSnapshotWrite), configsnapshotHandler.Restore)
+		snapshotg.DELETE("/:id", middleware.RequirePermission(accessservice.PermissionConfigSnapshotWrite), configsnapshotHandler.Delete)
+	}
 	protected.GET("/auth/me", authzHandler.Me)
 	protected.GET("/access/matrix", authzHandler.Matrix)
 	protected.GET("/sessions", securityHandler.ListSessions)
@@ -403,6 +416,58 @@ func SetupRouter() *gin.Engine {
 		monitoringg.POST("/channels/:id/update", middleware.RequirePermission(accessservice.PermissionMonitoringWrite), monitoringHandler.UpdateChannel)
 		monitoringg.POST("/channels/:id/delete", middleware.RequirePermission(accessservice.PermissionMonitoringWrite), monitoringHandler.DeleteChannel)
 		monitoringg.POST("/channels/:id/test", middleware.RequirePermission(accessservice.PermissionMonitoringWrite), monitoringHandler.TestChannel)
+	}
+
+	// Docker 容器管理。所有资源操作均由固定动作适配器执行，不接受任意命令。
+	containerg := protected.Group("/containers")
+	{
+		containerg.GET("/runtime", middleware.RequirePermission(accessservice.PermissionContainerRead), containerHandler.Runtime)
+		containerg.POST("/runtime/actions", middleware.RequirePermission(accessservice.PermissionContainerConfigWrite), containerHandler.RuntimeAction)
+		containerg.GET("", middleware.RequirePermission(accessservice.PermissionContainerRead), containerHandler.ListContainers)
+		containerg.POST("", middleware.RequirePermission(accessservice.PermissionContainerWrite), containerHandler.CreateContainer)
+		containerg.POST("/cleanup", middleware.RequirePermission(accessservice.PermissionContainerDangerousCleanup), containerHandler.Cleanup)
+		containerg.GET("/:id", middleware.RequirePermission(accessservice.PermissionContainerRead), containerHandler.GetContainer)
+		containerg.GET("/:id/stats", middleware.RequirePermission(accessservice.PermissionContainerRead), containerHandler.ContainerStats)
+		containerg.POST("/:id/actions", middleware.RequirePermission(accessservice.PermissionContainerWrite), containerHandler.Action)
+		containerg.POST("/batch/actions", middleware.RequirePermission(accessservice.PermissionContainerWrite), containerHandler.BatchAction)
+		containerg.GET("/:id/logs", middleware.RequirePermission(accessservice.PermissionContainerLogsRead), containerHandler.Logs)
+		containerg.GET("/images", middleware.RequirePermission(accessservice.PermissionContainerRead), containerHandler.ListImages)
+		containerg.POST("/images/import", middleware.RequirePermission(accessservice.PermissionContainerImageWrite), containerHandler.ImportImage)
+		containerg.POST("/images/build", middleware.RequirePermission(accessservice.PermissionContainerImageWrite), containerHandler.BuildImage)
+		containerg.POST("/images/build-cache/prune", middleware.RequirePermission(accessservice.PermissionContainerDangerousCleanup), containerHandler.PruneBuildCache)
+		containerg.POST("/images/:id/tag", middleware.RequirePermission(accessservice.PermissionContainerImageWrite), containerHandler.TagImage)
+		containerg.POST("/images/push", middleware.RequirePermission(accessservice.PermissionContainerImageWrite), containerHandler.PushImage)
+		containerg.GET("/images/:id/export", middleware.RequirePermission(accessservice.PermissionContainerRead), containerHandler.ExportImage)
+		containerg.GET("/images/:id", middleware.RequirePermission(accessservice.PermissionContainerRead), containerHandler.InspectImage)
+		containerg.POST("/images/pull", middleware.RequirePermission(accessservice.PermissionContainerImageWrite), containerHandler.PullImage)
+		containerg.POST("/images/prune", middleware.RequirePermission(accessservice.PermissionContainerDangerousCleanup), containerHandler.PruneImages)
+		containerg.DELETE("/images/:id", middleware.RequirePermission(accessservice.PermissionContainerDelete), containerHandler.DeleteImage)
+		containerg.GET("/networks", middleware.RequirePermission(accessservice.PermissionContainerRead), containerHandler.ListNetworks)
+		containerg.GET("/networks/:id", middleware.RequirePermission(accessservice.PermissionContainerRead), containerHandler.InspectNetwork)
+		containerg.POST("/networks", middleware.RequirePermission(accessservice.PermissionContainerNetworkWrite), containerHandler.CreateNetwork)
+		containerg.POST("/networks/prune", middleware.RequirePermission(accessservice.PermissionContainerDangerousCleanup), containerHandler.PruneNetworks)
+		containerg.DELETE("/networks/:id", middleware.RequirePermission(accessservice.PermissionContainerNetworkWrite), containerHandler.DeleteNetwork)
+		containerg.POST("/networks/batch/delete", middleware.RequirePermission(accessservice.PermissionContainerNetworkWrite), containerHandler.BatchDeleteNetwork)
+		containerg.GET("/volumes", middleware.RequirePermission(accessservice.PermissionContainerRead), containerHandler.ListVolumes)
+		containerg.GET("/volumes/:id", middleware.RequirePermission(accessservice.PermissionContainerRead), containerHandler.InspectVolume)
+		containerg.POST("/volumes", middleware.RequirePermission(accessservice.PermissionContainerVolumeWrite), containerHandler.CreateVolume)
+		containerg.POST("/volumes/prune", middleware.RequirePermission(accessservice.PermissionContainerDangerousCleanup), containerHandler.PruneVolumes)
+		containerg.DELETE("/volumes/:id", middleware.RequirePermission(accessservice.PermissionContainerVolumeWrite), containerHandler.DeleteVolume)
+		containerg.POST("/volumes/batch/delete", middleware.RequirePermission(accessservice.PermissionContainerVolumeWrite), containerHandler.BatchDeleteVolume)
+		containerg.GET("/registries", middleware.RequirePermission(accessservice.PermissionContainerRead), containerHandler.Registries)
+		containerg.POST("/registries", middleware.RequirePermission(accessservice.PermissionContainerRegistryWrite), containerHandler.CreateRegistry)
+		containerg.PUT("/registries/:id", middleware.RequirePermission(accessservice.PermissionContainerRegistryWrite), containerHandler.UpdateRegistry)
+		containerg.DELETE("/registries/:id", middleware.RequirePermission(accessservice.PermissionContainerRegistryWrite), containerHandler.DeleteRegistry)
+		containerg.POST("/registries/:id/test", middleware.RequirePermission(accessservice.PermissionContainerRegistryWrite), containerHandler.TestRegistry)
+		containerg.GET("/compose", middleware.RequirePermission(accessservice.PermissionContainerRead), containerHandler.ListCompose)
+		containerg.GET("/templates", middleware.RequirePermission(accessservice.PermissionContainerRead), containerHandler.Templates)
+		containerg.POST("/templates", middleware.RequirePermission(accessservice.PermissionContainerComposeWrite), containerHandler.CreateTemplate)
+		containerg.GET("/templates/:id", middleware.RequirePermission(accessservice.PermissionContainerRead), containerHandler.GetTemplate)
+		containerg.PUT("/templates/:id", middleware.RequirePermission(accessservice.PermissionContainerComposeWrite), containerHandler.UpdateTemplate)
+		containerg.DELETE("/templates/:id", middleware.RequirePermission(accessservice.PermissionContainerComposeWrite), containerHandler.DeleteTemplate)
+		containerg.GET("/config", middleware.RequirePermission(accessservice.PermissionContainerRead), containerHandler.Config)
+		containerg.PUT("/config", middleware.RequirePermission(accessservice.PermissionContainerConfigWrite), containerHandler.SaveConfig)
+		containerg.POST("/config", middleware.RequirePermission(accessservice.PermissionContainerConfigWrite), containerHandler.SaveConfig)
 	}
 
 	// 堡垒机管理

@@ -1,10 +1,14 @@
 package website
 
 import (
+	"encoding/json"
 	"strconv"
 
 	"oneinstack/core"
+	"oneinstack/internal/services/configsnapshot"
 	websiteService "oneinstack/internal/services/website"
+	configsnapshotHandler "oneinstack/router/handler/configsnapshot"
+	"oneinstack/router/middleware"
 
 	"github.com/gin-gonic/gin"
 )
@@ -42,11 +46,38 @@ func UpdateWebsiteSettings(c *gin.Context) {
 		core.HandleError(c, core.WrapError(err, core.ErrConfigError, "网站服务不可用"))
 		return
 	}
+	userID, ok := middleware.AuthenticatedUserID(c)
+	if !ok {
+		core.HandleError(c, core.NewError(core.ErrUnauthorized, "登录状态无效"))
+		return
+	}
+	before, err := service.GetSettings(id)
+	if err != nil {
+		core.HandleError(c, core.WrapError(err, core.ErrInternalError, "读取网站当前配置失败"))
+		return
+	}
+	beforeJSON, _ := json.Marshal(before)
+	snapshot, err := configsnapshot.Default().Create(configsnapshot.CreateInput{
+		ResourceType: "website", ResourceID: strconv.FormatInt(id, 10), Operation: "update",
+		Before: before.Settings, After: request, RequestedBy: userID, Artifact: beforeJSON,
+		ArtifactName: "website-before.json",
+	})
+	if err != nil {
+		core.HandleError(c, core.WrapError(err, core.ErrInternalError, "创建网站配置快照失败"))
+		return
+	}
 	document, err := service.UpdateSettings(c.Request.Context(), id, request)
 	if err != nil {
+		_ = configsnapshot.Default().Mark(snapshot.ID, "failed", err.Error())
+		configsnapshotHandler.RecordAudit(c, snapshot, "failed", err.Error())
 		core.HandleError(c, core.WrapError(err, core.ErrConfigError, "发布网站设置失败"))
 		return
 	}
+	if err := configsnapshot.Default().Mark(snapshot.ID, "succeeded", ""); err != nil {
+		core.HandleError(c, core.WrapError(err, core.ErrInternalError, "更新网站配置快照状态失败"))
+		return
+	}
+	configsnapshotHandler.RecordAudit(c, snapshot, "succeeded", "网站结构化配置已发布")
 	core.HandleSuccess(c, document)
 }
 

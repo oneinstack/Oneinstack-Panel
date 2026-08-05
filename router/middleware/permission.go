@@ -96,6 +96,12 @@ var authorizationMenuRules = []menuVisibilityRule{
 		},
 	},
 	{
+		key: "container",
+		visible: func(has func(string) bool, access *accessservice.UserAccess) bool {
+			return has(accessservice.PermissionContainerRead) || has(accessservice.PermissionContainerWrite)
+		},
+	},
+	{
 		key: "panelSettings",
 		visible: func(has func(string) bool, access *accessservice.UserAccess) bool {
 			return access != nil && access.IsSuperAdmin
@@ -253,21 +259,24 @@ func BuildAuthorizationMatrix(access *accessservice.UserAccess) AuthorizationMat
 		menu[rule.key] = rule.visible(has, access)
 	}
 	actions := map[string]bool{
-		"website.delete":             has(accessservice.PermissionWebsiteWrite),
-		"website.restore":            has(accessservice.PermissionWebsiteWrite),
-		"database.restore":           has(accessservice.PermissionDatabaseWrite),
-		"database.connection.delete": has(accessservice.PermissionDatabaseWrite),
-		"audit.export":               has(accessservice.PermissionAuditExport),
-		"database.credential.reveal": has(accessservice.PermissionDatabaseWrite),
-		"certificate.issue":          has(accessservice.PermissionWebsiteWrite),
-		"file.create":                has(accessservice.PermissionFileCreate),
-		"file.edit":                  has(accessservice.PermissionFileEdit),
-		"file.move":                  has(accessservice.PermissionFileMove),
-		"file.delete":                has(accessservice.PermissionFileDelete),
-		"file.modify":                has(accessservice.PermissionFileModify),
-		"file.archive":               has(accessservice.PermissionFileArchive),
-		"file.share.create":          has(accessservice.PermissionFileShare),
-		"file.share.revoke":          has(accessservice.PermissionFileShare),
+		"website.delete":              has(accessservice.PermissionWebsiteWrite),
+		"website.restore":             has(accessservice.PermissionWebsiteWrite),
+		"database.restore":            has(accessservice.PermissionDatabaseWrite),
+		"database.connection.delete":  has(accessservice.PermissionDatabaseWrite),
+		"audit.export":                has(accessservice.PermissionAuditExport),
+		"database.credential.reveal":  has(accessservice.PermissionDatabaseWrite),
+		"certificate.issue":           has(accessservice.PermissionWebsiteWrite),
+		"file.create":                 has(accessservice.PermissionFileCreate),
+		"file.edit":                   has(accessservice.PermissionFileEdit),
+		"file.move":                   has(accessservice.PermissionFileMove),
+		"file.delete":                 has(accessservice.PermissionFileDelete),
+		"file.modify":                 has(accessservice.PermissionFileModify),
+		"file.archive":                has(accessservice.PermissionFileArchive),
+		"file.share.create":           has(accessservice.PermissionFileShare),
+		"file.share.revoke":           has(accessservice.PermissionFileShare),
+		"container.terminal":          has(accessservice.PermissionContainerTerminal),
+		"container.force_action":      has(accessservice.PermissionContainerForceAction),
+		"container.dangerous.cleanup": has(accessservice.PermissionContainerDangerousCleanup),
 	}
 	for operation, permission := range accessservice.OperationPermissions() {
 		actions[operation] = has(permission)
@@ -316,6 +325,19 @@ func BuildAuthorizationMatrix(access *accessservice.UserAccess) AuthorizationMat
 				"scopeRoot":     has(accessservice.PermissionFileScopeRoot),
 				"scopeWebsites": has(accessservice.PermissionFileScopeWebsites),
 				"scopeBackups":  has(accessservice.PermissionFileScopeBackups),
+			},
+			"container": {
+				"read":          has(accessservice.PermissionContainerRead),
+				"write":         has(accessservice.PermissionContainerWrite),
+				"delete":        has(accessservice.PermissionContainerDelete),
+				"terminal":      has(accessservice.PermissionContainerTerminal),
+				"logsRead":      has(accessservice.PermissionContainerLogsRead),
+				"imageWrite":    has(accessservice.PermissionContainerImageWrite),
+				"networkWrite":  has(accessservice.PermissionContainerNetworkWrite),
+				"volumeWrite":   has(accessservice.PermissionContainerVolumeWrite),
+				"composeWrite":  has(accessservice.PermissionContainerComposeWrite),
+				"registryWrite": has(accessservice.PermissionContainerRegistryWrite),
+				"configWrite":   has(accessservice.PermissionContainerConfigWrite),
 			},
 		},
 	}

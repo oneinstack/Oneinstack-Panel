@@ -15,6 +15,7 @@ import (
 	previewservice "oneinstack/internal/services/operationpreview"
 	safeservice "oneinstack/internal/services/safe"
 	softwareService "oneinstack/internal/services/software"
+	systemservice "oneinstack/internal/services/system"
 	"oneinstack/internal/services/website"
 	"oneinstack/router/handler/software"
 	"oneinstack/router/input"
@@ -164,6 +165,11 @@ func buildDocument(operation string, payload json.RawMessage) (previewservice.Do
 		document.Actions = []previewservice.Action{{Type: "firewall", Name: "切换防火墙状态", DisplayCommand: "由检测到的防火墙后端执行启停动作"}}
 		document.Impact = previewservice.Impact{ModifyDatabase: true, NetworkRisk: true}
 		document.Rollback = previewservice.Rollback{Supported: false, Summary: "防火墙启停可能导致当前连接中断，请确认后执行", Unrecoverable: []string{"已断开的外部连接"}}
+	case "panel.network":
+		document.Files = []previewservice.FileChange{{Path: "面板受管配置文件", Action: "update", ChangeSummary: "更新面板监听、TLS、安全入口和可信代理配置"}}
+		document.Actions = []previewservice.Action{{Type: "system", Name: "应用面板访问配置", DisplayCommand: "由面板网络配置事务执行"}, {Type: "firewall", Name: "同步面板端口规则", DisplayCommand: "由受控防火墙适配器执行"}}
+		document.Impact = previewservice.Impact{WriteFiles: true, ModifyDatabase: true, RestartService: true, NetworkRisk: true}
+		document.Rollback = previewservice.Rollback{Supported: true, Summary: "由面板网络事务恢复配置文件和已准备的端口规则"}
 	}
 	return document, "", nil
 }
@@ -364,6 +370,16 @@ func executeOperation(ctx context.Context, operation string, payload json.RawMes
 			return nil, err
 		}
 		return gin.H{"operation": operation, "status": "succeeded"}, nil
+	case "panel.network":
+		var value systemservice.UpdatePanelNetworkRequest
+		if err := json.Unmarshal(payload, &value); err != nil {
+			return nil, err
+		}
+		settings, err := systemservice.UpdatePanelNetwork(value)
+		if err != nil {
+			return nil, err
+		}
+		return gin.H{"operation": operation, "settings": settings, "status": "succeeded"}, nil
 	default:
 		return nil, fmt.Errorf("unsupported operation %s", operation)
 	}

@@ -31,38 +31,54 @@ const (
 	PermissionFileScopeWebsites = "file.scope.websites"
 	PermissionFileScopeBackups  = "file.scope.backups"
 
-	PermissionWebsiteRead         = "website.read"
-	PermissionWebsiteWrite        = "website.write"
-	PermissionWebsiteApproval     = "website.approval.request"
-	PermissionDatabaseRead        = "database.read"
-	PermissionDatabaseWrite       = "database.write"
-	PermissionDatabaseApproval    = "database.approval.request"
-	PermissionSoftwareRead        = "software.read"
-	PermissionSoftwareWrite       = "software.write"
-	PermissionServiceRead         = "software.service.read"
-	PermissionServiceWrite        = "software.service.write"
-	PermissionSecurityRead        = "security.read"
-	PermissionSecurityWrite       = "security.write"
-	PermissionCronRead            = "cron.read"
-	PermissionCronWrite           = "cron.write"
-	PermissionMonitoringRead      = "monitoring.read"
-	PermissionMonitoringWrite     = "monitoring.write"
-	PermissionSystemRead          = "system.settings.read"
-	PermissionSystemWrite         = "system.settings.write"
-	PermissionTerminalAccess      = "terminal.access"
-	PermissionAuditRead           = "audit.read"
-	PermissionAuditExport         = "audit.export"
-	PermissionAuditVerify         = "audit.verify"
-	PermissionApprovalRead        = "approval.read"
-	PermissionApprovalRequest     = "approval.request"
-	PermissionApprovalReview      = "approval.review"
-	PermissionApprovalExecute     = "approval.execute"
-	PermissionTaskReadSelf        = "task.read.self"
-	PermissionTaskReadAll         = "task.read.all"
-	PermissionTaskCancelSelf      = "task.cancel.self"
-	PermissionBastionRead         = "bastion.read"
-	PermissionBastionWrite        = "bastion.write"
-	PermissionBastionIdentityRead = "bastion.identity.read"
+	PermissionWebsiteRead               = "website.read"
+	PermissionWebsiteWrite              = "website.write"
+	PermissionWebsiteApproval           = "website.approval.request"
+	PermissionDatabaseRead              = "database.read"
+	PermissionDatabaseWrite             = "database.write"
+	PermissionDatabaseApproval          = "database.approval.request"
+	PermissionSoftwareRead              = "software.read"
+	PermissionSoftwareWrite             = "software.write"
+	PermissionServiceRead               = "software.service.read"
+	PermissionServiceWrite              = "software.service.write"
+	PermissionSecurityRead              = "security.read"
+	PermissionSecurityWrite             = "security.write"
+	PermissionCronRead                  = "cron.read"
+	PermissionCronWrite                 = "cron.write"
+	PermissionMonitoringRead            = "monitoring.read"
+	PermissionMonitoringWrite           = "monitoring.write"
+	PermissionSystemRead                = "system.settings.read"
+	PermissionSystemWrite               = "system.settings.write"
+	PermissionConfigSnapshotRead        = "config.snapshot.read"
+	PermissionConfigSnapshotWrite       = "config.snapshot.write"
+	PermissionTerminalAccess            = "terminal.access"
+	PermissionAuditRead                 = "audit.read"
+	PermissionAuditExport               = "audit.export"
+	PermissionAuditVerify               = "audit.verify"
+	PermissionApprovalRead              = "approval.read"
+	PermissionApprovalRequest           = "approval.request"
+	PermissionApprovalReview            = "approval.review"
+	PermissionApprovalExecute           = "approval.execute"
+	PermissionTaskReadSelf              = "task.read.self"
+	PermissionTaskReadAll               = "task.read.all"
+	PermissionTaskCancelSelf            = "task.cancel.self"
+	PermissionBastionRead               = "bastion.read"
+	PermissionBastionWrite              = "bastion.write"
+	PermissionBastionIdentityRead       = "bastion.identity.read"
+	PermissionContainerRead             = "container.read"
+	PermissionContainerWrite            = "container.write"
+	PermissionContainerDelete           = "container.delete"
+	PermissionContainerTerminal         = "container.terminal"
+	PermissionContainerLogsRead         = "container.logs.read"
+	PermissionContainerImageWrite       = "container.image.write"
+	PermissionContainerNetworkWrite     = "container.network.write"
+	PermissionContainerVolumeWrite      = "container.volume.write"
+	PermissionContainerComposeWrite     = "container.compose.write"
+	PermissionContainerRegistryWrite    = "container.registry.write"
+	PermissionContainerConfigWrite      = "container.config.write"
+	PermissionContainerRuntimeInstall   = "container.runtime.install"
+	PermissionContainerDangerousCleanup = "container.dangerous.cleanup"
+	PermissionContainerForceAction      = "container.force_action"
 )
 
 const (
@@ -72,6 +88,7 @@ const (
 	RoleSystemOperator    = "system_operator"
 	RoleSecurityAuditor   = "security_auditor"
 	RoleOperationApprover = "operation_approver"
+	RoleContainerOperator = "container_operator"
 )
 
 type RoleSummary struct {
@@ -150,6 +167,8 @@ func builtinPermissions() []models.Permission {
 		{Code: PermissionMonitoringWrite, Name: "监控修改", Module: "monitoring"},
 		{Code: PermissionSystemRead, Name: "系统访问配置读取", Module: "system"},
 		{Code: PermissionSystemWrite, Name: "系统访问配置修改", Module: "system"},
+		{Code: PermissionConfigSnapshotRead, Name: "配置快照查看", Module: "configuration"},
+		{Code: PermissionConfigSnapshotWrite, Name: "配置快照恢复与删除", Module: "configuration"},
 		{Code: PermissionTerminalAccess, Name: "Web 终端访问", Module: "terminal"},
 		{Code: PermissionAuditRead, Name: "审计查看", Module: "audit"},
 		{Code: PermissionAuditExport, Name: "审计导出", Module: "audit"},
@@ -164,6 +183,20 @@ func builtinPermissions() []models.Permission {
 		{Code: PermissionBastionRead, Name: "堡垒机读取", Module: "bastion"},
 		{Code: PermissionBastionWrite, Name: "堡垒机管理", Module: "bastion"},
 		{Code: PermissionBastionIdentityRead, Name: "堡垒机登录身份查看", Module: "bastion"},
+		{Code: PermissionContainerRead, Name: "容器资源读取", Module: "container"},
+		{Code: PermissionContainerWrite, Name: "容器生命周期操作", Module: "container"},
+		{Code: PermissionContainerDelete, Name: "容器资源删除", Module: "container"},
+		{Code: PermissionContainerTerminal, Name: "容器终端访问", Module: "container"},
+		{Code: PermissionContainerLogsRead, Name: "容器日志查看", Module: "container"},
+		{Code: PermissionContainerImageWrite, Name: "镜像管理", Module: "container"},
+		{Code: PermissionContainerNetworkWrite, Name: "容器网络管理", Module: "container"},
+		{Code: PermissionContainerVolumeWrite, Name: "存储卷管理", Module: "container"},
+		{Code: PermissionContainerComposeWrite, Name: "编排项目管理", Module: "container"},
+		{Code: PermissionContainerRegistryWrite, Name: "镜像仓库管理", Module: "container"},
+		{Code: PermissionContainerConfigWrite, Name: "Docker配置管理", Module: "container"},
+		{Code: PermissionContainerRuntimeInstall, Name: "Docker运行时安装", Module: "container"},
+		{Code: PermissionContainerDangerousCleanup, Name: "容器资源清理", Module: "container"},
+		{Code: PermissionContainerForceAction, Name: "容器强制操作", Module: "container"},
 	}
 }
 
@@ -214,6 +247,8 @@ func builtinRoles() []struct {
 				PermissionWebsiteRead,
 				PermissionWebsiteWrite,
 				PermissionWebsiteApproval,
+				PermissionConfigSnapshotRead,
+				PermissionConfigSnapshotWrite,
 				PermissionApprovalRequest,
 				PermissionTaskReadSelf,
 				PermissionTaskCancelSelf,
@@ -271,6 +306,8 @@ func builtinRoles() []struct {
 				PermissionMonitoringWrite,
 				PermissionSystemRead,
 				PermissionSystemWrite,
+				PermissionConfigSnapshotRead,
+				PermissionConfigSnapshotWrite,
 				PermissionTerminalAccess,
 				PermissionTaskReadSelf,
 				PermissionTaskReadAll,
@@ -311,6 +348,29 @@ func builtinRoles() []struct {
 				PermissionApprovalReview,
 				PermissionApprovalExecute,
 				PermissionTaskReadAll,
+			},
+		},
+		{
+			Role: models.Role{
+				Code:        RoleContainerOperator,
+				Name:        "容器运维",
+				Description: "负责 Docker、容器和 Compose 资源管理",
+				Builtin:     true,
+			},
+			Permissions: []string{
+				PermissionDashboardRead,
+				PermissionContainerRead,
+				PermissionContainerWrite,
+				PermissionContainerDelete,
+				PermissionContainerLogsRead,
+				PermissionContainerImageWrite,
+				PermissionContainerNetworkWrite,
+				PermissionContainerVolumeWrite,
+				PermissionContainerComposeWrite,
+				PermissionContainerRegistryWrite,
+				PermissionContainerConfigWrite,
+				PermissionTaskReadSelf,
+				PermissionTaskCancelSelf,
 			},
 		},
 	}

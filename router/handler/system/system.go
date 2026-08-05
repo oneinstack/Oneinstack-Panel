@@ -4,7 +4,9 @@ import (
 	"errors"
 	"oneinstack/core"
 	auditservice "oneinstack/internal/services/audit"
+	configsnapshot "oneinstack/internal/services/configsnapshot"
 	"oneinstack/internal/services/system"
+	configsnapshotHandler "oneinstack/router/handler/configsnapshot"
 	"oneinstack/router/input"
 	"oneinstack/router/middleware"
 	"oneinstack/router/session"
@@ -176,6 +178,24 @@ func UpdatePanelNetwork(c *gin.Context) {
 		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "请求参数错误"))
 		return
 	}
+	userID, ok := middleware.AuthenticatedUserID(c)
+	if !ok {
+		core.HandleError(c, core.NewError(core.ErrUnauthorized, "登录状态无效"))
+		return
+	}
+	before, err := system.GetPanelNetworkSettings()
+	if err != nil {
+		core.HandleError(c, core.WrapError(err, core.ErrInternalError, "读取面板当前访问配置失败"))
+		return
+	}
+	snapshot, err := configsnapshot.Default().Create(configsnapshot.CreateInput{
+		ResourceType: "panel_access", ResourceID: "panel", Operation: "update",
+		Before: before, After: request, RequestedBy: userID,
+	})
+	if err != nil {
+		core.HandleError(c, core.WrapError(err, core.ErrInternalError, "创建面板访问配置快照失败"))
+		return
+	}
 	settings, err := system.UpdatePanelNetwork(system.UpdatePanelNetworkRequest{
 		BindAddress:          request.BindAddress,
 		HTTPPort:             request.HTTPPort,
@@ -189,6 +209,8 @@ func UpdatePanelNetwork(c *gin.Context) {
 		RotatePanelEntry:     request.RotatePanelEntry,
 	})
 	if err != nil {
+		_ = configsnapshot.Default().Mark(snapshot.ID, "failed", err.Error())
+		configsnapshotHandler.RecordAudit(c, snapshot, "failed", err.Error())
 		if errors.Is(err, system.ErrNetworkConfigInvalid) {
 			core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "面板访问配置无效"))
 			return
@@ -200,6 +222,11 @@ func UpdatePanelNetwork(c *gin.Context) {
 		core.HandleError(c, core.WrapError(err, core.ErrInternalError, "保存面板访问配置失败"))
 		return
 	}
+	if err := configsnapshot.Default().Mark(snapshot.ID, "succeeded", ""); err != nil {
+		core.HandleError(c, core.WrapError(err, core.ErrInternalError, "更新面板访问配置快照状态失败"))
+		return
+	}
+	configsnapshotHandler.RecordAudit(c, snapshot, "succeeded", "面板访问配置已更新")
 	core.HandleSuccess(c, settings)
 }
 

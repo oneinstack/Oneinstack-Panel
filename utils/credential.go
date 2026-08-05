@@ -17,13 +17,14 @@ import (
 const encryptedCredentialPrefix = "enc:v1:"
 
 const (
-	CredentialPurposeStoragePassword = "storage.password"
-	CredentialPurposeLibraryPassword = "library.password"
-	CredentialPurposeTOTPSecret      = "security.totp.secret"
-	CredentialPurposeTOTPPending     = "security.totp.pending"
-	CredentialPurposeRecoveryCode    = "security.recovery-code"
-	CredentialPurposeNotification    = "monitor.notification-channel"
-	CredentialPurposeBastionPassword = "bastion.password"
+	CredentialPurposeStoragePassword  = "storage.password"
+	CredentialPurposeLibraryPassword  = "library.password"
+	CredentialPurposeTOTPSecret       = "security.totp.secret"
+	CredentialPurposeTOTPPending      = "security.totp.pending"
+	CredentialPurposeRecoveryCode     = "security.recovery-code"
+	CredentialPurposeNotification     = "monitor.notification-channel"
+	CredentialPurposeBastionPassword  = "bastion.password"
+	CredentialPurposeRegistryPassword = "container.registry.password"
 )
 
 var (
