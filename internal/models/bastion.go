@@ -14,22 +14,23 @@ const (
 
 // BastionServer 远端服务器注册信息
 type BastionServer struct {
-	ID          uint       `gorm:"primaryKey" json:"id"`
-	Name        string     `gorm:"size:120;not null" json:"name"`
-	Host        string     `gorm:"size:255;not null" json:"host"`
-	Port        int        `gorm:"not null;default:22" json:"port"`
-	Username    string     `gorm:"size:64;not null" json:"username"`
-	AuthMethod  string     `gorm:"size:16;not null;default:password" json:"authMethod"`
-	PasswordEnc string     `gorm:"type:text" json:"-"`
-	KeyPath     string     `gorm:"size:512" json:"keyPath,omitempty"`
-	Tags        string     `gorm:"size:255" json:"tags"`
-	Enabled     bool       `gorm:"index;not null;default:true" json:"enabled"`
-	LastSeenAt  *time.Time `gorm:"index" json:"lastSeenAt,omitempty"`
-	Status      string     `gorm:"size:16;index;not null;default:unknown" json:"status"`
-	StatusError string     `gorm:"size:512" json:"statusError,omitempty"`
-	OSInfo      string     `gorm:"size:255" json:"osInfo,omitempty"`
-	CreatedAt   time.Time  `json:"createdAt"`
-	UpdatedAt   time.Time  `json:"updatedAt"`
+	ID            uint       `gorm:"primaryKey" json:"id"`
+	Name          string     `gorm:"size:120;not null" json:"name"`
+	Host          string     `gorm:"size:255;not null" json:"host"`
+	Port          int        `gorm:"not null;default:22" json:"port"`
+	Username      string     `gorm:"size:64;not null" json:"username"`
+	AuthMethod    string     `gorm:"size:16;not null;default:password" json:"authMethod"`
+	PasswordEnc   string     `gorm:"type:text" json:"-"`
+	KeyPath       string     `gorm:"size:512" json:"-"`
+	KeyConfigured bool       `gorm:"-" json:"keyConfigured"`
+	Tags          string     `gorm:"size:255" json:"tags"`
+	Enabled       bool       `gorm:"index;not null;default:true" json:"enabled"`
+	LastSeenAt    *time.Time `gorm:"index" json:"lastSeenAt,omitempty"`
+	Status        string     `gorm:"size:16;index;not null;default:unknown" json:"status"`
+	StatusError   string     `gorm:"size:512" json:"statusError,omitempty"`
+	OSInfo        string     `gorm:"size:255" json:"osInfo,omitempty"`
+	CreatedAt     time.Time  `json:"createdAt"`
+	UpdatedAt     time.Time  `json:"updatedAt"`
 }
 
 // BastionMetricSample 远端服务器采集快照

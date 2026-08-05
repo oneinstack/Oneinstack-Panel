@@ -31,37 +31,38 @@ const (
 	PermissionFileScopeWebsites = "file.scope.websites"
 	PermissionFileScopeBackups  = "file.scope.backups"
 
-	PermissionWebsiteRead      = "website.read"
-	PermissionWebsiteWrite     = "website.write"
-	PermissionWebsiteApproval  = "website.approval.request"
-	PermissionDatabaseRead     = "database.read"
-	PermissionDatabaseWrite    = "database.write"
-	PermissionDatabaseApproval = "database.approval.request"
-	PermissionSoftwareRead     = "software.read"
-	PermissionSoftwareWrite    = "software.write"
-	PermissionServiceRead      = "software.service.read"
-	PermissionServiceWrite     = "software.service.write"
-	PermissionSecurityRead     = "security.read"
-	PermissionSecurityWrite    = "security.write"
-	PermissionCronRead         = "cron.read"
-	PermissionCronWrite        = "cron.write"
-	PermissionMonitoringRead   = "monitoring.read"
-	PermissionMonitoringWrite  = "monitoring.write"
-	PermissionSystemRead       = "system.settings.read"
-	PermissionSystemWrite      = "system.settings.write"
-	PermissionTerminalAccess   = "terminal.access"
-	PermissionAuditRead        = "audit.read"
-	PermissionAuditExport      = "audit.export"
-	PermissionAuditVerify      = "audit.verify"
-	PermissionApprovalRead     = "approval.read"
-	PermissionApprovalRequest  = "approval.request"
-	PermissionApprovalReview   = "approval.review"
-	PermissionApprovalExecute  = "approval.execute"
-	PermissionTaskReadSelf     = "task.read.self"
-	PermissionTaskReadAll      = "task.read.all"
-	PermissionTaskCancelSelf   = "task.cancel.self"
-	PermissionBastionRead      = "bastion.read"
-	PermissionBastionWrite     = "bastion.write"
+	PermissionWebsiteRead         = "website.read"
+	PermissionWebsiteWrite        = "website.write"
+	PermissionWebsiteApproval     = "website.approval.request"
+	PermissionDatabaseRead        = "database.read"
+	PermissionDatabaseWrite       = "database.write"
+	PermissionDatabaseApproval    = "database.approval.request"
+	PermissionSoftwareRead        = "software.read"
+	PermissionSoftwareWrite       = "software.write"
+	PermissionServiceRead         = "software.service.read"
+	PermissionServiceWrite        = "software.service.write"
+	PermissionSecurityRead        = "security.read"
+	PermissionSecurityWrite       = "security.write"
+	PermissionCronRead            = "cron.read"
+	PermissionCronWrite           = "cron.write"
+	PermissionMonitoringRead      = "monitoring.read"
+	PermissionMonitoringWrite     = "monitoring.write"
+	PermissionSystemRead          = "system.settings.read"
+	PermissionSystemWrite         = "system.settings.write"
+	PermissionTerminalAccess      = "terminal.access"
+	PermissionAuditRead           = "audit.read"
+	PermissionAuditExport         = "audit.export"
+	PermissionAuditVerify         = "audit.verify"
+	PermissionApprovalRead        = "approval.read"
+	PermissionApprovalRequest     = "approval.request"
+	PermissionApprovalReview      = "approval.review"
+	PermissionApprovalExecute     = "approval.execute"
+	PermissionTaskReadSelf        = "task.read.self"
+	PermissionTaskReadAll         = "task.read.all"
+	PermissionTaskCancelSelf      = "task.cancel.self"
+	PermissionBastionRead         = "bastion.read"
+	PermissionBastionWrite        = "bastion.write"
+	PermissionBastionIdentityRead = "bastion.identity.read"
 )
 
 const (
@@ -162,6 +163,7 @@ func builtinPermissions() []models.Permission {
 		{Code: PermissionTaskCancelSelf, Name: "本人任务取消", Module: "task"},
 		{Code: PermissionBastionRead, Name: "堡垒机读取", Module: "bastion"},
 		{Code: PermissionBastionWrite, Name: "堡垒机管理", Module: "bastion"},
+		{Code: PermissionBastionIdentityRead, Name: "堡垒机登录身份查看", Module: "bastion"},
 	}
 }
 
@@ -275,6 +277,7 @@ func builtinRoles() []struct {
 				PermissionTaskCancelSelf,
 				PermissionBastionRead,
 				PermissionBastionWrite,
+				PermissionBastionIdentityRead,
 			},
 		},
 		{

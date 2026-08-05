@@ -9,7 +9,10 @@ import (
 
 	"oneinstack/app"
 	"oneinstack/core"
+	"oneinstack/internal/models"
+	accessservice "oneinstack/internal/services/access"
 	bastionservice "oneinstack/internal/services/bastion"
+	"oneinstack/router/middleware"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -22,7 +25,7 @@ func Overview(c *gin.Context) {
 		return
 	}
 	servers, err := manager.ListServers()
-	writeResult(c, servers, err)
+	writeServersResult(c, servers, err)
 }
 
 // ListServers 服务器列表
@@ -32,7 +35,7 @@ func ListServers(c *gin.Context) {
 		return
 	}
 	servers, err := manager.ListServers()
-	writeResult(c, servers, err)
+	writeServersResult(c, servers, err)
 }
 
 // GetServer 服务器详情
@@ -50,7 +53,7 @@ func GetServer(c *gin.Context) {
 		writeNotFound(c, "服务器不存在")
 		return
 	}
-	writeResult(c, server, err)
+	writeServerResult(c, server, err)
 }
 
 // CreateServer 添加服务器
@@ -64,12 +67,16 @@ func CreateServer(c *gin.Context) {
 		writeBadRequest(c, err)
 		return
 	}
+	if strings.TrimSpace(input.KeyPath) != "" {
+		writeBadRequest(c, errors.New("不允许指定私钥路径，请直接提交 privateKey"))
+		return
+	}
 	server, err := manager.CreateServer(input)
 	if err != nil {
 		writeBadRequest(c, err)
 		return
 	}
-	core.HandleSuccess(c, server)
+	writeServerResult(c, server, nil)
 }
 
 // UpdateServer 编辑服务器
@@ -87,6 +94,10 @@ func UpdateServer(c *gin.Context) {
 		writeBadRequest(c, err)
 		return
 	}
+	if strings.TrimSpace(input.KeyPath) != "" {
+		writeBadRequest(c, errors.New("不允许指定私钥路径，请直接提交 privateKey"))
+		return
+	}
 	server, err := manager.UpdateServer(id, input)
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		writeNotFound(c, "服务器不存在")
@@ -96,7 +107,7 @@ func UpdateServer(c *gin.Context) {
 		writeBadRequest(c, err)
 		return
 	}
-	core.HandleSuccess(c, server)
+	writeServerResult(c, server, nil)
 }
 
 // DeleteServer 删除服务器
@@ -137,6 +148,14 @@ func TestConnection(c *gin.Context) {
 	result, err := manager.TestConnection(id, input.Password)
 	if err != nil {
 		writeResult(c, nil, err)
+		return
+	}
+	if !result.Reachable {
+		core.HandleErrorWithStatus(c, http.StatusBadGateway, core.NewErrorWithDetail(
+			core.ErrInternalError,
+			"服务器连接失败",
+			result.Error,
+		))
 		return
 	}
 	core.HandleSuccess(c, result)
@@ -219,6 +238,37 @@ func writeResult(c *gin.Context, result interface{}, err error) {
 		return
 	}
 	core.HandleSuccess(c, result)
+}
+
+func writeServersResult(c *gin.Context, servers []models.BastionServerSummary, err error) {
+	if err != nil {
+		writeResult(c, nil, err)
+		return
+	}
+	if !canViewIdentity(c) {
+		for i := range servers {
+			servers[i].Username = "***"
+		}
+	}
+	core.HandleSuccess(c, servers)
+}
+
+func writeServerResult(c *gin.Context, server *models.BastionServer, err error) {
+	if err != nil {
+		writeResult(c, nil, err)
+		return
+	}
+	if server != nil && !canViewIdentity(c) {
+		copy := *server
+		copy.Username = "***"
+		server = &copy
+	}
+	core.HandleSuccess(c, server)
+}
+
+func canViewIdentity(c *gin.Context) bool {
+	access, ok := middleware.UserAccess(c)
+	return ok && access.HasPermission(accessservice.PermissionBastionIdentityRead)
 }
 
 func writeBadRequest(c *gin.Context, err error) {

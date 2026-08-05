@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -23,6 +25,7 @@ type CreateServerInput struct {
 	Username   string `json:"username"`
 	AuthMethod string `json:"authMethod"`
 	Password   string `json:"password"`
+	PrivateKey string `json:"privateKey"`
 	KeyPath    string `json:"keyPath,omitempty"`
 	Tags       string `json:"tags,omitempty"`
 }
@@ -35,6 +38,7 @@ type UpdateServerInput struct {
 	Username   string `json:"username"`
 	AuthMethod string `json:"authMethod"`
 	Password   string `json:"password,omitempty"`
+	PrivateKey string `json:"privateKey"`
 	KeyPath    string `json:"keyPath,omitempty"`
 	Tags       string `json:"tags,omitempty"`
 	Enabled    *bool  `json:"enabled,omitempty"`
@@ -94,6 +98,9 @@ func NewManager(
 		retentionDays:  retentionDays,
 		scheduler:      scheduler,
 		now:            time.Now,
+	}
+	if err := manager.migrateLegacyPrivateKeys(); err != nil {
+		log.Printf("bastion: legacy private key migration: %v", err)
 	}
 	if _, err := scheduler.AddFunc(collectSchedule, func() {
 		manager.collectAllServers()
@@ -263,6 +270,7 @@ func (m *Manager) ListServers() ([]models.BastionServerSummary, error) {
 	}
 	result := make([]models.BastionServerSummary, 0, len(servers))
 	for _, server := range servers {
+		markKeyConfigured(&server)
 		summary := models.BastionServerSummary{BastionServer: server}
 		var latest models.BastionMetricSample
 		err := m.db.Where("server_id = ?", server.ID).
@@ -286,6 +294,7 @@ func (m *Manager) GetServer(id uint) (*models.BastionServer, error) {
 	if err := m.db.First(&server, id).Error; err != nil {
 		return nil, err
 	}
+	markKeyConfigured(&server)
 	return &server, nil
 }
 
@@ -294,18 +303,31 @@ func (m *Manager) CreateServer(input CreateServerInput) (*models.BastionServer, 
 	if input.AuthMethod == "" {
 		input.AuthMethod = models.BastionAuthPassword
 	}
+	if input.Port == 0 {
+		input.Port = 22
+	}
 	if err := validateServerInput(input.Name, input.Host, input.Port, input.Username, input.AuthMethod); err != nil {
 		return nil, err
 	}
 	if input.AuthMethod == models.BastionAuthPassword && input.Password == "" {
 		return nil, errors.New("密码不能为空")
 	}
+	if input.AuthMethod == models.BastionAuthPassword && strings.TrimSpace(input.PrivateKey) != "" {
+		return nil, errors.New("密码认证不能提交私钥")
+	}
+	if input.AuthMethod == models.BastionAuthKey {
+		if strings.TrimSpace(input.PrivateKey) == "" && strings.TrimSpace(input.KeyPath) == "" {
+			return nil, errors.New("私钥不能为空")
+		}
+		if strings.TrimSpace(input.PrivateKey) != "" {
+			if err := validatePrivateKey(input.PrivateKey); err != nil {
+				return nil, err
+			}
+		}
+	}
 	passwordEnc, err := encryptPassword(input.Password)
 	if err != nil {
 		return nil, fmt.Errorf("encrypt password: %w", err)
-	}
-	if input.Port == 0 {
-		input.Port = 22
 	}
 	server := &models.BastionServer{
 		Name:        input.Name,
@@ -314,7 +336,6 @@ func (m *Manager) CreateServer(input CreateServerInput) (*models.BastionServer, 
 		Username:    input.Username,
 		AuthMethod:  input.AuthMethod,
 		PasswordEnc: passwordEnc,
-		KeyPath:     input.KeyPath,
 		Tags:        input.Tags,
 		Enabled:     true,
 		Status:      models.BastionStatusUnknown,
@@ -322,11 +343,34 @@ func (m *Manager) CreateServer(input CreateServerInput) (*models.BastionServer, 
 	if err := m.db.Create(server).Error; err != nil {
 		return nil, err
 	}
+	if input.AuthMethod == models.BastionAuthKey && strings.TrimSpace(input.PrivateKey) != "" {
+		if err := writePrivateKey(server.ID, input.PrivateKey); err != nil {
+			_ = m.db.Delete(&models.BastionServer{}, server.ID).Error
+			return nil, err
+		}
+		server.KeyPath = privateKeyPath(server.ID)
+		if err := m.db.Model(server).Update("key_path", server.KeyPath).Error; err != nil {
+			_ = removePrivateKey(server.ID)
+			_ = m.db.Delete(&models.BastionServer{}, server.ID).Error
+			return nil, fmt.Errorf("保存私钥映射失败: %w", err)
+		}
+	}
+	if input.AuthMethod == models.BastionAuthKey && strings.TrimSpace(input.PrivateKey) == "" {
+		server.KeyPath = input.KeyPath
+		if err := m.db.Model(server).Update("key_path", server.KeyPath).Error; err != nil {
+			_ = m.db.Delete(&models.BastionServer{}, server.ID).Error
+			return nil, fmt.Errorf("保存旧私钥路径失败: %w", err)
+		}
+	}
+	markKeyConfigured(server)
 	return server, nil
 }
 
 // UpdateServer 编辑远端服务器
 func (m *Manager) UpdateServer(id uint, input UpdateServerInput) (*models.BastionServer, error) {
+	if strings.TrimSpace(input.KeyPath) != "" {
+		return nil, errors.New("不允许指定私钥路径，请直接提交 privateKey")
+	}
 	var server models.BastionServer
 	if err := m.db.First(&server, id).Error; err != nil {
 		return nil, err
@@ -334,18 +378,49 @@ func (m *Manager) UpdateServer(id uint, input UpdateServerInput) (*models.Bastio
 	if input.AuthMethod == "" {
 		input.AuthMethod = server.AuthMethod
 	}
+	if input.Port == 0 {
+		input.Port = server.Port
+	}
 	if err := validateServerInput(input.Name, input.Host, input.Port, input.Username, input.AuthMethod); err != nil {
 		return nil, err
 	}
 	if input.AuthMethod == models.BastionAuthPassword && input.Password == "" && server.PasswordEnc == "" {
 		return nil, errors.New("密码不能为空")
 	}
+	if input.AuthMethod == models.BastionAuthPassword && strings.TrimSpace(input.PrivateKey) != "" {
+		return nil, errors.New("密码认证不能提交私钥")
+	}
+	keyChanged := input.AuthMethod == models.BastionAuthKey && strings.TrimSpace(input.PrivateKey) != ""
+	if input.AuthMethod == models.BastionAuthKey {
+		if keyChanged {
+			if err := validatePrivateKey(input.PrivateKey); err != nil {
+				return nil, err
+			}
+		} else {
+			path, err := resolvePrivateKeyPath(&server)
+			if err != nil {
+				return nil, err
+			}
+			info, statErr := os.Stat(path)
+			if statErr != nil || !info.Mode().IsRegular() {
+				return nil, errors.New("私钥未配置，请提交 privateKey")
+			}
+		}
+	}
+	oldKeyContent, oldKeyExists := readManagedPrivateKey(&server)
+	if keyChanged {
+		if err := writePrivateKey(server.ID, input.PrivateKey); err != nil {
+			return nil, err
+		}
+	}
 	server.Name = input.Name
 	server.Host = input.Host
 	server.Port = input.Port
 	server.Username = input.Username
 	server.AuthMethod = input.AuthMethod
-	server.KeyPath = input.KeyPath
+	if input.AuthMethod == models.BastionAuthKey {
+		server.KeyPath = privateKeyPath(server.ID)
+	}
 	server.Tags = input.Tags
 	if input.Password != "" {
 		passwordEnc, err := encryptPassword(input.Password)
@@ -358,8 +433,14 @@ func (m *Manager) UpdateServer(id uint, input UpdateServerInput) (*models.Bastio
 		server.Enabled = *input.Enabled
 	}
 	if err := m.db.Save(&server).Error; err != nil {
+		if keyChanged && oldKeyExists {
+			_ = writePrivateKey(server.ID, oldKeyContent)
+		} else if keyChanged {
+			_ = removePrivateKey(server.ID)
+		}
 		return nil, err
 	}
+	markKeyConfigured(&server)
 	return &server, nil
 }
 
@@ -372,8 +453,41 @@ func (m *Manager) DeleteServer(id uint) error {
 		if err := tx.Delete(&models.BastionServer{}, id).Error; err != nil {
 			return err
 		}
+		if err := removePrivateKey(id); err != nil {
+			log.Printf("bastion: delete server %d private key: %v", id, err)
+		}
 		return nil
 	})
+}
+
+func (m *Manager) migrateLegacyPrivateKeys() error {
+	var servers []models.BastionServer
+	if err := m.db.Where("auth_method = ? AND key_path <> ''", models.BastionAuthKey).Find(&servers).Error; err != nil {
+		return err
+	}
+	for i := range servers {
+		server := &servers[i]
+		if err := migrateLegacyPrivateKey(server); err != nil {
+			log.Printf("bastion: server %d private key requires reconfiguration: %v", server.ID, err)
+			if updateErr := m.db.Model(server).Update("key_path", "").Error; updateErr != nil {
+				log.Printf("bastion: clear legacy key path for server %d: %v", server.ID, updateErr)
+			}
+			continue
+		}
+		if err := m.db.Model(server).Update("key_path", privateKeyPath(server.ID)).Error; err != nil {
+			log.Printf("bastion: update managed key path for server %d: %v", server.ID, err)
+		}
+	}
+	return nil
+}
+
+func readManagedPrivateKey(server *models.BastionServer) (string, bool) {
+	path, err := resolvePrivateKeyPath(server)
+	if err != nil {
+		return "", false
+	}
+	content, err := os.ReadFile(path)
+	return string(content), err == nil
 }
 
 // TestConnection 测试与指定服务器的连通性。

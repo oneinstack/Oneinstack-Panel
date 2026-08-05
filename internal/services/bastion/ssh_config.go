@@ -22,10 +22,15 @@ func buildSSHClientConfig(server *models.BastionServer, password string, timeout
 	}
 	switch server.AuthMethod {
 	case models.BastionAuthKey:
-		if server.KeyPath == "" {
-			return nil, errors.New("密钥认证需要配置私钥路径")
+		path, err := resolvePrivateKeyPath(server)
+		if err != nil {
+			return nil, err
 		}
-		key, err := os.ReadFile(server.KeyPath)
+		info, err := os.Lstat(path)
+		if err != nil || !info.Mode().IsRegular() {
+			return nil, errors.New("受控私钥文件不存在或不是普通文件")
+		}
+		key, err := os.ReadFile(path)
 		if err != nil {
 			return nil, fmt.Errorf("读取私钥文件: %w", err)
 		}
