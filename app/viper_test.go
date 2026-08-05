@@ -137,7 +137,13 @@ func TestLoadConfigRotatesLegacyJWTSecret(t *testing.T) {
 	})
 
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
-	legacyConfig := defaultConfig + `    jwtSecret: "` + legacyInsecureJWTSecret + "\"\n"
+	legacyConfig := strings.Replace(
+		defaultConfig,
+		"bastion:\n",
+		"    jwtSecret: \""+legacyInsecureJWTSecret+"\"\n"+
+			"bastion:\n",
+		1,
+	)
 	if err := os.WriteFile(configPath, []byte(legacyConfig), 0644); err != nil {
 		t.Fatal(err)
 	}
