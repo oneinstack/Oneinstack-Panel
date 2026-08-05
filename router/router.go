@@ -47,6 +47,7 @@ func SetupRouter() *gin.Engine {
 		_ = r.SetTrustedProxies(trustedProxies)
 	}
 	r.Use(middleware.SecurityHeaders())
+	r.Use(middleware.Locale())
 	r.Use(gin.LoggerWithConfig(gin.LoggerConfig{
 		Output: logOutput,
 		SkipPaths: []string{

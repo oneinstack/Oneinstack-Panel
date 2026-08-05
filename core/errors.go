@@ -3,6 +3,7 @@ package core
 import (
 	"fmt"
 	"net/http"
+	"oneinstack/internal/i18n"
 
 	"github.com/gin-gonic/gin"
 )
@@ -45,10 +46,11 @@ const (
 
 // AppError 应用错误结构
 type AppError struct {
-	Code    ErrorCode `json:"code"`
-	Message string    `json:"message"`
-	Detail  string    `json:"detail,omitempty"`
-	Field   string    `json:"field,omitempty"`
+	Code       ErrorCode `json:"code"`
+	Message    string    `json:"message"`
+	MessageKey string    `json:"messageKey,omitempty"`
+	Detail     string    `json:"detail,omitempty"`
+	Field      string    `json:"field,omitempty"`
 }
 
 // Error 实现error接口
@@ -65,6 +67,12 @@ func NewError(code ErrorCode, message string) *AppError {
 		Code:    code,
 		Message: message,
 	}
+}
+
+func NewErrorKey(code ErrorCode, messageKey, fallback string) *AppError {
+	err := NewError(code, fallback)
+	err.MessageKey = messageKey
+	return err
 }
 
 // NewErrorWithDetail 创建带详细信息的应用错误
@@ -96,10 +104,14 @@ type APIResponse struct {
 
 // SuccessResponse 成功响应
 func SuccessResponse(data interface{}) *APIResponse {
+	return SuccessResponseForLocale(i18n.LocaleZhCN, data)
+}
+
+func SuccessResponseForLocale(locale string, data interface{}) *APIResponse {
 	return &APIResponse{
 		Success: true,
 		Code:    0,
-		Message: "操作成功",
+		Message: i18n.Message(locale, i18n.MessageOperationSucceeded, "操作成功"),
 		Data:    data,
 	}
 }
@@ -114,20 +126,29 @@ func ErrorResponse(err *AppError) *APIResponse {
 	}
 }
 
+func ErrorResponseForLocale(err *AppError, locale string) *APIResponse {
+	response := ErrorResponse(err)
+	if err.MessageKey != "" {
+		response.Message = i18n.Message(locale, err.MessageKey, err.Message)
+		response.Error.Message = response.Message
+	}
+	return response
+}
+
 // HandleSuccess 处理成功响应
 func HandleSuccess(c *gin.Context, data interface{}) {
-	c.JSON(http.StatusOK, SuccessResponse(data))
+	c.JSON(http.StatusOK, SuccessResponseForLocale(c.GetString("locale"), data))
 }
 
 // HandleError 处理错误响应
 func HandleError(c *gin.Context, err *AppError) {
 	statusCode := getHTTPStatusCode(err.Code)
-	c.JSON(statusCode, ErrorResponse(err))
+	c.JSON(statusCode, ErrorResponseForLocale(err, c.GetString("locale")))
 }
 
 // HandleErrorWithStatus 处理带状态码的错误响应
 func HandleErrorWithStatus(c *gin.Context, statusCode int, err *AppError) {
-	c.JSON(statusCode, ErrorResponse(err))
+	c.JSON(statusCode, ErrorResponseForLocale(err, c.GetString("locale")))
 }
 
 // getHTTPStatusCode 根据错误码获取HTTP状态码
@@ -188,7 +209,7 @@ func HandleValidationErrors(c *gin.Context, errors ValidationErrors) {
 	c.JSON(http.StatusBadRequest, gin.H{
 		"success": false,
 		"code":    ErrBadRequest,
-		"message": "输入验证失败",
+		"message": i18n.Message(c.GetString("locale"), i18n.MessageValidationFailed, "输入验证失败"),
 		"errors":  errors,
 	})
 }
