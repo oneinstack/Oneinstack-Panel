@@ -304,11 +304,11 @@ func (s *Service) CreateContainer(ctx context.Context, request ContainerCreateRe
 		if err != nil {
 			return "", err
 		}
-		mode := "rw"
+		mountSpec := fmt.Sprintf("type=bind,src=%s,dst=%s", source, target)
 		if mount.ReadOnly {
-			mode = "ro"
+			mountSpec += ",readonly"
 		}
-		args = append(args, "--mount", fmt.Sprintf("type=bind,src=%s,dst=%s,%s", source, target, mode))
+		args = append(args, "--mount", mountSpec)
 	}
 	for key, value := range request.Labels {
 		key, err := validateLabel(key)
