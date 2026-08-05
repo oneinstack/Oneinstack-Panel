@@ -27,9 +27,10 @@ const internalDirectoryName = ".oneinstack-trash"
 // "/sites/example" is a child beneath that root. When scopePrefixes is set,
 // virtual paths outside the listed prefixes are rejected.
 type Manager struct {
-	root          *os.Root
-	rootPath      string
-	scopePrefixes []string
+	root           *os.Root
+	rootPath       string
+	scopePrefixes  []string
+	protectedPaths []string
 }
 
 func New(rootPath string) (*Manager, error) {
@@ -72,6 +73,18 @@ func (m *Manager) WithScope(prefixes []string) *Manager {
 	return m
 }
 
+// WithProtectedPaths prevents all file-manager operations below the given
+// absolute paths, including list, read, write, share, and delete operations.
+func (m *Manager) WithProtectedPaths(paths []string) *Manager {
+	m.protectedPaths = make([]string, 0, len(paths))
+	for _, path := range paths {
+		if absolute, err := filepath.Abs(filepath.Clean(strings.TrimSpace(path))); err == nil && absolute != "" {
+			m.protectedPaths = append(m.protectedPaths, absolute)
+		}
+	}
+	return m
+}
+
 func (m *Manager) RootPath() string {
 	return m.rootPath
 }
@@ -110,6 +123,9 @@ func (m *Manager) Relative(virtualPath string) (string, error) {
 		if !m.isInScope(virtual) {
 			return "", ErrInvalidPath
 		}
+	}
+	if m.isProtectedRelative(relative) {
+		return "", ErrReservedPath
 	}
 	return relative, nil
 }
@@ -182,6 +198,9 @@ func (m *Manager) OpenRelative(relative string) (*os.File, error) {
 	if err := validatePublicRelative(relative); err != nil {
 		return nil, err
 	}
+	if m.isProtectedRelative(relative) {
+		return nil, ErrReservedPath
+	}
 	return m.root.Open(relative)
 }
 
@@ -201,6 +220,9 @@ func (m *Manager) OpenFileRelative(relative string, flag int, perm os.FileMode) 
 	if err := validatePublicRelative(relative); err != nil {
 		return nil, err
 	}
+	if m.isProtectedRelative(relative) {
+		return nil, ErrReservedPath
+	}
 	return m.root.OpenFile(relative, flag, perm)
 }
 
@@ -217,7 +239,20 @@ func (m *Manager) LstatRelative(relative string) (os.FileInfo, error) {
 	if err := validatePublicRelative(relative); err != nil {
 		return nil, err
 	}
+	if m.isProtectedRelative(relative) {
+		return nil, ErrReservedPath
+	}
 	return m.root.Lstat(relative)
+}
+
+func (m *Manager) isProtectedRelative(relative string) bool {
+	absolute := filepath.Clean(filepath.Join(m.rootPath, filepath.FromSlash(relative)))
+	for _, protected := range m.protectedPaths {
+		if absolute == protected || strings.HasPrefix(absolute, protected+string(os.PathSeparator)) {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *Manager) ReadDir(virtualPath string) ([]os.DirEntry, string, error) {
@@ -239,15 +274,18 @@ func (m *Manager) ReadDir(virtualPath string) ([]os.DirEntry, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
-	if relative == "." {
-		visible := entries[:0]
-		for _, entry := range entries {
-			if entry.Name() != internalDirectoryName {
-				visible = append(visible, entry)
-			}
+	visible := entries[:0]
+	for _, entry := range entries {
+		if relative == "." && entry.Name() == internalDirectoryName {
+			continue
 		}
-		entries = visible
+		childRelative := pathpkg.Join(relative, entry.Name())
+		if m.isProtectedRelative(childRelative) {
+			continue
+		}
+		visible = append(visible, entry)
 	}
+	entries = visible
 	return entries, relative, nil
 }
 
@@ -344,6 +382,12 @@ func (m *Manager) Walk(virtualPath string, walkFn fs.WalkDirFunc) error {
 		return err
 	}
 	return fs.WalkDir(m.root.FS(), relative, func(path string, entry fs.DirEntry, walkErr error) error {
+		if path != "." && m.isProtectedRelative(path) {
+			if entry != nil && entry.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
 		if path == internalDirectoryName || strings.HasPrefix(path, internalDirectoryName+"/") {
 			if entry != nil && entry.IsDir() {
 				return fs.SkipDir

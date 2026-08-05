@@ -877,6 +877,9 @@ func managerForRequest(c *gin.Context) (*filemanager.Manager, bool) {
 		core.HandleError(c, core.NewError(core.ErrInternalError, "文件服务初始化失败"))
 		return nil, false
 	}
+	manager.WithProtectedPaths([]string{
+		filepath.Join(app.GetBasePath(), ".ssh"),
+	})
 
 	access, accessOk := middleware.UserAccess(c)
 	if accessOk && !access.HasPermission(accessservice.PermissionFileScopeRoot) {
