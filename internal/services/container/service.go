@@ -25,7 +25,12 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-var ErrRuntimeUnavailable = errors.New("container runtime unavailable")
+var (
+	ErrRuntimeUnavailable     = errors.New("container runtime unavailable")
+	ErrInvalidContainerConfig = errors.New("invalid container configuration")
+	ErrImagePullFailed        = errors.New("container image pull failed")
+	ErrDockerCommandTimeout   = errors.New("docker command timed out")
+)
 
 // Service is a deliberately small, fixed-command Docker adapter. It never
 // accepts a shell command from an HTTP request; every operation is selected
@@ -214,6 +219,9 @@ func (s *Service) Stats(ctx context.Context, id string) (ContainerStats, error) 
 }
 
 func (s *Service) CreateContainer(ctx context.Context, request ContainerCreateRequest) (string, error) {
+	if err := validateContainerCreateRequest(request); err != nil {
+		return "", fmt.Errorf("%w: %v", ErrInvalidContainerConfig, err)
+	}
 	name, err := validateName(request.Name)
 	if err != nil {
 		return "", err
@@ -222,7 +230,13 @@ func (s *Service) CreateContainer(ctx context.Context, request ContainerCreateRe
 	if err != nil {
 		return "", err
 	}
+	if err := s.ensureImage(ctx, image); err != nil {
+		return "", err
+	}
 	args := []string{"create", "--name", name}
+	// 镜像准备由 ensureImage 负责，禁止 create 再隐式拉取，避免失败原因和
+	// 创建动作混在一起，也避免并发请求重复触发镜像拉取。
+	args = append(args, "--pull", "never")
 	if request.AutoRemove {
 		args = append(args, "--rm")
 	}
@@ -332,6 +346,106 @@ func (s *Service) CreateContainer(ctx context.Context, request ContainerCreateRe
 	return s.run(ctx, args...)
 }
 
+func validateContainerCreateRequest(request ContainerCreateRequest) error {
+	if _, err := validateName(request.Name); err != nil {
+		return fmt.Errorf("容器名称无效: %w", err)
+	}
+	if _, err := validateReference(request.Image); err != nil {
+		return fmt.Errorf("镜像名称无效: %w", err)
+	}
+	if request.AutoRemove && request.Restart != "" && request.Restart != "no" {
+		return errors.New("autoRemove=true 不能与 restart 同时使用；请关闭 autoRemove，或将 restart 设置为 no")
+	}
+	if request.Restart != "" {
+		if err := validateRestart(request.Restart); err != nil {
+			return fmt.Errorf("重启策略无效: %w", err)
+		}
+	}
+	if request.CPUWeight != 0 && (request.CPUWeight < 10 || request.CPUWeight > 1000) {
+		return errors.New("CPU权重必须在10到1000之间，0表示不设置")
+	}
+	if request.CPULimit < 0 || request.CPULimit > 256 {
+		return errors.New("CPU限制必须在0到256之间，0表示不设置")
+	}
+	if request.MemoryLimitMB < 0 || request.MemoryLimitMB > 1024*1024 {
+		return errors.New("内存限制必须在0到1048576 MB之间，0表示不设置")
+	}
+
+	networks := make(map[string]struct{}, len(request.Networks))
+	for _, value := range request.Networks {
+		network, err := validateName(value)
+		if err != nil {
+			return fmt.Errorf("网络名称无效: %w", err)
+		}
+		if _, exists := networks[network]; exists {
+			return fmt.Errorf("网络 %q 重复配置", network)
+		}
+		networks[network] = struct{}{}
+	}
+	if request.IPv4 != "" && !validIP(request.IPv4) {
+		return errors.New("IPv4地址无效，请填写合法的IPv4地址")
+	}
+	if request.IPv6 != "" && !validIP(request.IPv6) {
+		return errors.New("IPv6地址无效，请填写合法的IPv6地址")
+	}
+
+	ports := make(map[string]struct{}, len(request.Ports))
+	for _, port := range request.Ports {
+		if port.ContainerPort < 1 || port.ContainerPort > 65535 {
+			return fmt.Errorf("容器端口 %d 无效，必须在1到65535之间", port.ContainerPort)
+		}
+		if port.HostPort < 0 || port.HostPort > 65535 {
+			return fmt.Errorf("主机端口 %d 无效，必须在0到65535之间", port.HostPort)
+		}
+		protocol := strings.ToLower(strings.TrimSpace(port.Protocol))
+		if protocol == "" {
+			protocol = "tcp"
+		}
+		if protocol != "tcp" && protocol != "udp" {
+			return fmt.Errorf("端口协议 %q 无效，只支持 tcp 或 udp", port.Protocol)
+		}
+		if port.HostPort != 0 {
+			key := fmt.Sprintf("%d/%s", port.HostPort, protocol)
+			if _, exists := ports[key]; exists {
+				return fmt.Errorf("主机端口 %d/%s 重复映射", port.HostPort, protocol)
+			}
+			ports[key] = struct{}{}
+		}
+	}
+
+	targets := make(map[string]struct{}, len(request.Mounts))
+	for _, mount := range request.Mounts {
+		source := strings.TrimSpace(mount.Source)
+		if source == "" || strings.ContainsAny(source, "\r\n") || !filepath.IsAbs(source) {
+			return fmt.Errorf("挂载源路径 %q 无效，必须是 Docker 主机上的绝对路径", mount.Source)
+		}
+		target, err := validateMountTarget(mount.Target)
+		if err != nil {
+			return fmt.Errorf("挂载目标 %q 无效: %w", mount.Target, err)
+		}
+		if _, exists := targets[target]; exists {
+			return fmt.Errorf("容器目录 %q 重复挂载", target)
+		}
+		targets[target] = struct{}{}
+	}
+	for key := range request.Labels {
+		if _, err := validateLabel(key); err != nil {
+			return fmt.Errorf("Label 名称无效: %w", err)
+		}
+	}
+	for key := range request.Environment {
+		if _, err := validateEnvKey(key); err != nil {
+			return fmt.Errorf("环境变量名称无效: %w", err)
+		}
+	}
+	for _, value := range append(append([]string{}, request.Entrypoint...), request.Command...) {
+		if strings.ContainsAny(value, "\r\n") {
+			return errors.New("入口命令和启动参数不能包含换行符")
+		}
+	}
+	return nil
+}
+
 func (s *Service) ContainerAction(ctx context.Context, id, action string, force, confirm bool) error {
 	id, err := validateReference(id)
 	if err != nil {
@@ -383,8 +497,47 @@ func (s *Service) PullImage(ctx context.Context, reference string) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.run(ctx, "pull", reference)
-	return err
+	if _, err = s.runWithTimeout(ctx, 30*time.Minute, "pull", reference); err != nil {
+		return fmt.Errorf("%w: %s: %w", ErrImagePullFailed, reference, err)
+	}
+	return nil
+}
+
+func (s *Service) ImageAvailable(ctx context.Context, reference string) (bool, error) {
+	reference, err := validateReference(reference)
+	if err != nil {
+		return false, err
+	}
+	if _, err := s.run(ctx, "image", "inspect", reference); err == nil {
+		return true, nil
+	} else if isImageNotFoundError(err) {
+		return false, nil
+	} else {
+		return false, err
+	}
+}
+
+func (s *Service) ensureImage(ctx context.Context, reference string) error {
+	if _, err := s.run(ctx, "image", "inspect", reference); err == nil {
+		return nil
+	} else if !isImageNotFoundError(err) {
+		return err
+	}
+
+	if _, err := s.run(ctx, "pull", reference); err != nil {
+		return fmt.Errorf("%w: %s: %w", ErrImagePullFailed, reference, err)
+	}
+	return nil
+}
+
+func isImageNotFoundError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "no such image") ||
+		strings.Contains(message, "unable to find image") ||
+		strings.Contains(message, "no such object")
 }
 
 func (s *Service) RegistryImageReference(registryID uint, imageName, reference string) (string, error) {
@@ -1538,16 +1691,23 @@ func (s *Service) inspectResource(ctx context.Context, kind, id string) (map[str
 }
 
 func (s *Service) run(ctx context.Context, args ...string) (string, error) {
+	return s.runWithTimeout(ctx, 60*time.Second, args...)
+}
+
+func (s *Service) runWithTimeout(ctx context.Context, timeout time.Duration, args ...string) (string, error) {
 	if _, err := exec.LookPath(s.binary); err != nil {
 		return "", fmt.Errorf("%w: %s executable file not found in PATH", ErrRuntimeUnavailable, s.binary)
 	}
-	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	command := exec.CommandContext(ctx, s.binary, args...)
 	var stdout, stderr bytes.Buffer
 	command.Stdout = &stdout
 	command.Stderr = &stderr
 	if err := command.Run(); err != nil {
+		if ctx.Err() != nil {
+			return "", fmt.Errorf("%w: docker %s", ErrDockerCommandTimeout, strings.Join(args, " "))
+		}
 		message := strings.TrimSpace(stderr.String())
 		if message == "" {
 			message = err.Error()

@@ -119,6 +119,10 @@ func createTables() error {
 	if err != nil {
 		return err
 	}
+	err = db.AutoMigrate(&models.ContainerTask{})
+	if err != nil {
+		return err
+	}
 	err = db.AutoMigrate(&models.Library{})
 	if err != nil {
 		return err

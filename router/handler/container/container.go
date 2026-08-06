@@ -19,6 +19,11 @@ import (
 )
 
 var service = containerService.New()
+var createTaskManager = containerService.NewCreateTaskManager(service)
+
+func StartCreateTaskManager() error {
+	return createTaskManager.Start()
+}
 
 func Runtime(c *gin.Context) {
 	ctx, cancel := requestContext(c)
@@ -355,12 +360,38 @@ func CreateContainer(c *gin.Context) {
 	for _, mount := range request.Mounts {
 		mounts = append(mounts, containerService.Mount{Source: mount.Source, Target: mount.Target, ReadOnly: mount.ReadOnly})
 	}
-	id, err := service.CreateContainer(ctx, containerService.ContainerCreateRequest{
+	createRequest := containerService.ContainerCreateRequest{
 		Name: request.Name, Image: request.Image, Ports: ports, Networks: request.Networks, IPv4: request.IPv4, IPv6: request.IPv6,
 		Mounts: mounts, Command: request.Command, Entrypoint: request.Entrypoint, AutoRemove: request.AutoRemove, Privileged: request.Privileged,
 		TTY: request.TTY, OpenStdin: request.OpenStdin, Restart: request.Restart, CPUWeight: request.CPUWeight, CPULimit: request.CPULimit,
 		MemoryLimitMB: request.MemoryLimitMB, Labels: request.Labels, Environment: request.Environment,
-	})
+	}
+	available, err := service.ImageAvailable(ctx, request.Image)
+	if err != nil {
+		recordAction(c, "container.create", http.StatusInternalServerError, err)
+		operationError(c, err)
+		return
+	}
+	if !available {
+		userID, _ := middleware.AuthenticatedUserID(c)
+		task, taskErr := createTaskManager.Submit(createRequest, userID)
+		if taskErr != nil {
+			recordAction(c, "container.create", http.StatusInternalServerError, taskErr)
+			operationError(c, taskErr)
+			return
+		}
+		recordAction(c, "container.create", http.StatusAccepted, nil)
+		c.JSON(http.StatusAccepted, core.SuccessResponse(gin.H{
+			"action":      "container.create",
+			"taskId":      task.ID,
+			"status":      task.Status,
+			"containerId": nil,
+			"name":        task.Name,
+			"image":       task.Image,
+		}))
+		return
+	}
+	id, err := service.CreateContainer(ctx, createRequest)
 	if err != nil {
 		recordAction(c, "container.create", http.StatusInternalServerError, err)
 		operationError(c, err)
@@ -368,6 +399,16 @@ func CreateContainer(c *gin.Context) {
 	}
 	recordAction(c, "container.create", http.StatusOK, nil)
 	core.HandleSuccess(c, gin.H{"id": strings.TrimSpace(id), "action": "container.create"})
+}
+
+func GetContainerCreateTask(c *gin.Context) {
+	userID, _ := middleware.AuthenticatedUserID(c)
+	task, err := createTaskManager.Get(c.Param("taskId"), userID)
+	if err != nil {
+		core.HandleError(c, core.WrapError(err, core.ErrNotFound, "容器创建任务不存在"))
+		return
+	}
+	core.HandleSuccess(c, task)
 }
 
 func BatchAction(c *gin.Context) {
@@ -840,10 +881,34 @@ func badRequest(c *gin.Context, err error) {
 }
 
 func operationError(c *gin.Context, err error) {
+	if errors.Is(err, containerService.ErrInvalidContainerConfig) {
+		core.HandleError(c, core.NewErrorWithDetail(
+			core.ErrBadRequest,
+			"容器配置无效",
+			strings.TrimPrefix(err.Error(), containerService.ErrInvalidContainerConfig.Error()+": "),
+		))
+		return
+	}
 	if errors.Is(err, containerService.ErrRuntimeUnavailable) {
 		core.HandleError(c, core.NewErrorWithDetail(
 			core.ErrContainerRuntimeUnavailable,
 			"Docker运行时不可用",
+			err.Error(),
+		))
+		return
+	}
+	if errors.Is(err, containerService.ErrImagePullFailed) {
+		core.HandleError(c, core.NewErrorWithDetail(
+			core.ErrInternalError,
+			"Docker镜像拉取失败",
+			err.Error(),
+		))
+		return
+	}
+	if errors.Is(err, containerService.ErrDockerCommandTimeout) {
+		core.HandleError(c, core.NewErrorWithDetail(
+			core.ErrInternalError,
+			"Docker操作超时",
 			err.Error(),
 		))
 		return

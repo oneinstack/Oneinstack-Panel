@@ -3,6 +3,7 @@ package web
 import (
 	"fmt"
 	"io"
+	"log"
 	"oneinstack/app"
 	accessservice "oneinstack/internal/services/access"
 	authzHandler "oneinstack/router/handler/access"
@@ -35,6 +36,11 @@ import (
 
 func SetupRouter() *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
+	if app.DB() != nil {
+		if err := containerHandler.StartCreateTaskManager(); err != nil {
+			log.Printf("container task manager unavailable: %v", err)
+		}
+	}
 	logOutput := io.Writer(gin.DefaultWriter)
 	if manager := logservice.RuntimeDefault(); manager != nil {
 		logOutput = io.MultiWriter(gin.DefaultWriter, manager.Writer("http"))
@@ -427,6 +433,7 @@ func SetupRouter() *gin.Engine {
 		containerg.GET("", middleware.RequirePermission(accessservice.PermissionContainerRead), containerHandler.ListContainers)
 		containerg.POST("", middleware.RequirePermission(accessservice.PermissionContainerWrite), containerHandler.CreateContainer)
 		containerg.POST("/cleanup", middleware.RequirePermission(accessservice.PermissionContainerDangerousCleanup), containerHandler.Cleanup)
+		containerg.GET("/tasks/:taskId", middleware.RequirePermission(accessservice.PermissionContainerRead), containerHandler.GetContainerCreateTask)
 		containerg.GET("/:id", middleware.RequirePermission(accessservice.PermissionContainerRead), containerHandler.GetContainer)
 		containerg.GET("/:id/stats", middleware.RequirePermission(accessservice.PermissionContainerRead), containerHandler.ContainerStats)
 		containerg.POST("/:id/actions", middleware.RequirePermission(accessservice.PermissionContainerWrite), containerHandler.Action)
