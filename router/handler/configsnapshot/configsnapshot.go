@@ -39,6 +39,38 @@ func List(c *gin.Context) {
 	core.HandleSuccess(c, result)
 }
 
+// ListNginxResources returns the safe resource identifiers accepted by nginx
+// configuration snapshots. An unavailable web server is represented as an
+// empty list so the snapshot form can still render without a special case.
+func ListNginxResources(c *gin.Context) {
+	manager, err := websiteService.NewDefaultWebServerConfigManager()
+	if err != nil {
+		if errors.Is(err, websiteService.ErrWebServerUnavailable) {
+			core.HandleSuccess(c, gin.H{"items": []websiteService.WebServerConfigFile{}})
+			return
+		}
+		core.HandleError(c, core.WrapError(err, core.ErrConfigError, "读取可选 Nginx 配置失败"))
+		return
+	}
+	files, err := manager.List()
+	if err != nil {
+		core.HandleError(c, core.WrapError(err, core.ErrConfigError, "读取可选 Nginx 配置失败"))
+		return
+	}
+
+	items := make([]gin.H, 0, len(files))
+	for _, file := range files {
+		items = append(items, gin.H{
+			"resourceId": file.Path,
+			"name":       file.Name,
+			"path":       file.Path,
+			"main":       file.Main,
+			"site":       file.Site,
+		})
+	}
+	core.HandleSuccess(c, gin.H{"items": items})
+}
+
 type createRequest struct {
 	ResourceType  string `json:"resourceType" binding:"required"`
 	ResourceID    string `json:"resourceId" binding:"required"`

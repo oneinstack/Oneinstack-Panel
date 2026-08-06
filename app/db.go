@@ -9,6 +9,7 @@ import (
 	"oneinstack/utils"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -51,6 +52,9 @@ func InitDB(dbPath string) error {
 	gc := &gorm.Config{}
 	gc.Logger = logger.Default.LogMode(logger.Error)
 	if ENV == "debug" {
+		gc.Logger = logger.Default.LogMode(logger.Info)
+	}
+	if runtime.GOOS == "MacOS" {
 		gc.Logger = logger.Default.LogMode(logger.Info)
 	}
 
@@ -119,8 +123,11 @@ func createTables() error {
 	if err != nil {
 		return err
 	}
-	err = db.AutoMigrate(&models.ContainerTask{})
+	err = db.AutoMigrate(&models.ContainerTask{}, &models.ContainerTaskEvent{})
 	if err != nil {
+		return err
+	}
+	if err := migrateContainerTasks(); err != nil {
 		return err
 	}
 	err = db.AutoMigrate(&models.Library{})
@@ -267,6 +274,22 @@ func createTables() error {
 	}
 	if err := accessservice.SeedBuiltin(db); err != nil {
 		return err
+	}
+	return nil
+}
+
+func migrateContainerTasks() error {
+	if err := db.Model(&models.ContainerTask{}).
+		Where("operation IS NULL OR operation = ''").
+		Update("operation", models.ContainerTaskOperationCreate).Error; err != nil {
+		return fmt.Errorf("backfill container task operation: %w", err)
+	}
+	// Legacy container tasks only persisted status. The new phase column uses
+	// the same values for the existing task lifecycle states.
+	if err := db.Model(&models.ContainerTask{}).
+		Where("phase = 'queued' AND status <> 'queued'").
+		Update("phase", gorm.Expr("status")).Error; err != nil {
+		return fmt.Errorf("backfill container task phase: %w", err)
 	}
 	return nil
 }

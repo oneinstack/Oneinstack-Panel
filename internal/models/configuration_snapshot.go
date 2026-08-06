@@ -45,6 +45,7 @@ type ConfigurationSnapshot struct {
 	RequestedBy    int64      `json:"requestedBy" gorm:"not null;index"`
 	FailureMessage string     `json:"failureMessage,omitempty" gorm:"size:1024"`
 	CreatedAt      time.Time  `json:"createdAt" gorm:"index:idx_config_snapshot_resource_created,priority:3"`
+	UpdatedAt      time.Time  `json:"updatedAt"`
 	FinishedAt     *time.Time `json:"finishedAt,omitempty"`
 }
 

@@ -149,39 +149,68 @@ func (m *Manager) Sync(ctx context.Context) (Status, error) {
 	if state.Revision != "" && state.Channel == m.config.Channel {
 		request.Header.Set("If-None-Match", `"`+state.Revision+`"`)
 	}
-	response, err := m.client.Do(request)
-	if err != nil {
-		return m.failSync(fmt.Errorf("request Center software catalog: %w", err))
-	}
-	defer response.Body.Close()
-	if response.StatusCode == http.StatusNotModified {
-		now := m.now().UTC()
-		state.ID = 1
-		state.Mode = "center"
-		state.Channel = m.config.Channel
-		state.LastAttemptAt = &now
-		state.LastSyncedAt = &now
-		state.LastError = ""
-		state.UpdatedAt = now
-		if err := m.db.Save(&state).Error; err != nil {
-			return Status{}, err
+	forcedRefresh := false
+	for {
+		response, err := m.client.Do(request)
+		if err != nil {
+			return m.failSync(fmt.Errorf("request Center software catalog: %w", err))
+		}
+		if response.StatusCode == http.StatusNotModified {
+			response.Body.Close()
+			complete, checkErr := m.localCatalogComplete(state)
+			if checkErr != nil {
+				return m.failSync(fmt.Errorf("check local software catalog: %w", checkErr))
+			}
+			if complete {
+				now := m.now().UTC()
+				state.ID = 1
+				state.Mode = "center"
+				state.Channel = m.config.Channel
+				state.LastAttemptAt = &now
+				state.LastSyncedAt = &now
+				state.LastError = ""
+				state.UpdatedAt = now
+				if err := m.db.Save(&state).Error; err != nil {
+					return Status{}, err
+				}
+				return m.Status()
+			}
+			if forcedRefresh {
+				return m.failSync(errors.New("Center returned not modified but local software catalog is incomplete"))
+			}
+			// The revision is unchanged, but the local offline rows are missing
+			// or incomplete. Re-fetch the full signed document to repair them.
+			request.Header.Del("If-None-Match")
+			forcedRefresh = true
+			continue
+		}
+		defer response.Body.Close()
+		if response.StatusCode != http.StatusOK {
+			return m.failSync(decodeAPIError(response))
+		}
+		var document Document
+		if err := decodeLimitedJSON(response.Body, &document); err != nil {
+			return m.failSync(fmt.Errorf("decode Center software catalog: %w", err))
+		}
+		if err := m.verify(document); err != nil {
+			return m.failSync(fmt.Errorf("verify Center software catalog: %w", err))
+		}
+		if err := m.apply(document); err != nil {
+			return m.failSync(fmt.Errorf("apply Center software catalog: %w", err))
 		}
 		return m.Status()
 	}
-	if response.StatusCode != http.StatusOK {
-		return m.failSync(decodeAPIError(response))
+}
+
+func (m *Manager) localCatalogComplete(state models.SoftwareCatalogState) (bool, error) {
+	var count int64
+	err := m.db.Model(&models.Software{}).
+		Where("catalog_managed = ? AND catalog_channel = ? AND catalog_revision = ?", true, state.Channel, state.Revision).
+		Count(&count).Error
+	if err != nil {
+		return false, err
 	}
-	var document Document
-	if err := decodeLimitedJSON(response.Body, &document); err != nil {
-		return m.failSync(fmt.Errorf("decode Center software catalog: %w", err))
-	}
-	if err := m.verify(document); err != nil {
-		return m.failSync(fmt.Errorf("verify Center software catalog: %w", err))
-	}
-	if err := m.apply(document); err != nil {
-		return m.failSync(fmt.Errorf("apply Center software catalog: %w", err))
-	}
-	return m.Status()
+	return count == int64(state.VersionCount), nil
 }
 
 func (m *Manager) Status() (Status, error) {

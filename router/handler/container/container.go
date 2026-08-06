@@ -2,7 +2,10 @@ package container
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"mime"
 	"net/http"
 	"os"
 	"strconv"
@@ -10,6 +13,8 @@ import (
 	"time"
 
 	"oneinstack/core"
+	"oneinstack/internal/models"
+	accessservice "oneinstack/internal/services/access"
 	auditservice "oneinstack/internal/services/audit"
 	containerService "oneinstack/internal/services/container"
 	"oneinstack/router/input"
@@ -104,9 +109,7 @@ func ListImages(c *gin.Context) {
 		if search != "" && !strings.Contains(strings.ToLower(stringValue(item, "ID")+" "+stringValue(item, "Repository")+":"+stringValue(item, "Tag")), search) {
 			continue
 		}
-		if containers, ok := item["Containers"].(float64); ok {
-			item["used"] = containers > 0
-		}
+		item["used"] = imageUsed(item["Containers"])
 		filtered = append(filtered, item)
 	}
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
@@ -350,65 +353,199 @@ func CreateContainer(c *gin.Context) {
 		badRequest(c, err)
 		return
 	}
-	ctx, cancel := requestContext(c)
-	defer cancel()
-	ports := make([]containerService.PortMapping, 0, len(request.Ports))
-	for _, port := range request.Ports {
-		ports = append(ports, containerService.PortMapping{HostPort: port.HostPort, ContainerPort: port.ContainerPort, Protocol: port.Protocol})
-	}
-	mounts := make([]containerService.Mount, 0, len(request.Mounts))
-	for _, mount := range request.Mounts {
-		mounts = append(mounts, containerService.Mount{Source: mount.Source, Target: mount.Target, ReadOnly: mount.ReadOnly})
-	}
 	createRequest := containerService.ContainerCreateRequest{
-		Name: request.Name, Image: request.Image, Ports: ports, Networks: request.Networks, IPv4: request.IPv4, IPv6: request.IPv6,
-		Mounts: mounts, Command: request.Command, Entrypoint: request.Entrypoint, AutoRemove: request.AutoRemove, Privileged: request.Privileged,
+		Ports:  make([]containerService.PortMapping, 0, len(request.Ports)),
+		Mounts: make([]containerService.Mount, 0, len(request.Mounts)),
+		Name:   request.Name, Image: request.Image, Networks: request.Networks, IPv4: request.IPv4, IPv6: request.IPv6,
+		Command: request.Command, Entrypoint: request.Entrypoint, AutoRemove: request.AutoRemove, Privileged: request.Privileged,
 		TTY: request.TTY, OpenStdin: request.OpenStdin, Restart: request.Restart, CPUWeight: request.CPUWeight, CPULimit: request.CPULimit,
 		MemoryLimitMB: request.MemoryLimitMB, Labels: request.Labels, Environment: request.Environment,
 	}
-	available, err := service.ImageAvailable(ctx, request.Image)
+	for _, port := range request.Ports {
+		createRequest.Ports = append(createRequest.Ports, containerService.PortMapping{HostPort: port.HostPort, ContainerPort: port.ContainerPort, Protocol: port.Protocol})
+	}
+	for _, mount := range request.Mounts {
+		createRequest.Mounts = append(createRequest.Mounts, containerService.Mount{Source: mount.Source, Target: mount.Target, ReadOnly: mount.ReadOnly})
+	}
+	userID, _ := middleware.AuthenticatedUserID(c)
+	task, err := createTaskManager.Submit(containerService.TaskRequest{Operation: models.ContainerTaskOperationCreate, Create: &createRequest, Image: request.Image}, userID)
 	if err != nil {
-		recordAction(c, "container.create", http.StatusInternalServerError, err)
+		recordAction(c, "container.create", http.StatusBadRequest, err)
 		operationError(c, err)
 		return
 	}
-	if !available {
-		userID, _ := middleware.AuthenticatedUserID(c)
-		task, taskErr := createTaskManager.Submit(createRequest, userID)
-		if taskErr != nil {
-			recordAction(c, "container.create", http.StatusInternalServerError, taskErr)
-			operationError(c, taskErr)
-			return
-		}
-		recordAction(c, "container.create", http.StatusAccepted, nil)
-		c.JSON(http.StatusAccepted, core.SuccessResponse(gin.H{
-			"action":      "container.create",
-			"taskId":      task.ID,
-			"status":      task.Status,
-			"containerId": nil,
-			"name":        task.Name,
-			"image":       task.Image,
-		}))
-		return
-	}
-	id, err := service.CreateContainer(ctx, createRequest)
-	if err != nil {
-		recordAction(c, "container.create", http.StatusInternalServerError, err)
-		operationError(c, err)
-		return
-	}
-	recordAction(c, "container.create", http.StatusOK, nil)
-	core.HandleSuccess(c, gin.H{"id": strings.TrimSpace(id), "action": "container.create"})
+	recordAction(c, "container.create", http.StatusAccepted, nil)
+	c.JSON(http.StatusAccepted, core.SuccessResponse(containerTaskResponse(task)))
 }
 
 func GetContainerCreateTask(c *gin.Context) {
 	userID, _ := middleware.AuthenticatedUserID(c)
-	task, err := createTaskManager.Get(c.Param("taskId"), userID)
+	access, _ := middleware.UserAccess(c)
+	task, err := createTaskManager.Get(c.Param("taskId"), userID, canReadAllContainerTasks(access))
 	if err != nil {
 		core.HandleError(c, core.WrapError(err, core.ErrNotFound, "容器创建任务不存在"))
 		return
 	}
 	core.HandleSuccess(c, task)
+}
+
+func containerTaskResponse(task *models.ContainerTask) gin.H {
+	return gin.H{"taskId": task.ID, "operation": task.Operation, "status": task.Status, "progress": task.Progress,
+		"statusUrl": "/v1/containers/tasks/" + task.ID, "streamUrl": "/v1/containers/tasks/" + task.ID + "/events"}
+}
+
+func ListContainerTasks(c *gin.Context) {
+	userID, ok := middleware.AuthenticatedUserID(c)
+	if !ok {
+		core.HandleError(c, core.NewError(core.ErrUnauthorized, "无法识别当前用户"))
+		return
+	}
+	access, _ := middleware.UserAccess(c)
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("pageSize", "20"))
+	result, err := createTaskManager.List(containerService.TaskListOptions{RequestedBy: userID, IncludeAll: canReadAllContainerTasks(access), ActiveOnly: strings.EqualFold(c.Query("active"), "true"), Operation: c.Query("operation"), Status: c.Query("status"), Page: page, PageSize: pageSize})
+	if err != nil {
+		core.HandleError(c, core.WrapError(err, core.ErrInternalError, "读取容器任务失败"))
+		return
+	}
+	core.HandleSuccess(c, result)
+}
+
+func GetContainerTask(c *gin.Context) {
+	userID, _ := middleware.AuthenticatedUserID(c)
+	access, _ := middleware.UserAccess(c)
+	task, err := createTaskManager.Get(c.Param("id"), userID, canReadAllContainerTasks(access))
+	if err != nil {
+		core.HandleError(c, core.WrapError(err, core.ErrNotFound, "容器任务不存在"))
+		return
+	}
+	core.HandleSuccess(c, task)
+}
+
+func StreamContainerTaskEvents(c *gin.Context) {
+	userID, _ := middleware.AuthenticatedUserID(c)
+	access, _ := middleware.UserAccess(c)
+	task, err := createTaskManager.Get(c.Param("id"), userID, canReadAllContainerTasks(access))
+	if err != nil {
+		core.HandleError(c, core.WrapError(err, core.ErrNotFound, "容器任务不存在"))
+		return
+	}
+	after, _ := strconv.ParseInt(c.DefaultQuery("after", "0"), 10, 64)
+	if header := c.GetHeader("Last-Event-ID"); header != "" {
+		if value, parseErr := strconv.ParseInt(header, 10, 64); parseErr == nil && value > after {
+			after = value
+		}
+	}
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache, no-transform")
+	c.Header("Connection", "keep-alive")
+	c.Header("X-Accel-Buffering", "no")
+	c.Status(http.StatusOK)
+	_, _ = fmt.Fprint(c.Writer, "retry: 3000\n\n")
+	c.Writer.Flush()
+	notifications, unsubscribe := createTaskManager.Subscribe(task.ID)
+	defer unsubscribe()
+	heartbeat := time.NewTicker(15 * time.Second)
+	defer heartbeat.Stop()
+	for {
+		events, eventErr := createTaskManager.EventsAfter(task.ID, after, 200)
+		if eventErr != nil {
+			return
+		}
+		for i := range events {
+			data, marshalErr := json.Marshal(containerTaskEventResponse(&events[i]))
+			if marshalErr != nil {
+				continue
+			}
+			_, writeErr := fmt.Fprintf(c.Writer, "id: %d\nevent: %s\ndata: %s\n\n", events[i].Seq, events[i].Type, data)
+			if writeErr != nil {
+				return
+			}
+			after = events[i].Seq
+		}
+		if len(events) > 0 {
+			c.Writer.Flush()
+		}
+		current, getErr := createTaskManager.Get(task.ID, userID, canReadAllContainerTasks(access))
+		if getErr != nil {
+			return
+		}
+		if models.IsContainerTaskTerminal(current.Status) && after >= current.EventSeq {
+			return
+		}
+		select {
+		case <-c.Request.Context().Done():
+			return
+		case <-notifications:
+		case <-heartbeat.C:
+			if _, err := fmt.Fprint(c.Writer, ": heartbeat\n\n"); err != nil {
+				return
+			}
+			c.Writer.Flush()
+		}
+	}
+}
+
+func containerTaskEventResponse(event *models.ContainerTaskEvent) gin.H {
+	result := gin.H{"seq": event.Seq, "type": event.Type, "level": event.Level, "status": event.Status, "phase": event.Phase, "progress": event.Progress, "message": event.Message, "log": event.Log, "code": event.Code, "createdAt": event.CreatedAt}
+	if event.PhaseProgress != nil {
+		result["phaseProgress"] = *event.PhaseProgress
+	}
+	if strings.TrimSpace(event.DetailsJSON) != "" {
+		var details any
+		if json.Unmarshal([]byte(event.DetailsJSON), &details) == nil {
+			result["details"] = details
+		}
+	}
+	return result
+}
+
+func GetContainerTaskLog(c *gin.Context) {
+	userID, _ := middleware.AuthenticatedUserID(c)
+	access, _ := middleware.UserAccess(c)
+	cursor, _ := strconv.ParseInt(c.DefaultQuery("cursor", "0"), 10, 64)
+	limit, _ := strconv.ParseInt(c.DefaultQuery("limit", "65536"), 10, 64)
+	chunk, err := createTaskManager.ReadLog(c.Param("id"), cursor, limit, userID, canReadAllContainerTasks(access))
+	if err != nil {
+		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "读取容器任务日志失败"))
+		return
+	}
+	core.HandleSuccess(c, chunk)
+}
+
+func DownloadContainerTaskLog(c *gin.Context) {
+	userID, _ := middleware.AuthenticatedUserID(c)
+	access, _ := middleware.UserAccess(c)
+	file, info, err := createTaskManager.OpenLog(c.Param("id"), userID, canReadAllContainerTasks(access))
+	if err != nil {
+		core.HandleError(c, core.WrapError(err, core.ErrNotFound, "容器任务日志不存在"))
+		return
+	}
+	defer file.Close()
+	name := "oneinstack-container-task-" + c.Param("id") + ".log"
+	c.Header("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": name}))
+	c.Header("Content-Type", "text/plain; charset=utf-8")
+	http.ServeContent(c.Writer, c.Request, name, info.ModTime(), file)
+}
+
+func CancelContainerTask(c *gin.Context) {
+	userID, _ := middleware.AuthenticatedUserID(c)
+	access, _ := middleware.UserAccess(c)
+	if access == nil || (!access.HasPermission(accessservice.PermissionContainerWrite) && !access.HasPermission(accessservice.PermissionContainerImageWrite)) {
+		core.HandleError(c, core.NewError(core.ErrForbidden, "无权取消该容器任务"))
+		return
+	}
+	task, err := createTaskManager.Cancel(c.Param("id"), userID, canReadAllContainerTasks(access))
+	if err != nil {
+		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "取消容器任务失败"))
+		return
+	}
+	recordAction(c, "container.task.cancel", http.StatusOK, nil)
+	core.HandleSuccess(c, task)
+}
+
+func canReadAllContainerTasks(access *accessservice.UserAccess) bool {
+	return access != nil && (access.IsSuperAdmin || access.HasPermission(accessservice.PermissionTaskReadAll))
 }
 
 func BatchAction(c *gin.Context) {
@@ -471,20 +608,20 @@ func PullImage(c *gin.Context) {
 		badRequest(c, err)
 		return
 	}
-	ctx, cancel := requestContext(c)
-	defer cancel()
 	reference, err := service.RegistryImageReference(request.RegistryID, request.ImageName, request.Reference)
 	if err != nil {
 		badRequest(c, err)
 		return
 	}
-	if err := service.PullImage(ctx, reference); err != nil {
-		recordAction(c, "container.image.pull", http.StatusInternalServerError, err)
+	userID, _ := middleware.AuthenticatedUserID(c)
+	task, err := createTaskManager.Submit(containerService.TaskRequest{Operation: models.ContainerTaskOperationPull, Image: reference}, userID)
+	if err != nil {
+		recordAction(c, "container.image.pull", http.StatusBadRequest, err)
 		operationError(c, err)
 		return
 	}
 	recordAction(c, "container.image.pull", http.StatusAccepted, nil)
-	c.JSON(http.StatusAccepted, core.SuccessResponse(gin.H{"action": "container.image.pull", "reference": reference}))
+	c.JSON(http.StatusAccepted, core.SuccessResponse(containerTaskResponse(task)))
 }
 
 func ImportImage(c *gin.Context) {
@@ -569,15 +706,15 @@ func BuildImage(c *gin.Context) {
 		badRequest(c, err)
 		return
 	}
-	ctx, cancel := requestContext(c)
-	defer cancel()
-	if err := service.BuildImage(ctx, request.Name, request.Dockerfile, request.ContextPath, request.DockerfilePath, request.Labels, request.LabelsText); err != nil {
-		recordAction(c, "container.image.build", http.StatusInternalServerError, err)
+	userID, _ := middleware.AuthenticatedUserID(c)
+	task, err := createTaskManager.Submit(containerService.TaskRequest{Operation: models.ContainerTaskOperationBuild, Image: request.Name, Build: &containerService.BuildTaskRequest{Name: request.Name, Dockerfile: request.Dockerfile, ContextPath: request.ContextPath, DockerfilePath: request.DockerfilePath, Labels: request.Labels, LabelsText: request.LabelsText}}, userID)
+	if err != nil {
+		recordAction(c, "container.image.build", http.StatusBadRequest, err)
 		operationError(c, err)
 		return
 	}
 	recordAction(c, "container.image.build", http.StatusAccepted, nil)
-	c.JSON(http.StatusAccepted, core.SuccessResponse(gin.H{"action": "container.image.build", "name": request.Name}))
+	c.JSON(http.StatusAccepted, core.SuccessResponse(containerTaskResponse(task)))
 }
 
 func PruneBuildCache(c *gin.Context) { prune(c, "image.build-cache", service.PruneBuildCache) }
@@ -850,6 +987,22 @@ func list(c *gin.Context, loader func(context.Context) ([]map[string]any, error)
 func stringValue(item map[string]any, key string) string {
 	value, _ := item[key].(string)
 	return value
+}
+
+func imageUsed(value any) bool {
+	switch containers := value.(type) {
+	case float64:
+		return containers > 0
+	case int:
+		return containers > 0
+	case int64:
+		return containers > 0
+	case string:
+		count, err := strconv.Atoi(strings.TrimSpace(containers))
+		return err == nil && count > 0
+	default:
+		return false
+	}
 }
 
 func resourceAction(c *gin.Context, kind string, action func(context.Context, containerService.ResourceRequest) error) {

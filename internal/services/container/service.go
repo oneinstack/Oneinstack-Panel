@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"oneinstack/app"
@@ -493,11 +494,17 @@ func (s *Service) Logs(ctx context.Context, id string, tail int) (string, error)
 }
 
 func (s *Service) PullImage(ctx context.Context, reference string) error {
+	return s.PullImageStream(ctx, reference, nil)
+}
+
+// PullImageStream executes docker pull while forwarding each output line to emit.
+// The command remains fixed and the caller controls the bounded context lifetime.
+func (s *Service) PullImageStream(ctx context.Context, reference string, emit func(string)) error {
 	reference, err := validateReference(reference)
 	if err != nil {
 		return err
 	}
-	if _, err = s.runWithTimeout(ctx, 30*time.Minute, "pull", reference); err != nil {
+	if err = s.runStreaming(ctx, 30*time.Minute, []string{"pull", reference}, emit); err != nil {
 		return fmt.Errorf("%w: %s: %w", ErrImagePullFailed, reference, err)
 	}
 	return nil
@@ -646,6 +653,10 @@ func (s *Service) ExportImage(ctx context.Context, id string) ([]byte, error) {
 }
 
 func (s *Service) BuildImage(ctx context.Context, name, dockerfile, contextPath, dockerfilePath string, labels map[string]string, labelsText string) error {
+	return s.BuildImageStream(ctx, name, dockerfile, contextPath, dockerfilePath, labels, labelsText, nil)
+}
+
+func (s *Service) BuildImageStream(ctx context.Context, name, dockerfile, contextPath, dockerfilePath string, labels map[string]string, labelsText string, emit func(string)) error {
 	name, err := validateReference(name)
 	if err != nil {
 		return err
@@ -699,8 +710,7 @@ func (s *Service) BuildImage(ctx context.Context, name, dockerfile, contextPath,
 		}
 		args = append(args, "-f", dockerfilePath, contextPath)
 	}
-	_, err = s.run(ctx, args...)
-	return err
+	return s.runStreaming(ctx, 30*time.Minute, args, emit)
 }
 
 func (s *Service) DeleteImage(ctx context.Context, reference string, confirm bool) error {
@@ -1719,6 +1729,73 @@ func (s *Service) runWithTimeout(ctx context.Context, timeout time.Duration, arg
 		return "", errors.New(message)
 	}
 	return stdout.String(), nil
+}
+
+type streamLineWriter struct {
+	mu   sync.Mutex
+	buf  bytes.Buffer
+	all  bytes.Buffer
+	emit func(string)
+}
+
+func (w *streamLineWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	_, _ = w.buf.Write(p)
+	_, _ = w.all.Write(p)
+	for {
+		line, err := w.buf.ReadString('\n')
+		if err != nil {
+			w.buf.WriteString(line)
+			break
+		}
+		if w.emit != nil {
+			w.emit(strings.TrimSpace(line))
+		}
+	}
+	return len(p), nil
+}
+
+func (w *streamLineWriter) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.all.String()
+}
+
+func (w *streamLineWriter) Flush() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	line := strings.TrimSpace(w.buf.String())
+	w.buf.Reset()
+	if line != "" && w.emit != nil {
+		w.emit(line)
+	}
+}
+
+func (s *Service) runStreaming(ctx context.Context, timeout time.Duration, args []string, emit func(string)) error {
+	if _, err := exec.LookPath(s.binary); err != nil {
+		return fmt.Errorf("%w: %s executable file not found in PATH", ErrRuntimeUnavailable, s.binary)
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	command := exec.CommandContext(ctx, s.binary, args...)
+	var output streamLineWriter
+	output.emit = emit
+	command.Stdout = &output
+	command.Stderr = &output
+	if err := command.Run(); err != nil {
+		output.Flush()
+		if ctx.Err() != nil {
+			return fmt.Errorf("%w: docker %s", ErrDockerCommandTimeout, strings.Join(args, " "))
+		}
+		message := strings.TrimSpace(output.String())
+		if message == "" {
+			message = err.Error()
+		}
+		return errors.New(message)
+	}
+	output.Flush()
+	return nil
 }
 
 func (s *Service) linesJSON(ctx context.Context, args ...string) ([]map[string]any, error) {
