@@ -1,6 +1,7 @@
 package input
 
 import (
+	"encoding/json"
 	"fmt"
 	"net"
 	"regexp"
@@ -19,6 +20,55 @@ type QueryParam struct {
 	Type     string `json:"type"`
 	RDB      int    `json:"r_db"`
 	Name     string `json:"name"`
+}
+
+// UnmarshalJSON keeps compatibility with older frontends that submit the
+// Redis logical database number as a quoted string (for example, "0").
+// New clients may continue to submit it as a JSON number (for example, 0).
+func (p *QueryParam) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		Page
+		ID       int64           `json:"id"`
+		Addr     string          `json:"addr"`
+		Port     string          `json:"port"`
+		Root     string          `json:"root"`
+		Password string          `json:"password"`
+		Remark   string          `json:"remark"`
+		Type     string          `json:"type"`
+		RDB      json.RawMessage `json:"r_db"`
+		Name     string          `json:"name"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	*p = QueryParam{
+		Page:     raw.Page,
+		ID:       raw.ID,
+		Addr:     raw.Addr,
+		Port:     raw.Port,
+		Root:     raw.Root,
+		Password: raw.Password,
+		Remark:   raw.Remark,
+		Type:     raw.Type,
+		Name:     raw.Name,
+	}
+	if len(raw.RDB) == 0 || string(raw.RDB) == "null" {
+		return nil
+	}
+	if err := json.Unmarshal(raw.RDB, &p.RDB); err == nil {
+		return nil
+	}
+	var rdbString string
+	if err := json.Unmarshal(raw.RDB, &rdbString); err != nil {
+		return fmt.Errorf("r_db must be an integer: %w", err)
+	}
+	rdb, err := strconv.Atoi(strings.TrimSpace(rdbString))
+	if err != nil {
+		return fmt.Errorf("r_db must be an integer: %w", err)
+	}
+	p.RDB = rdb
+	return nil
 }
 
 type AddParam struct {

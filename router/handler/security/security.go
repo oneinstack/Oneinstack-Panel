@@ -3,12 +3,14 @@ package security
 import (
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"oneinstack/app"
 	"oneinstack/core"
 	auditservice "oneinstack/internal/services/audit"
 	securityservice "oneinstack/internal/services/security"
+	userservice "oneinstack/internal/services/user"
 	"oneinstack/router/middleware"
 	"oneinstack/router/session"
 
@@ -18,6 +20,54 @@ import (
 type verificationRequest struct {
 	Password string `json:"password"`
 	Code     string `json:"code"`
+}
+
+type passwordVerificationRequest struct {
+	Password string `json:"password" binding:"required"`
+}
+
+// VerifyPassword verifies the currently authenticated user's panel password
+// without changing the password or creating a new session.
+func VerifyPassword(c *gin.Context) {
+	userID, ok := authenticatedUser(c)
+	if !ok {
+		return
+	}
+	username := valueString(usernameValue(c))
+	remoteIP := auditservice.RemoteIP(c.Request)
+	if allowed, remaining := securityservice.PasswordVerificationAllowed(userID, remoteIP); !allowed {
+		seconds := int64(remaining.Seconds())
+		if seconds < 1 {
+			seconds = 1
+		}
+		c.Header("Retry-After", strconv.FormatInt(seconds, 10))
+		auditservice.RecordAuthEvent(c, "auth.password_verify_blocked", username, userID,
+			http.StatusTooManyRequests, "failure", "", "密码校验失败次数过多，正在冷却")
+		core.HandleError(c, core.NewError(core.ErrRateLimitExceeded, "密码校验失败次数过多，请稍后再试"))
+		return
+	}
+	var request passwordVerificationRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		core.HandleError(c, core.NewError(core.ErrBadRequest, "请输入当前面板密码"))
+		return
+	}
+
+	account, verified := userservice.CheckUserPassword(username, request.Password)
+	if !verified || account.ID != userID {
+		locked, cooldown := securityservice.RecordPasswordVerificationFailure(userID, remoteIP)
+		auditservice.RecordAuthEvent(c, "auth.password_verify", username, userID,
+			http.StatusUnauthorized, "failure", "", "当前面板密码错误")
+		if locked {
+			c.Header("Retry-After", strconv.FormatInt(int64(cooldown.Seconds()), 10))
+		}
+		core.HandleError(c, core.NewError(core.ErrInvalidPassword, "当前面板密码错误"))
+		return
+	}
+
+	securityservice.ResetPasswordVerificationFailures(userID, remoteIP)
+	auditservice.RecordAuthEvent(c, "auth.password_verify", username, userID,
+		http.StatusOK, "success", "", "")
+	core.HandleSuccess(c, gin.H{"verified": true})
 }
 
 func Status(c *gin.Context) {

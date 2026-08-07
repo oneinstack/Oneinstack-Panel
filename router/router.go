@@ -120,6 +120,7 @@ func SetupRouter() *gin.Engine {
 		snapshotg.DELETE("/:id", middleware.RequirePermission(accessservice.PermissionConfigSnapshotWrite), configsnapshotHandler.Delete)
 	}
 	protected.GET("/auth/me", authzHandler.Me)
+	protected.POST("/auth/verify-password", securityHandler.VerifyPassword)
 	protected.GET("/access/matrix", authzHandler.Matrix)
 	protected.GET("/sessions", securityHandler.ListSessions)
 	protected.POST("/sessions/revoke-others", securityHandler.RevokeOtherSessions)

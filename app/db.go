@@ -9,6 +9,7 @@ import (
 	"oneinstack/utils"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -50,12 +51,9 @@ func Initialize() error {
 func InitDB(dbPath string) error {
 	gc := &gorm.Config{}
 	gc.Logger = logger.Default.LogMode(logger.Error)
-	if ENV == "debug" {
+	if ENV == "debug" || runtime.GOOS == "darwin" {
 		gc.Logger = logger.Default.LogMode(logger.Info)
 	}
-	//if runtime.GOOS == "darwin" {
-	//	gc.Logger = logger.Default.LogMode(logger.Info)
-	//}
 
 	separator := "?"
 	if strings.Contains(dbPath, "?") {
