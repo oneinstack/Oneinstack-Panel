@@ -147,11 +147,8 @@ func writeSSE(c *gin.Context, id uint64, event string, payload interface{}) erro
 func runtimeManager(c *gin.Context) (*logservice.Manager, bool) {
 	manager := logservice.RuntimeDefault()
 	if manager == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{
-			"success": false,
-			"code":    "RUNTIME_LOG_UNAVAILABLE",
-			"message": "运行日志服务未初始化",
-		})
+		core.HandleErrorWithStatus(c, http.StatusServiceUnavailable,
+			core.NewErrorWithDetail("RUNTIME_LOG_UNAVAILABLE", "运行日志服务不可用", "运行日志服务未初始化，无法查询、统计或订阅运行日志。"))
 		return nil, false
 	}
 	return manager, true

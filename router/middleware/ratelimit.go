@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"fmt"
 	"net/http"
 	"sync"
 	"time"
@@ -108,12 +109,7 @@ func RateLimitMiddleware(rate int, window time.Duration) gin.HandlerFunc {
 		ip := c.ClientIP()
 
 		if !limiter.IsAllowed(ip) {
-			c.JSON(http.StatusTooManyRequests, gin.H{
-				"error":       "Rate limit exceeded",
-				"code":        "RATE_LIMIT_EXCEEDED",
-				"retry_after": int(window.Seconds()),
-			})
-			c.Abort()
+			writeAPIError(c, http.StatusTooManyRequests, "RATE_LIMIT_EXCEEDED", "请求频率超过限制", fmt.Sprintf("请在 %d 秒后重试。", int(window.Seconds())))
 			return
 		}
 

@@ -222,9 +222,6 @@ func csvSafe(value string) string {
 }
 
 func writeError(c *gin.Context, status int, code, message string) {
-	c.JSON(status, gin.H{
-		"success": false,
-		"code":    code,
-		"message": message,
-	})
+	core.HandleErrorWithStatus(c, status,
+		core.NewErrorWithDetail(core.ErrorCode(code), message, "审计接口处理失败；具体原因："+message))
 }

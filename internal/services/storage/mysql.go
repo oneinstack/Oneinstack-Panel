@@ -59,18 +59,19 @@ func NewMysqlOP(p *models.Storage, lib string) *MysqlOP {
 
 func (s *MysqlOP) Connect() error {
 	driverConfig := mysqlDriver.Config{
-		User:              s.Root,
-		Passwd:            s.Password,
-		Net:               "tcp",
-		Addr:              net.JoinHostPort(s.Addr, s.Port),
-		DBName:            s.Lib,
-		Collation:         "utf8mb4_unicode_ci",
-		ParseTime:         true,
-		Loc:               time.Local,
-		Timeout:           5 * time.Second,
-		ReadTimeout:       15 * time.Second,
-		WriteTimeout:      15 * time.Second,
-		InterpolateParams: true,
+		User:                 s.Root,
+		Passwd:               s.Password,
+		Net:                  "tcp",
+		Addr:                 net.JoinHostPort(s.Addr, s.Port),
+		DBName:               s.Lib,
+		Collation:            "utf8mb4_unicode_ci",
+		ParseTime:            true,
+		Loc:                  time.Local,
+		Timeout:              5 * time.Second,
+		ReadTimeout:          15 * time.Second,
+		WriteTimeout:         15 * time.Second,
+		InterpolateParams:    true,
+		AllowNativePasswords: true,
 	}
 	dsn := driverConfig.FormatDSN()
 	db, err := gorm.Open(gormmysql.Open(dsn), &gorm.Config{

@@ -191,11 +191,8 @@ func GetMetrics(c *gin.Context) {
 
 func checkEnabled(c *gin.Context, manager *bastionservice.Manager) bool {
 	if manager == nil || !app.ONE_CONFIG.Bastion.Enabled {
-		c.JSON(http.StatusServiceUnavailable, gin.H{
-			"success": false,
-			"code":    "BASTION_UNAVAILABLE",
-			"message": "堡垒机模块未启用",
-		})
+		core.HandleErrorWithStatus(c, http.StatusServiceUnavailable,
+			core.NewErrorWithDetail("BASTION_UNAVAILABLE", "堡垒机服务不可用", "堡垒机模块未启用或服务管理器未初始化，请先在面板配置中启用堡垒机模块。"))
 		return false
 	}
 	return true

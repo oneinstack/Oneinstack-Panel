@@ -368,9 +368,8 @@ func TestChannel(c *gin.Context) {
 func managerOrUnavailable(c *gin.Context) (*monitorservice.Manager, bool) {
 	manager := monitorservice.Default()
 	if manager == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{
-			"success": false, "code": "MONITOR_UNAVAILABLE", "message": "监控服务未初始化",
-		})
+		core.HandleErrorWithStatus(c, http.StatusServiceUnavailable,
+			core.NewErrorWithDetail("MONITOR_UNAVAILABLE", "监控服务不可用", "监控服务未初始化，无法读取监控指标或执行监控操作。"))
 		return nil, false
 	}
 	return manager, true

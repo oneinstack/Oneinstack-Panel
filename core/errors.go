@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"oneinstack/internal/i18n"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 )
@@ -95,11 +96,12 @@ func NewFieldError(code ErrorCode, message, field string) *AppError {
 
 // APIResponse 统一的API响应结构
 type APIResponse struct {
-	Success bool        `json:"success"`
-	Code    interface{} `json:"code"`
-	Message string      `json:"message"`
-	Data    interface{} `json:"data,omitempty"`
-	Error   *AppError   `json:"error,omitempty"`
+	Success bool             `json:"success"`
+	Code    interface{}      `json:"code"`
+	Message string           `json:"message"`
+	Data    interface{}      `json:"data,omitempty"`
+	Error   *AppError        `json:"error,omitempty"`
+	Errors  ValidationErrors `json:"errors,omitempty"`
 }
 
 // SuccessResponse 成功响应
@@ -118,21 +120,54 @@ func SuccessResponseForLocale(locale string, data interface{}) *APIResponse {
 
 // ErrorResponse 错误响应
 func ErrorResponse(err *AppError) *APIResponse {
+	message := detailedErrorMessage(err.Message, err.Detail)
 	return &APIResponse{
 		Success: false,
 		Code:    err.Code,
-		Message: err.Message,
-		Error:   err,
+		Message: message,
+		Error: &AppError{
+			Code:       err.Code,
+			Message:    message,
+			MessageKey: err.MessageKey,
+			Detail:     explicitErrorDetail(err.Detail),
+			Field:      err.Field,
+		},
 	}
 }
 
 func ErrorResponseForLocale(err *AppError, locale string) *APIResponse {
 	response := ErrorResponse(err)
 	if err.MessageKey != "" {
-		response.Message = i18n.Message(locale, err.MessageKey, err.Message)
+		response.Message = detailedErrorMessage(i18n.Message(locale, err.MessageKey, err.Message), err.Detail)
 		response.Error.Message = response.Message
 	}
 	return response
+}
+
+// detailedErrorMessage keeps the stable high-level operation description while
+// exposing the concrete cause in the top-level message for clients that do not
+// inspect error.detail.
+func detailedErrorMessage(message, detail string) string {
+	message = strings.TrimSpace(message)
+	detail = strings.TrimSpace(detail)
+	if detail == "" || strings.Contains(message, detail) {
+		return message
+	}
+	if message == "" {
+		return detail
+	}
+	return fmt.Sprintf("%s：%s", message, detail)
+}
+
+func explicitErrorDetail(detail string) string {
+	detail = strings.TrimSpace(detail)
+	if detail == "" {
+		return "未提供底层错误详情，请根据 code 和 message 检查请求参数、权限配置及相关服务状态。"
+	}
+	if strings.HasPrefix(detail, "具体原因：") {
+		return detail
+	}
+	return "具体原因：" + detail
 }
 
 // HandleSuccess 处理成功响应
@@ -206,10 +241,11 @@ func (ve ValidationErrors) Error() string {
 
 // HandleValidationErrors 处理验证错误
 func HandleValidationErrors(c *gin.Context, errors ValidationErrors) {
-	c.JSON(http.StatusBadRequest, gin.H{
-		"success": false,
-		"code":    ErrBadRequest,
-		"message": i18n.Message(c.GetString("locale"), i18n.MessageValidationFailed, "输入验证失败"),
-		"errors":  errors,
-	})
+	message := i18n.Message(c.GetString("locale"), i18n.MessageValidationFailed, "输入验证失败")
+	response := ErrorResponseForLocale(
+		NewErrorWithDetail(ErrBadRequest, message, "字段校验失败："+errors.Error()),
+		c.GetString("locale"),
+	)
+	response.Errors = errors
+	c.JSON(http.StatusBadRequest, response)
 }

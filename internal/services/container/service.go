@@ -1792,6 +1792,11 @@ func (s *Service) runStreaming(ctx context.Context, timeout time.Duration, args 
 		if message == "" {
 			message = err.Error()
 		}
+		lowerMessage := strings.ToLower(message)
+		if strings.Contains(lowerMessage, "cannot connect to the docker daemon") ||
+			strings.Contains(lowerMessage, "is the docker daemon running") {
+			return fmt.Errorf("%w: %s", ErrRuntimeUnavailable, message)
+		}
 		return errors.New(message)
 	}
 	output.Flush()

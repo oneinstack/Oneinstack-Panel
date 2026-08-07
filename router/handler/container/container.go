@@ -1043,10 +1043,18 @@ func operationError(c *gin.Context, err error) {
 		return
 	}
 	if errors.Is(err, containerService.ErrRuntimeUnavailable) {
+		detail := strings.TrimSpace(strings.TrimPrefix(err.Error(), containerService.ErrRuntimeUnavailable.Error()+": "))
+		if strings.Contains(detail, "executable file not found in PATH") {
+			detail = "未找到 Docker 可执行文件（docker），请安装 Docker CLI/Engine，并确认 docker 已加入面板进程的 PATH。"
+		} else if detail != "" {
+			detail = "Docker 客户端已安装，但无法连接 Docker 守护进程；请确认 Docker 服务已启动，并检查当前面板运行用户是否有访问 Docker socket 的权限。底层错误：" + detail
+		} else {
+			detail = "无法确认 Docker 运行时状态；请检查 Docker 是否安装、服务是否启动，以及面板进程的 PATH 和 Docker socket 权限。"
+		}
 		core.HandleError(c, core.NewErrorWithDetail(
 			core.ErrContainerRuntimeUnavailable,
-			"Docker运行时不可用",
-			err.Error(),
+			"Docker运行时不可用，请先安装并启动 Docker 后重试",
+			detail,
 		))
 		return
 	}

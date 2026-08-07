@@ -22,10 +22,7 @@ const panelEntryHintStylesheetPath = "/__panel-entry_hint.css"
 func MidUiHandle(c *gin.Context) {
 	requestPath := c.Request.URL.Path
 	if requestPath == "/v1" || strings.HasPrefix(requestPath, "/v1/") {
-		c.JSON(http.StatusNotFound, gin.H{
-			"code":    "NOT_FOUND",
-			"message": "API route not found",
-		})
+		writeAPIError(c, http.StatusNotFound, "NOT_FOUND", "API 路由不存在", "未找到与当前 HTTP 方法和路径匹配的接口路由："+c.Request.Method+" "+requestPath)
 		return
 	}
 	if c.Request.Method != http.MethodGet && c.Request.Method != http.MethodHead {
@@ -83,10 +80,7 @@ func MidUiHandle(c *gin.Context) {
 		servedPath = "index.html"
 		data, err = webui.ReadFile(servedPath)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"code":    "WEB_UI_UNAVAILABLE",
-				"message": "Web UI is unavailable",
-			})
+			writeAPIError(c, http.StatusInternalServerError, "WEB_UI_UNAVAILABLE", "Web UI 不可用", "无法从嵌入资源中读取 index.html，前端资源可能未构建或部署不完整。")
 			return
 		}
 	}
@@ -111,10 +105,7 @@ func PanelEntryGuard() gin.HandlerFunc {
 			c.Next()
 			return
 		}
-		c.AbortWithStatusJSON(http.StatusNotFound, gin.H{
-			"code":    "NOT_FOUND",
-			"message": "resource not found",
-		})
+		writeAPIError(c, http.StatusNotFound, "NOT_FOUND", "请求资源不存在", "当前请求未通过面板入口路径校验，或 Origin/Referer 与面板入口不匹配。")
 	}
 }
 
