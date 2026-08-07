@@ -3,8 +3,9 @@
 setup() {
   PROJECT_DIR="$(cd "${BATS_TEST_DIRNAME}/.." && pwd)"
   INSTALLER="${PROJECT_DIR}/install.sh"
-  TEST_ROOT="$(mktemp -d "${BATS_TEST_TMPDIR}/one-install-root.XXXXXX")"
-  FIXTURE_DIR="$(mktemp -d "${BATS_TEST_TMPDIR}/one-install-fixture.XXXXXX")"
+  TEST_TMPDIR="${BATS_TEST_TMPDIR:-${TMPDIR:-/tmp}}"
+  TEST_ROOT="$(mktemp -d "${TEST_TMPDIR}/one-install-root.XXXXXX")"
+  FIXTURE_DIR="$(mktemp -d "${TEST_TMPDIR}/one-install-fixture.XXXXXX")"
   FAKE_BINARY="${FIXTURE_DIR}/one"
   CONFIG_SOURCE="${FIXTURE_DIR}/config.yaml"
 

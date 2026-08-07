@@ -3,7 +3,8 @@
 setup() {
   PROJECT_DIR="$(cd "${BATS_TEST_DIRNAME}/.." && pwd)"
   REGISTRY_ROOT="${PROJECT_DIR}/script-registry/bundled"
-  TEST_WORK="$(mktemp -d "${BATS_TEST_TMPDIR}/one-components.XXXXXX")"
+  TEST_TMPDIR="${BATS_TEST_TMPDIR:-${TMPDIR:-/tmp}}"
+  TEST_WORK="$(mktemp -d "${TEST_TMPDIR}/one-components.XXXXXX")"
   COMPONENTS=(nginx mysql php redis)
   REQUIRED_BIN="${TEST_WORK}/required-bin"
   mkdir -p "${REQUIRED_BIN}"
