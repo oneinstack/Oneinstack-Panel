@@ -21,7 +21,7 @@ import (
 func ListEvents(c *gin.Context) {
 	filter, err := parseFilter(c)
 	if err != nil {
-		writeError(c, http.StatusBadRequest, "INVALID_AUDIT_FILTER", err.Error())
+		writeError(c, http.StatusBadRequest, core.ErrInvalidParameter, "审计日志筛选条件无效，请检查页码、时间范围和数量限制")
 		return
 	}
 	manager, ok := managerOrUnavailable(c)
@@ -30,7 +30,7 @@ func ListEvents(c *gin.Context) {
 	}
 	result, err := manager.List(filter)
 	if err != nil {
-		writeError(c, http.StatusInternalServerError, "AUDIT_QUERY_FAILED", "查询审计日志失败")
+		writeError(c, http.StatusInternalServerError, core.ErrOperationFailed, "查询审计日志失败，请稍后重试")
 		return
 	}
 	core.HandleSuccess(c, result)
@@ -39,7 +39,7 @@ func ListEvents(c *gin.Context) {
 func GetEvent(c *gin.Context) {
 	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
 	if err != nil || id == 0 {
-		writeError(c, http.StatusBadRequest, "INVALID_AUDIT_ID", "审计日志 ID 无效")
+		writeError(c, http.StatusBadRequest, core.ErrInvalidID, "审计日志 ID 无效，请提供正整数")
 		return
 	}
 	manager, ok := managerOrUnavailable(c)
@@ -48,11 +48,11 @@ func GetEvent(c *gin.Context) {
 	}
 	event, err := manager.Get(id)
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		writeError(c, http.StatusNotFound, "AUDIT_EVENT_NOT_FOUND", "审计日志不存在")
+		writeError(c, http.StatusNotFound, core.ErrNotFound, "审计日志不存在或已被清理")
 		return
 	}
 	if err != nil {
-		writeError(c, http.StatusInternalServerError, "AUDIT_QUERY_FAILED", "查询审计日志失败")
+		writeError(c, http.StatusInternalServerError, core.ErrOperationFailed, "查询审计日志失败，请稍后重试")
 		return
 	}
 	core.HandleSuccess(c, event)
@@ -65,7 +65,7 @@ func GetStats(c *gin.Context) {
 	}
 	stats, err := manager.Stats()
 	if err != nil {
-		writeError(c, http.StatusInternalServerError, "AUDIT_QUERY_FAILED", "查询审计统计失败")
+		writeError(c, http.StatusInternalServerError, core.ErrOperationFailed, "查询审计统计失败，请稍后重试")
 		return
 	}
 	core.HandleSuccess(c, gin.H{
@@ -83,7 +83,7 @@ func VerifyChain(c *gin.Context) {
 	}
 	result, err := manager.Verify()
 	if err != nil {
-		writeError(c, http.StatusInternalServerError, "AUDIT_VERIFY_FAILED", "校验审计链失败")
+		writeError(c, http.StatusInternalServerError, core.ErrOperationFailed, "审计链校验失败，请检查审计服务状态")
 		return
 	}
 	core.HandleSuccess(c, result)
@@ -92,7 +92,7 @@ func VerifyChain(c *gin.Context) {
 func ExportEvents(c *gin.Context) {
 	filter, err := parseFilter(c)
 	if err != nil {
-		writeError(c, http.StatusBadRequest, "INVALID_AUDIT_FILTER", err.Error())
+		writeError(c, http.StatusBadRequest, core.ErrInvalidParameter, "审计日志筛选条件无效，请检查页码、时间范围和数量限制")
 		return
 	}
 	manager, ok := managerOrUnavailable(c)
@@ -101,7 +101,7 @@ func ExportEvents(c *gin.Context) {
 	}
 	events, err := manager.Export(filter, app.ONE_CONFIG.System.AuditExportMaxRows)
 	if err != nil {
-		writeError(c, http.StatusInternalServerError, "AUDIT_EXPORT_FAILED", "导出审计日志失败")
+		writeError(c, http.StatusInternalServerError, core.ErrOperationFailed, "导出审计日志失败，请稍后重试")
 		return
 	}
 
@@ -126,7 +126,7 @@ func ExportEvents(c *gin.Context) {
 func managerOrUnavailable(c *gin.Context) (*auditservice.Manager, bool) {
 	manager := auditservice.Default()
 	if manager == nil {
-		writeError(c, http.StatusServiceUnavailable, "AUDIT_UNAVAILABLE", "审计服务未初始化")
+		writeError(c, http.StatusServiceUnavailable, core.ErrServiceUnavailable, "审计服务尚未初始化，请稍后重试")
 		return nil, false
 	}
 	return manager, true
@@ -221,7 +221,6 @@ func csvSafe(value string) string {
 	return value
 }
 
-func writeError(c *gin.Context, status int, code, message string) {
-	core.HandleErrorWithStatus(c, status,
-		core.NewErrorWithDetail(core.ErrorCode(code), message, "审计接口处理失败；具体原因："+message))
+func writeError(c *gin.Context, status int, code core.ErrorCode, message string) {
+	core.HandleErrorWithStatus(c, status, core.NewError(code, message))
 }

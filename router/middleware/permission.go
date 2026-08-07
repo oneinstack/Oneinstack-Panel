@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"oneinstack/app"
+	"oneinstack/core"
 	accessservice "oneinstack/internal/services/access"
 	auditservice "oneinstack/internal/services/audit"
 	"strings"
@@ -155,10 +156,10 @@ func RequirePermission(requiredPermission string) gin.HandlerFunc {
 
 func writePermissionDenied(c *gin.Context, access *accessservice.UserAccess, requiredPermission string) {
 	if access == nil || (!access.IsSuperAdmin && len(access.Roles) == 0 && len(access.Permissions) == 0) {
-		writeAPIError(c, http.StatusForbidden, "ADMIN_REQUIRED", "需要管理员权限", "当前用户未加载有效的管理员权限，无法访问该接口。")
+		writeAPIError(c, http.StatusForbidden, core.ErrAdminRequired, "当前操作需要管理员权限", "当前用户未加载有效的管理员权限，无法访问该接口。")
 		return
 	}
-	writeAPIError(c, http.StatusForbidden, "INSUFFICIENT_PERMISSIONS", "权限不足", "当前接口要求权限："+requiredPermission+"。")
+	writeAPIError(c, http.StatusForbidden, core.ErrInsufficientPermissions, "当前用户没有执行此操作的权限", "当前接口要求权限："+requiredPermission+"。")
 }
 
 func RequireAnyPermission(requiredPermissions ...string) gin.HandlerFunc {
@@ -185,7 +186,7 @@ func LoadAuthorizationContext() gin.HandlerFunc {
 		}
 		database := app.DB()
 		if database == nil {
-			writeAPIError(c, http.StatusServiceUnavailable, "PERMISSION_UNAVAILABLE", "权限服务不可用", "服务端数据库未初始化，无法加载当前用户权限。")
+			writeAPIError(c, http.StatusServiceUnavailable, core.ErrPermissionUnavailable, "权限服务不可用，请稍后重试", "服务端数据库未初始化，无法加载当前用户权限。")
 			return
 		}
 		access, err := accessservice.NewService(database).LoadUserAccess(userID)
@@ -195,7 +196,7 @@ func LoadAuthorizationContext() gin.HandlerFunc {
 				c.Next()
 				return
 			}
-			writeAPIError(c, http.StatusServiceUnavailable, "PERMISSION_UNAVAILABLE", "权限服务不可用", "读取当前用户权限失败："+err.Error())
+			writeAPIError(c, http.StatusServiceUnavailable, core.ErrPermissionUnavailable, "权限服务不可用，请稍后重试", "读取当前用户权限失败："+err.Error())
 			return
 		}
 		c.Set(ContextUserAccess, access)
@@ -207,7 +208,7 @@ func RequireSuperAdmin() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		access, ok := UserAccess(c)
 		if !ok || !access.IsSuperAdmin {
-			writeAPIError(c, http.StatusForbidden, "ADMIN_REQUIRED", "需要管理员权限", "只有超级管理员可以访问该接口。")
+			writeAPIError(c, http.StatusForbidden, core.ErrAdminRequired, "当前操作需要超级管理员权限", "只有超级管理员可以访问该接口。")
 			return
 		}
 		c.Next()

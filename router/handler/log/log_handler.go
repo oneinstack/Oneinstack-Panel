@@ -148,7 +148,7 @@ func runtimeManager(c *gin.Context) (*logservice.Manager, bool) {
 	manager := logservice.RuntimeDefault()
 	if manager == nil {
 		core.HandleErrorWithStatus(c, http.StatusServiceUnavailable,
-			core.NewErrorWithDetail("RUNTIME_LOG_UNAVAILABLE", "运行日志服务不可用", "运行日志服务未初始化，无法查询、统计或订阅运行日志。"))
+			core.NewErrorWithDetail(core.ErrServiceUnavailable, "运行日志服务不可用，请稍后重试", "运行日志服务未初始化，无法查询、统计或订阅运行日志。"))
 		return nil, false
 	}
 	return manager, true

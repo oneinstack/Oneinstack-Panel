@@ -3,6 +3,7 @@ package middleware
 import (
 	"fmt"
 	"net/http"
+	"oneinstack/core"
 	"sync"
 	"time"
 
@@ -109,7 +110,7 @@ func RateLimitMiddleware(rate int, window time.Duration) gin.HandlerFunc {
 		ip := c.ClientIP()
 
 		if !limiter.IsAllowed(ip) {
-			writeAPIError(c, http.StatusTooManyRequests, "RATE_LIMIT_EXCEEDED", "请求频率超过限制", fmt.Sprintf("请在 %d 秒后重试。", int(window.Seconds())))
+			writeAPIError(c, http.StatusTooManyRequests, core.ErrRateLimitExceeded, "请求过于频繁，请在稍后重试", fmt.Sprintf("请在 %d 秒后重试。", int(window.Seconds())))
 			return
 		}
 

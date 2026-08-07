@@ -54,7 +54,7 @@ func TestEmbeddedUIRoutes(t *testing.T) {
 			path:        "/v1/does-not-exist",
 			status:      http.StatusNotFound,
 			contentType: "application/json",
-			contains:    `"code":"NOT_FOUND"`,
+			contains:    `"code":1001`,
 		},
 	}
 

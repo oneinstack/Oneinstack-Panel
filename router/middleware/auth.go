@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/url"
 	"oneinstack/app"
+	"oneinstack/core"
 	"oneinstack/internal/models"
 	accessservice "oneinstack/internal/services/access"
 	securityservice "oneinstack/internal/services/security"
@@ -34,23 +35,23 @@ func AuthMiddleware() gin.HandlerFunc {
 		if c.Request.URL.Path == "/v1/ssh/open" && c.Query("ticket") != "" {
 			claims, err := sshservice.DefaultTickets.Consume(c.Query("ticket"), c.ClientIP())
 			if err != nil {
-				writeAPIError(c, http.StatusUnauthorized, "INVALID_TERMINAL_TICKET", "终端票据无效或已过期", "终端票据校验失败，请重新打开终端并获取新的票据。")
+				writeAPIError(c, http.StatusUnauthorized, core.ErrInvalidTerminalTicket, "终端票据无效或已过期", "终端票据校验失败，请重新打开终端并获取新的票据。")
 				return
 			}
 			if claims.UserAgent != c.GetHeader("User-Agent") {
-				writeAPIError(c, http.StatusUnauthorized, "INVALID_TERMINAL_TICKET", "终端票据无效", "当前请求的 User-Agent 与签发终端票据时不一致，请重新打开终端。")
+				writeAPIError(c, http.StatusUnauthorized, core.ErrInvalidTerminalTicket, "终端票据无效", "当前请求的 User-Agent 与签发终端票据时不一致，请重新打开终端。")
 				return
 			}
 			database := app.DB()
 			if database == nil {
-				writeAPIError(c, http.StatusServiceUnavailable, "SESSION_UNAVAILABLE", "会话服务不可用", "服务端数据库未初始化，无法校验终端来源会话。")
+				writeAPIError(c, http.StatusServiceUnavailable, core.ErrSessionUnavailable, "会话服务不可用，请稍后重试", "服务端数据库未初始化，无法校验终端来源会话。")
 				return
 			}
 			var account models.User
 			if err := database.First(&account, claims.UserID).Error; err != nil ||
 				account.Username != claims.Username ||
 				account.EffectiveSecurityVersion() != claims.SecurityVersion {
-				writeAPIError(c, http.StatusUnauthorized, "SESSION_INVALIDATED", "终端来源会话无效", "终端票据关联的用户或安全版本与当前服务端记录不一致。")
+				writeAPIError(c, http.StatusUnauthorized, core.ErrSessionInvalidated, "终端来源会话无效，请重新打开终端", "终端票据关联的用户或安全版本与当前服务端记录不一致。")
 				return
 			}
 			sessionManager := securityservice.NewSessionManager(database)
@@ -59,7 +60,7 @@ func AuthMiddleware() gin.HandlerFunc {
 				claims.UserID,
 				claims.SecurityVersion,
 			); err != nil {
-				writeAPIError(c, http.StatusUnauthorized, "SESSION_INVALIDATED", "终端来源会话已过期或撤销", "请重新登录后再打开终端。")
+				writeAPIError(c, http.StatusUnauthorized, core.ErrSessionInvalidated, "终端来源会话已过期或撤销，请重新打开终端", "请重新登录后再打开终端。")
 				return
 			}
 			c.Set(ContextUsername, claims.Username)
@@ -78,12 +79,12 @@ func AuthMiddleware() gin.HandlerFunc {
 		if authHeader != "" {
 			parts := strings.SplitN(authHeader, " ", 2)
 			if len(parts) != 2 || parts[0] != "Bearer" {
-				writeAPIError(c, http.StatusUnauthorized, "INVALID_TOKEN_FORMAT", "Authorization 请求头格式无效", "应使用 Bearer <token> 格式传递访问令牌。")
+				writeAPIError(c, http.StatusUnauthorized, core.ErrInvalidTokenFormat, "Authorization 请求头格式无效，请使用 Bearer Token", "应使用 Bearer <token> 格式传递访问令牌。")
 				return
 			}
 			token = parts[1]
 			if len(token) == 0 {
-				writeAPIError(c, http.StatusUnauthorized, "EMPTY_TOKEN", "访问令牌为空", "Authorization 请求头未提供有效的 Bearer 令牌。")
+				writeAPIError(c, http.StatusUnauthorized, core.ErrEmptyToken, "访问令牌不能为空", "Authorization 请求头未提供有效的 Bearer 令牌。")
 				return
 			}
 		} else if cookie, err := c.Request.Cookie(session.CookieName); err == nil {
@@ -92,7 +93,7 @@ func AuthMiddleware() gin.HandlerFunc {
 		}
 
 		if token == "" {
-			writeAPIError(c, http.StatusUnauthorized, "MISSING_TOKEN", "未通过身份认证", "请在请求中提供有效的 Bearer 令牌或登录会话 Cookie。")
+			writeAPIError(c, http.StatusUnauthorized, core.ErrMissingToken, "请先登录后再访问此接口", "请在请求中提供有效的 Bearer 令牌或登录会话 Cookie。")
 			return
 		}
 
@@ -101,19 +102,19 @@ func AuthMiddleware() gin.HandlerFunc {
 			if authMode == AuthModeCookie {
 				session.Clear(c)
 			}
-			writeAPIError(c, http.StatusUnauthorized, "INVALID_TOKEN", "访问令牌无效或已过期", "令牌校验失败："+err.Error())
+			writeAPIError(c, http.StatusUnauthorized, core.ErrInvalidToken, "访问令牌无效或已过期，请重新登录", "令牌校验失败："+err.Error())
 			return
 		}
 		if claims.SessionID == "" {
 			if authMode == AuthModeCookie {
 				session.Clear(c)
 			}
-			writeAPIError(c, http.StatusUnauthorized, "SESSION_REQUIRED", "当前会话不受服务端会话安全机制保护", "请退出后重新登录，以签发包含服务端会话标识的新令牌。")
+			writeAPIError(c, http.StatusUnauthorized, core.ErrSessionRequired, "当前会话缺少安全标识，请退出后重新登录", "请退出后重新登录，以签发包含服务端会话标识的新令牌。")
 			return
 		}
 		database := app.DB()
 		if database == nil {
-			writeAPIError(c, http.StatusServiceUnavailable, "SESSION_UNAVAILABLE", "会话服务不可用", "服务端数据库未初始化，无法校验当前登录会话。")
+			writeAPIError(c, http.StatusServiceUnavailable, core.ErrSessionUnavailable, "会话服务不可用，请稍后重试", "服务端数据库未初始化，无法校验当前登录会话。")
 			return
 		}
 		var account models.User
@@ -122,7 +123,7 @@ func AuthMiddleware() gin.HandlerFunc {
 			if authMode == AuthModeCookie {
 				session.Clear(c)
 			}
-			writeAPIError(c, http.StatusUnauthorized, "SESSION_INVALIDATED", "登录会话已失效", "用户安全版本与会话记录不一致，可能是密码或安全配置已变更。")
+			writeAPIError(c, http.StatusUnauthorized, core.ErrSessionInvalidated, "登录会话已失效，请重新登录", "用户安全版本与会话记录不一致，可能是密码或安全配置已变更。")
 			return
 		}
 		sessionManager := securityservice.NewSessionManager(database)
@@ -132,7 +133,7 @@ func AuthMiddleware() gin.HandlerFunc {
 			if authMode == AuthModeCookie {
 				session.Clear(c)
 			}
-			writeAPIError(c, http.StatusUnauthorized, "SESSION_INVALIDATED", "登录会话已过期或已撤销", "请重新登录后再继续操作。")
+			writeAPIError(c, http.StatusUnauthorized, core.ErrSessionInvalidated, "登录会话已过期或已撤销，请重新登录", "请重新登录后再继续操作。")
 			return
 		}
 
@@ -162,7 +163,7 @@ func RequirePasswordChange() gin.HandlerFunc {
 			c.Next()
 			return
 		}
-		writeAPIError(c, http.StatusForbidden, "PASSWORD_CHANGE_REQUIRED", "必须先修改初始密码", "当前账号仍使用初始密码，完成密码修改前不能访问该管理接口。")
+		writeAPIError(c, http.StatusForbidden, core.ErrPasswordChangeRequired, "请先修改初始密码后再访问此接口", "当前账号仍使用初始密码，完成密码修改前不能访问该管理接口。")
 	}
 }
 
@@ -189,7 +190,7 @@ func CSRFMiddleware() gin.HandlerFunc {
 		origin, err := url.Parse(c.GetHeader("Origin"))
 		if err != nil || (origin.Scheme != "http" && origin.Scheme != "https") ||
 			origin.User != nil || !strings.EqualFold(origin.Host, c.Request.Host) {
-			writeAPIError(c, http.StatusForbidden, "CSRF_REJECTED", "跨站请求已拒绝", "Cookie 会话请求的 Origin 与当前面板地址不匹配。")
+			writeAPIError(c, http.StatusForbidden, core.ErrCSRFRejected, "请求来源无效，请刷新页面后重试", "Cookie 会话请求的 Origin 与当前面板地址不匹配。")
 			return
 		}
 		c.Next()

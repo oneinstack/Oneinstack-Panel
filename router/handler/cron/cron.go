@@ -55,7 +55,7 @@ func cronServiceOrUnavailable(c *gin.Context) (*cron.CronService, bool) {
 	service, err := getCronService()
 	if err != nil {
 		core.HandleErrorWithStatus(c, http.StatusServiceUnavailable,
-			core.NewErrorWithDetail("CRON_UNAVAILABLE", "计划任务服务不可用", "计划任务服务未初始化，无法执行当前操作；具体原因："+err.Error()))
+			core.NewErrorWithDetail(core.ErrTaskServiceUnavailable, "计划任务服务不可用，请稍后重试", "计划任务服务未初始化，无法执行当前操作；具体原因："+err.Error()))
 		return nil, false
 	}
 	return service, true

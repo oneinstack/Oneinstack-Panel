@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"oneinstack/app"
+	"oneinstack/core"
 	systemservice "oneinstack/internal/services/system"
 	"oneinstack/utils/httpex"
 	"oneinstack/webui"
@@ -22,7 +23,7 @@ const panelEntryHintStylesheetPath = "/__panel-entry_hint.css"
 func MidUiHandle(c *gin.Context) {
 	requestPath := c.Request.URL.Path
 	if requestPath == "/v1" || strings.HasPrefix(requestPath, "/v1/") {
-		writeAPIError(c, http.StatusNotFound, "NOT_FOUND", "API 路由不存在", "未找到与当前 HTTP 方法和路径匹配的接口路由："+c.Request.Method+" "+requestPath)
+		writeAPIError(c, http.StatusNotFound, core.ErrNotFound, "请求的接口不存在", "未找到与当前 HTTP 方法和路径匹配的接口路由："+c.Request.Method+" "+requestPath)
 		return
 	}
 	if c.Request.Method != http.MethodGet && c.Request.Method != http.MethodHead {
@@ -80,7 +81,7 @@ func MidUiHandle(c *gin.Context) {
 		servedPath = "index.html"
 		data, err = webui.ReadFile(servedPath)
 		if err != nil {
-			writeAPIError(c, http.StatusInternalServerError, "WEB_UI_UNAVAILABLE", "Web UI 不可用", "无法从嵌入资源中读取 index.html，前端资源可能未构建或部署不完整。")
+			writeAPIError(c, http.StatusInternalServerError, core.ErrWebUIUnavailable, "面板页面暂不可用，请检查前端资源部署", "无法从嵌入资源中读取 index.html，前端资源可能未构建或部署不完整。")
 			return
 		}
 	}
@@ -105,7 +106,7 @@ func PanelEntryGuard() gin.HandlerFunc {
 			c.Next()
 			return
 		}
-		writeAPIError(c, http.StatusNotFound, "NOT_FOUND", "请求资源不存在", "当前请求未通过面板入口路径校验，或 Origin/Referer 与面板入口不匹配。")
+		writeAPIError(c, http.StatusNotFound, core.ErrNotFound, "请求的面板资源不存在", "当前请求未通过面板入口路径校验，或 Origin/Referer 与面板入口不匹配。")
 	}
 }
 

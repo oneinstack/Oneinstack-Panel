@@ -66,13 +66,13 @@ func TestManagementRoutesRequireAuthentication(t *testing.T) {
 			}
 
 			var response struct {
-				Code string `json:"code"`
+				Code int `json:"code"`
 			}
 			if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 				t.Fatalf("decode response: %v", err)
 			}
-			if response.Code != "MISSING_TOKEN" {
-				t.Fatalf("expected MISSING_TOKEN, got %q", response.Code)
+			if response.Code != 1105 {
+				t.Fatalf("expected MISSING_TOKEN(1105), got %d", response.Code)
 			}
 		})
 		checked++
@@ -281,7 +281,7 @@ func TestProtectedRouteRejectsLegacyStatelessToken(t *testing.T) {
 	router.ServeHTTP(recorder, req)
 
 	if recorder.Code != http.StatusUnauthorized ||
-		!strings.Contains(recorder.Body.String(), "SESSION_REQUIRED") {
+		!strings.Contains(recorder.Body.String(), `"code":1108`) {
 		t.Fatalf("legacy token response: status=%d body=%s",
 			recorder.Code, recorder.Body.String())
 	}
@@ -312,7 +312,7 @@ func TestStorageRoutesRequireAdministratorRole(t *testing.T) {
 	if recorder.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403; response=%s", recorder.Code, recorder.Body.String())
 	}
-	if !strings.Contains(recorder.Body.String(), "ADMIN_REQUIRED") {
+	if !strings.Contains(recorder.Body.String(), `"code":1202`) {
 		t.Fatalf("unexpected response: %s", recorder.Body.String())
 	}
 }
@@ -354,7 +354,7 @@ func TestSoftwareServiceRoutesRequireAdministratorRole(t *testing.T) {
 		response := httptest.NewRecorder()
 		router.ServeHTTP(response, request)
 		if response.Code != http.StatusForbidden ||
-			!strings.Contains(response.Body.String(), "ADMIN_REQUIRED") {
+			!strings.Contains(response.Body.String(), `"code":1202`) {
 			t.Fatalf(
 				"%s %s: status=%d body=%s",
 				request.Method,
@@ -391,7 +391,7 @@ func TestFirewallRoutesRequireAdministratorRole(t *testing.T) {
 	if recorder.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403; response=%s", recorder.Code, recorder.Body.String())
 	}
-	if !strings.Contains(recorder.Body.String(), "ADMIN_REQUIRED") {
+	if !strings.Contains(recorder.Body.String(), `"code":1202`) {
 		t.Fatalf("unexpected response: %s", recorder.Body.String())
 	}
 }
@@ -416,7 +416,7 @@ func TestPanelUpdateRoutesRequireAdministratorRole(t *testing.T) {
 	if recorder.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403; response=%s", recorder.Code, recorder.Body.String())
 	}
-	if !strings.Contains(recorder.Body.String(), "ADMIN_REQUIRED") {
+	if !strings.Contains(recorder.Body.String(), `"code":1202`) {
 		t.Fatalf("unexpected response: %s", recorder.Body.String())
 	}
 }
@@ -441,7 +441,7 @@ func TestMonitoringRoutesRequireAdministratorRole(t *testing.T) {
 	if recorder.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403; response=%s", recorder.Code, recorder.Body.String())
 	}
-	if !strings.Contains(recorder.Body.String(), "ADMIN_REQUIRED") {
+	if !strings.Contains(recorder.Body.String(), `"code":1202`) {
 		t.Fatalf("unexpected response: %s", recorder.Body.String())
 	}
 }
@@ -531,7 +531,7 @@ func TestCookieAuthenticationRejectsCrossOriginMutation(t *testing.T) {
 		t.Fatalf("cross-origin status = %d, want 403; response=%s",
 			recorder.Code, recorder.Body.String())
 	}
-	if !strings.Contains(recorder.Body.String(), "CSRF_REJECTED") {
+	if !strings.Contains(recorder.Body.String(), `"code":1205`) {
 		t.Fatalf("unexpected response: %s", recorder.Body.String())
 	}
 }
@@ -560,7 +560,7 @@ func TestLogoutClearsSessionCookie(t *testing.T) {
 	reuseResponse := httptest.NewRecorder()
 	router.ServeHTTP(reuseResponse, reuse)
 	if reuseResponse.Code != http.StatusUnauthorized ||
-		!strings.Contains(reuseResponse.Body.String(), "SESSION_INVALIDATED") {
+		!strings.Contains(reuseResponse.Body.String(), `"code":1109`) {
 		t.Fatalf("logged-out session was reusable: status=%d body=%s",
 			reuseResponse.Code, reuseResponse.Body.String())
 	}
@@ -654,7 +654,7 @@ func TestInitialAdministratorMustChangePasswordBeforeUsingPanel(t *testing.T) {
 	blockedResponse := httptest.NewRecorder()
 	router.ServeHTTP(blockedResponse, blocked)
 	if blockedResponse.Code != http.StatusForbidden ||
-		!strings.Contains(blockedResponse.Body.String(), "PASSWORD_CHANGE_REQUIRED") {
+		!strings.Contains(blockedResponse.Body.String(), `"code":1112`) {
 		t.Fatalf("initial session was not restricted: status=%d body=%s",
 			blockedResponse.Code, blockedResponse.Body.String())
 	}
@@ -761,7 +761,7 @@ func TestAuditRoutesRequireAdminAndExposeVerifiedEvents(t *testing.T) {
 	forbiddenResponse := httptest.NewRecorder()
 	router.ServeHTTP(forbiddenResponse, forbidden)
 	if forbiddenResponse.Code != http.StatusForbidden ||
-		!strings.Contains(forbiddenResponse.Body.String(), "ADMIN_REQUIRED") {
+		!strings.Contains(forbiddenResponse.Body.String(), `"code":1202`) {
 		t.Fatalf("non-admin audit response: status=%d body=%s", forbiddenResponse.Code, forbiddenResponse.Body.String())
 	}
 }
@@ -820,7 +820,7 @@ func TestRuntimeLogRoutesRequireAdminAndExposePersistedEntries(t *testing.T) {
 	forbiddenResponse := httptest.NewRecorder()
 	router.ServeHTTP(forbiddenResponse, forbidden)
 	if forbiddenResponse.Code != http.StatusForbidden ||
-		!strings.Contains(forbiddenResponse.Body.String(), "ADMIN_REQUIRED") {
+		!strings.Contains(forbiddenResponse.Body.String(), `"code":1202`) {
 		t.Fatalf("non-admin runtime logs: status=%d body=%s",
 			forbiddenResponse.Code, forbiddenResponse.Body.String())
 	}

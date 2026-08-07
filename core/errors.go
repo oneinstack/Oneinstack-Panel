@@ -4,45 +4,77 @@ import (
 	"fmt"
 	"net/http"
 	"oneinstack/internal/i18n"
-	"strings"
 
 	"github.com/gin-gonic/gin"
 )
 
-// ErrorCode 错误码类型
-type ErrorCode string
+// ErrorCode 错误码类型。
+// 0 is reserved for successful responses; non-zero values are stable API codes.
+type ErrorCode int
 
 // 定义错误码常量
 const (
 	// 通用错误码
-	ErrInternalError     ErrorCode = "INTERNAL_ERROR"
-	ErrBadRequest        ErrorCode = "BAD_REQUEST"
-	ErrUnauthorized      ErrorCode = "UNAUTHORIZED"
-	ErrForbidden         ErrorCode = "FORBIDDEN"
-	ErrNotFound          ErrorCode = "NOT_FOUND"
-	ErrConflict          ErrorCode = "CONFLICT"
-	ErrRateLimitExceeded ErrorCode = "RATE_LIMIT_EXCEEDED"
+	ErrInternalError     ErrorCode = 1003
+	ErrBadRequest        ErrorCode = 1000
+	ErrUnauthorized      ErrorCode = 1100
+	ErrForbidden         ErrorCode = 1200
+	ErrNotFound          ErrorCode = 1001
+	ErrConflict          ErrorCode = 1002
+	ErrRateLimitExceeded ErrorCode = 1004
+	ErrValidationFailed  ErrorCode = 1005
+	ErrInvalidParameter  ErrorCode = 1006
+	ErrRequiredField     ErrorCode = 1007
+	ErrInvalidID         ErrorCode = 1008
 
 	// 认证相关错误码
-	ErrInvalidToken    ErrorCode = "INVALID_TOKEN"
-	ErrTokenExpired    ErrorCode = "TOKEN_EXPIRED"
-	ErrInvalidPassword ErrorCode = "INVALID_PASSWORD"
-	ErrWeakPassword    ErrorCode = "WEAK_PASSWORD"
+	ErrInvalidToken           ErrorCode = 1101
+	ErrTokenExpired           ErrorCode = 1102
+	ErrInvalidPassword        ErrorCode = 1103
+	ErrWeakPassword           ErrorCode = 1104
+	ErrMissingToken           ErrorCode = 1105
+	ErrEmptyToken             ErrorCode = 1106
+	ErrInvalidTokenFormat     ErrorCode = 1107
+	ErrSessionRequired        ErrorCode = 1108
+	ErrSessionInvalidated     ErrorCode = 1109
+	ErrSessionUnavailable     ErrorCode = 1110
+	ErrInvalidTerminalTicket  ErrorCode = 1111
+	ErrPasswordChangeRequired ErrorCode = 1112
 
 	// 系统相关错误码
-	ErrSystemError                 ErrorCode = "SYSTEM_ERROR"
-	ErrCommandFailed               ErrorCode = "COMMAND_FAILED"
-	ErrFileNotFound                ErrorCode = "FILE_NOT_FOUND"
-	ErrPermissionDenied            ErrorCode = "PERMISSION_DENIED"
-	ErrInsufficientStorage         ErrorCode = "INSUFFICIENT_STORAGE"
-	ErrContainerRuntimeUnavailable ErrorCode = "CONTAINER_RUNTIME_UNAVAILABLE"
+	ErrPermissionDenied        ErrorCode = 1201
+	ErrAdminRequired           ErrorCode = 1202
+	ErrInsufficientPermissions ErrorCode = 1203
+	ErrPermissionUnavailable   ErrorCode = 1204
+	ErrCSRFRejected            ErrorCode = 1205
+
+	// 系统、配置及依赖错误码
+	ErrSystemError                 ErrorCode = 3000
+	ErrCommandFailed               ErrorCode = 3001
+	ErrFileNotFound                ErrorCode = 2004
+	ErrInsufficientStorage         ErrorCode = 3003
+	ErrContainerRuntimeUnavailable ErrorCode = 3004
+	ErrWebUIUnavailable            ErrorCode = 3005
+	ErrServiceUnavailable          ErrorCode = 3006
+	ErrConfigReadFailed            ErrorCode = 3007
+	ErrConfigValidateFailed        ErrorCode = 3008
+	ErrConfigApplyFailed           ErrorCode = 3009
 
 	// 业务相关错误码
-	ErrUserNotFound     ErrorCode = "USER_NOT_FOUND"
-	ErrUserExists       ErrorCode = "USER_EXISTS"
-	ErrSoftwareNotFound ErrorCode = "SOFTWARE_NOT_FOUND"
-	ErrWebsiteNotFound  ErrorCode = "WEBSITE_NOT_FOUND"
-	ErrConfigError      ErrorCode = "CONFIG_ERROR"
+	ErrUserNotFound         ErrorCode = 2000
+	ErrUserExists           ErrorCode = 2001
+	ErrSoftwareNotFound     ErrorCode = 2002
+	ErrWebsiteNotFound      ErrorCode = 2003
+	ErrResourceStateInvalid ErrorCode = 2006
+	ErrOperationExpired     ErrorCode = 2007
+	ErrConfigError          ErrorCode = 3002
+
+	// 任务及操作错误码
+	ErrOperationFailed        ErrorCode = 4000
+	ErrOperationNotConfirmed  ErrorCode = 4001
+	ErrTaskCanceled           ErrorCode = 4002
+	ErrTaskTimeout            ErrorCode = 4003
+	ErrTaskServiceUnavailable ErrorCode = 4004
 )
 
 // AppError 应用错误结构
@@ -50,16 +82,16 @@ type AppError struct {
 	Code       ErrorCode `json:"code"`
 	Message    string    `json:"message"`
 	MessageKey string    `json:"messageKey,omitempty"`
-	Detail     string    `json:"detail,omitempty"`
-	Field      string    `json:"field,omitempty"`
+	Detail     string    `json:"-"`
+	Field      string    `json:"-"`
 }
 
 // Error 实现error接口
 func (e *AppError) Error() string {
 	if e.Detail != "" {
-		return fmt.Sprintf("[%s] %s: %s", e.Code, e.Message, e.Detail)
+		return fmt.Sprintf("[%d] %s: %s", e.Code, e.Message, e.Detail)
 	}
-	return fmt.Sprintf("[%s] %s", e.Code, e.Message)
+	return fmt.Sprintf("[%d] %s", e.Code, e.Message)
 }
 
 // NewError 创建新的应用错误
@@ -97,10 +129,9 @@ func NewFieldError(code ErrorCode, message, field string) *AppError {
 // APIResponse 统一的API响应结构
 type APIResponse struct {
 	Success bool             `json:"success"`
-	Code    interface{}      `json:"code"`
+	Code    ErrorCode        `json:"code"`
 	Message string           `json:"message"`
-	Data    interface{}      `json:"data,omitempty"`
-	Error   *AppError        `json:"error,omitempty"`
+	Data    interface{}      `json:"data"`
 	Errors  ValidationErrors `json:"errors,omitempty"`
 }
 
@@ -120,54 +151,49 @@ func SuccessResponseForLocale(locale string, data interface{}) *APIResponse {
 
 // ErrorResponse 错误响应
 func ErrorResponse(err *AppError) *APIResponse {
-	message := detailedErrorMessage(err.Message, err.Detail)
-	return &APIResponse{
+	message := normalizeErrorMessage(err.Message)
+	response := &APIResponse{
 		Success: false,
 		Code:    err.Code,
 		Message: message,
-		Error: &AppError{
-			Code:       err.Code,
-			Message:    message,
-			MessageKey: err.MessageKey,
-			Detail:     explicitErrorDetail(err.Detail),
-			Field:      err.Field,
-		},
+		Data:    nil,
 	}
+	if err.Field != "" {
+		response.Errors = ValidationErrors{{
+			Field:   err.Field,
+			Code:    err.Code,
+			Message: message,
+		}}
+	}
+	return response
 }
 
 func ErrorResponseForLocale(err *AppError, locale string) *APIResponse {
 	response := ErrorResponse(err)
 	if err.MessageKey != "" {
-		response.Message = detailedErrorMessage(i18n.Message(locale, err.MessageKey, err.Message), err.Detail)
-		response.Error.Message = response.Message
+		response.Message = normalizeErrorMessage(i18n.Message(locale, err.MessageKey, err.Message))
+		if len(response.Errors) > 0 {
+			response.Errors[0].Message = response.Message
+		}
 	}
 	return response
 }
 
-// detailedErrorMessage keeps the stable high-level operation description while
-// exposing the concrete cause in the top-level message for clients that do not
-// inspect error.detail.
-func detailedErrorMessage(message, detail string) string {
-	message = strings.TrimSpace(message)
-	detail = strings.TrimSpace(detail)
-	if detail == "" || strings.Contains(message, detail) {
+// normalizeErrorMessage keeps legacy handler messages useful to API clients
+// while individual handlers are migrated to business-specific descriptions.
+func normalizeErrorMessage(message string) string {
+	switch message {
+	case "请求参数错误", "请求参数无效":
+		return "请求参数无效，请检查提交内容"
+	case "请求参数格式错误":
+		return "请求参数格式不正确，请检查字段类型和格式"
+	case "操作失败", "操作异常", "请求失败":
+		return "操作执行失败，请稍后重试"
+	case "系统错误":
+		return "系统处理异常，请稍后重试"
+	default:
 		return message
 	}
-	if message == "" {
-		return detail
-	}
-	return fmt.Sprintf("%s：%s", message, detail)
-}
-
-func explicitErrorDetail(detail string) string {
-	detail = strings.TrimSpace(detail)
-	if detail == "" {
-		return "未提供底层错误详情，请根据 code 和 message 检查请求参数、权限配置及相关服务状态。"
-	}
-	if strings.HasPrefix(detail, "具体原因：") {
-		return detail
-	}
-	return "具体原因：" + detail
 }
 
 // HandleSuccess 处理成功响应
@@ -191,21 +217,31 @@ func getHTTPStatusCode(code ErrorCode) int {
 	switch code {
 	case ErrBadRequest, ErrWeakPassword, ErrConfigError:
 		return http.StatusBadRequest
-	case ErrUnauthorized, ErrInvalidToken, ErrTokenExpired, ErrInvalidPassword:
+	case ErrValidationFailed, ErrInvalidParameter, ErrRequiredField, ErrInvalidID, ErrConfigValidateFailed:
+		return http.StatusBadRequest
+	case ErrUnauthorized, ErrInvalidToken, ErrTokenExpired, ErrInvalidPassword,
+		ErrMissingToken, ErrEmptyToken, ErrInvalidTokenFormat, ErrSessionRequired,
+		ErrSessionInvalidated, ErrInvalidTerminalTicket:
 		return http.StatusUnauthorized
-	case ErrForbidden, ErrPermissionDenied:
+	case ErrForbidden, ErrPermissionDenied, ErrAdminRequired, ErrInsufficientPermissions,
+		ErrCSRFRejected, ErrPasswordChangeRequired:
 		return http.StatusForbidden
 	case ErrNotFound, ErrUserNotFound, ErrSoftwareNotFound, ErrWebsiteNotFound, ErrFileNotFound:
 		return http.StatusNotFound
-	case ErrConflict, ErrUserExists:
+	case ErrConflict, ErrUserExists, ErrResourceStateInvalid, ErrOperationExpired,
+		ErrOperationNotConfirmed, ErrTaskCanceled:
 		return http.StatusConflict
 	case ErrRateLimitExceeded:
 		return http.StatusTooManyRequests
 	case ErrInsufficientStorage:
 		return http.StatusInsufficientStorage
-	case ErrContainerRuntimeUnavailable:
+	case ErrContainerRuntimeUnavailable, ErrSessionUnavailable, ErrPermissionUnavailable,
+		ErrWebUIUnavailable, ErrServiceUnavailable, ErrTaskServiceUnavailable:
 		return http.StatusServiceUnavailable
-	case ErrInternalError, ErrSystemError, ErrCommandFailed:
+	case ErrTaskTimeout:
+		return http.StatusGatewayTimeout
+	case ErrInternalError, ErrSystemError, ErrCommandFailed, ErrConfigReadFailed,
+		ErrConfigApplyFailed, ErrOperationFailed:
 		return http.StatusInternalServerError
 	default:
 		return http.StatusInternalServerError
@@ -223,9 +259,10 @@ func WrapError(err error, code ErrorCode, message string) *AppError {
 
 // ValidationError 验证错误
 type ValidationError struct {
-	Field   string `json:"field"`
-	Message string `json:"message"`
-	Value   string `json:"value,omitempty"`
+	Field   string    `json:"field"`
+	Code    ErrorCode `json:"code"`
+	Message string    `json:"message"`
+	Value   string    `json:"value,omitempty"`
 }
 
 // ValidationErrors 多个验证错误
@@ -242,10 +279,7 @@ func (ve ValidationErrors) Error() string {
 // HandleValidationErrors 处理验证错误
 func HandleValidationErrors(c *gin.Context, errors ValidationErrors) {
 	message := i18n.Message(c.GetString("locale"), i18n.MessageValidationFailed, "输入验证失败")
-	response := ErrorResponseForLocale(
-		NewErrorWithDetail(ErrBadRequest, message, "字段校验失败："+errors.Error()),
-		c.GetString("locale"),
-	)
+	response := ErrorResponseForLocale(NewError(ErrValidationFailed, message), c.GetString("locale"))
 	response.Errors = errors
 	c.JSON(http.StatusBadRequest, response)
 }
