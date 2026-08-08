@@ -31,8 +31,6 @@ allow_unsupported=false
 purge=false
 assume_yes=false
 temporary_password_file=""
-terminal_user_runtime="one-terminal"
-terminal_home_runtime="/var/lib/one-terminal"
 
 usage() {
   cat <<'EOF'
@@ -269,9 +267,7 @@ check_host() {
   esac
 
   command -v systemctl >/dev/null 2>&1 || die "系统缺少 systemctl"
-  command -v setpriv >/dev/null 2>&1 || die "系统缺少 setpriv（util-linux），无法提供低权限 Web 终端"
   command -v prlimit >/dev/null 2>&1 || die "系统缺少 prlimit（util-linux），无法限制 Web 终端资源"
-  command -v getent >/dev/null 2>&1 || die "系统缺少 getent，无法校验 Web 终端用户"
 }
 
 check_install_sources() {
@@ -467,46 +463,6 @@ install_files() {
   fi
 }
 
-ensure_terminal_user() {
-  [[ -z "$root_prefix" ]] || return 0
-
-  local nologin_shell="/usr/sbin/nologin"
-  [[ -x "$nologin_shell" ]] || nologin_shell="/sbin/nologin"
-  [[ -x "$nologin_shell" ]] || die "系统缺少 nologin，无法创建隔离终端用户"
-
-  if getent passwd "$terminal_user_runtime" >/dev/null 2>&1; then
-    local passwd_entry uid home shell groups
-    passwd_entry="$(getent passwd "$terminal_user_runtime")"
-    IFS=: read -r _ _ uid _ _ home shell <<<"$passwd_entry"
-    [[ "$uid" =~ ^[0-9]+$ && "$uid" -ne 0 ]] ||
-      die "终端用户 ${terminal_user_runtime} 的 UID 无效"
-    [[ "$home" == "$terminal_home_runtime" ]] ||
-      die "终端用户 ${terminal_user_runtime} 的主目录不是 ${terminal_home_runtime}"
-    [[ "$shell" == "/usr/sbin/nologin" || "$shell" == "/sbin/nologin" ]] ||
-      die "终端用户 ${terminal_user_runtime} 必须使用 nologin"
-    groups="$(id -nG "$terminal_user_runtime" 2>/dev/null || true)"
-    case " ${groups} " in
-      *" root "*|*" sudo "*|*" wheel "*|*" admin "*|*" docker "*|*" lxd "*|*" podman "*|*" systemd-journal "*)
-        die "终端用户 ${terminal_user_runtime} 不能属于特权用户组"
-        ;;
-    esac
-  else
-    command -v useradd >/dev/null 2>&1 ||
-      die "系统缺少 useradd，无法创建隔离终端用户"
-    useradd \
-      --system \
-      --user-group \
-      --home-dir "$terminal_home_runtime" \
-      --create-home \
-      --shell "$nologin_shell" \
-      --comment "OneinStack isolated web terminal" \
-      "$terminal_user_runtime"
-  fi
-
-  install -d -m 0750 -o "$terminal_user_runtime" -g "$terminal_user_runtime" \
-    "$terminal_home_runtime"
-}
-
 password_file_mode_is_safe() {
   local file="$1"
   local mode
@@ -613,7 +569,6 @@ run_install() {
     backup_existing
   fi
   install_files
-  ensure_terminal_user
   initialize_admin
   start_service
   check_health
