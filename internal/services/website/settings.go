@@ -278,6 +278,83 @@ func (service *Service) ReadManagedConfig(
 	return manager.Read(relative)
 }
 
+// RestoreMissingManagedConfigs rebuilds every missing enabled website virtual
+// host from the Panel database. The database is the canonical source for
+// managed website settings; existing files are deliberately left untouched so
+// manual edits are not overwritten during a component reinstall.
+func (service *Service) RestoreMissingManagedConfigs(ctx context.Context) (int, error) {
+	if err := service.validate(); err != nil {
+		return 0, err
+	}
+	binary := filepath.Clean(strings.TrimSpace(service.Publisher.NginxBinary))
+	if filepath.IsAbs(binary) {
+		info, err := os.Stat(binary)
+		if errors.Is(err, os.ErrNotExist) {
+			return 0, nil
+		}
+		if err != nil {
+			return 0, fmt.Errorf("检查 Web 服务器程序: %w", err)
+		}
+		if !info.Mode().IsRegular() || info.Mode().Perm()&0111 == 0 {
+			return 0, errors.New("Web 服务器程序不可执行")
+		}
+	}
+	var sites []models.Website
+	if err := service.DB.
+		Where("enabled = ?", true).
+		Order("id ASC").
+		Find(&sites).Error; err != nil {
+		return 0, fmt.Errorf("读取启用的网站列表: %w", err)
+	}
+	changes := make(map[string]*string)
+	for i := range sites {
+		site := &sites[i]
+		configPath, err := service.ConfigFile(site)
+		if err != nil {
+			return 0, fmt.Errorf("检查网站 %s 的配置路径: %w", site.Name, err)
+		}
+		info, statErr := os.Lstat(configPath)
+		switch {
+		case statErr == nil:
+			if !info.Mode().IsRegular() {
+				return 0, fmt.Errorf("网站 %s 的配置路径不是普通文件", site.Name)
+			}
+			continue
+		case !errors.Is(statErr, os.ErrNotExist):
+			return 0, fmt.Errorf("检查网站 %s 的配置文件: %w", site.Name, statErr)
+		}
+
+		_, settings, err := service.loadSettings(site.ID)
+		if err != nil {
+			return 0, fmt.Errorf("读取网站 %s 的配置参数: %w", site.Name, err)
+		}
+		tlsOptions, err := service.activeTLSOptions(site.ID, site.Domain)
+		if err != nil {
+			return 0, fmt.Errorf("读取网站 %s 的证书配置: %w", site.Name, err)
+		}
+		prepared, err := prepareWebsiteWithTLSAndSettings(
+			site,
+			service.WebRoot,
+			service.LogRoot,
+			service.challengeRoot(),
+			tlsOptions,
+			settings,
+		)
+		if err != nil {
+			return 0, fmt.Errorf("重新生成网站 %s 的配置: %w", site.Name, err)
+		}
+		content := prepared.config
+		changes[prepared.configName] = &content
+	}
+	if len(changes) == 0 {
+		return 0, nil
+	}
+	if _, err := service.Publisher.Publish(ctx, changes); err != nil {
+		return 0, fmt.Errorf("发布恢复的网站配置: %w", err)
+	}
+	return len(changes), nil
+}
+
 func (service *Service) UpdateManagedConfig(
 	ctx context.Context,
 	id int64,

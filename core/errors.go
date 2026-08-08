@@ -162,7 +162,7 @@ func detailedErrorMessage(message, detail string) string {
 func explicitErrorDetail(detail string) string {
 	detail = strings.TrimSpace(detail)
 	if detail == "" {
-		return "未提供底层错误详情，请根据 code 和 message 检查请求参数、权限配置及相关服务状态。"
+		return ""
 	}
 	if strings.HasPrefix(detail, "具体原因：") {
 		return detail

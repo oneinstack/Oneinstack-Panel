@@ -40,6 +40,20 @@ server {
     }
 }
 EOF
+latest_removed=""
+for candidate in "${state_dir}"/removed/*; do
+  [[ -d "${candidate}/install/conf/conf.d" ]] || continue
+  latest_removed="${candidate}"
+done
+if [[ -n "${latest_removed}" ]]; then
+  emit_progress 58 restore_site_config "正在恢复卸载前的网站配置"
+  shopt -s nullglob
+  for preserved_config in "${latest_removed}/install/conf/conf.d/"*.conf; do
+    [[ -f "${preserved_config}" && ! -L "${preserved_config}" ]] || continue
+    install -m 0640 -- "${preserved_config}" "${install_dir}/conf/conf.d/$(basename -- "${preserved_config}")"
+  done
+  shopt -u nullglob
+fi
 if [[ ! -f "${web_root}/default/index.html" ]]; then
   printf '%s\n' '<!doctype html><meta charset="utf-8"><title>Oneinstack Panel</title><h1>It works.</h1>' >"${web_root}/default/index.html"
   chown "${run_user}:${run_group}" "${web_root}/default/index.html"

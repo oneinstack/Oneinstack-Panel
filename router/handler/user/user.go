@@ -3,6 +3,9 @@ package user
 import (
 	"errors"
 	"net/http"
+	"strings"
+	"time"
+
 	"oneinstack/app"
 	"oneinstack/core"
 	"oneinstack/internal/models"
@@ -15,7 +18,6 @@ import (
 	"oneinstack/router/middleware"
 	"oneinstack/router/session"
 	"oneinstack/utils"
-	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -35,6 +37,7 @@ func LoginHandler(c *gin.Context) {
 		})
 		return
 	}
+	req.Username = strings.TrimSpace(req.Username)
 	c.Set(middleware.ContextUsername, req.Username)
 
 	// 验证用户名格式

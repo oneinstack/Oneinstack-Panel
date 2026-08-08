@@ -29,11 +29,6 @@ func ValidateUsername(username string) *core.AppError {
 		return core.NewFieldError(core.ErrBadRequest, "用户名只能包含字母、数字、下划线和连字符", "username")
 	}
 
-	// 不能以数字开头
-	if unicode.IsDigit(rune(username[0])) {
-		return core.NewFieldError(core.ErrBadRequest, "用户名不能以数字开头", "username")
-	}
-
 	return nil
 }
 
