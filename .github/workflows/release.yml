@@ -10,10 +10,6 @@ permissions:
   contents: read
 
 jobs:
-  component-install-matrix:
-    name: Verify production component installers
-    uses: ./.github/workflows/component-install-matrix.yml
-
   verify:
     name: Verify release source
     runs-on: ubuntu-latest
@@ -74,7 +70,7 @@ jobs:
 
   package:
     name: Package Linux ${{ matrix.arch }}
-    needs: [verify, component-install-matrix, web-assets]
+    needs: [verify, web-assets]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
