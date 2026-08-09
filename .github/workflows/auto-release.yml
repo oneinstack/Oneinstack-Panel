@@ -1,0 +1,67 @@
+name: Auto Release from Main
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  actions: write
+  contents: write
+
+concurrency:
+  group: oneinstack-panel-auto-release
+  cancel-in-progress: false
+
+jobs:
+  tag-and-dispatch:
+    name: Create build tag and dispatch Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Resolve automatic release tag
+        id: release
+        shell: bash
+        env:
+          CONFIGURED_BASE_VERSION: ${{ vars.AUTO_RELEASE_BASE_VERSION }}
+        run: |
+          base_version="${CONFIGURED_BASE_VERSION:-0.1.0}"
+          if [[ ! "${base_version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "AUTO_RELEASE_BASE_VERSION must use MAJOR.MINOR.PATCH" >&2
+            exit 1
+          fi
+          release_tag="v${base_version}-build.${GITHUB_RUN_NUMBER}"
+          echo "tag=${release_tag}" >> "${GITHUB_OUTPUT}"
+
+      - name: Create immutable tag
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          if git rev-parse --verify --quiet "refs/tags/${RELEASE_TAG}" >/dev/null; then
+            existing_commit="$(git rev-list --max-count=1 "${RELEASE_TAG}")"
+            if [[ "${existing_commit}" != "${GITHUB_SHA}" ]]; then
+              echo "Tag ${RELEASE_TAG} already points to ${existing_commit}, not ${GITHUB_SHA}" >&2
+              exit 1
+            fi
+            echo "Tag ${RELEASE_TAG} already exists for this commit."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag --annotate "${RELEASE_TAG}" "${GITHUB_SHA}" \
+            --message "Automated Panel build ${GITHUB_RUN_NUMBER}"
+          git push origin "refs/tags/${RELEASE_TAG}"
+
+      - name: Dispatch release workflow for tag
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          gh workflow run release.yml \
+            --repo "${GITHUB_REPOSITORY}" \
+            --ref "${RELEASE_TAG}"

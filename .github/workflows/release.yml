@@ -32,9 +32,49 @@ jobs:
       - name: Run quality gate
         run: make quality
 
+  web-assets:
+    name: Resolve verified Web Publish assets
+    runs-on: ubuntu-latest
+    outputs:
+      source_sha: ${{ steps.web.outputs.source_sha }}
+    steps:
+      - name: Check out Panel source
+        uses: actions/checkout@v6
+
+      - name: Check out Web Publish branch
+        uses: actions/checkout@v6
+        with:
+          repository: oneinstack/Oneinstack-Panel-Web
+          ref: Publish
+          path: web-publish
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Validate Web Publish provenance and archive
+        id: web
+        shell: bash
+        run: |
+          source_sha="$(
+            ./scripts/import-web-publish.sh \
+              web-publish \
+              "${RUNNER_TEMP}/verified-web/app.zip"
+          )"
+          echo "source_sha=${source_sha}" >> "${GITHUB_OUTPUT}"
+          cp web-publish/app.zip.sha256 "${RUNNER_TEMP}/verified-web/"
+          cp web-publish/build-info.json "${RUNNER_TEMP}/verified-web/"
+          cp web-publish/SOURCE_SHA "${RUNNER_TEMP}/verified-web/"
+
+      - name: Upload verified Web assets
+        uses: actions/upload-artifact@v7
+        with:
+          name: one-web-publish-${{ github.run_id }}
+          if-no-files-found: error
+          retention-days: 30
+          path: ${{ runner.temp }}/verified-web/
+
   package:
     name: Package Linux ${{ matrix.arch }}
-    needs: [verify, component-install-matrix]
+    needs: [verify, component-install-matrix, web-assets]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -52,6 +92,17 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: go.sum
 
+      - name: Download verified Web assets
+        uses: actions/download-artifact@v8
+        with:
+          name: one-web-publish-${{ github.run_id }}
+          path: web-publish
+
+      - name: Embed Web Publish archive
+        shell: bash
+        run: |
+          ./scripts/import-web-publish.sh web-publish webui/app.zip >/dev/null
+
       - name: Build release binary
         shell: bash
         env:
@@ -66,7 +117,7 @@ jobs:
               -X oneinstack/internal/buildinfo.Version=${GITHUB_REF_NAME} \
               -X oneinstack/internal/buildinfo.BuildTime=${build_time} \
               -X oneinstack/internal/buildinfo.CommitHash=${GITHUB_SHA} \
-              -X oneinstack/internal/buildinfo.WebVersion=1.0.0" \
+              -X oneinstack/internal/buildinfo.WebVersion=${{ needs.web-assets.outputs.source_sha }}" \
             -o "dist/one-linux-${GOARCH}" ./cmd
 
       - name: Check release metadata
@@ -182,7 +233,7 @@ jobs:
           signing_key="${RUNNER_TEMP}/one-update-signing-key"
           release_channel="stable"
           case "${GITHUB_REF_NAME}" in
-            *-alpha*|*-beta*|*-rc*) release_channel="beta" ;;
+            *-alpha*|*-beta*|*-rc*|*-build.*) release_channel="beta" ;;
           esac
           umask 077
           printf '%s' "${UPDATE_SIGNING_PRIVATE_KEY}" >"${signing_key}"
@@ -205,7 +256,7 @@ jobs:
         run: |
           prerelease_args=()
           case "${GITHUB_REF_NAME}" in
-            *-alpha*|*-beta*|*-rc*) prerelease_args+=(--prerelease) ;;
+            *-alpha*|*-beta*|*-rc*|*-build.*) prerelease_args+=(--prerelease) ;;
           esac
 
           if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
@@ -227,12 +278,12 @@ jobs:
           CENTER_RELEASE_NOTES: See the GitHub release notes for ${{ github.ref_name }}.
         run: |
           if [[ -z "${CENTER_RELEASE_URL}" || -z "${CENTER_RELEASE_TOKEN}" ]]; then
-            echo "Center publishing is not configured; set CENTER_RELEASE_URL and CENTER_RELEASE_TOKEN." >&2
-            exit 1
+            echo "Center publishing is not configured; GitHub Release is complete, skipping Center."
+            exit 0
           fi
           release_channel="stable"
           case "${GITHUB_REF_NAME}" in
-            *-alpha*|*-beta*|*-rc*) release_channel="beta" ;;
+            *-alpha*|*-beta*|*-rc*|*-build.*) release_channel="beta" ;;
           esac
           rollout_percentage="${CENTER_RELEASE_ROLLOUT_PERCENTAGE:-0}"
           ./scripts/publish-release-to-center.sh \

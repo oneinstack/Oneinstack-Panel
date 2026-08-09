@@ -119,6 +119,33 @@ OneinStack Panel 的目标是：
   `53fda4aacdced961db0ad76706178bed521141680b224e542a4309aace34d530`；部署前版本
   已备份到 `/usr/local/one/backups/manual-release-v0.1.0-test.57/one`。
 
+### 4.1.3 2026-08-09 Nginx 1.31.0 配置读取兼容修复
+
+状态：代码完成、Center 包已发布并完成实机验证
+
+完成内容：
+
+- 定位配置抽屉失败根因：Center 中已安装 Nginx 1.31.0 对应的 development 包
+  只有安装和服务动作，缺少成对的 `configGet/configApply`；旧内置包又不接受
+  1.31.0，导致远程、缓存和离线兜底均无法解析。
+- Center Nginx development 包升级为 `2.0.6`，补齐配置读取、差异预览、语法
+  检查、配置快照、原子发布和平滑重载动作，并由组件生成器持续生成，避免后续
+  重新生成时丢失。
+- Panel 内置 Nginx 兜底包升级为 `1.0.2`，明确允许对现有 1.31.0 安装执行
+  配置、启停、重载及卸载等管理动作；安装动作仍只允许已验证的 1.28.2。
+
+验证结果：
+
+- Center 全量 Go 测试、Nginx 全部 Shell 语法检查和归档安全校验通过；发布归档
+  SHA-256 为 `e04c068980d34f8fcd9f4fcf695b1329706edbf63d6f976052b6fd689aef123b`。
+- 测试 Center 已签名发布 Nginx `2.0.6`，公共解析接口对
+  `Nginx 1.31.0 + development + Ubuntu 24.04 amd64` 返回该包及完整配置动作。
+- 在测试服务器真实 Nginx 1.31.0 上成功读取当前配置及 SHA-256 修订号，返回
+  `workerProcesses=auto`、`workerConnections=51200`、`keepaliveTimeout=120`、
+  `clientMaxBodySize=1024`。
+- Panel 脚本注册中心、软件服务和路由处理器测试通过；测试服务器的离线兜底包
+  已先备份再同步，全部文件摘要校验通过。
+
 ### 4.2 2026-07-28 软件安装完成后商城状态自动刷新
 
 状态：代码完成并部署测试环境
@@ -2780,6 +2807,64 @@ Panel 配置与数据加密灾备已完成首轮源码实现。下一代码开�
 
 - 独立浏览器会话可以打开最新版登录页，但测试账号处于首次强制改密流程；本轮没有代替用户提交最终密码修改。
   登录后的最终视觉验收需使用已有管理员会话强制刷新文件页完成。
+
+### 2026-08-09 Root 终端占满内容区
+
+状态：布局调整、自动化验证、生产构建和测试环境部署已完成。
+
+已完成：
+
+- 终端页面改为继承主内容区 `100%` 宽高，移除重复的 22px 内层留白。
+- 移除终端窗口原有 `56vh / 680px` 最大高度限制，终端主体通过 Flex 自动占满标题区下方全部剩余空间。
+- 桌面端与移动端统一使用 `min-height: 0`，避免小屏或较矮窗口因为固定最小高度产生溢出。
+- 保留现有 `ResizeObserver` 和全屏事件适配；容器尺寸变化后自动执行 xterm `fit()` 并同步服务端行列。
+
+验证与部署：
+
+- 前端 TypeScript 类型检查、4 个 Vitest 文件共 10 项测试和生产构建通过。
+- WebUI 嵌入测试和差异检查通过，测试服务器实际 CSS 已确认包含 `height:100%`、
+  `min-height:0` 和 `max-height:none`，旧的 `680px` 限制已不存在。
+- Panel `v0.1.0-test.59` 已部署到 `192.168.1.6:8089`；服务为 active，ready 检查中数据库和 WebUI 均为 `ok`。
+- 部署后二进制 SHA-256 为
+  `36fa7003b6375da6c094263d244423ecb7234cf6926a445b957eb3d92e6a587c`；部署前版本保存在
+  `/usr/local/one/backups/manual-release-v0.1.0-test.59/one`。
+
+### 2026-08-09 Web Publish 与 Panel 自动 Release
+
+状态：代码与本地产物联调完成，待首次远程运行。
+
+已完成：
+
+- 参考 AList Web 的源码与构建产物分离模式，为 Web 新增 `Publish Web Assets`
+  工作流；`main` 推送通过质量门禁后，以一次性构建提交更新 `Publish` 分支。
+- Publish 产物包含展开的 `dist`、Panel 使用的 `app.zip`、逐文件/归档 SHA-256、
+  Web 源码提交和构建来源元数据，分支不接受人工编辑。
+- Panel 新增 `Auto Release from Main` 工作流；每次 `main` 推送创建
+  `v<基础版本>-build.<运行序号>` 标签，并按该标签显式调度 Release。
+- Release 从当前公开 Web 仓库拉取 `Publish`，验证来源、元数据、摘要、Zip 完整性
+  和路径安全后替换 `webui/app.zip`，再执行现有双架构打包、供应链证据和 GitHub
+  Release 发布流程；自动标签统一标记为 Pre-release。
+- Center 发布凭据改为可选：未配置时 GitHub Release 仍正常完成，配置后继续同步
+  Center beta 渠道。
+
+验证结果：
+
+- Web TypeScript 检查与生产构建通过，生成压缩包约 2.57 MiB。
+- Publish 准备脚本确认归档内容与本次 `dist` 一致；Panel 导入脚本验证后产物
+  SHA-256 与 Web 原包一致：
+  `af20b3df24f1739a54ca994317cfb79b46c2287553b439e679a1e5d0c0f66ba4`。
+- 两个 Shell 脚本语法、三份 Workflow YAML 解析及两个仓库 `git diff --check`
+  均通过。
+
+远程启用条件：
+
+- 当前 Web 仓库为公开仓库，Panel 无需保存跨仓库 Token；如果以后改为私有，需
+  使用仅授权 Web 仓库且只有 Contents Read 权限的独立 fine-grained Token，禁止
+  复用管理员 Token。
+- Web 仓库 Actions 需允许 `GITHUB_TOKEN` 写入 Contents；`Publish` 分支若启用
+  保护规则，需允许该工作流强制更新。
+- Panel 仓库变量 `AUTO_RELEASE_BASE_VERSION` 可设置基础版本，未设置时使用
+  `0.1.0`。
 
 ## 12. 进度维护规则
 
