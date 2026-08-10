@@ -33,9 +33,7 @@ func contentSecurityPolicy() string {
 	}
 
 	connectSources := []string{"'self'", "wss:"}
-	if app.IsDevelopmentEnvironment() || app.ONE_CONFIG.System.AllowInsecureWebSocketInDev {
-		connectSources = append(connectSources, "ws:")
-	}
+	connectSources = append(connectSources, "ws:")
 
 	return "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; " +
 		"img-src 'self' data: blob:; font-src 'self' data:; " +

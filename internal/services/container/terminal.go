@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -846,46 +845,4 @@ func sameContainerTerminalOrigin(request *http.Request) bool {
 		return false
 	}
 	return parsed.Host == request.Host
-}
-
-func ContainerTerminalTransportAllowed(request *http.Request) bool {
-	if app.IsDevelopmentEnvironment() {
-		return true
-	}
-	if request == nil {
-		return false
-	}
-	if request.TLS != nil {
-		return true
-	}
-	if !containerTerminalPeerTrusted(request.RemoteAddr, app.ONE_CONFIG.System.TrustedProxies) {
-		return false
-	}
-	forwardedProto := strings.TrimSpace(strings.Split(request.Header.Get("X-Forwarded-Proto"), ",")[0])
-	return strings.EqualFold(forwardedProto, "https")
-}
-
-func containerTerminalPeerTrusted(remoteAddress string, trustedProxies []string) bool {
-	host, _, err := net.SplitHostPort(strings.TrimSpace(remoteAddress))
-	if err != nil {
-		host = strings.TrimSpace(remoteAddress)
-	}
-	peer := net.ParseIP(host)
-	if peer == nil {
-		return false
-	}
-	for _, configured := range trustedProxies {
-		configured = strings.TrimSpace(configured)
-		if address := net.ParseIP(configured); address != nil {
-			if address.Equal(peer) {
-				return true
-			}
-			continue
-		}
-		_, network, parseErr := net.ParseCIDR(configured)
-		if parseErr == nil && network.Contains(peer) {
-			return true
-		}
-	}
-	return false
 }

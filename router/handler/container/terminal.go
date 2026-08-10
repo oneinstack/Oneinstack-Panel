@@ -15,9 +15,6 @@ import (
 )
 
 func TerminalStatus(c *gin.Context) {
-	if !requireContainerTerminalTransport(c) {
-		return
-	}
 	ctx, cancel := requestContext(c)
 	defer cancel()
 	status, err := service.ContainerTerminalStatus(ctx, c.Param("id"))
@@ -32,9 +29,6 @@ func TerminalStatus(c *gin.Context) {
 }
 
 func CreateTerminalTicket(c *gin.Context) {
-	if !requireContainerTerminalTransport(c) {
-		return
-	}
 	var request input.ContainerTerminalTicketRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
 		badRequest(c, err)
@@ -101,9 +95,6 @@ func CreateTerminalTicket(c *gin.Context) {
 }
 
 func OpenTerminal(c *gin.Context) {
-	if !requireContainerTerminalTransport(c) {
-		return
-	}
 	userID, ok := middleware.AuthenticatedUserID(c)
 	if !ok {
 		core.HandleError(c, core.NewError(core.ErrUnauthorized, "容器终端票据无效"))
@@ -187,17 +178,4 @@ func terminalError(c *gin.Context, err error) {
 	default:
 		core.HandleError(c, core.WrapError(err, core.ErrInternalError, "容器终端操作失败"))
 	}
-}
-
-func requireContainerTerminalTransport(c *gin.Context) bool {
-	if containerService.ContainerTerminalTransportAllowed(c.Request) {
-		return true
-	}
-	err := errors.New("容器终端仅允许通过 HTTPS/WSS 访问；开发环境请设置 GO_ENV=development 或使用 one debug 启动")
-	recordAction(c, "container.terminal.transport", http.StatusForbidden, err)
-	core.HandleErrorWithStatus(c, http.StatusForbidden, core.NewError(
-		core.ErrForbidden,
-		"容器终端仅允许通过 HTTPS/WSS 访问；开发环境请设置 GO_ENV=development 或使用 one debug 启动",
-	))
-	return false
 }
