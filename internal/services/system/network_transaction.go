@@ -162,6 +162,7 @@ func schedulePanelNetworkTransaction(ctx context.Context, transactionID string) 
 	command := exec.CommandContext(
 		ctx,
 		"systemd-run",
+		"--no-block",
 		"--unit="+unitName,
 		"--collect",
 		"--property=Type=oneshot",
@@ -233,6 +234,15 @@ func applyPanelNetworkTransaction(ctx context.Context, transactionID string) err
 	applyErr := restartPanelService(ctx)
 	if applyErr == nil {
 		applyErr = waitForPanelReady(ctx, transaction.Candidate, networkApplyTimeout)
+	}
+	if applyErr == nil {
+		currentConfig, readErr := readLimitedFile(configFilePath(), networkConfigSnapshotMaxBytes)
+		switch {
+		case readErr != nil:
+			applyErr = fmt.Errorf("重启后读取待应用配置: %w", readErr)
+		case checksumHex(currentConfig) != transaction.CandidateSHA256:
+			applyErr = errors.New("重启后待应用配置已被其他操作替换")
+		}
 	}
 	if applyErr == nil {
 		finished := time.Now().UTC()
