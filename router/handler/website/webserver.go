@@ -89,7 +89,7 @@ func UpdateWebServerConfig(c *gin.Context) {
 	}
 	_ = configsnapshot.Default().MarkWithAfter(snapshot.ID, result, "succeeded", "")
 	configsnapshotHandler.RecordAudit(c, snapshot, "succeeded", "Nginx 受管配置已发布")
-	c.JSON(http.StatusOK, core.SuccessResponse(result))
+	c.JSON(http.StatusOK, core.SuccessResponseForContext(c, result))
 }
 
 func handleWebServerConfigError(c *gin.Context, err error, message string) {

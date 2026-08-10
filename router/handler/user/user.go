@@ -23,7 +23,7 @@ import (
 func LoginHandler(c *gin.Context) {
 	var req input.LoginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		appErr := core.NewErrorWithDetail(core.ErrBadRequest, "请求参数格式错误", err.Error())
+		appErr := core.NewErrorWithDetail(core.ErrBadRequest, "登录请求参数格式不正确", err.Error())
 		core.HandleError(c, appErr)
 		log.CreateLog(&models.SystemLog{
 			LogType:  models.Login_Type,

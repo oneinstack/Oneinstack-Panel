@@ -39,7 +39,7 @@ func CreateFileShare(c *gin.Context) {
 		ExpiryHours int    `json:"expiryHours"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
-		handleBadRequest(c, err, "请求参数错误")
+		handleBadRequest(c, err, "文件分享参数格式不正确")
 		return
 	}
 	if input.ExpiryHours == 0 {

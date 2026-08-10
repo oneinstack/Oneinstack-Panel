@@ -64,13 +64,13 @@ func cronServiceOrUnavailable(c *gin.Context) (*cron.CronService, bool) {
 func GetCronList(c *gin.Context) {
 	var param input.CronParam
 	if err := c.ShouldBindJSON(&param); err != nil {
-		appErr := core.WrapError(err, core.ErrBadRequest, "请求参数错误")
+		appErr := core.WrapError(err, core.ErrBadRequest, "计划任务查询参数格式不正确")
 		core.HandleError(c, appErr)
 		return
 	}
 	p, err := cron.GetCronList(c, &param)
 	if err != nil {
-		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		appErr := core.WrapError(err, core.ErrInternalError, "查询计划任务列表失败")
 		core.HandleError(c, appErr)
 		return
 	}
@@ -80,13 +80,13 @@ func GetCronList(c *gin.Context) {
 func GetCronLogList(c *gin.Context) {
 	var param input.CronParam
 	if err := c.ShouldBindJSON(&param); err != nil {
-		appErr := core.WrapError(err, core.ErrBadRequest, "请求参数错误")
+		appErr := core.WrapError(err, core.ErrBadRequest, "计划任务日志查询参数格式不正确")
 		core.HandleError(c, appErr)
 		return
 	}
 	p, err := cron.GetCronLogList(c, &param)
 	if err != nil {
-		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		appErr := core.WrapError(err, core.ErrInternalError, "查询计划任务日志失败")
 		core.HandleError(c, appErr)
 		return
 	}
@@ -96,7 +96,7 @@ func GetCronLogList(c *gin.Context) {
 func AddCron(c *gin.Context) {
 	var param input.AddCronParam
 	if err := c.ShouldBindJSON(&param); err != nil {
-		appErr := core.WrapError(err, core.ErrBadRequest, "请求参数错误")
+		appErr := core.WrapError(err, core.ErrBadRequest, "创建计划任务参数格式不正确")
 		core.HandleError(c, appErr)
 		return
 	}
@@ -144,7 +144,7 @@ func AddCron(c *gin.Context) {
 func UpdateCron(c *gin.Context) {
 	var param input.AddCronParam
 	if err := c.ShouldBindJSON(&param); err != nil {
-		appErr := core.WrapError(err, core.ErrBadRequest, "请求参数错误")
+		appErr := core.WrapError(err, core.ErrBadRequest, "更新计划任务参数格式不正确")
 		core.HandleError(c, appErr)
 		return
 	}
@@ -219,7 +219,7 @@ func cronUpdateErrorMessage(taskType string) string {
 func DeleteCron(c *gin.Context) {
 	var param input.CronIDs
 	if err := c.ShouldBindJSON(&param); err != nil {
-		appErr := core.WrapError(err, core.ErrBadRequest, "请求参数错误")
+		appErr := core.WrapError(err, core.ErrBadRequest, "删除计划任务参数格式不正确")
 		core.HandleError(c, appErr)
 		return
 	}
@@ -237,7 +237,7 @@ func DeleteCron(c *gin.Context) {
 func DisableCron(c *gin.Context) {
 	var param input.CronIDs
 	if err := c.ShouldBindJSON(&param); err != nil {
-		appErr := core.WrapError(err, core.ErrBadRequest, "请求参数错误")
+		appErr := core.WrapError(err, core.ErrBadRequest, "禁用计划任务参数格式不正确")
 		core.HandleError(c, appErr)
 		return
 	}
@@ -255,7 +255,7 @@ func DisableCron(c *gin.Context) {
 func EnableCron(c *gin.Context) {
 	var param input.CronIDs
 	if err := c.ShouldBindJSON(&param); err != nil {
-		appErr := core.WrapError(err, core.ErrBadRequest, "请求参数错误")
+		appErr := core.WrapError(err, core.ErrBadRequest, "启用计划任务参数格式不正确")
 		core.HandleError(c, appErr)
 		return
 	}
@@ -285,7 +285,7 @@ func RunCron(c *gin.Context) {
 		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "执行计划任务失败"))
 		return
 	}
-	c.JSON(http.StatusAccepted, core.SuccessResponse(execution))
+	c.JSON(http.StatusAccepted, core.SuccessResponseForContext(c, execution))
 }
 
 func ListTemplates(c *gin.Context) {
@@ -326,7 +326,7 @@ func CancelExecution(c *gin.Context) {
 			core.WrapError(err, core.ErrBadRequest, "取消执行失败"))
 		return
 	}
-	c.JSON(http.StatusAccepted, core.SuccessResponse(execution))
+	c.JSON(http.StatusAccepted, core.SuccessResponseForContext(c, execution))
 }
 
 func CleanupCronLogs(c *gin.Context) {

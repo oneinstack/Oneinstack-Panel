@@ -34,7 +34,7 @@ func CreateTicket(c *gin.Context) {
 		Password string `json:"password" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
-		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "请求参数错误"))
+		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "SSH 会话票据参数格式不正确"))
 		return
 	}
 	userID, ok := middleware.AuthenticatedUserID(c)

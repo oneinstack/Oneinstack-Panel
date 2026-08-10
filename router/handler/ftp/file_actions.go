@@ -22,7 +22,7 @@ type transferInput struct {
 func CopyFileOrDir(c *gin.Context) {
 	var input transferInput
 	if err := c.ShouldBindJSON(&input); err != nil {
-		handleBadRequest(c, err, "请求参数错误")
+		handleBadRequest(c, err, "复制文件或目录参数格式不正确")
 		return
 	}
 	targetDir, targetName := splitTargetPath(input.TargetPath)
@@ -57,7 +57,7 @@ func CopyFileOrDir(c *gin.Context) {
 func MoveFileOrDir(c *gin.Context) {
 	var input transferInput
 	if err := c.ShouldBindJSON(&input); err != nil {
-		handleBadRequest(c, err, "请求参数错误")
+		handleBadRequest(c, err, "移动文件或目录参数格式不正确")
 		return
 	}
 	targetDir, targetName := splitTargetPath(input.TargetPath)
@@ -83,7 +83,7 @@ func RenameFileOrDir(c *gin.Context) {
 		NewName string `json:"newName" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
-		handleBadRequest(c, err, "请求参数错误")
+		handleBadRequest(c, err, "重命名文件或目录参数格式不正确")
 		return
 	}
 	startFileOperation(c, "file.rename", operationAuditPath(input.Path, "", input.NewName))
@@ -108,7 +108,7 @@ func ArchiveFileOrDir(c *gin.Context) {
 		ArchiveName string `json:"archiveName" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
-		handleBadRequest(c, err, "请求参数错误")
+		handleBadRequest(c, err, "归档文件或目录参数格式不正确")
 		return
 	}
 	startFileOperation(c, "file.archive", operationAuditPath(input.Path, input.TargetDir, input.ArchiveName))
@@ -143,7 +143,7 @@ func GetFileProperties(c *gin.Context) {
 		Path string `json:"path" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
-		handleBadRequest(c, err, "请求参数错误")
+		handleBadRequest(c, err, "读取文件属性参数格式不正确")
 		return
 	}
 	manager, ok := managerForRequest(c)

@@ -98,7 +98,7 @@ func CreateWebsiteBackup(c *gin.Context) {
 		handleWebsiteTaskError(c, err, "创建网站备份任务失败")
 		return
 	}
-	c.JSON(http.StatusAccepted, core.SuccessResponse(task))
+	c.JSON(http.StatusAccepted, core.SuccessResponseForContext(c, task))
 }
 
 func RestoreWebsiteBackup(c *gin.Context) {
@@ -123,7 +123,7 @@ func RestoreWebsiteBackup(c *gin.Context) {
 			core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "创建网站恢复审批失败"))
 			return
 		}
-		c.JSON(http.StatusAccepted, core.SuccessResponse(gin.H{
+		c.JSON(http.StatusAccepted, core.SuccessResponseForContext(c, gin.H{
 			"mode":       "approval_pending",
 			"approvalId": approval.ID,
 			"status":     approval.Status,
@@ -135,7 +135,7 @@ func RestoreWebsiteBackup(c *gin.Context) {
 		handleWebsiteTaskError(c, err, "创建网站恢复任务失败")
 		return
 	}
-	c.JSON(http.StatusAccepted, core.SuccessResponse(task))
+	c.JSON(http.StatusAccepted, core.SuccessResponseForContext(c, task))
 }
 
 func ListWebsiteTasks(c *gin.Context) {
@@ -216,13 +216,13 @@ func GetWebsiteTaskLog(c *gin.Context) {
 		return
 	}
 	cursor, err := strconv.ParseInt(c.DefaultQuery("cursor", "0"), 10, 64)
-	if err != nil {
-		core.HandleError(c, core.NewError(core.ErrBadRequest, "日志游标格式错误"))
+	if err != nil || cursor < 0 {
+		core.HandleError(c, core.NewFieldError(core.ErrInvalidParameter, "cursor 必须是大于等于 0 的整数", "cursor"))
 		return
 	}
 	limit, err := strconv.ParseInt(c.DefaultQuery("limit", "65536"), 10, 64)
-	if err != nil {
-		core.HandleError(c, core.NewError(core.ErrBadRequest, "日志读取大小格式错误"))
+	if err != nil || limit < 1 || limit > 65536 {
+		core.HandleError(c, core.NewFieldError(core.ErrInvalidParameter, "limit 必须是 1 到 65536 之间的整数", "limit"))
 		return
 	}
 	chunk, err := manager.ReadLog(c.Param("id"), cursor, limit)

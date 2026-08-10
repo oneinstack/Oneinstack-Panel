@@ -16,7 +16,7 @@ import (
 func RunInstallation(c *gin.Context) {
 	var req input.InstallParams
 	if err := c.ShouldBindJSON(&req); err != nil {
-		appErr := core.WrapError(err, core.ErrBadRequest, "请求参数错误")
+		appErr := core.WrapError(err, core.ErrBadRequest, "软件安装参数格式不正确")
 		core.HandleError(c, appErr)
 		return
 	}
@@ -31,7 +31,7 @@ func RunInstallation(c *gin.Context) {
 		core.HandleError(c, appErr)
 		return
 	}
-	c.JSON(http.StatusAccepted, core.SuccessResponse(gin.H{
+	c.JSON(http.StatusAccepted, core.SuccessResponseForContext(c, gin.H{
 		"taskId":      task.ID,
 		"installName": task.ID,
 		"operation":   task.Operation,
@@ -46,13 +46,13 @@ func RunInstallation(c *gin.Context) {
 func GetSoftware(c *gin.Context) {
 	var req input.SoftwareParam
 	if err := c.ShouldBindJSON(&req); err != nil {
-		appErr := core.WrapError(err, core.ErrBadRequest, "请求参数错误")
+		appErr := core.WrapError(err, core.ErrBadRequest, "软件列表参数格式不正确")
 		core.HandleError(c, appErr)
 		return
 	}
 	data, err := softwareService.List(&req)
 	if err != nil {
-		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		appErr := core.WrapError(err, core.ErrInternalError, "查询软件列表失败")
 		core.HandleError(c, appErr)
 		return
 	}
@@ -65,7 +65,7 @@ func GetLogContent(c *gin.Context) {
 		if task, taskErr := manager.Get(param); taskErr == nil && canAccessTask(c, task) {
 			chunk, logErr := manager.ReadLog(task.ID, 0, 64*1024)
 			if logErr != nil {
-				core.HandleError(c, core.WrapError(logErr, core.ErrInternalError, "操作失败"))
+				core.HandleError(c, core.WrapError(logErr, core.ErrInternalError, "读取软件任务日志失败"))
 				return
 			}
 			core.HandleSuccess(c, gin.H{
@@ -79,7 +79,7 @@ func GetLogContent(c *gin.Context) {
 	softName := c.Query("name")
 	install, err := utils.GetLogContent(param, softName)
 	if err != nil {
-		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		appErr := core.WrapError(err, core.ErrInternalError, "读取软件安装日志失败")
 		core.HandleError(c, appErr)
 		return
 	}
@@ -91,7 +91,7 @@ func GetLogContent(c *gin.Context) {
 func Exploration(c *gin.Context) {
 	var req input.SoftwareParam
 	if err := c.ShouldBindJSON(&req); err != nil {
-		appErr := core.WrapError(err, core.ErrBadRequest, "请求参数错误")
+		appErr := core.WrapError(err, core.ErrBadRequest, "软件探测参数格式不正确")
 		core.HandleError(c, appErr)
 		return
 	}
@@ -102,7 +102,7 @@ func Exploration(c *gin.Context) {
 func RemoveSoftware(c *gin.Context) {
 	var req input.RemoveParams
 	if err := c.ShouldBindJSON(&req); err != nil {
-		appErr := core.WrapError(err, core.ErrBadRequest, "请求参数错误")
+		appErr := core.WrapError(err, core.ErrBadRequest, "软件卸载参数格式不正确")
 		core.HandleError(c, appErr)
 		return
 	}
@@ -123,7 +123,7 @@ func RemoveSoftware(c *gin.Context) {
 		core.HandleError(c, appErr)
 		return
 	}
-	c.JSON(http.StatusAccepted, core.SuccessResponse(gin.H{
+	c.JSON(http.StatusAccepted, core.SuccessResponseForContext(c, gin.H{
 		"taskId":      task.ID,
 		"installName": task.ID,
 		"operation":   task.Operation,

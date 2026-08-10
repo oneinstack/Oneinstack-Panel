@@ -430,14 +430,79 @@ func resolveHistoryRange(from, to, now time.Time) (time.Time, time.Time, error) 
 
 func writeResult(c *gin.Context, result interface{}, err error) {
 	if err != nil {
-		core.HandleError(c, core.WrapError(err, core.ErrInternalError, "监控操作失败"))
+		core.HandleError(c, core.WrapError(err, core.ErrInternalError, monitoringOperationMessage(c)))
 		return
 	}
 	core.HandleSuccess(c, result)
 }
 
 func writeBadRequest(c *gin.Context, err error) {
-	core.HandleError(c, core.NewErrorWithDetail(core.ErrBadRequest, "请求参数无效", err.Error()))
+	core.HandleError(c, core.NewErrorWithDetail(core.ErrBadRequest, monitoringParameterMessage(c), err.Error()))
+}
+
+func monitoringOperationMessage(c *gin.Context) string {
+	switch c.FullPath() {
+	case "/v1/monitor/summary":
+		return "读取监控摘要失败"
+	case "/v1/monitor/services":
+		return "读取组件健康状态失败"
+	case "/v1/monitor/services/check":
+		return "执行组件健康检查失败"
+	case "/v1/monitor/services/:component/silence":
+		return "更新组件健康静默状态失败"
+	case "/v1/monitor/metrics":
+		return "读取监控指标失败"
+	case "/v1/monitor/history":
+		return "读取监控历史失败"
+	case "/v1/monitor/rules":
+		if c.Request.Method == http.MethodDelete {
+			return "删除告警规则失败"
+		}
+		return "读取告警规则列表失败"
+	case "/v1/monitor/rules/:id", "/v1/monitor/rules/:id/delete":
+		return "删除告警规则失败"
+	case "/v1/monitor/rules/:id/silence":
+		return "更新告警规则静默状态失败"
+	case "/v1/monitor/events":
+		return "读取告警事件失败"
+	case "/v1/monitor/deliveries":
+		return "读取通知投递记录失败"
+	case "/v1/monitor/channels":
+		return "读取通知通道列表失败"
+	case "/v1/monitor/channels/:id", "/v1/monitor/channels/:id/delete":
+		return "删除通知通道失败"
+	case "/v1/monitor/channels/:id/test":
+		return "发送测试通知失败"
+	default:
+		return "处理监控请求失败"
+	}
+}
+
+func monitoringParameterMessage(c *gin.Context) string {
+	switch c.FullPath() {
+	case "/v1/monitor/services/:component/silence":
+		return "组件健康静默参数无效"
+	case "/v1/monitor/metrics":
+		return "监控指标查询参数无效"
+	case "/v1/monitor/history":
+		return "监控历史查询参数无效"
+	case "/v1/monitor/rules":
+		return "告警规则参数无效"
+	case "/v1/monitor/rules/:id", "/v1/monitor/rules/:id/update":
+		return "告警规则更新参数无效"
+	case "/v1/monitor/rules/:id/silence":
+		return "告警规则静默参数无效"
+	case "/v1/monitor/events":
+		return "告警事件查询参数无效"
+	case "/v1/monitor/deliveries":
+		return "通知投递记录查询参数无效"
+	case "/v1/monitor/channels":
+		return "通知通道参数无效"
+	case "/v1/monitor/channels/:id", "/v1/monitor/channels/:id/update":
+		return "通知通道更新参数无效"
+	default:
+		return "监控请求参数无效"
+	}
 }
 
 func writeNotFound(c *gin.Context, message string) {

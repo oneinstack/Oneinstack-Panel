@@ -33,7 +33,7 @@ func CreateFavorite(c *gin.Context) {
 		Path string `json:"path" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
-		handleBadRequest(c, err, "请求参数错误")
+		handleBadRequest(c, err, "文件收藏参数格式不正确")
 		return
 	}
 	userID, ok := middleware.AuthenticatedUserID(c)
@@ -97,7 +97,7 @@ func CancelFavorite(c *gin.Context) {
 		ID   int64  `json:"id"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
-		handleBadRequest(c, err, "请求参数错误")
+		handleBadRequest(c, err, "取消文件收藏参数格式不正确")
 		return
 	}
 	userID, ok := middleware.AuthenticatedUserID(c)

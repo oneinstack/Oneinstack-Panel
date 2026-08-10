@@ -31,7 +31,7 @@ func GetSystemInfo(c *gin.Context) {
 func GetSystemMonitor(c *gin.Context) {
 	monitor, err := system.GetSystemMonitor()
 	if err != nil {
-		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		appErr := core.WrapError(err, core.ErrInternalError, "获取系统监控信息失败")
 		core.HandleError(c, appErr)
 		return
 	}
@@ -41,7 +41,7 @@ func GetSystemMonitor(c *gin.Context) {
 func GetLibCount(c *gin.Context) {
 	count, err := system.GetLibCount()
 	if err != nil {
-		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		appErr := core.WrapError(err, core.ErrInternalError, "获取软件数量失败")
 		core.HandleError(c, appErr)
 		return
 	}
@@ -51,7 +51,7 @@ func GetLibCount(c *gin.Context) {
 func GetWebSiteCount(c *gin.Context) {
 	count, err := system.GetWebSiteCount()
 	if err != nil {
-		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		appErr := core.WrapError(err, core.ErrInternalError, "获取网站数量失败")
 		core.HandleError(c, appErr)
 		return
 	}
@@ -62,7 +62,7 @@ func GetWebSiteCount(c *gin.Context) {
 func GetRemarkCount(c *gin.Context) {
 	count, err := system.GetRemarkCount()
 	if err != nil {
-		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		appErr := core.WrapError(err, core.ErrInternalError, "获取备忘录数量失败")
 		core.HandleError(c, appErr)
 		return
 	}
@@ -72,7 +72,7 @@ func GetRemarkCount(c *gin.Context) {
 func SystemInfo(c *gin.Context) {
 	info, err := system.SystemInfo()
 	if err != nil {
-		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		appErr := core.WrapError(err, core.ErrInternalError, "获取系统信息失败")
 		core.HandleError(c, appErr)
 		return
 	}
@@ -82,7 +82,7 @@ func SystemInfo(c *gin.Context) {
 func UpdateUser(c *gin.Context) {
 	var request input.UpdateUserRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
-		appErr := core.WrapError(err, core.ErrBadRequest, "请求参数错误")
+		appErr := core.WrapError(err, core.ErrBadRequest, "用户资料格式不正确")
 		core.HandleError(c, appErr)
 		return
 	}
@@ -93,7 +93,7 @@ func UpdateUser(c *gin.Context) {
 		return
 	}
 	if err := system.UpdateUser(userID, request.Username); err != nil {
-		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		appErr := core.WrapError(err, core.ErrBadRequest, "更新用户资料失败")
 		core.HandleError(c, appErr)
 		return
 	}
@@ -109,13 +109,16 @@ func ResetPassword(c *gin.Context) {
 	}
 	var request input.ResetPasswordRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
-		appErr := core.WrapError(err, core.ErrBadRequest, "请求参数错误")
+		appErr := core.WrapError(err, core.ErrBadRequest, "密码修改参数格式不正确")
 		core.HandleError(c, appErr)
 		return
 	}
 	if err := system.ResetPassword(userID, request.CurrentPassword, request.Password); err != nil {
 		appErr := core.WrapError(err, core.ErrBadRequest, "密码修改失败")
-		if errors.Is(err, system.ErrCurrentPasswordInvalid) {
+		var strengthErr *system.PasswordStrengthError
+		if errors.As(err, &strengthErr) {
+			appErr = core.NewFieldError(core.ErrBadRequest, strengthErr.Error(), "password")
+		} else if errors.Is(err, system.ErrCurrentPasswordInvalid) {
 			auditservice.RecordAuthEvent(c, "auth.password_change", "", userID, 401, "failure", "", "当前密码错误")
 			appErr = core.NewError(core.ErrInvalidPassword, "当前密码错误")
 		}
@@ -133,13 +136,13 @@ func ResetPassword(c *gin.Context) {
 func UpdatePort(c *gin.Context) {
 	param := input.UpdatePortRequest{}
 	if err := c.ShouldBindJSON(&param); err != nil {
-		appErr := core.WrapError(err, core.ErrBadRequest, "请求参数错误")
+		appErr := core.WrapError(err, core.ErrBadRequest, "面板访问配置参数格式不正确")
 		core.HandleError(c, appErr)
 		return
 	}
 	err := system.UpdateSystemPort(param.Port)
 	if err != nil {
-		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		appErr := core.WrapError(err, core.ErrInternalError, "更新面板端口失败")
 		core.HandleError(c, appErr)
 		return
 	}
@@ -175,7 +178,7 @@ func GetPanelNetworkTransaction(c *gin.Context) {
 func UpdatePanelNetwork(c *gin.Context) {
 	var request input.UpdatePanelNetworkRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
-		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "请求参数错误"))
+		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "面板访问配置参数格式不正确"))
 		return
 	}
 	userID, ok := middleware.AuthenticatedUserID(c)
@@ -233,13 +236,13 @@ func UpdatePanelNetwork(c *gin.Context) {
 func UpdateSystemTitle(c *gin.Context) {
 	param := input.UpdateSystemTitleRequest{}
 	if err := c.ShouldBindJSON(&param); err != nil {
-		appErr := core.WrapError(err, core.ErrBadRequest, "请求参数错误")
+		appErr := core.WrapError(err, core.ErrBadRequest, "系统标题参数格式不正确")
 		core.HandleError(c, appErr)
 		return
 	}
 	err := system.UpdateSystemTitle(param.Title)
 	if err != nil {
-		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		appErr := core.WrapError(err, core.ErrInternalError, "更新系统标题失败")
 		core.HandleError(c, appErr)
 		return
 	}
@@ -249,7 +252,7 @@ func UpdateSystemTitle(c *gin.Context) {
 func GetInfo(c *gin.Context) {
 	info, err := system.GetInfo()
 	if err != nil {
-		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		appErr := core.WrapError(err, core.ErrInternalError, "读取面板基础信息失败")
 		core.HandleError(c, appErr)
 		return
 	}

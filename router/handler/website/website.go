@@ -16,13 +16,13 @@ import (
 func List(c *gin.Context) {
 	input := &input.WebsiteQueryParam{}
 	if err := c.ShouldBindJSON(&input); err != nil {
-		appErr := core.WrapError(err, core.ErrBadRequest, "请求参数格式错误")
+		appErr := core.WrapError(err, core.ErrBadRequest, "网站列表查询参数格式不正确")
 		core.HandleError(c, appErr)
 		return
 	}
 	list, err := website.List(input)
 	if err != nil {
-		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		appErr := core.WrapError(err, core.ErrInternalError, "查询网站列表失败")
 		core.HandleError(c, appErr)
 		return
 	}
@@ -32,12 +32,12 @@ func List(c *gin.Context) {
 func SetStatus(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil || id <= 0 {
-		core.HandleError(c, core.NewError(core.ErrBadRequest, "网站 ID 无效"))
+		core.HandleError(c, core.NewFieldError(core.ErrInvalidParameter, "id 必须是正整数", "id"))
 		return
 	}
 	var request input.WebsiteStatusParam
 	if err := c.ShouldBindJSON(&request); err != nil {
-		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "请求参数格式错误"))
+		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "网站状态更新参数格式不正确"))
 		return
 	}
 	service, err := website.DefaultService()
@@ -56,7 +56,7 @@ func SetStatus(c *gin.Context) {
 func Add(c *gin.Context) {
 	input := &models.Website{}
 	if err := c.ShouldBindJSON(&input); err != nil {
-		appErr := core.WrapError(err, core.ErrBadRequest, "请求参数格式错误")
+		appErr := core.WrapError(err, core.ErrBadRequest, "网站创建参数格式不正确")
 		core.HandleError(c, appErr)
 		return
 	}
@@ -77,7 +77,7 @@ func Add(c *gin.Context) {
 func Update(c *gin.Context) {
 	input := &models.Website{}
 	if err := c.ShouldBindJSON(&input); err != nil {
-		appErr := core.WrapError(err, core.ErrBadRequest, "请求参数格式错误")
+		appErr := core.WrapError(err, core.ErrBadRequest, "网站更新参数格式不正确")
 		core.HandleError(c, appErr)
 		return
 	}
@@ -97,7 +97,7 @@ func Update(c *gin.Context) {
 func Delete(c *gin.Context) {
 	var request input.WebsiteDeleteParam
 	if err := c.ShouldBindJSON(&request); err != nil {
-		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "请求参数格式错误"))
+		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "网站删除参数格式不正确"))
 		return
 	}
 	if request.ID <= 0 || request.ConfirmName == "" {
@@ -115,7 +115,7 @@ func Delete(c *gin.Context) {
 			core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "创建网站删除审批失败"))
 			return
 		}
-		c.JSON(http.StatusAccepted, core.SuccessResponse(gin.H{
+		c.JSON(http.StatusAccepted, core.SuccessResponseForContext(c, gin.H{
 			"mode":       "approval_pending",
 			"approvalId": approval.ID,
 			"status":     approval.Status,
@@ -140,7 +140,7 @@ func Delete(c *gin.Context) {
 		handleWebsiteTaskError(c, err, "创建网站安全删除任务失败")
 		return
 	}
-	c.JSON(http.StatusAccepted, core.SuccessResponse(task))
+	c.JSON(http.StatusAccepted, core.SuccessResponseForContext(c, task))
 }
 
 func Info(context *gin.Context) {

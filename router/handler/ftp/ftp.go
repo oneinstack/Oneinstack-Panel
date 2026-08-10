@@ -77,7 +77,7 @@ func ListDirectory(c *gin.Context) {
 		Path string `json:"path" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
-		handleBadRequest(c, err, "请求参数错误")
+		handleBadRequest(c, err, "文件列表参数格式不正确")
 		return
 	}
 
@@ -152,7 +152,7 @@ func CreateFileOrDir(c *gin.Context) {
 		Type string `json:"type" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
-		handleBadRequest(c, err, "请求参数错误")
+		handleBadRequest(c, err, "创建文件或目录参数格式不正确")
 		return
 	}
 	startFileOperation(c, "file.create", input.Path)
@@ -182,7 +182,7 @@ func CreateFileOrDir(c *gin.Context) {
 		err = fmt.Errorf("%w: type must be file or dir", filemanager.ErrInvalidPath)
 	}
 	if err != nil {
-		handleFileError(c, err, "创建失败")
+		handleFileError(c, err, "创建文件或目录失败")
 		return
 	}
 	core.HandleSuccess(c, "创建成功")
@@ -275,7 +275,7 @@ func DownloadFile(c *gin.Context) {
 		Path string `json:"path" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
-		handleBadRequest(c, err, "请求参数错误")
+		handleBadRequest(c, err, "文件下载参数格式不正确")
 		return
 	}
 	startFileOperation(c, "file.download", input.Path)
@@ -318,7 +318,7 @@ func DeleteFileOrDir(c *gin.Context) {
 		Path string `json:"path" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
-		handleBadRequest(c, err, "请求参数错误")
+		handleBadRequest(c, err, "删除文件或目录参数格式不正确")
 		return
 	}
 	startFileOperation(c, "file.trash", input.Path)
@@ -335,7 +335,7 @@ func DeleteFileOrDir(c *gin.Context) {
 	}
 	entry, err := manager.MoveToTrash(input.Path, deletedBy)
 	if err != nil {
-		handleFileError(c, err, "删除失败")
+		handleFileError(c, err, "删除文件或目录失败")
 		return
 	}
 	core.HandleSuccess(c, entry)
@@ -362,7 +362,7 @@ func RestoreTrash(c *gin.Context) {
 		ID string `json:"id" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
-		handleBadRequest(c, err, "请求参数错误")
+		handleBadRequest(c, err, "恢复回收站文件参数格式不正确")
 		return
 	}
 	startFileOperation(c, "file.restore", "/trash/"+input.ID)
@@ -374,7 +374,7 @@ func RestoreTrash(c *gin.Context) {
 
 	entry, err := manager.RestoreTrash(input.ID)
 	if err != nil {
-		handleFileError(c, err, "恢复失败")
+		handleFileError(c, err, "从回收站恢复文件或目录失败")
 		return
 	}
 	startFileOperation(c, "file.restore", entry.OriginalPath)
@@ -387,7 +387,7 @@ func DeleteTrashPermanently(c *gin.Context) {
 		ID string `json:"id" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
-		handleBadRequest(c, err, "请求参数错误")
+		handleBadRequest(c, err, "彻底删除回收站文件参数格式不正确")
 		return
 	}
 	startFileOperation(c, "file.delete_permanently", "/trash/"+input.ID)
@@ -413,7 +413,7 @@ func EmptyTrash(c *gin.Context) {
 		if err == nil {
 			err = errors.New("必须确认清空回收站")
 		}
-		handleBadRequest(c, err, "请求参数错误")
+		handleBadRequest(c, err, "清空回收站参数格式不正确")
 		return
 	}
 	startFileOperation(c, "file.empty_trash", "/")
@@ -441,7 +441,7 @@ func ModifyFileOrDirAttributes(c *gin.Context) {
 		Recursive bool   `json:"recursive"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
-		handleBadRequest(c, err, "请求参数错误")
+		handleBadRequest(c, err, "文件属性修改参数格式不正确")
 		return
 	}
 	startFileOperation(c, "file.attributes", input.Path)
@@ -532,7 +532,7 @@ func Content(c *gin.Context) {
 		Path string `json:"path" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
-		handleBadRequest(c, err, "请求参数错误")
+		handleBadRequest(c, err, "读取文件内容参数格式不正确")
 		return
 	}
 	startFileOperation(c, "file.read", input.Path)
@@ -618,7 +618,7 @@ func GetDirectoryTreeHandler(c *gin.Context) {
 		MaxPerFolder int    `json:"maxPerFolder"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
-		handleBadRequest(c, err, "请求参数错误")
+		handleBadRequest(c, err, "读取目录树参数格式不正确")
 		return
 	}
 	if input.MaxDepth <= 0 {
@@ -678,7 +678,7 @@ func SaveFile(c *gin.Context) {
 		Revision string `json:"revision"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
-		handleBadRequest(c, err, "请求参数错误")
+		handleBadRequest(c, err, "保存文件参数格式不正确")
 		return
 	}
 	startFileOperation(c, "file.save", input.Path)
@@ -735,7 +735,7 @@ func SaveFile(c *gin.Context) {
 	}
 	defer reservation.Release()
 	if err := manager.WriteExistingFile(input.Path, []byte(input.Content)); err != nil {
-		handleFileError(c, err, "保存失败")
+		handleFileError(c, err, "保存文件内容失败")
 		return
 	}
 	revision := contentRevision([]byte(input.Content))
@@ -750,7 +750,7 @@ func UrlDownloadFile(c *gin.Context) {
 		Name string `json:"name" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
-		handleBadRequest(c, err, "请求参数错误")
+		handleBadRequest(c, err, "文件操作参数格式不正确")
 		return
 	}
 

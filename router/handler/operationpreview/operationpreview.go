@@ -95,10 +95,10 @@ func Execute(c *gin.Context) {
 	}
 	result, err := executeOperation(c.Request.Context(), operation, payload, userID)
 	if err != nil {
-		core.HandleError(c, core.WrapError(err, core.ErrConfigError, "执行操作失败"))
+		core.HandleError(c, core.WrapError(err, core.ErrConfigError, "执行已确认的操作预览失败"))
 		return
 	}
-	c.JSON(http.StatusAccepted, core.SuccessResponse(result))
+	c.JSON(http.StatusAccepted, core.SuccessResponseForContext(c, result))
 }
 
 func supportedOperation(operation string) bool {

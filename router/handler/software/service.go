@@ -91,7 +91,7 @@ func RunComponentServiceAction(c *gin.Context) {
 	}
 	var request input.SoftwareServiceAction
 	if err := c.ShouldBindJSON(&request); err != nil {
-		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "请求参数错误"))
+		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "服务控制参数格式不正确"))
 		return
 	}
 	request.Action = strings.ToLower(strings.TrimSpace(request.Action))
@@ -119,7 +119,7 @@ func RunComponentServiceAction(c *gin.Context) {
 		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "创建服务控制任务失败"))
 		return
 	}
-	c.JSON(http.StatusAccepted, core.SuccessResponse(gin.H{
+	c.JSON(http.StatusAccepted, core.SuccessResponseForContext(c, gin.H{
 		"taskId":      task.ID,
 		"operation":   task.Operation,
 		"component":   task.Component,
@@ -156,7 +156,7 @@ func PreviewComponentServiceConfiguration(c *gin.Context) {
 	}
 	var request input.SoftwareServiceConfiguration
 	if err := c.ShouldBindJSON(&request); err != nil {
-		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "请求参数错误"))
+		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "组件配置预览参数格式不正确"))
 		return
 	}
 	current, err := softwareService.NewInstaller().InspectServiceConfiguration(
@@ -187,7 +187,7 @@ func ApplyComponentServiceConfiguration(c *gin.Context) {
 	}
 	var request input.SoftwareServiceConfiguration
 	if err := c.ShouldBindJSON(&request); err != nil {
-		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "请求参数错误"))
+		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "组件配置应用参数格式不正确"))
 		return
 	}
 	current, err := softwareService.NewInstaller().InspectServiceConfiguration(
@@ -234,7 +234,7 @@ func ApplyComponentServiceConfiguration(c *gin.Context) {
 		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "创建组件配置任务失败"))
 		return
 	}
-	c.JSON(http.StatusAccepted, core.SuccessResponse(gin.H{
+	c.JSON(http.StatusAccepted, core.SuccessResponseForContext(c, gin.H{
 		"taskId":      task.ID,
 		"operation":   task.Operation,
 		"component":   task.Component,
@@ -321,7 +321,7 @@ func RestoreComponentServiceConfiguration(c *gin.Context) {
 		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "创建配置恢复任务失败"))
 		return
 	}
-	c.JSON(http.StatusAccepted, core.SuccessResponse(gin.H{
+	c.JSON(http.StatusAccepted, core.SuccessResponseForContext(c, gin.H{
 		"taskId":        task.ID,
 		"operation":     task.Operation,
 		"component":     task.Component,

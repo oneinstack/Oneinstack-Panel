@@ -42,6 +42,8 @@ type ProcessList struct {
 	Limit  int              `json:"limit"`
 }
 
+var ErrProcessNotAvailable = errors.New("process is no longer available")
+
 func ListProcesses(ctx context.Context, offset, limit int, keyword, sortBy string, descending bool) (ProcessList, error) {
 	if offset < 0 || limit < 1 || limit > 200 {
 		return ProcessList{}, errors.New("invalid process pagination")
@@ -109,11 +111,11 @@ func GetProcessDetail(ctx context.Context, pid int32) (ProcessDetail, error) {
 	}
 	p, err := process.NewProcess(pid)
 	if err != nil {
-		return ProcessDetail{}, fmt.Errorf("find process: %w", err)
+		return ProcessDetail{}, fmt.Errorf("%w: %v", ErrProcessNotAvailable, err)
 	}
 	list, err := ListProcesses(ctx, 0, 200, strconv.Itoa(int(pid)), "pid", false)
 	if err != nil || len(list.Items) != 1 {
-		return ProcessDetail{}, errors.New("process is no longer available")
+		return ProcessDetail{}, ErrProcessNotAvailable
 	}
 	detail := ProcessDetail{ProcessSummary: list.Items[0]}
 	detail.Executable, _ = p.ExeWithContext(ctx)

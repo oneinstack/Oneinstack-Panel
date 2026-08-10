@@ -105,7 +105,7 @@ func ConfirmTOTP(c *gin.Context) {
 	}
 	var request verificationRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
-		core.HandleError(c, core.NewError(core.ErrBadRequest, "请求参数格式错误"))
+		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "启用动态口令的验证参数格式不正确"))
 		return
 	}
 	codes, err := securityservice.NewTOTPManager(app.DB()).
@@ -134,7 +134,7 @@ func DisableTOTP(c *gin.Context) {
 	}
 	var request verificationRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
-		core.HandleError(c, core.NewError(core.ErrBadRequest, "请求参数格式错误"))
+		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "停用动态口令的验证参数格式不正确"))
 		return
 	}
 	if err := securityservice.NewTOTPManager(app.DB()).
@@ -156,7 +156,7 @@ func RegenerateRecoveryCodes(c *gin.Context) {
 	}
 	var request verificationRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
-		core.HandleError(c, core.NewError(core.ErrBadRequest, "请求参数格式错误"))
+		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "重新生成恢复码的验证参数格式不正确"))
 		return
 	}
 	codes, err := securityservice.NewTOTPManager(app.DB()).
@@ -276,6 +276,29 @@ func handleSecurityError(c *gin.Context, err error) {
 		errors.Is(err, securityservice.ErrMFAUnavailable):
 		core.HandleError(c, core.NewError(core.ErrBadRequest, "动态口令认证尚未配置"))
 	default:
-		core.HandleError(c, core.WrapError(err, core.ErrInternalError, "安全设置操作失败"))
+		core.HandleError(c, core.WrapError(err, core.ErrInternalError, securityOperationMessage(c)))
+	}
+}
+
+func securityOperationMessage(c *gin.Context) string {
+	switch c.FullPath() {
+	case "/v1/security/status":
+		return "读取账号安全设置失败"
+	case "/v1/security/totp/setup":
+		return "创建动态口令设置失败"
+	case "/v1/security/totp/confirm":
+		return "启用动态口令认证失败"
+	case "/v1/security/totp/disable":
+		return "停用动态口令认证失败"
+	case "/v1/security/totp/recovery-codes/regenerate":
+		return "重新生成动态口令恢复码失败"
+	case "/v1/sessions":
+		return "读取登录会话列表失败"
+	case "/v1/sessions/revoke-others":
+		return "撤销其他登录会话失败"
+	case "/v1/sessions/:id/revoke":
+		return "撤销指定登录会话失败"
+	default:
+		return "处理账号安全请求失败"
 	}
 }

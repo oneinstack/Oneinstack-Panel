@@ -88,7 +88,7 @@ func IssueCertificate(c *gin.Context) {
 			core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "创建证书签发审批失败"))
 			return
 		}
-		c.JSON(http.StatusAccepted, core.SuccessResponse(gin.H{
+		c.JSON(http.StatusAccepted, core.SuccessResponseForContext(c, gin.H{
 			"mode":       "approval_pending",
 			"approvalId": approval.ID,
 			"status":     approval.Status,
@@ -107,13 +107,13 @@ func IssueCertificate(c *gin.Context) {
 		handleCertificateError(c, err, "创建证书签发任务失败")
 		return
 	}
-	c.JSON(http.StatusAccepted, core.SuccessResponse(task))
+	c.JSON(http.StatusAccepted, core.SuccessResponseForContext(c, task))
 }
 
 func GetCertificate(c *gin.Context) {
 	websiteID, err := strconv.ParseInt(c.Param("websiteId"), 10, 64)
 	if err != nil || websiteID <= 0 {
-		core.HandleError(c, core.NewError(core.ErrBadRequest, "网站 ID 格式错误"))
+		core.HandleError(c, core.NewFieldError(core.ErrInvalidParameter, "websiteId 必须是正整数", "websiteId"))
 		return
 	}
 	manager, ok := certificateManagerForRequest(c)
@@ -146,7 +146,7 @@ func RenewCertificate(c *gin.Context) {
 			core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "创建证书续签审批失败"))
 			return
 		}
-		c.JSON(http.StatusAccepted, core.SuccessResponse(gin.H{
+		c.JSON(http.StatusAccepted, core.SuccessResponseForContext(c, gin.H{
 			"mode":       "approval_pending",
 			"approvalId": approval.ID,
 			"status":     approval.Status,
@@ -158,7 +158,7 @@ func RenewCertificate(c *gin.Context) {
 		handleCertificateError(c, err, "创建证书续签任务失败")
 		return
 	}
-	c.JSON(http.StatusAccepted, core.SuccessResponse(task))
+	c.JSON(http.StatusAccepted, core.SuccessResponseForContext(c, task))
 }
 
 func DisableCertificate(c *gin.Context) {
@@ -194,7 +194,7 @@ func DisableCertificate(c *gin.Context) {
 			core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "创建证书禁用审批失败"))
 			return
 		}
-		c.JSON(http.StatusAccepted, core.SuccessResponse(gin.H{
+		c.JSON(http.StatusAccepted, core.SuccessResponseForContext(c, gin.H{
 			"mode":       "approval_pending",
 			"approvalId": approval.ID,
 			"status":     approval.Status,

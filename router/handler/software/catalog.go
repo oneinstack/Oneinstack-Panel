@@ -28,5 +28,5 @@ func SyncSoftwareCatalog(c *gin.Context) {
 		core.HandleError(c, core.WrapError(err, core.ErrInternalError, "同步 Center 软件商城失败"))
 		return
 	}
-	c.JSON(http.StatusOK, core.SuccessResponse(status))
+	c.JSON(http.StatusOK, core.SuccessResponseForContext(c, status))
 }

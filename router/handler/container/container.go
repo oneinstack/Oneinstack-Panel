@@ -375,7 +375,7 @@ func CreateContainer(c *gin.Context) {
 		return
 	}
 	recordAction(c, "container.create", http.StatusAccepted, nil)
-	c.JSON(http.StatusAccepted, core.SuccessResponse(containerTaskResponse(task)))
+	c.JSON(http.StatusAccepted, core.SuccessResponseForContext(c, containerTaskResponse(task)))
 }
 
 func GetContainerCreateTask(c *gin.Context) {
@@ -621,7 +621,7 @@ func PullImage(c *gin.Context) {
 		return
 	}
 	recordAction(c, "container.image.pull", http.StatusAccepted, nil)
-	c.JSON(http.StatusAccepted, core.SuccessResponse(containerTaskResponse(task)))
+	c.JSON(http.StatusAccepted, core.SuccessResponseForContext(c, containerTaskResponse(task)))
 }
 
 func ImportImage(c *gin.Context) {
@@ -658,7 +658,7 @@ func ImportImage(c *gin.Context) {
 		return
 	}
 	recordAction(c, "container.image.import", http.StatusAccepted, nil)
-	c.JSON(http.StatusAccepted, core.SuccessResponse(gin.H{"action": "container.image.import"}))
+	c.JSON(http.StatusAccepted, core.SuccessResponseForContext(c, gin.H{"action": "container.image.import"}))
 }
 
 func TagImage(c *gin.Context) {
@@ -697,7 +697,7 @@ func PushImage(c *gin.Context) {
 		return
 	}
 	recordAction(c, "container.image.push", http.StatusAccepted, nil)
-	c.JSON(http.StatusAccepted, core.SuccessResponse(gin.H{"action": "container.image.push", "reference": reference}))
+	c.JSON(http.StatusAccepted, core.SuccessResponseForContext(c, gin.H{"action": "container.image.push", "reference": reference}))
 }
 
 func BuildImage(c *gin.Context) {
@@ -714,7 +714,7 @@ func BuildImage(c *gin.Context) {
 		return
 	}
 	recordAction(c, "container.image.build", http.StatusAccepted, nil)
-	c.JSON(http.StatusAccepted, core.SuccessResponse(containerTaskResponse(task)))
+	c.JSON(http.StatusAccepted, core.SuccessResponseForContext(c, containerTaskResponse(task)))
 }
 
 func PruneBuildCache(c *gin.Context) { prune(c, "image.build-cache", service.PruneBuildCache) }
@@ -1030,7 +1030,7 @@ func requestContext(c *gin.Context) (context.Context, context.CancelFunc) {
 }
 
 func badRequest(c *gin.Context, err error) {
-	core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "请求参数错误"))
+	core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "容器资源参数格式不正确"))
 }
 
 func operationError(c *gin.Context, err error) {
@@ -1047,7 +1047,7 @@ func operationError(c *gin.Context, err error) {
 		if strings.Contains(detail, "executable file not found in PATH") {
 			detail = "未找到 Docker 可执行文件（docker），请安装 Docker CLI/Engine，并确认 docker 已加入面板进程的 PATH。"
 		} else if detail != "" {
-			detail = "Docker 客户端已安装，但无法连接 Docker 守护进程；请确认 Docker 服务已启动，并检查当前面板运行用户是否有访问 Docker socket 的权限。底层错误：" + detail
+			detail = "Docker 客户端已安装，但无法连接 Docker 守护进程；请确认 Docker 服务已启动，并检查当前面板运行用户是否有访问 Docker socket 的权限。"
 		} else {
 			detail = "无法确认 Docker 运行时状态；请检查 Docker 是否安装、服务是否启动，以及面板进程的 PATH 和 Docker socket 权限。"
 		}
@@ -1074,7 +1074,131 @@ func operationError(c *gin.Context, err error) {
 		))
 		return
 	}
-	core.HandleError(c, core.WrapError(err, core.ErrInternalError, "Docker操作失败"))
+	core.HandleError(c, core.WrapError(err, core.ErrInternalError, containerOperationMessage(c)))
+}
+
+func containerOperationMessage(c *gin.Context) string {
+	switch c.FullPath() {
+	case "/v1/containers/runtime":
+		return "读取 Docker 运行时状态失败"
+	case "/v1/containers/runtime/actions":
+		return "执行 Docker 运行时服务操作失败"
+	case "/v1/containers":
+		if c.Request.Method == http.MethodPost {
+			return "创建容器失败"
+		}
+		return "读取容器列表失败"
+	case "/v1/containers/cleanup":
+		return "清理容器资源失败"
+	case "/v1/containers/tasks":
+		return "读取容器任务列表失败"
+	case "/v1/containers/tasks/:id":
+		return "读取容器任务详情失败"
+	case "/v1/containers/tasks/:id/events":
+		return "订阅容器任务事件失败"
+	case "/v1/containers/tasks/:id/log":
+		return "读取容器任务日志失败"
+	case "/v1/containers/tasks/:id/log/download":
+		return "下载容器任务日志失败"
+	case "/v1/containers/tasks/:id/cancel":
+		return "取消容器任务失败"
+	case "/v1/containers/:id":
+		return "读取容器详情失败"
+	case "/v1/containers/:id/stats":
+		return "读取容器实时指标失败"
+	case "/v1/containers/:id/actions":
+		return "执行容器状态操作失败"
+	case "/v1/containers/batch/actions":
+		return "执行容器批量操作失败"
+	case "/v1/containers/:id/logs":
+		return "读取容器日志失败"
+	case "/v1/containers/images":
+		return "读取容器镜像列表失败"
+	case "/v1/containers/images/import":
+		return "导入容器镜像失败"
+	case "/v1/containers/images/build":
+		return "构建容器镜像失败"
+	case "/v1/containers/images/build-cache/prune":
+		return "清理容器镜像构建缓存失败"
+	case "/v1/containers/images/:id/tag":
+		return "创建容器镜像标签失败"
+	case "/v1/containers/images/push":
+		return "推送容器镜像失败"
+	case "/v1/containers/images/:id/export":
+		return "导出容器镜像失败"
+	case "/v1/containers/images/:id":
+		if c.Request.Method == http.MethodDelete {
+			return "删除容器镜像失败"
+		}
+		return "读取容器镜像详情失败"
+	case "/v1/containers/images/pull":
+		return "拉取容器镜像失败"
+	case "/v1/containers/images/prune":
+		return "清理未使用容器镜像失败"
+	case "/v1/containers/networks":
+		if c.Request.Method == http.MethodPost {
+			return "创建容器网络失败"
+		}
+		return "读取容器网络列表失败"
+	case "/v1/containers/networks/:id":
+		if c.Request.Method == http.MethodDelete {
+			return "删除容器网络失败"
+		}
+		return "读取容器网络详情失败"
+	case "/v1/containers/networks/prune":
+		return "清理未使用容器网络失败"
+	case "/v1/containers/networks/batch/delete":
+		return "批量删除容器网络失败"
+	case "/v1/containers/volumes":
+		if c.Request.Method == http.MethodPost {
+			return "创建容器存储卷失败"
+		}
+		return "读取容器存储卷列表失败"
+	case "/v1/containers/volumes/:id":
+		if c.Request.Method == http.MethodDelete {
+			return "删除容器存储卷失败"
+		}
+		return "读取容器存储卷详情失败"
+	case "/v1/containers/volumes/prune":
+		return "清理未使用容器存储卷失败"
+	case "/v1/containers/volumes/batch/delete":
+		return "批量删除容器存储卷失败"
+	case "/v1/containers/registries":
+		if c.Request.Method == http.MethodPost {
+			return "创建容器镜像仓库失败"
+		}
+		return "读取容器镜像仓库列表失败"
+	case "/v1/containers/registries/:id":
+		if c.Request.Method == http.MethodDelete {
+			return "删除容器镜像仓库失败"
+		}
+		return "更新容器镜像仓库失败"
+	case "/v1/containers/registries/:id/test":
+		return "测试容器镜像仓库连接失败"
+	case "/v1/containers/compose":
+		return "读取 Compose 项目列表失败"
+	case "/v1/containers/templates":
+		if c.Request.Method == http.MethodPost {
+			return "创建 Compose 模板失败"
+		}
+		return "读取 Compose 模板列表失败"
+	case "/v1/containers/templates/:id":
+		switch c.Request.Method {
+		case http.MethodPut:
+			return "更新 Compose 模板失败"
+		case http.MethodDelete:
+			return "删除 Compose 模板失败"
+		default:
+			return "读取 Compose 模板详情失败"
+		}
+	case "/v1/containers/config":
+		if c.Request.Method == http.MethodGet {
+			return "读取容器运行配置失败"
+		}
+		return "保存容器运行配置失败"
+	default:
+		return "处理容器管理请求失败"
+	}
 }
 
 func recordAction(c *gin.Context, action string, status int, err error) {

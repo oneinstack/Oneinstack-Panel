@@ -57,7 +57,7 @@ func CreateImagePreviewTicket(c *gin.Context) {
 		Path string `json:"path" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
-		handleBadRequest(c, err, "请求参数错误")
+		handleBadRequest(c, err, "文件预览票据参数格式不正确")
 		return
 	}
 	manager, ok := managerForRequest(c)

@@ -55,7 +55,7 @@ func ListUsers(c *gin.Context) {
 func CreateUser(c *gin.Context) {
 	var request input.AccessCreateUserRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
-		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "请求参数错误"))
+		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "用户创建参数格式不正确"))
 		return
 	}
 	user, err := accessservice.NewService(app.DB()).
@@ -70,12 +70,12 @@ func CreateUser(c *gin.Context) {
 func AssignRoles(c *gin.Context) {
 	var request input.AccessAssignRolesRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
-		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "请求参数错误"))
+		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "用户角色参数格式不正确"))
 		return
 	}
 	userID, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil || userID <= 0 {
-		core.HandleError(c, core.NewError(core.ErrBadRequest, "用户标识无效"))
+		core.HandleError(c, core.NewFieldError(core.ErrInvalidParameter, "id 必须是正整数", "id"))
 		return
 	}
 	if err := accessservice.NewService(app.DB()).AssignRoles(userID, request.RoleCodes); err != nil {
@@ -88,12 +88,12 @@ func AssignRoles(c *gin.Context) {
 func ResetUserPassword(c *gin.Context) {
 	var request input.AccessResetUserPasswordRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
-		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "请求参数错误"))
+		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "用户密码重置参数格式不正确"))
 		return
 	}
 	userID, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil || userID <= 0 {
-		core.HandleError(c, core.NewError(core.ErrBadRequest, "用户标识无效"))
+		core.HandleError(c, core.NewFieldError(core.ErrInvalidParameter, "id 必须是正整数", "id"))
 		return
 	}
 	if err := accessservice.NewService(app.DB()).ResetUserPassword(userID, request.Password); err != nil {

@@ -53,7 +53,7 @@ func GetPanelUpdateStatus(c *gin.Context) {
 func ApplyPanelUpdate(c *gin.Context) {
 	var request input.ApplyPanelUpdateRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
-		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "请求参数错误"))
+		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "面板更新检查参数格式不正确"))
 		return
 	}
 	if request.Confirm != panelUpdateConfirmation {
@@ -117,6 +117,19 @@ func handlePanelUpdateError(c *gin.Context, err error) {
 	case errors.Is(err, panelupdate.ErrRecoveryNeeded):
 		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "检测到中断的更新事务，请先执行 one update rollback --yes"))
 	default:
-		core.HandleError(c, core.WrapError(err, core.ErrInternalError, "面板更新操作失败"))
+		core.HandleError(c, core.WrapError(err, core.ErrInternalError, panelUpdateOperationMessage(c)))
+	}
+}
+
+func panelUpdateOperationMessage(c *gin.Context) string {
+	switch c.FullPath() {
+	case "/v1/sys/update/status":
+		return "读取面板更新状态失败"
+	case "/v1/sys/update/check":
+		return "检查面板可用更新失败"
+	case "/v1/sys/update/apply":
+		return "启动面板更新任务失败"
+	default:
+		return "处理面板更新请求失败"
 	}
 }

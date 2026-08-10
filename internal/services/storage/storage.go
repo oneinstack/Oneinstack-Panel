@@ -16,6 +16,12 @@ import (
 	"gorm.io/gorm"
 )
 
+var (
+	ErrLibraryNotFound              = errors.New("database library not found")
+	ErrLibraryCredentialUnavailable = errors.New("database library has no managed MySQL account")
+	ErrLibraryCredentialCorrupt     = errors.New("database library credential cannot be decrypted")
+)
+
 func Add(param *input.AddParam) error {
 	normalizeConnectionParam(param)
 	s := &models.Storage{}
@@ -490,17 +496,20 @@ func GetLibraryCredential(id int64) (*output.DatabaseCredential, error) {
 		return nil, fmt.Errorf("database is required")
 	}
 	if err := app.DB().First(&library, id).Error; err != nil {
-		return nil, err
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, fmt.Errorf("%w: id=%d", ErrLibraryNotFound, id)
+		}
+		return nil, fmt.Errorf("load database library id=%d: %w", id, err)
 	}
 	if library.Type != "mysql" || strings.TrimSpace(library.User) == "" {
-		return nil, fmt.Errorf("database does not have a managed MySQL account")
+		return nil, fmt.Errorf("%w: id=%d", ErrLibraryCredentialUnavailable, id)
 	}
 	password, err := utils.DecryptCredential(
 		library.Password,
 		utils.CredentialPurposeLibraryPassword,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("decrypt database user credential: %w", err)
+		return nil, fmt.Errorf("%w: decrypt database user credential: %v", ErrLibraryCredentialCorrupt, err)
 	}
 	return &output.DatabaseCredential{
 		LibraryID: library.ID,

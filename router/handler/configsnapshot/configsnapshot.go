@@ -22,13 +22,13 @@ import (
 func List(c *gin.Context) {
 	userID := snapshotUser(c)
 	page, err := strconv.Atoi(c.DefaultQuery("page", "1"))
-	if err != nil {
-		core.HandleError(c, core.NewError(core.ErrBadRequest, "页码无效"))
+	if err != nil || page < 1 {
+		core.HandleError(c, core.NewFieldError(core.ErrInvalidParameter, "page 必须是大于等于 1 的整数", "page"))
 		return
 	}
 	pageSize, err := strconv.Atoi(c.DefaultQuery("pageSize", "20"))
-	if err != nil {
-		core.HandleError(c, core.NewError(core.ErrBadRequest, "每页数量无效"))
+	if err != nil || pageSize < 1 || pageSize > 100 {
+		core.HandleError(c, core.NewFieldError(core.ErrInvalidParameter, "pageSize 必须是 1 到 100 之间的整数", "pageSize"))
 		return
 	}
 	result, err := configsnapshot.Default().List(c.Query("resourceType"), c.Query("resourceId"), c.Query("status"), page, pageSize, userID)
@@ -110,7 +110,7 @@ func Create(c *gin.Context) {
 		return
 	}
 	RecordAudit(c, snapshot, "succeeded", "手动创建配置快照")
-	c.JSON(http.StatusCreated, core.SuccessResponse(gin.H{"snapshot": snapshot}))
+	c.JSON(http.StatusCreated, core.SuccessResponseForContext(c, gin.H{"snapshot": snapshot}))
 }
 
 func Get(c *gin.Context) {
@@ -183,7 +183,7 @@ func Restore(c *gin.Context) {
 	}
 	_ = configsnapshot.Default().Mark(restoreSnapshot.ID, "succeeded", "")
 	RecordAudit(c, restoreSnapshot, "succeeded", "配置快照已回滚")
-	c.JSON(http.StatusAccepted, core.SuccessResponse(gin.H{"snapshotId": restoreSnapshot.ID, "status": "succeeded", "operation": "restore"}))
+	c.JSON(http.StatusAccepted, core.SuccessResponseForContext(c, gin.H{"snapshotId": restoreSnapshot.ID, "status": "succeeded", "operation": "restore"}))
 }
 
 func currentResource(resourceType, resourceID string) (any, bool, error) {

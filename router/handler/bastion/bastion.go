@@ -151,14 +151,70 @@ func TestConnection(c *gin.Context) {
 		return
 	}
 	if !result.Reachable {
-		core.HandleErrorWithStatus(c, http.StatusBadGateway, core.NewErrorWithDetail(
-			core.ErrInternalError,
-			"服务器连接失败",
-			result.Error,
-		))
+		core.HandleErrorWithStatus(c, http.StatusBadGateway, bastionConnectionError(result.Error))
 		return
 	}
 	core.HandleSuccess(c, result)
+}
+
+func bastionConnectionError(probeError string) *core.AppError {
+	lower := strings.ToLower(strings.TrimSpace(probeError))
+	switch {
+	case strings.Contains(lower, "connection refused"):
+		return core.NewErrorWithDetail(
+			core.ErrInternalError,
+			"目标服务器 SSH 端口拒绝连接",
+			"目标服务器可访问，但 SSH 端口未接受连接；请确认 SSH 服务已启动，并检查端口、安全组和防火墙配置。",
+		)
+	case strings.Contains(lower, "no such host"), strings.Contains(lower, "server misbehaving"):
+		return core.NewErrorWithDetail(
+			core.ErrInternalError,
+			"目标服务器地址解析失败",
+			"无法解析目标服务器地址，请检查主机名或 IP 配置以及面板服务器的 DNS 设置。",
+		)
+	case strings.Contains(lower, "network is unreachable"), strings.Contains(lower, "no route to host"):
+		return core.NewErrorWithDetail(
+			core.ErrInternalError,
+			"目标服务器网络不可达",
+			"面板服务器当前没有到目标服务器的可用网络路由，请检查网络、路由、安全组和防火墙配置。",
+		)
+	case strings.Contains(lower, "timeout"), strings.Contains(lower, "timed out"), strings.Contains(lower, "探测超时"):
+		return core.NewErrorWithDetail(
+			core.ErrInternalError,
+			"目标服务器 SSH 连接测试超时",
+			"目标服务器在限定时间内未完成连接或探测，请检查 SSH 端口、安全组、防火墙和服务器负载后重试。",
+		)
+	case strings.Contains(lower, "unable to authenticate"), strings.Contains(lower, "permission denied"):
+		return core.NewErrorWithDetail(
+			core.ErrInternalError,
+			"SSH 身份认证失败",
+			"已连接到目标 SSH 服务，但用户名、密码或私钥未通过认证，请核对登录账号和认证凭据。",
+		)
+	case strings.HasPrefix(lower, "ssh 配置无效"):
+		return core.NewErrorWithDetail(
+			core.ErrInternalError,
+			"SSH 认证配置无效",
+			"当前服务器记录缺少有效的 SSH 用户名、密码或托管私钥，请完善认证配置后重试。",
+		)
+	case strings.HasPrefix(lower, "ssh 会话创建失败"):
+		return core.NewErrorWithDetail(
+			core.ErrInternalError,
+			"SSH 会话创建失败",
+			"SSH 连接已建立，但无法创建远程会话；请检查目标账号的登录权限和 SSH 服务策略。",
+		)
+	case strings.HasPrefix(lower, "远程命令执行失败"):
+		return core.NewErrorWithDetail(
+			core.ErrInternalError,
+			"服务器已连接，但系统信息探测失败",
+			"SSH 会话已建立，但只读系统信息命令无法执行；请检查目标账号的命令执行权限和服务器环境。",
+		)
+	default:
+		return core.NewErrorWithDetail(
+			core.ErrInternalError,
+			"目标服务器 SSH 连接测试失败",
+			"连接测试未完成，请核对服务器地址、SSH 端口、认证方式和网络访问策略后重试。",
+		)
+	}
 }
 
 // GetMetrics 获取历史指标
@@ -231,10 +287,32 @@ func optionalTime(value string) (time.Time, error) {
 
 func writeResult(c *gin.Context, result interface{}, err error) {
 	if err != nil {
-		core.HandleError(c, core.WrapError(err, core.ErrInternalError, "堡垒机操作失败"))
+		core.HandleError(c, core.WrapError(err, core.ErrInternalError, bastionOperationMessage(c)))
 		return
 	}
 	core.HandleSuccess(c, result)
+}
+
+func bastionOperationMessage(c *gin.Context) string {
+	switch c.FullPath() {
+	case "/v1/bastion/overview", "/v1/bastion/servers":
+		return "读取堡垒机服务器列表失败"
+	case "/v1/bastion/servers/:id":
+		switch c.Request.Method {
+		case http.MethodPut:
+			return "更新堡垒机服务器失败"
+		case http.MethodDelete:
+			return "删除堡垒机服务器失败"
+		default:
+			return "读取堡垒机服务器详情失败"
+		}
+	case "/v1/bastion/servers/:id/test":
+		return "测试堡垒机服务器 SSH 连接失败"
+	case "/v1/bastion/servers/:id/metrics":
+		return "读取堡垒机服务器监控指标失败"
+	default:
+		return "堡垒机请求处理失败"
+	}
 }
 
 func writeServersResult(c *gin.Context, servers []models.BastionServerSummary, err error) {
@@ -269,7 +347,7 @@ func canViewIdentity(c *gin.Context) bool {
 }
 
 func writeBadRequest(c *gin.Context, err error) {
-	core.HandleError(c, core.NewErrorWithDetail(core.ErrBadRequest, "请求参数无效", err.Error()))
+	core.HandleError(c, core.NewErrorWithDetail(core.ErrBadRequest, "堡垒机请求参数格式不正确", err.Error()))
 }
 
 func writeNotFound(c *gin.Context, message string) {

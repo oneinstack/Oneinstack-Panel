@@ -84,7 +84,7 @@ func Get(c *gin.Context) {
 func Approve(c *gin.Context) {
 	var review input.ApprovalReviewRequest
 	if err := c.ShouldBindJSON(&review); err != nil {
-		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "请求参数错误"))
+		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "审批通过参数格式不正确"))
 		return
 	}
 	userID, _ := middleware.AuthenticatedUserID(c)
@@ -110,7 +110,7 @@ func Approve(c *gin.Context) {
 func Reject(c *gin.Context) {
 	var review input.ApprovalReviewRequest
 	if err := c.ShouldBindJSON(&review); err != nil {
-		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "请求参数错误"))
+		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "审批拒绝参数格式不正确"))
 		return
 	}
 	userID, _ := middleware.AuthenticatedUserID(c)

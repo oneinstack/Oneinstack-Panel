@@ -2,7 +2,9 @@ package system
 
 import (
 	"context"
+	"errors"
 	"strconv"
+	"strings"
 	"time"
 
 	"oneinstack/core"
@@ -13,23 +15,44 @@ import (
 
 func ListProcesses(c *gin.Context) {
 	offset, limit := 0, 50
-	var err error
 	if value := c.Query("offset"); value != "" {
-		offset, err = strconv.Atoi(value)
-	}
-	if err == nil {
-		if value := c.Query("limit"); value != "" {
-			limit, err = strconv.Atoi(value)
+		parsed, err := strconv.Atoi(value)
+		if err != nil || parsed < 0 {
+			core.HandleError(c, core.NewFieldError(core.ErrInvalidParameter, "offset 必须是大于等于 0 的整数", "offset"))
+			return
 		}
+		offset = parsed
 	}
-	if err != nil {
-		core.HandleError(c, core.NewError(core.ErrBadRequest, "分页参数错误"))
+	if value := c.Query("limit"); value != "" {
+		parsed, err := strconv.Atoi(value)
+		if err != nil || parsed < 1 || parsed > 200 {
+			core.HandleError(c, core.NewFieldError(core.ErrInvalidParameter, "limit 必须是 1 到 200 之间的整数", "limit"))
+			return
+		}
+		limit = parsed
+	}
+	sortBy := strings.ToLower(strings.TrimSpace(c.Query("sort")))
+	switch sortBy {
+	case "", "pid", "cpu", "memory", "name":
+	default:
+		core.HandleError(c, core.NewFieldError(core.ErrInvalidParameter, "sort 仅支持 pid、cpu、memory 或 name", "sort"))
+		return
+	}
+	order := strings.ToLower(strings.TrimSpace(c.Query("order")))
+	switch order {
+	case "", "asc", "desc":
+	default:
+		core.HandleError(c, core.NewFieldError(core.ErrInvalidParameter, "order 仅支持 asc 或 desc", "order"))
 		return
 	}
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
 	defer cancel()
-	result, err := systemservice.ListProcesses(ctx, offset, limit, c.Query("keyword"), c.Query("sort"), c.Query("order") == "desc")
+	result, err := systemservice.ListProcesses(ctx, offset, limit, c.Query("keyword"), sortBy, order == "desc")
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			core.HandleError(c, core.WrapError(err, core.ErrTaskTimeout, "获取进程列表超时"))
+			return
+		}
 		core.HandleError(c, core.WrapError(err, core.ErrSystemError, "获取进程列表失败"))
 		return
 	}
@@ -38,15 +61,22 @@ func ListProcesses(c *gin.Context) {
 
 func GetProcessDetail(c *gin.Context) {
 	pid, err := strconv.ParseInt(c.Param("pid"), 10, 32)
-	if err != nil {
-		core.HandleError(c, core.NewError(core.ErrBadRequest, "进程 ID 无效"))
+	if err != nil || pid < 1 {
+		core.HandleError(c, core.NewFieldError(core.ErrInvalidParameter, "pid 必须是正整数", "pid"))
 		return
 	}
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
 	defer cancel()
 	result, err := systemservice.GetProcessDetail(ctx, int32(pid))
 	if err != nil {
-		core.HandleError(c, core.WrapError(err, core.ErrNotFound, "获取进程详情失败"))
+		switch {
+		case errors.Is(err, context.DeadlineExceeded):
+			core.HandleError(c, core.WrapError(err, core.ErrTaskTimeout, "获取进程详情超时"))
+		case errors.Is(err, systemservice.ErrProcessNotAvailable):
+			core.HandleError(c, core.NewErrorWithDetail(core.ErrNotFound, "进程不存在或已退出", "该进程可能已结束，请刷新进程列表后重试。"))
+		default:
+			core.HandleError(c, core.WrapError(err, core.ErrSystemError, "获取进程详情失败"))
+		}
 		return
 	}
 	core.HandleSuccess(c, result)

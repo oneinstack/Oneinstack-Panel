@@ -244,6 +244,7 @@ func BuildAuthorizationMatrix(access *accessservice.UserAccess) AuthorizationMat
 		"database.restore":            has(accessservice.PermissionDatabaseWrite),
 		"database.connection.delete":  has(accessservice.PermissionDatabaseWrite),
 		"audit.export":                has(accessservice.PermissionAuditExport),
+		"audit.verify":                has(accessservice.PermissionAuditVerify),
 		"database.credential.reveal":  has(accessservice.PermissionDatabaseWrite),
 		"certificate.issue":           has(accessservice.PermissionWebsiteWrite),
 		"file.create":                 has(accessservice.PermissionFileCreate),
@@ -278,6 +279,43 @@ func BuildAuthorizationMatrix(access *accessservice.UserAccess) AuthorizationMat
 			"file.trash.delete":          true,
 		},
 		Scopes: map[string]map[string]bool{
+			"dashboard": {
+				"read": has(accessservice.PermissionDashboardRead),
+			},
+			"runtimeLog": {
+				"read": has(accessservice.PermissionRuntimeLogRead),
+			},
+			"software": {
+				"read":         has(accessservice.PermissionSoftwareRead),
+				"write":        has(accessservice.PermissionSoftwareWrite),
+				"serviceRead":  has(accessservice.PermissionServiceRead),
+				"serviceWrite": has(accessservice.PermissionServiceWrite),
+			},
+			"security": {
+				"read":  has(accessservice.PermissionSecurityRead),
+				"write": has(accessservice.PermissionSecurityWrite),
+			},
+			"cron": {
+				"read":  has(accessservice.PermissionCronRead),
+				"write": has(accessservice.PermissionCronWrite),
+			},
+			"monitoring": {
+				"read":  has(accessservice.PermissionMonitoringRead),
+				"write": has(accessservice.PermissionMonitoringWrite),
+			},
+			"system": {
+				"read":  has(accessservice.PermissionSystemRead),
+				"write": has(accessservice.PermissionSystemWrite),
+			},
+			"configuration": {
+				"read":  has(accessservice.PermissionConfigSnapshotRead),
+				"write": has(accessservice.PermissionConfigSnapshotWrite),
+			},
+			"audit": {
+				"read":   has(accessservice.PermissionAuditRead),
+				"export": has(accessservice.PermissionAuditExport),
+				"verify": has(accessservice.PermissionAuditVerify),
+			},
 			"website": {
 				"read":            has(accessservice.PermissionWebsiteRead),
 				"write":           has(accessservice.PermissionWebsiteWrite),
@@ -290,8 +328,14 @@ func BuildAuthorizationMatrix(access *accessservice.UserAccess) AuthorizationMat
 			},
 			"approval": {
 				"read":    has(accessservice.PermissionApprovalRead),
+				"request": has(accessservice.PermissionApprovalRequest),
 				"review":  has(accessservice.PermissionApprovalReview),
 				"execute": has(accessservice.PermissionApprovalExecute),
+			},
+			"task": {
+				"readSelf":   has(accessservice.PermissionTaskReadSelf),
+				"readAll":    has(accessservice.PermissionTaskReadAll),
+				"cancelSelf": has(accessservice.PermissionTaskCancelSelf),
 			},
 			"file": {
 				"read":          has(accessservice.PermissionFileRead),
@@ -307,17 +351,25 @@ func BuildAuthorizationMatrix(access *accessservice.UserAccess) AuthorizationMat
 				"scopeBackups":  has(accessservice.PermissionFileScopeBackups),
 			},
 			"container": {
-				"read":          has(accessservice.PermissionContainerRead),
-				"write":         has(accessservice.PermissionContainerWrite),
-				"delete":        has(accessservice.PermissionContainerDelete),
-				"terminal":      has(accessservice.PermissionContainerTerminal),
-				"logsRead":      has(accessservice.PermissionContainerLogsRead),
-				"imageWrite":    has(accessservice.PermissionContainerImageWrite),
-				"networkWrite":  has(accessservice.PermissionContainerNetworkWrite),
-				"volumeWrite":   has(accessservice.PermissionContainerVolumeWrite),
-				"composeWrite":  has(accessservice.PermissionContainerComposeWrite),
-				"registryWrite": has(accessservice.PermissionContainerRegistryWrite),
-				"configWrite":   has(accessservice.PermissionContainerConfigWrite),
+				"read":             has(accessservice.PermissionContainerRead),
+				"write":            has(accessservice.PermissionContainerWrite),
+				"delete":           has(accessservice.PermissionContainerDelete),
+				"terminal":         has(accessservice.PermissionContainerTerminal),
+				"logsRead":         has(accessservice.PermissionContainerLogsRead),
+				"imageWrite":       has(accessservice.PermissionContainerImageWrite),
+				"networkWrite":     has(accessservice.PermissionContainerNetworkWrite),
+				"volumeWrite":      has(accessservice.PermissionContainerVolumeWrite),
+				"composeWrite":     has(accessservice.PermissionContainerComposeWrite),
+				"registryWrite":    has(accessservice.PermissionContainerRegistryWrite),
+				"configWrite":      has(accessservice.PermissionContainerConfigWrite),
+				"runtimeInstall":   has(accessservice.PermissionContainerRuntimeInstall),
+				"dangerousCleanup": has(accessservice.PermissionContainerDangerousCleanup),
+				"forceAction":      has(accessservice.PermissionContainerForceAction),
+			},
+			"bastion": {
+				"read":         has(accessservice.PermissionBastionRead),
+				"write":        has(accessservice.PermissionBastionWrite),
+				"identityRead": has(accessservice.PermissionBastionIdentityRead),
 			},
 		},
 	}

@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"errors"
 	"net/http"
 	"oneinstack/app"
 	"oneinstack/core"
@@ -33,7 +34,7 @@ type DeleteConnectionApprovalPayload struct {
 func ADDStorage(c *gin.Context) {
 	var req input.AddParam
 	if err := c.ShouldBindJSON(&req); err != nil {
-		appErr := core.WrapError(err, core.ErrBadRequest, "请求参数错误")
+		appErr := core.WrapError(err, core.ErrBadRequest, "数据库连接请求参数格式不正确")
 		core.HandleError(c, appErr)
 		return
 	}
@@ -45,7 +46,7 @@ func ADDStorage(c *gin.Context) {
 	}
 	err = storage.Add(&req)
 	if err != nil {
-		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		appErr := core.WrapError(err, core.ErrInternalError, "新增数据库连接失败")
 		core.HandleError(c, appErr)
 		return
 	}
@@ -55,7 +56,7 @@ func ADDStorage(c *gin.Context) {
 func ADDLib(c *gin.Context) {
 	var req input.LibParam
 	if err := c.ShouldBindJSON(&req); err != nil {
-		appErr := core.WrapError(err, core.ErrBadRequest, "请求参数错误")
+		appErr := core.WrapError(err, core.ErrBadRequest, "数据库实例请求参数格式不正确")
 		core.HandleError(c, appErr)
 		return
 	}
@@ -69,7 +70,7 @@ func ADDLib(c *gin.Context) {
 	}
 	credential, err := storage.AddLibs(&req)
 	if err != nil {
-		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		appErr := core.WrapError(err, core.ErrInternalError, "新增数据库实例失败")
 		core.HandleError(c, appErr)
 		return
 	}
@@ -80,7 +81,7 @@ func GetStorage(c *gin.Context) {
 	t := c.Query("type")
 	data, err := storage.List(t)
 	if err != nil {
-		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		appErr := core.WrapError(err, core.ErrInternalError, "查询数据库连接列表失败")
 		core.HandleError(c, appErr)
 		return
 	}
@@ -90,7 +91,7 @@ func GetStorage(c *gin.Context) {
 func UpdateStorage(c *gin.Context) {
 	var req input.AddParam
 	if err := c.ShouldBindJSON(&req); err != nil {
-		appErr := core.WrapError(err, core.ErrBadRequest, "请求参数错误")
+		appErr := core.WrapError(err, core.ErrBadRequest, "数据库连接请求参数格式不正确")
 		core.HandleError(c, appErr)
 		return
 	}
@@ -102,7 +103,7 @@ func UpdateStorage(c *gin.Context) {
 	}
 	err = storage.Update(&req)
 	if err != nil {
-		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		appErr := core.WrapError(err, core.ErrInternalError, "更新数据库连接失败")
 		core.HandleError(c, appErr)
 		return
 	}
@@ -112,7 +113,7 @@ func UpdateStorage(c *gin.Context) {
 func DelStorage(c *gin.Context) {
 	var req input.IDParam
 	if err := c.ShouldBindJSON(&req); err != nil {
-		appErr := core.WrapError(err, core.ErrBadRequest, "请求参数错误")
+		appErr := core.WrapError(err, core.ErrBadRequest, "数据库连接标识格式不正确")
 		core.HandleError(c, appErr)
 		return
 	}
@@ -142,7 +143,7 @@ func DelStorage(c *gin.Context) {
 			core.HandleError(c, core.WrapError(createErr, core.ErrBadRequest, "创建数据库连接删除审批失败"))
 			return
 		}
-		c.JSON(http.StatusAccepted, core.SuccessResponse(gin.H{
+		c.JSON(http.StatusAccepted, core.SuccessResponseForContext(c, gin.H{
 			"mode":       "approval_pending",
 			"approvalId": approval.ID,
 			"status":     approval.Status,
@@ -151,7 +152,7 @@ func DelStorage(c *gin.Context) {
 	}
 	err := storage.Del(&req)
 	if err != nil {
-		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		appErr := core.WrapError(err, core.ErrInternalError, "删除数据库连接失败")
 		core.HandleError(c, appErr)
 		return
 	}
@@ -161,7 +162,7 @@ func DelStorage(c *gin.Context) {
 func TestStorageConnection(c *gin.Context) {
 	var req input.AddParam
 	if err := c.ShouldBindJSON(&req); err != nil {
-		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "请求参数错误"))
+		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "数据库连接测试参数格式不正确"))
 		return
 	}
 	if err := req.Validate(); err != nil {
@@ -178,7 +179,7 @@ func TestStorageConnection(c *gin.Context) {
 func DeleteLibrary(c *gin.Context) {
 	var req input.DeleteLibraryParam
 	if err := c.ShouldBindJSON(&req); err != nil {
-		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "请求参数错误"))
+		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "数据库实例删除参数格式不正确"))
 		return
 	}
 	if err := storage.DeleteLibrary(&req); err != nil {
@@ -191,13 +192,13 @@ func DeleteLibrary(c *gin.Context) {
 func SyncStorage(c *gin.Context) {
 	var req input.IDParam
 	if err := c.ShouldBindJSON(&req); err != nil {
-		appErr := core.WrapError(err, core.ErrBadRequest, "请求参数错误")
+		appErr := core.WrapError(err, core.ErrBadRequest, "数据库同步参数格式不正确")
 		core.HandleError(c, appErr)
 		return
 	}
 	err := storage.Sync(&req)
 	if err != nil {
-		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		appErr := core.WrapError(err, core.ErrInternalError, "同步数据库信息失败")
 		core.HandleError(c, appErr)
 		return
 	}
@@ -206,13 +207,13 @@ func SyncStorage(c *gin.Context) {
 func GetLib(c *gin.Context) {
 	var req input.QueryParam
 	if err := c.ShouldBindJSON(&req); err != nil {
-		appErr := core.WrapError(err, core.ErrBadRequest, "请求参数错误")
+		appErr := core.WrapError(err, core.ErrBadRequest, "数据库查询参数格式不正确")
 		core.HandleError(c, appErr)
 		return
 	}
 	data, err := storage.LibList(&req)
 	if err != nil {
-		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		appErr := core.WrapError(err, core.ErrInternalError, "查询数据库实例列表失败")
 		core.HandleError(c, appErr)
 		return
 	}
@@ -222,13 +223,13 @@ func GetLib(c *gin.Context) {
 func GetRedisKeys(c *gin.Context) {
 	var req input.QueryParam
 	if err := c.ShouldBindJSON(&req); err != nil {
-		appErr := core.WrapError(err, core.ErrBadRequest, "请求参数错误")
+		appErr := core.WrapError(err, core.ErrBadRequest, "Redis 查询参数格式不正确")
 		core.HandleError(c, appErr)
 		return
 	}
 	data, err := storage.RedisKeyList(&req)
 	if err != nil {
-		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		appErr := core.WrapError(err, core.ErrInternalError, "查询 Redis 键列表失败")
 		core.HandleError(c, appErr)
 		return
 	}
@@ -264,7 +265,7 @@ func RevealLibraryCredential(c *gin.Context) {
 			core.HandleError(c, core.WrapError(createErr, core.ErrBadRequest, "创建数据库凭据审批失败"))
 			return
 		}
-		c.JSON(202, core.SuccessResponse(gin.H{
+		c.JSON(202, core.SuccessResponseForContext(c, gin.H{
 			"mode":       "approval_pending",
 			"approvalId": approval.ID,
 			"status":     approval.Status,
@@ -273,7 +274,16 @@ func RevealLibraryCredential(c *gin.Context) {
 	}
 	credential, err := storage.GetLibraryCredential(id)
 	if err != nil {
-		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "读取数据库账号失败"))
+		code, message := core.ErrInternalError, "读取数据库账号失败"
+		switch {
+		case errors.Is(err, storage.ErrLibraryNotFound):
+			code, message = core.ErrNotFound, "数据库实例不存在"
+		case errors.Is(err, storage.ErrLibraryCredentialUnavailable):
+			code, message = core.ErrBadRequest, "该数据库没有可读取的托管 MySQL 账号"
+		case errors.Is(err, storage.ErrLibraryCredentialCorrupt):
+			code, message = core.ErrConfigReadFailed, "数据库账号凭据无法解密，可能已损坏或密钥已变更"
+		}
+		core.HandleError(c, core.WrapError(err, code, message))
 		return
 	}
 	core.HandleSuccess(c, credential)
@@ -282,7 +292,7 @@ func RevealLibraryCredential(c *gin.Context) {
 func UpdateLibraryCredential(c *gin.Context) {
 	var req input.UpdateLibraryCredentialParam
 	if err := c.ShouldBindJSON(&req); err != nil {
-		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "请求参数错误"))
+		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "数据库凭据更新参数格式不正确"))
 		return
 	}
 	if !verifyCurrentPassword(c, req.PanelPassword) {

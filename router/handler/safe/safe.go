@@ -33,7 +33,7 @@ func GetFirewallInfo(c *gin.Context) {
 func GetFirewallRules(c *gin.Context) {
 	var param input.IptablesRuleParam
 	if err := c.ShouldBindJSON(&param); err != nil {
-		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "请求参数错误"))
+		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "防火墙请求参数格式不正确"))
 		return
 	}
 	rules, err := safeservice.NewDefaultService().List(&param)
@@ -47,7 +47,7 @@ func GetFirewallRules(c *gin.Context) {
 func AddFirewallRule(c *gin.Context) {
 	var param models.IptablesRule
 	if err := c.ShouldBindJSON(&param); err != nil {
-		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "请求参数错误"))
+		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "防火墙规则创建参数格式不正确"))
 		return
 	}
 	service := safeservice.NewDefaultService()
@@ -71,7 +71,7 @@ func AddFirewallRule(c *gin.Context) {
 func UpdateFirewallRule(c *gin.Context) {
 	var param models.IptablesRule
 	if err := c.ShouldBindJSON(&param); err != nil {
-		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "请求参数错误"))
+		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "防火墙规则更新参数格式不正确"))
 		return
 	}
 	service := safeservice.NewDefaultService()
@@ -97,7 +97,7 @@ func DeleteFirewallRule(c *gin.Context) {
 		ID int64 `json:"id" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&param); err != nil {
-		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "请求参数错误"))
+		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "防火墙规则删除参数格式不正确"))
 		return
 	}
 	service := safeservice.NewDefaultService()
@@ -121,7 +121,7 @@ func DeleteFirewallRule(c *gin.Context) {
 func SetFirewallRuleState(c *gin.Context) {
 	var param input.FirewallRuleStateParam
 	if err := c.ShouldBindJSON(&param); err != nil {
-		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "请求参数错误"))
+		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "防火墙规则状态参数格式不正确"))
 		return
 	}
 	service := safeservice.NewDefaultService()
@@ -145,7 +145,7 @@ func SetFirewallRuleState(c *gin.Context) {
 func BatchFirewallRules(c *gin.Context) {
 	var param input.FirewallRuleBatchParam
 	if err := c.ShouldBindJSON(&param); err != nil {
-		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "请求参数错误"))
+		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "防火墙批量操作参数格式不正确"))
 		return
 	}
 	service := safeservice.NewDefaultService()
@@ -225,7 +225,7 @@ func ImportFirewallRules(c *gin.Context) {
 func ListPortForwards(c *gin.Context) {
 	var param input.FirewallPortForwardParam
 	if err := c.ShouldBindJSON(&param); err != nil {
-		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "请求参数错误"))
+		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "端口转发查询参数格式不正确"))
 		return
 	}
 	result, err := safeservice.NewDefaultService().ListPortForwards(&param)
@@ -239,7 +239,7 @@ func ListPortForwards(c *gin.Context) {
 func AddPortForward(c *gin.Context) {
 	var param models.FirewallPortForward
 	if err := c.ShouldBindJSON(&param); err != nil {
-		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "请求参数错误"))
+		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "端口转发创建参数格式不正确"))
 		return
 	}
 	if err := safeservice.NewDefaultService().AddPortForward(c.Request.Context(), &param); err != nil {
@@ -252,7 +252,7 @@ func AddPortForward(c *gin.Context) {
 func UpdatePortForward(c *gin.Context) {
 	var param models.FirewallPortForward
 	if err := c.ShouldBindJSON(&param); err != nil {
-		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "请求参数错误"))
+		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "端口转发更新参数格式不正确"))
 		return
 	}
 	if err := safeservice.NewDefaultService().UpdatePortForward(c.Request.Context(), &param); err != nil {
@@ -267,7 +267,7 @@ func DeletePortForward(c *gin.Context) {
 		ID int64 `json:"id" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&param); err != nil {
-		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "请求参数错误"))
+		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "端口转发删除参数格式不正确"))
 		return
 	}
 	if err := safeservice.NewDefaultService().DeletePortForward(c.Request.Context(), param.ID); err != nil {
@@ -280,7 +280,7 @@ func DeletePortForward(c *gin.Context) {
 func SetPortForwardState(c *gin.Context) {
 	var param input.FirewallPortForwardStateParam
 	if err := c.ShouldBindJSON(&param); err != nil {
-		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "请求参数错误"))
+		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "端口转发状态参数格式不正确"))
 		return
 	}
 	if err := safeservice.NewDefaultService().SetPortForwardState(c.Request.Context(), param.ID, param.Enabled); err != nil {
@@ -302,7 +302,7 @@ func GetAutoBlockConfig(c *gin.Context) {
 func SaveAutoBlockConfig(c *gin.Context) {
 	var param input.FirewallAutoBlockParam
 	if err := c.ShouldBindJSON(&param); err != nil {
-		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "请求参数错误"))
+		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "自动封禁配置参数格式不正确"))
 		return
 	}
 	config, err := safeservice.NewDefaultService().SaveAutoBlockConfig(&param)
@@ -326,7 +326,7 @@ func RunAutoBlock(c *gin.Context) {
 func StopFirewall(c *gin.Context) {
 	var param input.FirewallToggleParam
 	if err := c.ShouldBindJSON(&param); err != nil {
-		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "请求参数错误"))
+		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "防火墙停止参数格式不正确"))
 		return
 	}
 	if err := safeservice.NewDefaultService().SetEnabled(
@@ -341,7 +341,7 @@ func StopFirewall(c *gin.Context) {
 func BlockPing(c *gin.Context) {
 	var param input.FirewallPingParam
 	if err := c.ShouldBindJSON(&param); err != nil {
-		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "请求参数错误"))
+		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "防火墙 Ping 设置参数格式不正确"))
 		return
 	}
 	if err := safeservice.NewDefaultService().SetPingBlocked(c.Request.Context(), param.Blocked); err != nil {
@@ -374,7 +374,7 @@ func InstallFirewall(c *gin.Context) {
 		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "创建 firewalld 安装任务失败"))
 		return
 	}
-	c.JSON(http.StatusAccepted, core.SuccessResponse(gin.H{
+	c.JSON(http.StatusAccepted, core.SuccessResponseForContext(c, gin.H{
 		"taskId":      task.ID,
 		"installName": task.ID,
 		"operation":   task.Operation,
@@ -397,7 +397,57 @@ func handleServiceError(c *gin.Context, err error) {
 	case errors.Is(err, gorm.ErrRecordNotFound):
 		core.HandleError(c, core.WrapError(err, core.ErrNotFound, "防火墙规则不存在"))
 	default:
-		core.HandleError(c, core.WrapError(err, core.ErrInternalError, "防火墙操作失败"))
+		core.HandleError(c, core.WrapError(err, core.ErrInternalError, firewallOperationMessage(c)))
+	}
+}
+
+func firewallOperationMessage(c *gin.Context) string {
+	switch c.FullPath() {
+	case "/v1/safe/info":
+		return "读取防火墙状态失败"
+	case "/v1/safe/rules":
+		return "读取防火墙规则列表失败"
+	case "/v1/safe/add":
+		return "创建防火墙规则失败"
+	case "/v1/safe/update":
+		return "更新防火墙规则失败"
+	case "/v1/safe/del":
+		return "删除防火墙规则失败"
+	case "/v1/safe/rules/state":
+		return "更新防火墙规则状态失败"
+	case "/v1/safe/rules/batch":
+		return "执行防火墙规则批量操作失败"
+	case "/v1/safe/rules/cleanup":
+		return "清理防火墙规则失败"
+	case "/v1/safe/rules/export":
+		return "导出防火墙规则失败"
+	case "/v1/safe/rules/import":
+		return "导入防火墙规则失败"
+	case "/v1/safe/forwards":
+		return "读取端口转发列表失败"
+	case "/v1/safe/forwards/add":
+		return "创建端口转发失败"
+	case "/v1/safe/forwards/update":
+		return "更新端口转发失败"
+	case "/v1/safe/forwards/del":
+		return "删除端口转发失败"
+	case "/v1/safe/forwards/state":
+		return "更新端口转发状态失败"
+	case "/v1/safe/auto-block":
+		if c.Request.Method == http.MethodGet {
+			return "读取自动封禁配置失败"
+		}
+		return "保存自动封禁配置失败"
+	case "/v1/safe/auto-block/run":
+		return "执行自动封禁任务失败"
+	case "/v1/safe/stop":
+		return "停止防火墙服务失败"
+	case "/v1/safe/blockping":
+		return "更新防火墙 Ping 响应设置失败"
+	case "/v1/safe/install":
+		return "安装防火墙失败"
+	default:
+		return "处理防火墙请求失败"
 	}
 }
 

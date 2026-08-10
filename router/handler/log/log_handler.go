@@ -218,5 +218,5 @@ func optionalTime(value string) (time.Time, error) {
 }
 
 func writeBadRequest(c *gin.Context, err error) {
-	core.HandleError(c, core.NewErrorWithDetail(core.ErrBadRequest, "请求参数无效", err.Error()))
+	core.HandleError(c, core.NewErrorWithDetail(core.ErrBadRequest, "运行日志查询参数格式不正确", err.Error()))
 }

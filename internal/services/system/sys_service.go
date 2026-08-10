@@ -23,6 +23,19 @@ import (
 
 var ErrCurrentPasswordInvalid = errors.New("current password is invalid")
 
+// PasswordStrengthError 表示可安全返回给调用方的密码强度校验错误。
+type PasswordStrengthError struct {
+	message string
+}
+
+func (e *PasswordStrengthError) Error() string {
+	return e.message
+}
+
+func newPasswordStrengthError(message string) error {
+	return &PasswordStrengthError{message: message}
+}
+
 func GetSystemMonitor() (map[string]interface{}, error) {
 	ls, err := GetNetIOCounters()
 	if err != nil {
@@ -453,11 +466,11 @@ func GetInfo() (*models.System, error) {
 // validatePasswordStrength 验证密码强度
 func validatePasswordStrength(password string) error {
 	if len(password) < 8 {
-		return fmt.Errorf("password must be at least 8 characters long")
+		return newPasswordStrengthError("密码长度不能少于 8 个字符")
 	}
 
 	if len(password) > 128 {
-		return fmt.Errorf("password must be no more than 128 characters long")
+		return newPasswordStrengthError("密码长度不能超过 128 个字符")
 	}
 
 	var (
@@ -481,16 +494,16 @@ func validatePasswordStrength(password string) error {
 	}
 
 	if !hasUpper {
-		return fmt.Errorf("password must contain at least one uppercase letter")
+		return newPasswordStrengthError("密码必须包含至少一个大写字母")
 	}
 	if !hasLower {
-		return fmt.Errorf("password must contain at least one lowercase letter")
+		return newPasswordStrengthError("密码必须包含至少一个小写字母")
 	}
 	if !hasNumber {
-		return fmt.Errorf("password must contain at least one number")
+		return newPasswordStrengthError("密码必须包含至少一个数字")
 	}
 	if !hasSpecial {
-		return fmt.Errorf("password must contain at least one special character")
+		return newPasswordStrengthError("密码必须包含至少一个特殊字符")
 	}
 
 	// 检查常见弱密码
@@ -501,7 +514,7 @@ func validatePasswordStrength(password string) error {
 
 	for _, common := range commonPasswords {
 		if matched, _ := regexp.MatchString("(?i)"+common, password); matched {
-			return fmt.Errorf("password contains common weak patterns")
+			return newPasswordStrengthError("密码不能包含 123456、password、admin 等常见弱密码片段")
 		}
 	}
 

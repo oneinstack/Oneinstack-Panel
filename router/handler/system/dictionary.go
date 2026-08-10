@@ -13,7 +13,7 @@ func DictionaryList(c *gin.Context) {
 	param := c.Query("q")
 	list, err := system.DictionaryList(param)
 	if err != nil {
-		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		appErr := core.WrapError(err, core.ErrInternalError, "查询字典列表失败")
 		core.HandleError(c, appErr)
 		return
 	}
@@ -24,13 +24,13 @@ func DictionaryList(c *gin.Context) {
 func AddDictionary(c *gin.Context) {
 	input := &models.Dictionary{}
 	if err := c.ShouldBindJSON(&input); err != nil {
-		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		appErr := core.WrapError(err, core.ErrBadRequest, "字典参数格式不正确")
 		core.HandleError(c, appErr)
 		return
 	}
 	err := system.AddDictionary(input)
 	if err != nil {
-		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		appErr := core.WrapError(err, core.ErrBadRequest, "创建字典项失败")
 		core.HandleError(c, appErr)
 		return
 	}
@@ -41,13 +41,13 @@ func AddDictionary(c *gin.Context) {
 func UpdateDictionary(c *gin.Context) {
 	input := &models.Dictionary{}
 	if err := c.ShouldBindJSON(&input); err != nil {
-		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		appErr := core.WrapError(err, core.ErrBadRequest, "字典参数格式不正确")
 		core.HandleError(c, appErr)
 		return
 	}
 	err := system.UpdateDictionary(input)
 	if err != nil {
-		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		appErr := core.WrapError(err, core.ErrBadRequest, "更新字典项失败")
 		core.HandleError(c, appErr)
 		return
 	}
@@ -57,13 +57,13 @@ func UpdateDictionary(c *gin.Context) {
 func DeleteDictionary(c *gin.Context) {
 	input := &models.Dictionary{}
 	if err := c.ShouldBindJSON(&input); err != nil {
-		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		appErr := core.WrapError(err, core.ErrBadRequest, "字典参数格式不正确")
 		core.HandleError(c, appErr)
 		return
 	}
 	err := system.DeleteDictionary(input.ID)
 	if err != nil {
-		appErr := core.WrapError(err, core.ErrInternalError, "操作失败")
+		appErr := core.WrapError(err, core.ErrBadRequest, "删除字典项失败")
 		core.HandleError(c, appErr)
 		return
 	}
