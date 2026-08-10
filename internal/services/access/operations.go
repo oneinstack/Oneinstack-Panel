@@ -11,6 +11,7 @@ var operationPermissions = map[string]string{
 	"firewall.rule_change":        PermissionSecurityWrite,
 	"firewall.port_forward":       PermissionSecurityWrite,
 	"firewall.toggle":             PermissionSecurityWrite,
+	"firewall.ping":               PermissionSecurityWrite,
 	"panel.network":               PermissionSystemWrite,
 	"container.create":            PermissionContainerWrite,
 	"container.start":             PermissionContainerWrite,

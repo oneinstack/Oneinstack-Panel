@@ -155,9 +155,19 @@ func buildDocument(operation string, payload json.RawMessage) (previewservice.Do
 		document.Actions = []previewservice.Action{{Type: "command", Name: "校验并应用组件配置", DisplayCommand: "由组件配置动作执行"}}
 		document.Impact = previewservice.Impact{WriteFiles: true, ModifyDatabase: true, ReloadService: true}
 	case "firewall.rule_change":
-		document.Actions = []previewservice.Action{{Type: "firewall", Name: "修改防火墙规则", DisplayCommand: "由检测到的防火墙后端执行受控规则动作"}}
-		document.Impact = previewservice.Impact{ModifyDatabase: true, NetworkRisk: true}
-		document.Rollback = previewservice.Rollback{Supported: true, Summary: "失败时恢复已应用的规则操作和持久化状态"}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(payload, &fields); err != nil {
+			return previewservice.Document{}, "", err
+		}
+		if fields["blocked"] != nil {
+			document.Actions = []previewservice.Action{{Type: "firewall", Name: "修改防火墙 Ping 响应", DisplayCommand: "由检测到的防火墙后端执行受控 ICMP 规则动作"}}
+			document.Impact = previewservice.Impact{NetworkRisk: true}
+			document.Rollback = previewservice.Rollback{Supported: true, Summary: "可通过反向设置 Ping 响应状态恢复"}
+		} else {
+			document.Actions = []previewservice.Action{{Type: "firewall", Name: "修改防火墙规则", DisplayCommand: "由检测到的防火墙后端执行受控规则动作"}}
+			document.Impact = previewservice.Impact{ModifyDatabase: true, NetworkRisk: true}
+			document.Rollback = previewservice.Rollback{Supported: true, Summary: "失败时恢复已应用的规则操作和持久化状态"}
+		}
 	case "firewall.port_forward":
 		document.Actions = []previewservice.Action{{Type: "firewall", Name: "修改端口转发", DisplayCommand: "由检测到的防火墙后端执行受控转发动作"}}
 		document.Impact = previewservice.Impact{ModifyDatabase: true, NetworkRisk: true}
@@ -165,6 +175,10 @@ func buildDocument(operation string, payload json.RawMessage) (previewservice.Do
 		document.Actions = []previewservice.Action{{Type: "firewall", Name: "切换防火墙状态", DisplayCommand: "由检测到的防火墙后端执行启停动作"}}
 		document.Impact = previewservice.Impact{ModifyDatabase: true, NetworkRisk: true}
 		document.Rollback = previewservice.Rollback{Supported: false, Summary: "防火墙启停可能导致当前连接中断，请确认后执行", Unrecoverable: []string{"已断开的外部连接"}}
+	case "firewall.ping":
+		document.Actions = []previewservice.Action{{Type: "firewall", Name: "修改防火墙 Ping 响应", DisplayCommand: "由检测到的防火墙后端执行受控 ICMP 规则动作"}}
+		document.Impact = previewservice.Impact{NetworkRisk: true}
+		document.Rollback = previewservice.Rollback{Supported: true, Summary: "可通过反向设置 Ping 响应状态恢复"}
 	case "panel.network":
 		document.Files = []previewservice.FileChange{{Path: "面板受管配置文件", Action: "update", ChangeSummary: "更新面板监听、TLS、安全入口和可信代理配置"}}
 		document.Actions = []previewservice.Action{{Type: "system", Name: "应用面板访问配置", DisplayCommand: "由面板网络配置事务执行"}, {Type: "firewall", Name: "同步面板端口规则", DisplayCommand: "由受控防火墙适配器执行"}}
@@ -305,13 +319,41 @@ func executeOperation(ctx context.Context, operation string, payload json.RawMes
 			Rule    models.IptablesRule `json:"rule"`
 			ID      int64               `json:"id"`
 			Enabled *bool               `json:"enabled"`
+			Blocked *bool               `json:"blocked"`
 		}
 		if err := json.Unmarshal(payload, &value); err != nil {
 			return nil, err
 		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(payload, &fields); err != nil {
+			return nil, err
+		}
+		directRule := hasFirewallRuleFields(fields)
+		if directRule {
+			if err := json.Unmarshal(payload, &value.Rule); err != nil {
+				return nil, err
+			}
+		}
 		service := safeservice.NewDefaultService()
 		var err error
-		switch strings.ToLower(value.Action) {
+		action := strings.ToLower(strings.TrimSpace(value.Action))
+		if action == "" {
+			switch {
+			case value.Blocked != nil:
+				action = "ping"
+			case value.Enabled != nil && value.ID > 0:
+				action = "state"
+			case directRule || fields["rule"] != nil:
+				if value.Rule.ID > 0 {
+					action = "update"
+				} else {
+					action = "add"
+				}
+			case value.ID > 0:
+				action = "delete"
+			}
+		}
+		switch action {
 		case "add":
 			err = service.Add(ctx, &value.Rule)
 		case "update":
@@ -323,8 +365,13 @@ func executeOperation(ctx context.Context, operation string, payload json.RawMes
 				return nil, errors.New("enabled is required")
 			}
 			err = service.SetRuleState(ctx, value.ID, *value.Enabled)
+		case "ping", "block_ping", "blockping":
+			if value.Blocked == nil {
+				return nil, errors.New("blocked is required")
+			}
+			err = service.SetPingBlocked(ctx, *value.Blocked)
 		default:
-			return nil, errors.New("unsupported firewall rule action")
+			return nil, errors.New("无法识别防火墙规则操作，请提供 action 或有效的规则参数")
 		}
 		if err != nil {
 			return nil, err
@@ -366,7 +413,19 @@ func executeOperation(ctx context.Context, operation string, payload json.RawMes
 		if err := json.Unmarshal(payload, &value); err != nil {
 			return nil, err
 		}
+		if !value.Enabled && strings.TrimSpace(value.Confirm) == "" {
+			value.Confirm = safeservice.DisableConfirmation
+		}
 		if err := safeservice.NewDefaultService().SetEnabled(ctx, value.Enabled, value.Confirm); err != nil {
+			return nil, err
+		}
+		return gin.H{"operation": operation, "status": "succeeded"}, nil
+	case "firewall.ping":
+		var value input.FirewallPingParam
+		if err := json.Unmarshal(payload, &value); err != nil {
+			return nil, err
+		}
+		if err := safeservice.NewDefaultService().SetPingBlocked(ctx, value.Blocked); err != nil {
 			return nil, err
 		}
 		return gin.H{"operation": operation, "status": "succeeded"}, nil
@@ -383,6 +442,15 @@ func executeOperation(ctx context.Context, operation string, payload json.RawMes
 	default:
 		return nil, fmt.Errorf("unsupported operation %s", operation)
 	}
+}
+
+func hasFirewallRuleFields(fields map[string]json.RawMessage) bool {
+	for _, name := range []string{"ruleType", "direction", "protocol", "strategy", "ips", "ports", "state", "remark", "location", "expiresAt"} {
+		if _, ok := fields[name]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func softwareTaskResult(task *models.SoftwareTask) gin.H {
