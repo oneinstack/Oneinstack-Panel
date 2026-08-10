@@ -6,6 +6,7 @@ import (
 
 	"oneinstack/app"
 	"oneinstack/core"
+	"oneinstack/internal/i18n"
 	accessservice "oneinstack/internal/services/access"
 	"oneinstack/router/input"
 	"oneinstack/router/middleware"
@@ -20,7 +21,7 @@ func Me(c *gin.Context) {
 		core.HandleError(c, core.NewError(core.ErrUnauthorized, "登录状态无效"))
 		return
 	}
-	core.HandleSuccess(c, buildMeResponse(access))
+	core.HandleSuccess(c, buildMeResponse(c.GetString("locale"), access))
 }
 
 func Matrix(c *gin.Context) {
@@ -38,6 +39,7 @@ func ListRoles(c *gin.Context) {
 		core.HandleError(c, core.WrapError(err, core.ErrInternalError, "读取角色清单失败"))
 		return
 	}
+	localizeRoles(c.GetString("locale"), roles)
 	core.HandleSuccess(c, roles)
 }
 
@@ -50,6 +52,9 @@ func ListUsers(c *gin.Context) {
 	if err != nil {
 		core.HandleError(c, core.WrapError(err, core.ErrInternalError, "读取用户列表失败"))
 		return
+	}
+	for index := range result.Items {
+		localizeRoles(c.GetString("locale"), result.Items[index].Roles)
 	}
 	core.HandleSuccess(c, result)
 }
@@ -110,13 +115,13 @@ func ResetUserPassword(c *gin.Context) {
 	core.HandleSuccess(c, nil)
 }
 
-func buildMeResponse(access *accessservice.UserAccess) gin.H {
+func buildMeResponse(locale string, access *accessservice.UserAccess) gin.H {
 	roles := make([]gin.H, 0, len(access.Roles))
 	for _, role := range access.Roles {
 		roles = append(roles, gin.H{
 			"code":        role.Code,
-			"name":        role.Name,
-			"description": role.Description,
+			"name":        i18n.LocalizeBusinessText(locale, role.Name),
+			"description": i18n.LocalizeBusinessText(locale, role.Description),
 		})
 	}
 	matrix := middleware.BuildAuthorizationMatrix(access)
@@ -136,6 +141,13 @@ func buildMeResponse(access *accessservice.UserAccess) gin.H {
 			"file":       matrix.Scopes["file"],
 			"bastion":    matrix.Menu["bastion"],
 		},
+	}
+}
+
+func localizeRoles(locale string, roles []accessservice.RoleSummary) {
+	for index := range roles {
+		roles[index].Name = i18n.LocalizeBusinessText(locale, roles[index].Name)
+		roles[index].Description = i18n.LocalizeBusinessText(locale, roles[index].Description)
 	}
 }
 

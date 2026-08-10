@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"oneinstack/app"
 	"oneinstack/core"
+	"oneinstack/internal/i18n"
 	"oneinstack/internal/models"
 	"oneinstack/internal/services/cron"
 	"oneinstack/router/input"
@@ -289,7 +290,18 @@ func RunCron(c *gin.Context) {
 }
 
 func ListTemplates(c *gin.Context) {
-	core.HandleSuccess(c, cron.Templates())
+	templates := cron.Templates()
+	locale := c.GetString("locale")
+	for index := range templates {
+		templates[index].Name = i18n.LocalizeBusinessText(locale, templates[index].Name)
+		templates[index].Description = i18n.LocalizeBusinessText(locale, templates[index].Description)
+		for parameterIndex := range templates[index].Parameters {
+			parameter := &templates[index].Parameters[parameterIndex]
+			parameter.Label = i18n.LocalizeBusinessText(locale, parameter.Label)
+			parameter.Description = i18n.LocalizeBusinessText(locale, parameter.Description)
+		}
+	}
+	core.HandleSuccess(c, templates)
 }
 
 func ListRunningExecutions(c *gin.Context) {

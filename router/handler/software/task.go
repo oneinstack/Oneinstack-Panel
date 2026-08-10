@@ -16,6 +16,7 @@ import (
 
 	"oneinstack/app"
 	"oneinstack/core"
+	"oneinstack/internal/i18n"
 	"oneinstack/internal/models"
 	accessservice "oneinstack/internal/services/access"
 	softwareService "oneinstack/internal/services/software"
@@ -341,8 +342,10 @@ func StreamSoftwareTaskEvents(c *gin.Context) {
 			return
 		}
 		for i := range events {
-			event := &events[i]
-			data, marshalErr := json.Marshal(event)
+			event := events[i]
+			failed := strings.EqualFold(event.Level, "error") || strings.EqualFold(event.Status, "failed")
+			event.Message = i18n.LocalizeStatusText(c.GetString("locale"), event.Message, failed)
+			data, marshalErr := json.Marshal(&event)
 			if marshalErr != nil {
 				continue
 			}

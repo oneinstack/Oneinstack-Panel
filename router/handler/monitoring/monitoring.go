@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"oneinstack/core"
+	"oneinstack/internal/i18n"
 	monitorservice "oneinstack/internal/services/monitoring"
 
 	"github.com/gin-gonic/gin"
@@ -432,6 +433,11 @@ func writeResult(c *gin.Context, result interface{}, err error) {
 	if err != nil {
 		core.HandleError(c, core.WrapError(err, core.ErrInternalError, monitoringOperationMessage(c)))
 		return
+	}
+	if history, ok := result.(*monitorservice.HistoryResponse); ok && history != nil {
+		for index := range history.Series {
+			history.Series[index].Label = i18n.LocalizeBusinessText(c.GetString("locale"), history.Series[index].Label)
+		}
 	}
 	core.HandleSuccess(c, result)
 }

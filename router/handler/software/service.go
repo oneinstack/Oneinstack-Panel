@@ -11,6 +11,7 @@ import (
 
 	"oneinstack/app"
 	"oneinstack/core"
+	"oneinstack/internal/i18n"
 	"oneinstack/internal/models"
 	softwareService "oneinstack/internal/services/software"
 	"oneinstack/router/input"
@@ -146,6 +147,7 @@ func GetComponentServiceConfiguration(c *gin.Context) {
 		core.HandleError(c, core.WrapError(err, core.ErrInternalError, "读取组件配置失败"))
 		return
 	}
+	localizeComponentConfiguration(c.GetString("locale"), &configuration)
 	core.HandleSuccess(c, configuration)
 }
 
@@ -177,6 +179,7 @@ func PreviewComponentServiceConfiguration(c *gin.Context) {
 		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, message))
 		return
 	}
+	localizeConfigurationPreview(c.GetString("locale"), &preview)
 	core.HandleSuccess(c, preview)
 }
 
@@ -280,6 +283,7 @@ func PreviewComponentServiceConfigurationRestore(c *gin.Context) {
 	if !ok {
 		return
 	}
+	localizeConfigurationPreview(c.GetString("locale"), &preview)
 	core.HandleSuccess(c, gin.H{
 		"history": history,
 		"current": gin.H{
@@ -288,6 +292,27 @@ func PreviewComponentServiceConfigurationRestore(c *gin.Context) {
 		},
 		"preview": preview,
 	})
+}
+
+func localizeComponentConfiguration(locale string, configuration *softwareService.ComponentConfiguration) {
+	if configuration == nil {
+		return
+	}
+	for index := range configuration.Fields {
+		configuration.Fields[index].Label = i18n.LocalizeBusinessText(locale, configuration.Fields[index].Label)
+		configuration.Fields[index].Description = i18n.LocalizeBusinessText(locale, configuration.Fields[index].Description)
+		configuration.Fields[index].Unit = i18n.LocalizeBusinessText(locale, configuration.Fields[index].Unit)
+	}
+}
+
+func localizeConfigurationPreview(locale string, preview *softwareService.ConfigurationPreview) {
+	if preview == nil {
+		return
+	}
+	for index := range preview.Changes {
+		preview.Changes[index].Label = i18n.LocalizeBusinessText(locale, preview.Changes[index].Label)
+		preview.Changes[index].Unit = i18n.LocalizeBusinessText(locale, preview.Changes[index].Unit)
+	}
 }
 
 func RestoreComponentServiceConfiguration(c *gin.Context) {

@@ -10,6 +10,7 @@ import (
 
 	"oneinstack/app"
 	"oneinstack/core"
+	"oneinstack/internal/i18n"
 	"oneinstack/internal/models"
 	accessservice "oneinstack/internal/services/access"
 	previewservice "oneinstack/internal/services/operationpreview"
@@ -64,7 +65,32 @@ func Preview(c *gin.Context) {
 		core.HandleError(c, core.WrapError(err, core.ErrInternalError, "保存操作预览失败"))
 		return
 	}
+	localizeDocument(c.GetString("locale"), created)
 	core.HandleSuccess(c, created)
+}
+
+func localizeDocument(locale string, document *previewservice.Document) {
+	if document == nil {
+		return
+	}
+	document.Review.Reason = i18n.LocalizeBusinessText(locale, document.Review.Reason)
+	for index := range document.Files {
+		document.Files[index].Path = i18n.LocalizeBusinessText(locale, document.Files[index].Path)
+		document.Files[index].ChangeSummary = i18n.LocalizeBusinessText(locale, document.Files[index].ChangeSummary)
+	}
+	for index := range document.Actions {
+		document.Actions[index].Name = i18n.LocalizeBusinessText(locale, document.Actions[index].Name)
+		document.Actions[index].DisplayCommand = i18n.LocalizeBusinessText(locale, document.Actions[index].DisplayCommand)
+		document.Actions[index].Service = i18n.LocalizeBusinessText(locale, document.Actions[index].Service)
+	}
+	for index := range document.Prechecks {
+		document.Prechecks[index].Name = i18n.LocalizeBusinessText(locale, document.Prechecks[index].Name)
+		document.Prechecks[index].Message = i18n.LocalizeBusinessText(locale, document.Prechecks[index].Message)
+	}
+	document.Rollback.Summary = i18n.LocalizeBusinessText(locale, document.Rollback.Summary)
+	for index := range document.Rollback.Unrecoverable {
+		document.Rollback.Unrecoverable[index] = i18n.LocalizeBusinessText(locale, document.Rollback.Unrecoverable[index])
+	}
 }
 
 func Execute(c *gin.Context) {
@@ -337,6 +363,12 @@ func executeOperation(ctx context.Context, operation string, payload json.RawMes
 		service := safeservice.NewDefaultService()
 		var err error
 		action := strings.ToLower(strings.TrimSpace(value.Action))
+		switch action {
+		case "create":
+			action = "add"
+		case "set_ping":
+			action = "ping"
+		}
 		if action == "" {
 			switch {
 			case value.Blocked != nil:

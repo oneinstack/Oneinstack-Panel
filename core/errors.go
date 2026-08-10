@@ -158,7 +158,7 @@ func SuccessResponseForLocale(locale string, data interface{}) *APIResponse {
 		Success: true,
 		Code:    0,
 		Message: i18n.Message(locale, i18n.MessageOperationSucceeded, "操作成功"),
-		Data:    data,
+		Data:    i18n.LocalizeResponseData(locale, data),
 	}
 }
 
