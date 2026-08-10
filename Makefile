@@ -126,11 +126,11 @@ test-coverage:
 
 .PHONY: dev
 dev:
-	go run ./cmd server start
+	GO_ENV=development go run ./cmd server start
 
 .PHONY: dev-debug
 dev-debug:
-	go run ./cmd debug
+	GO_ENV=development go run ./cmd debug
 
 .PHONY: deps
 deps:

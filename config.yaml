@@ -58,6 +58,11 @@ system:
     terminalIdleMinutes: 5
     terminalMaxConcurrent: 2
     terminalMaxPerUser: 1
+    containerTerminalEnabled: true
+    containerTerminalSessionMinutes: 30
+    containerTerminalIdleMinutes: 5
+    containerTerminalMaxConcurrent: 5
+    containerTerminalMaxPerUser: 1
 scriptCenter:
     enabled: false
     allowInsecureHTTP: false

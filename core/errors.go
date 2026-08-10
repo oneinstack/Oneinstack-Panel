@@ -196,7 +196,7 @@ func ErrorResponse(err *AppError) *APIResponse {
 func safeErrorDetail(err *AppError) string {
 	detail := strings.TrimSpace(err.Detail)
 	if detail == "" {
-		return defaultErrorDetail(err.Code)
+		return ""
 	}
 
 	if classified := classifyErrorDetail(detail); classified != "" {
