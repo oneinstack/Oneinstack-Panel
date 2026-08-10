@@ -7,6 +7,7 @@ import (
 	"oneinstack/core"
 	"oneinstack/internal/models"
 	accessservice "oneinstack/internal/services/access"
+	containerservice "oneinstack/internal/services/container"
 	securityservice "oneinstack/internal/services/security"
 	sshservice "oneinstack/internal/services/ssh"
 	"oneinstack/router/session"
@@ -32,6 +33,40 @@ const (
 
 func AuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if isContainerTerminalOpenPath(c.Request.URL.Path) && c.Query("ticket") != "" {
+			claims, err := containerservice.DefaultTerminalTickets.Consume(c.Query("ticket"), c.ClientIP())
+			if err != nil {
+				writeAPIError(c, http.StatusUnauthorized, core.ErrInvalidTerminalTicket, "容器终端票据无效或已过期", "容器终端票据校验失败，请重新获取票据。")
+				return
+			}
+			if claims.UserAgent != c.GetHeader("User-Agent") || claims.ContainerReference != strings.TrimSpace(c.Param("id")) {
+				writeAPIError(c, http.StatusUnauthorized, core.ErrInvalidTerminalTicket, "容器终端票据无效", "当前请求与签发容器终端票据时绑定的客户端或容器不一致。")
+				return
+			}
+			database := app.DB()
+			if database == nil {
+				writeAPIError(c, http.StatusServiceUnavailable, core.ErrSessionUnavailable, "会话服务不可用，请稍后重试", "服务端数据库未初始化，无法校验容器终端来源会话。")
+				return
+			}
+			var account models.User
+			if err := database.First(&account, claims.UserID).Error; err != nil ||
+				account.Username != claims.Username || account.EffectiveSecurityVersion() != claims.SecurityVersion {
+				writeAPIError(c, http.StatusUnauthorized, core.ErrSessionInvalidated, "容器终端来源会话无效，请重新打开终端", "容器终端票据关联的用户或安全版本与当前服务端记录不一致。")
+				return
+			}
+			if _, err := securityservice.NewSessionManager(database).Validate(claims.SourceSessionID, claims.UserID, claims.SecurityVersion); err != nil {
+				writeAPIError(c, http.StatusUnauthorized, core.ErrSessionInvalidated, "容器终端来源会话已过期或撤销，请重新打开终端", "请重新登录后再打开容器终端。")
+				return
+			}
+			c.Set(ContextUsername, claims.Username)
+			c.Set(ContextUserID, claims.UserID)
+			c.Set(ContextTokenClaims, claims)
+			c.Set(ContextAuthMode, AuthModeTicket)
+			c.Set(ContextSessionID, claims.SourceSessionID)
+			c.Set(ContextMustChangePassword, account.MustChangePassword)
+			c.Next()
+			return
+		}
 		if c.Request.URL.Path == "/v1/ssh/open" && c.Query("ticket") != "" {
 			claims, err := sshservice.DefaultTickets.Consume(c.Query("ticket"), c.ClientIP())
 			if err != nil {
@@ -150,6 +185,15 @@ func AuthMiddleware() gin.HandlerFunc {
 
 		c.Next()
 	}
+}
+
+func isContainerTerminalOpenPath(path string) bool {
+	if !strings.HasPrefix(path, "/v1/containers/") || !strings.HasSuffix(path, "/terminal/open") {
+		return false
+	}
+	rest := strings.TrimPrefix(path, "/v1/containers/")
+	parts := strings.Split(rest, "/")
+	return len(parts) == 3 && parts[0] != "" && parts[1] == "terminal" && parts[2] == "open"
 }
 
 // RequirePasswordChange blocks the management plane until an initial

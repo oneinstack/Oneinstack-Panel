@@ -33,7 +33,7 @@ func contentSecurityPolicy() string {
 	}
 
 	connectSources := []string{"'self'", "wss:"}
-	if app.ONE_CONFIG.System.AllowInsecureWebSocketInDev {
+	if app.IsDevelopmentEnvironment() || app.ONE_CONFIG.System.AllowInsecureWebSocketInDev {
 		connectSources = append(connectSources, "ws:")
 	}
 

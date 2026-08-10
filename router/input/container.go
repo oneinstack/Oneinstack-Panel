@@ -47,6 +47,11 @@ type ContainerActionRequest struct {
 	Force   bool   `json:"force"`
 }
 
+type ContainerTerminalTicketRequest struct {
+	Password        string `json:"password" binding:"required"`
+	ConfirmHighRisk bool   `json:"confirmHighRisk"`
+}
+
 type ContainerImagePullRequest struct {
 	Reference  string `json:"reference,omitempty"`
 	RegistryID uint   `json:"registryId,omitempty"`

@@ -100,6 +100,11 @@ system:
     terminalIdleMinutes: 5
     terminalMaxConcurrent: 2
     terminalMaxPerUser: 1
+    containerTerminalEnabled: false
+    containerTerminalSessionMinutes: 30
+    containerTerminalIdleMinutes: 5
+    containerTerminalMaxConcurrent: 5
+    containerTerminalMaxPerUser: 1
 bastion:
     enabled: false
     collectSchedule: "*/1 * * * *"
@@ -186,6 +191,11 @@ func LoadConfig(path ...string) (*viper.Viper, error) {
 	v.SetDefault("system.terminalIdleMinutes", 5)
 	v.SetDefault("system.terminalMaxConcurrent", 2)
 	v.SetDefault("system.terminalMaxPerUser", 1)
+	v.SetDefault("system.containerTerminalEnabled", false)
+	v.SetDefault("system.containerTerminalSessionMinutes", 30)
+	v.SetDefault("system.containerTerminalIdleMinutes", 5)
+	v.SetDefault("system.containerTerminalMaxConcurrent", 5)
+	v.SetDefault("system.containerTerminalMaxPerUser", 1)
 	v.SetDefault("scriptCenter.enabled", false)
 	v.SetDefault("scriptCenter.allowInsecureHTTP", false)
 	v.SetDefault("scriptCenter.channel", "stable")
@@ -260,6 +270,11 @@ func LoadConfig(path ...string) (*viper.Viper, error) {
 		"system.terminalIdleMinutes":              "ONEINSTACK_SYSTEM_TERMINAL_IDLE_MINUTES",
 		"system.terminalMaxConcurrent":            "ONEINSTACK_SYSTEM_TERMINAL_MAX_CONCURRENT",
 		"system.terminalMaxPerUser":               "ONEINSTACK_SYSTEM_TERMINAL_MAX_PER_USER",
+		"system.containerTerminalEnabled":         "ONEINSTACK_SYSTEM_CONTAINER_TERMINAL_ENABLED",
+		"system.containerTerminalSessionMinutes":  "ONEINSTACK_SYSTEM_CONTAINER_TERMINAL_SESSION_MINUTES",
+		"system.containerTerminalIdleMinutes":     "ONEINSTACK_SYSTEM_CONTAINER_TERMINAL_IDLE_MINUTES",
+		"system.containerTerminalMaxConcurrent":   "ONEINSTACK_SYSTEM_CONTAINER_TERMINAL_MAX_CONCURRENT",
+		"system.containerTerminalMaxPerUser":      "ONEINSTACK_SYSTEM_CONTAINER_TERMINAL_MAX_PER_USER",
 		"scriptCenter.enabled":                    "ONEINSTACK_SCRIPT_CENTER_ENABLED",
 		"scriptCenter.allowInsecureHTTP":          "ONEINSTACK_SCRIPT_CENTER_ALLOW_INSECURE_HTTP",
 		"scriptCenter.url":                        "ONEINSTACK_SCRIPT_CENTER_URL",
@@ -619,6 +634,18 @@ func validateSystemConfig() error {
 	if system.TerminalMaxPerUser < 1 ||
 		system.TerminalMaxPerUser > system.TerminalMaxConcurrent {
 		return fmt.Errorf("validate config: system.terminalMaxPerUser must be between 1 and terminalMaxConcurrent")
+	}
+	if system.ContainerTermSessionMins < 1 || system.ContainerTermSessionMins > 120 {
+		return fmt.Errorf("validate config: system.containerTerminalSessionMinutes must be between 1 and 120")
+	}
+	if system.ContainerTermIdleMins < 1 || system.ContainerTermIdleMins > system.ContainerTermSessionMins {
+		return fmt.Errorf("validate config: system.containerTerminalIdleMinutes must be between 1 and containerTerminalSessionMinutes")
+	}
+	if system.ContainerTermMaxConcurrent < 1 || system.ContainerTermMaxConcurrent > 10 {
+		return fmt.Errorf("validate config: system.containerTerminalMaxConcurrent must be between 1 and 10")
+	}
+	if system.ContainerTermMaxPerUser < 1 || system.ContainerTermMaxPerUser > system.ContainerTermMaxConcurrent {
+		return fmt.Errorf("validate config: system.containerTerminalMaxPerUser must be between 1 and containerTerminalMaxConcurrent")
 	}
 	return nil
 }

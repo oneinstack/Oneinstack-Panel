@@ -473,6 +473,11 @@ func isReadOnlyPost(path string) bool {
 
 // isSensitiveOperation 判断是否为敏感操作
 func isSensitiveOperation(method, path string) bool {
+	if strings.HasPrefix(path, "/v1/containers/") &&
+		((method == http.MethodPost && strings.HasSuffix(path, "/terminal/ticket")) ||
+			(method == http.MethodGet && strings.HasSuffix(path, "/terminal/open"))) {
+		return true
+	}
 	if method != http.MethodGet && strings.HasPrefix(path, "/v1/bastion/") {
 		return true
 	}

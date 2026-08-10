@@ -27,6 +27,11 @@ func GetBasePath() string {
 	return BASE_PATH
 }
 
+func IsDevelopmentEnvironment() bool {
+	return strings.EqualFold(strings.TrimSpace(os.Getenv("GO_ENV")), "development") ||
+		strings.EqualFold(strings.TrimSpace(ENV), "debug")
+}
+
 func resolveBasePath() string {
 	if path := strings.TrimSpace(os.Getenv("ONEINSTACK_BASE_PATH")); path != "" {
 		return normalizeBasePath(path)

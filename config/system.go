@@ -57,4 +57,9 @@ type System struct {
 	TerminalIdleMins              int      `mapstructure:"terminalIdleMinutes" json:"terminalIdleMinutes" yaml:"terminalIdleMinutes"`
 	TerminalMaxConcurrent         int      `mapstructure:"terminalMaxConcurrent" json:"terminalMaxConcurrent" yaml:"terminalMaxConcurrent"`
 	TerminalMaxPerUser            int      `mapstructure:"terminalMaxPerUser" json:"terminalMaxPerUser" yaml:"terminalMaxPerUser"`
+	ContainerTermEnabled          bool     `mapstructure:"containerTerminalEnabled" json:"containerTerminalEnabled" yaml:"containerTerminalEnabled"`
+	ContainerTermSessionMins      int      `mapstructure:"containerTerminalSessionMinutes" json:"containerTerminalSessionMinutes" yaml:"containerTerminalSessionMinutes"`
+	ContainerTermIdleMins         int      `mapstructure:"containerTerminalIdleMinutes" json:"containerTerminalIdleMinutes" yaml:"containerTerminalIdleMinutes"`
+	ContainerTermMaxConcurrent    int      `mapstructure:"containerTerminalMaxConcurrent" json:"containerTerminalMaxConcurrent" yaml:"containerTerminalMaxConcurrent"`
+	ContainerTermMaxPerUser       int      `mapstructure:"containerTerminalMaxPerUser" json:"containerTerminalMaxPerUser" yaml:"containerTerminalMaxPerUser"`
 }

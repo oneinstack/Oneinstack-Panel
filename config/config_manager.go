@@ -169,6 +169,11 @@ func (cm *ConfigManager) setDefaults() {
 	cm.viper.SetDefault("system.terminalIdleMinutes", 5)
 	cm.viper.SetDefault("system.terminalMaxConcurrent", 2)
 	cm.viper.SetDefault("system.terminalMaxPerUser", 1)
+	cm.viper.SetDefault("system.containerTerminalEnabled", false)
+	cm.viper.SetDefault("system.containerTerminalSessionMinutes", 30)
+	cm.viper.SetDefault("system.containerTerminalIdleMinutes", 5)
+	cm.viper.SetDefault("system.containerTerminalMaxConcurrent", 5)
+	cm.viper.SetDefault("system.containerTerminalMaxPerUser", 1)
 
 	// 数据库默认配置
 	cm.viper.SetDefault("database.type", "sqlite")
@@ -292,6 +297,11 @@ system:
   terminalIdleMinutes: 5
   terminalMaxConcurrent: 2
   terminalMaxPerUser: 1
+  containerTerminalEnabled: false
+  containerTerminalSessionMinutes: 30
+  containerTerminalIdleMinutes: 5
+  containerTerminalMaxConcurrent: 5
+  containerTerminalMaxPerUser: 1
 
 database:
   type: "sqlite"
