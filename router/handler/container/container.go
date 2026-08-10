@@ -1,6 +1,7 @@
 package container
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,9 +11,11 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"oneinstack/core"
+	"oneinstack/internal/i18n"
 	"oneinstack/internal/models"
 	accessservice "oneinstack/internal/services/access"
 	auditservice "oneinstack/internal/services/audit"
@@ -33,7 +36,9 @@ func StartCreateTaskManager() error {
 func Runtime(c *gin.Context) {
 	ctx, cancel := requestContext(c)
 	defer cancel()
-	core.HandleSuccess(c, service.Runtime(ctx))
+	status := service.Runtime(ctx)
+	status.Message = i18n.LocalizeStatusText(c.GetString("locale"), status.Message, !status.Available)
+	core.HandleSuccess(c, status)
 }
 
 func RuntimeAction(c *gin.Context) {
@@ -301,7 +306,7 @@ func BatchDeleteNetwork(c *gin.Context) {
 	for _, id := range request.IDs {
 		item := gin.H{"id": id}
 		if err := service.DeleteNetwork(ctx, id, request.Confirm); err != nil {
-			item["success"], item["error"] = false, err.Error()
+			item["success"], item["error"], item["errorCode"] = false, containerBatchError(c, err), core.ErrInternalError
 			recordAction(c, "container.network.delete", http.StatusInternalServerError, err)
 		} else {
 			item["success"] = true
@@ -336,7 +341,7 @@ func BatchDeleteVolume(c *gin.Context) {
 	for _, id := range request.IDs {
 		item := gin.H{"id": id}
 		if err := service.DeleteVolume(ctx, id, request.Confirm); err != nil {
-			item["success"], item["error"] = false, err.Error()
+			item["success"], item["error"], item["errorCode"] = false, containerBatchError(c, err), core.ErrInternalError
 			recordAction(c, "container.volume.delete", http.StatusInternalServerError, err)
 		} else {
 			item["success"] = true
@@ -453,7 +458,7 @@ func StreamContainerTaskEvents(c *gin.Context) {
 			return
 		}
 		for i := range events {
-			data, marshalErr := json.Marshal(containerTaskEventResponse(&events[i]))
+			data, marshalErr := json.Marshal(containerTaskEventResponse(c.GetString("locale"), &events[i]))
 			if marshalErr != nil {
 				continue
 			}
@@ -486,8 +491,9 @@ func StreamContainerTaskEvents(c *gin.Context) {
 	}
 }
 
-func containerTaskEventResponse(event *models.ContainerTaskEvent) gin.H {
-	result := gin.H{"seq": event.Seq, "type": event.Type, "level": event.Level, "status": event.Status, "phase": event.Phase, "progress": event.Progress, "message": event.Message, "log": event.Log, "code": event.Code, "createdAt": event.CreatedAt}
+func containerTaskEventResponse(locale string, event *models.ContainerTaskEvent) gin.H {
+	failed := strings.EqualFold(event.Level, "error") || strings.EqualFold(event.Status, "failed")
+	result := gin.H{"seq": event.Seq, "type": event.Type, "level": event.Level, "status": event.Status, "phase": event.Phase, "progress": event.Progress, "message": i18n.LocalizeStatusText(locale, event.Message, failed), "log": event.Log, "code": event.Code, "createdAt": event.CreatedAt}
 	if event.PhaseProgress != nil {
 		result["phaseProgress"] = *event.PhaseProgress
 	}
@@ -561,7 +567,8 @@ func BatchAction(c *gin.Context) {
 		item := gin.H{"id": id, "action": request.Action}
 		if err := service.ContainerAction(ctx, id, request.Action, request.Force, request.Confirm); err != nil {
 			item["success"] = false
-			item["error"] = err.Error()
+			item["error"] = containerBatchError(c, err)
+			item["errorCode"] = core.ErrInternalError
 			recordAction(c, "container.batch."+strings.ToLower(request.Action), http.StatusInternalServerError, err)
 		} else {
 			item["success"] = true
@@ -570,6 +577,14 @@ func BatchAction(c *gin.Context) {
 		items = append(items, item)
 	}
 	core.HandleSuccess(c, gin.H{"items": items, "total": len(items)})
+}
+
+func containerBatchError(c *gin.Context, err error) string {
+	response := core.ErrorResponseForLocale(
+		core.WrapError(err, core.ErrInternalError, containerOperationMessage(c)),
+		c.GetString("locale"),
+	)
+	return response.Message
 }
 
 func Action(c *gin.Context) {
@@ -590,16 +605,210 @@ func Action(c *gin.Context) {
 }
 
 func Logs(c *gin.Context) {
-	tail, _ := strconv.Atoi(c.DefaultQuery("tail", "500"))
+	options, follow, err := containerLogOptions(c)
+	if err != nil {
+		containerLogBadRequest(c, err)
+		return
+	}
+	if follow {
+		followContainerLogs(c, options)
+		return
+	}
 	ctx, cancel := requestContext(c)
 	defer cancel()
-	result, err := service.Logs(ctx, c.Param("id"), tail)
+	result, err := service.Logs(ctx, c.Param("id"), options)
 	if err != nil {
 		recordAction(c, "container.logs.read", http.StatusInternalServerError, err)
 		operationError(c, err)
 		return
 	}
 	core.HandleSuccess(c, gin.H{"id": c.Param("id"), "logs": result})
+}
+
+func DownloadLogs(c *gin.Context) {
+	options, follow, err := containerLogOptions(c)
+	if err != nil {
+		containerLogBadRequest(c, err)
+		return
+	}
+	if follow {
+		containerLogBadRequest(c, errors.New("日志下载不支持 follow=true"))
+		return
+	}
+	ctx, cancel := requestContext(c)
+	defer cancel()
+	result, err := service.Logs(ctx, c.Param("id"), options)
+	if err != nil {
+		recordAction(c, "container.logs.download", http.StatusInternalServerError, err)
+		operationError(c, err)
+		return
+	}
+	name := fmt.Sprintf("oneinstack-container-%s-%s.log", safeDownloadName(c.Param("id")), time.Now().UTC().Format("20060102-150405"))
+	c.Header("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": name}))
+	c.Data(http.StatusOK, "text/plain; charset=utf-8", []byte(result))
+}
+
+func containerLogOptions(c *gin.Context) (containerService.LogOptions, bool, error) {
+	tail, err := strconv.Atoi(c.DefaultQuery("tail", "500"))
+	if err != nil {
+		return containerService.LogOptions{}, false, errors.New("tail 必须是 1 到 10000 的整数")
+	}
+	timestamps, err := containerLogBool(c.Query("timestamps"), true, "timestamps")
+	if err != nil {
+		return containerService.LogOptions{}, false, err
+	}
+	follow, err := containerLogBool(c.Query("follow"), false, "follow")
+	if err != nil {
+		return containerService.LogOptions{}, false, err
+	}
+	options := containerService.LogOptions{
+		Tail:       tail,
+		Since:      strings.TrimSpace(c.Query("since")),
+		Until:      strings.TrimSpace(c.Query("until")),
+		Timestamps: timestamps,
+	}
+	if err := containerService.ValidateLogOptions(options); err != nil {
+		return containerService.LogOptions{}, false, err
+	}
+	return options, follow, nil
+}
+
+func containerLogBool(value string, defaultValue bool, field string) (bool, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return defaultValue, nil
+	}
+	if value == "true" {
+		return true, nil
+	}
+	if value == "false" {
+		return false, nil
+	}
+	return false, fmt.Errorf("%s 必须是 true 或 false", field)
+}
+
+func containerLogBadRequest(c *gin.Context, err error) {
+	detail := strings.TrimSpace(strings.TrimPrefix(err.Error(), containerService.ErrInvalidLogOptions.Error()+":"))
+	core.HandleError(c, core.NewErrorWithDetail(core.ErrBadRequest, "容器日志查询参数格式不正确", detail))
+}
+
+func followContainerLogs(c *gin.Context, options containerService.LogOptions) {
+	containerID := c.Param("id")
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache, no-transform")
+	c.Header("Connection", "keep-alive")
+	c.Header("X-Accel-Buffering", "no")
+	c.Status(http.StatusOK)
+	_, _ = fmt.Fprint(c.Writer, "retry: 3000\n\n")
+	c.Writer.Flush()
+
+	stream := &containerLogSSEWriter{writer: c.Writer}
+	result := make(chan error, 1)
+	go func() {
+		result <- service.FollowLogs(c.Request.Context(), containerID, options, stream)
+	}()
+	heartbeat := time.NewTicker(15 * time.Second)
+	defer heartbeat.Stop()
+	for {
+		select {
+		case <-c.Request.Context().Done():
+			return
+		case err := <-result:
+			_ = stream.FlushPending()
+			if err != nil && !errors.Is(err, context.Canceled) {
+				recordAction(c, "container.logs.follow", http.StatusInternalServerError, err)
+				_ = stream.Event("error", gin.H{"message": i18n.LocalizeBusinessText(c.GetString("locale"), "容器日志追踪已中断，请检查容器状态和 Docker 运行时")})
+				return
+			}
+			_ = stream.Event("end", gin.H{"message": i18n.LocalizeBusinessText(c.GetString("locale"), "容器日志追踪已结束")})
+			return
+		case <-heartbeat.C:
+			if err := stream.Heartbeat(); err != nil {
+				return
+			}
+		}
+	}
+}
+
+type containerLogSSEWriter struct {
+	mu     sync.Mutex
+	writer gin.ResponseWriter
+	buffer []byte
+}
+
+func (writer *containerLogSSEWriter) Write(data []byte) (int, error) {
+	writer.mu.Lock()
+	defer writer.mu.Unlock()
+	written := len(data)
+	writer.buffer = append(writer.buffer, data...)
+	for {
+		newline := bytes.IndexByte(writer.buffer, '\n')
+		if newline >= 0 {
+			line := strings.TrimSuffix(string(writer.buffer[:newline]), "\r")
+			writer.buffer = writer.buffer[newline+1:]
+			if err := writer.eventLocked("log", gin.H{"line": line}); err != nil {
+				return 0, err
+			}
+			continue
+		}
+		if len(writer.buffer) > 64*1024 {
+			line := string(writer.buffer[:64*1024])
+			writer.buffer = writer.buffer[64*1024:]
+			if err := writer.eventLocked("log", gin.H{"line": line, "partial": true}); err != nil {
+				return 0, err
+			}
+			continue
+		}
+		return written, nil
+	}
+}
+
+func (writer *containerLogSSEWriter) FlushPending() error {
+	writer.mu.Lock()
+	defer writer.mu.Unlock()
+	if len(writer.buffer) == 0 {
+		return nil
+	}
+	line := string(writer.buffer)
+	writer.buffer = nil
+	return writer.eventLocked("log", gin.H{"line": line})
+}
+
+func (writer *containerLogSSEWriter) Event(event string, payload any) error {
+	writer.mu.Lock()
+	defer writer.mu.Unlock()
+	return writer.eventLocked(event, payload)
+}
+
+func (writer *containerLogSSEWriter) Heartbeat() error {
+	writer.mu.Lock()
+	defer writer.mu.Unlock()
+	if _, err := fmt.Fprint(writer.writer, ": heartbeat\n\n"); err != nil {
+		return err
+	}
+	writer.writer.Flush()
+	return nil
+}
+
+func (writer *containerLogSSEWriter) eventLocked(event string, payload any) error {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(writer.writer, "event: %s\ndata: %s\n\n", event, data); err != nil {
+		return err
+	}
+	writer.writer.Flush()
+	return nil
+}
+
+func safeDownloadName(value string) string {
+	return strings.Map(func(char rune) rune {
+		if char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' || char >= '0' && char <= '9' || char == '.' || char == '-' || char == '_' {
+			return char
+		}
+		return '_'
+	}, value)
 }
 
 func PullImage(c *gin.Context) {
@@ -1034,6 +1243,10 @@ func badRequest(c *gin.Context, err error) {
 }
 
 func operationError(c *gin.Context, err error) {
+	if errors.Is(err, containerService.ErrInvalidLogOptions) {
+		containerLogBadRequest(c, err)
+		return
+	}
 	if errors.Is(err, containerService.ErrInvalidContainerConfig) {
 		core.HandleError(c, core.NewErrorWithDetail(
 			core.ErrBadRequest,
@@ -1112,6 +1325,8 @@ func containerOperationMessage(c *gin.Context) string {
 		return "执行容器批量操作失败"
 	case "/v1/containers/:id/logs":
 		return "读取容器日志失败"
+	case "/v1/containers/:id/logs/download":
+		return "下载容器日志失败"
 	case "/v1/containers/images":
 		return "读取容器镜像列表失败"
 	case "/v1/containers/images/import":

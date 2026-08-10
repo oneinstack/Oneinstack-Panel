@@ -29,6 +29,7 @@ import (
 var (
 	ErrRuntimeUnavailable     = errors.New("container runtime unavailable")
 	ErrInvalidContainerConfig = errors.New("invalid container configuration")
+	ErrInvalidLogOptions      = errors.New("invalid container log options")
 	ErrImagePullFailed        = errors.New("container image pull failed")
 	ErrDockerCommandTimeout   = errors.New("docker command timed out")
 )
@@ -131,6 +132,13 @@ type ContainerStats struct {
 	NetworkIO     string `json:"networkIO,omitempty"`
 	BlockIO       string `json:"blockIO,omitempty"`
 	PIDs          string `json:"pids,omitempty"`
+}
+
+type LogOptions struct {
+	Tail       int
+	Since      string
+	Until      string
+	Timestamps bool
 }
 
 type RegistryInput struct {
@@ -482,15 +490,142 @@ func (s *Service) ContainerAction(ctx context.Context, id, action string, force,
 	return err
 }
 
-func (s *Service) Logs(ctx context.Context, id string, tail int) (string, error) {
-	id, err := validateReference(id)
+func (s *Service) Logs(ctx context.Context, id string, options LogOptions) (string, error) {
+	args, err := containerLogArgs(id, options, false)
 	if err != nil {
 		return "", err
 	}
-	if tail <= 0 || tail > 10000 {
-		tail = 500
+	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+	var output bytes.Buffer
+	if err := s.runContainerLogs(ctx, args, &output); err != nil {
+		return "", err
 	}
-	return s.run(ctx, "logs", "--tail", strconv.Itoa(tail), id)
+	return output.String(), nil
+}
+
+func (s *Service) FollowLogs(ctx context.Context, id string, options LogOptions, output io.Writer) error {
+	args, err := containerLogArgs(id, options, true)
+	if err != nil {
+		return err
+	}
+	return s.runContainerLogs(ctx, args, output)
+}
+
+func containerLogArgs(id string, options LogOptions, follow bool) ([]string, error) {
+	id, err := validateReference(id)
+	if err != nil {
+		return nil, err
+	}
+	if err := ValidateLogOptions(options); err != nil {
+		return nil, err
+	}
+	args := []string{"logs", "--tail", strconv.Itoa(options.Tail)}
+	if options.Timestamps {
+		args = append(args, "--timestamps")
+	}
+	if options.Since != "" {
+		args = append(args, "--since", options.Since)
+	}
+	if options.Until != "" {
+		args = append(args, "--until", options.Until)
+	}
+	if follow {
+		args = append(args, "--follow")
+	}
+	return append(args, id), nil
+}
+
+func ValidateLogOptions(options LogOptions) error {
+	if options.Tail < 1 || options.Tail > 10000 {
+		return fmt.Errorf("%w: tail 必须是 1 到 10000 的整数", ErrInvalidLogOptions)
+	}
+	var sinceAt time.Time
+	if options.Since != "" {
+		if duration, err := time.ParseDuration(options.Since); err == nil {
+			if duration <= 0 {
+				return fmt.Errorf("%w: since 相对时间必须大于 0", ErrInvalidLogOptions)
+			}
+		} else {
+			parsed, parseErr := time.Parse(time.RFC3339, options.Since)
+			if parseErr != nil {
+				return fmt.Errorf("%w: since 必须是正数时长（如 10m、4h、24h）或带时区的 RFC3339 时间", ErrInvalidLogOptions)
+			}
+			sinceAt = parsed
+		}
+	}
+	if options.Until != "" {
+		untilAt, err := time.Parse(time.RFC3339, options.Until)
+		if err != nil {
+			return fmt.Errorf("%w: until 必须是带时区的 RFC3339 时间", ErrInvalidLogOptions)
+		}
+		if !sinceAt.IsZero() && untilAt.Before(sinceAt) {
+			return fmt.Errorf("%w: until 不能早于 since", ErrInvalidLogOptions)
+		}
+	}
+	return nil
+}
+
+type synchronizedWriter struct {
+	mu     sync.Mutex
+	writer io.Writer
+}
+
+func (writer *synchronizedWriter) Write(data []byte) (int, error) {
+	writer.mu.Lock()
+	defer writer.mu.Unlock()
+	return writer.writer.Write(data)
+}
+
+type limitedBuffer struct {
+	buffer bytes.Buffer
+	limit  int
+}
+
+func (buffer *limitedBuffer) Write(data []byte) (int, error) {
+	written := len(data)
+	remaining := buffer.limit - buffer.buffer.Len()
+	if remaining > 0 {
+		if len(data) > remaining {
+			data = data[:remaining]
+		}
+		_, _ = buffer.buffer.Write(data)
+	}
+	return written, nil
+}
+
+func (buffer *limitedBuffer) String() string {
+	return buffer.buffer.String()
+}
+
+func (s *Service) runContainerLogs(ctx context.Context, args []string, output io.Writer) error {
+	if _, err := exec.LookPath(s.binary); err != nil {
+		return fmt.Errorf("%w: %s executable file not found in PATH", ErrRuntimeUnavailable, s.binary)
+	}
+	command := exec.CommandContext(ctx, s.binary, args...)
+	safeOutput := &synchronizedWriter{writer: output}
+	command.Stdout = safeOutput
+	stderr := &limitedBuffer{limit: 8192}
+	command.Stderr = io.MultiWriter(safeOutput, stderr)
+	if err := command.Run(); err != nil {
+		if ctx.Err() != nil {
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return fmt.Errorf("%w: docker logs", ErrDockerCommandTimeout)
+			}
+			return ctx.Err()
+		}
+		message := strings.TrimSpace(stderr.String())
+		if message == "" {
+			message = err.Error()
+		}
+		lowerMessage := strings.ToLower(message)
+		if strings.Contains(lowerMessage, "cannot connect to the docker daemon") ||
+			strings.Contains(lowerMessage, "is the docker daemon running") {
+			return fmt.Errorf("%w: %s", ErrRuntimeUnavailable, message)
+		}
+		return errors.New(message)
+	}
+	return nil
 }
 
 func (s *Service) PullImage(ctx context.Context, reference string) error {
