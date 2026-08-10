@@ -10,4 +10,4 @@ systemd_available && systemctl disable nginx 2>/dev/null || true
 [[ ! -e "${unit_file}" ]] || mv -- "${unit_file}" "${removed_dir}/nginx.service"
 systemd_available && systemctl daemon-reload
 rm -f -- "${state_dir}/version" "${state_dir}/pending-version"
-echo "Nginx removed. Website and log data were preserved; removed binaries are in ${removed_dir}."
+echo "Nginx removed. Website data and virtual-host configuration were preserved in ${removed_dir}."

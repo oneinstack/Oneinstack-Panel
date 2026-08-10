@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -19,7 +20,46 @@ var (
 	ErrTerminalCapacity         = errors.New("terminal session capacity reached")
 	ErrTerminalAuditUnavailable = errors.New("terminal audit is unavailable")
 	DefaultSessions             = NewTerminalSessionManager()
+	terminalCommandRedactors    = []struct {
+		pattern     *regexp.Regexp
+		replacement string
+	}{
+		{
+			regexp.MustCompile(`(?i)((?:^|[\s;|&])(?:[a-z0-9_-]*(?:password|passwd|passphrase|token|api[_-]?key|secret|private[_-]?key|authorization))\s*=\s*)(?:"[^"]*"|'[^']*'|[^\s;|&]+)`),
+			`${1}[REDACTED]`,
+		},
+		{
+			regexp.MustCompile(`(?i)((?:^|\s)--(?:password|passwd|passphrase|token|access-token|api-key|secret|client-secret|private-key|authorization)(?:\s+|=))(?:"[^"]*"|'[^']*'|[^\s;|&]+)`),
+			`${1}[REDACTED]`,
+		},
+		{
+			regexp.MustCompile(`(?i)(authorization\s*:\s*(?:bearer|basic)\s+)[^\s'"]+`),
+			`${1}[REDACTED]`,
+		},
+		{
+			regexp.MustCompile(`(?i)(\bsshpass\s+-p\s*)(?:"[^"]*"|'[^']*'|[^\s;|&]+)`),
+			`${1}[REDACTED]`,
+		},
+		{
+			regexp.MustCompile(`(?i)(\bredis-cli\b[^;&|]*\s-a\s+)(?:"[^"]*"|'[^']*'|[^\s;|&]+)`),
+			`${1}[REDACTED]`,
+		},
+		{
+			regexp.MustCompile(`(?i)(\b(?:mysql|mysqldump|mysqladmin)\b[^;&|]*\s-p)[^\s;|&]+`),
+			`${1}[REDACTED]`,
+		},
+		{
+			regexp.MustCompile(`(?i)(\bcurl\b[^;&|]*\s(?:-u|--user)\s+[^:\s]+:)[^\s;|&]+`),
+			`${1}[REDACTED]`,
+		},
+		{
+			regexp.MustCompile(`(?i)([a-z][a-z0-9+.-]*://[^:/\s]+:)[^@\s]+(@)`),
+			`${1}[REDACTED]${2}`,
+		},
+	}
 )
+
+const terminalAuditCommandMaxBytes = 224
 
 type TerminalSessionClaims struct {
 	UserID          int64
@@ -110,7 +150,7 @@ func (manager *TerminalSessionManager) Acquire(
 		session,
 		"terminal.session.open",
 		"success",
-		"低权限终端会话已建立",
+		"Root 终端会话已建立",
 	); err != nil {
 		manager.mu.Lock()
 		delete(manager.sessions, id)
@@ -153,7 +193,7 @@ func (session *TerminalSession) ID() string {
 	return session.info.ID
 }
 
-func (session *TerminalSession) RecordInput(data []byte) error {
+func (session *TerminalSession) RecordInput(data []byte, captureCommand bool) error {
 	if session == nil || len(data) == 0 {
 		return nil
 	}
@@ -164,7 +204,16 @@ func (session *TerminalSession) RecordInput(data []byte) error {
 	}
 	session.info.InputBytes += int64(len(data))
 	session.info.LastActive = session.manager.now().UTC()
-	commands := session.consumeInputLocked(data)
+	var commands []string
+	if captureCommand {
+		commands = session.consumeInputLocked(data)
+	} else {
+		// Password prompts and other no-echo terminal modes must never leak their
+		// input into the persistent audit chain. Drop any partially collected line
+		// as soon as the PTY disables echo.
+		session.line = session.line[:0]
+		session.escape = 0
+	}
 	session.manager.mu.Unlock()
 	for _, command := range commands {
 		if err := session.auditCommand(command); err != nil {
@@ -308,17 +357,48 @@ func (session *TerminalSession) consumeEscapeByte(value byte) bool {
 }
 
 func (session *TerminalSession) auditCommand(command string) error {
-	message := fmt.Sprintf(
-		"command=redacted chars=%d session=%s content=not_stored",
-		utf8.RuneCountInString(command),
-		session.info.ID,
-	)
+	message := terminalAuditCommandMessage(command)
 	return session.manager.appendAudit(
 		session,
 		"terminal.command.submit",
 		"success",
 		message,
 	)
+}
+
+func terminalAuditCommandMessage(command string) string {
+	return "command=" + truncateTerminalAuditCommand(redactTerminalCommand(command))
+}
+
+func redactTerminalCommand(command string) string {
+	command = normalizeSubmittedCommand([]byte(command))
+	if command == "" {
+		return "[EMPTY]"
+	}
+	lower := strings.ToLower(command)
+	for _, marker := range []string{
+		"chpasswd", "passwd --stdin", "htpasswd -b", "htpasswd -bn",
+	} {
+		if strings.Contains(lower, marker) {
+			return "[REDACTED: sensitive password command]"
+		}
+	}
+	for _, redactor := range terminalCommandRedactors {
+		command = redactor.pattern.ReplaceAllString(command, redactor.replacement)
+	}
+	return command
+}
+
+func truncateTerminalAuditCommand(command string) string {
+	if len(command) <= terminalAuditCommandMaxBytes {
+		return command
+	}
+	const suffix = "..."
+	limit := terminalAuditCommandMaxBytes - len(suffix)
+	for limit > 0 && !utf8.ValidString(command[:limit]) {
+		limit--
+	}
+	return command[:limit] + suffix
 }
 
 func (manager *TerminalSessionManager) appendAudit(

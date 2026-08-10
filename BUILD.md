@@ -120,7 +120,7 @@ sudo ./install.sh uninstall --purge --yes
 
 ## 审计日志与保留策略
 
-面板会持久化登录、失败请求、所有变更操作和敏感读取。审计记录不保存请求正文或查询字符串，避免密码、Token、私钥和一次性终端票据落库。只有数据库中的管理员可以通过“审计日志”页面查询、校验和导出。
+面板会持久化登录、失败请求、所有变更操作和敏感读取。HTTP 审计不保存请求正文或查询字符串，避免密码、Token、私钥和一次性终端票据落库；Web 终端会保存经过敏感参数脱敏的提交指令，PTY 关闭回显时的交互输入和终端输出不会落库。只有数据库中的管理员可以通过“审计日志”页面查询、校验和导出。
 
 默认策略：
 
@@ -181,8 +181,12 @@ sudo one update rollback --yes
 
 `rollback` 用于恢复被异常终止的活动事务。存在活动事务时，新更新会被拒绝，避免覆盖唯一恢复点。
 
-标签 Release 工作流要求配置：
+标签 Release 工作流配置：
 
+- 当前 Web 仓库为公开仓库，Release 直接从
+  `oneinstack/Oneinstack-Panel-Web` 的 `Publish` 分支读取已构建且带摘要的
+  `app.zip`，不保存额外 Token。若以后改为私有仓库，应配置一个仅授权该 Web
+  仓库、只有 Contents Read 权限的 fine-grained Token，不能复用管理员 Token。
 - `CENTER_RELEASE_URL`：可从 GitHub Runner 访问的 Center HTTPS 地址。
 - `CENTER_RELEASE_TOKEN`：Center 中角色为 `publisher` 的独立 CI Token。
 - 仓库变量 `CENTER_RELEASE_ROLLOUT_PERCENTAGE`：首次发布的灰度百分比，未配置时为 `0`。
@@ -196,9 +200,20 @@ sudo one update rollback --yes
 - `CI`：对 `main`、`develop` 和 Pull Request 执行格式、vet、竞态测试、ShellCheck、Secret Scan、双架构编译，以及 Ubuntu 22.04/24.04 安装生命周期矩阵。
 - `CodeQL`：对 Go 代码执行代码安全分析，并每周定时复查。
 - `Dependabot`：每周检查 Go 模块和 GitHub Actions 依赖并生成升级 PR。
-- `Release`：仅在 `v*` 标签或手动触发时运行；生成双架构包、SHA-256、可选兼容签名清单、CycloneDX 1.6 SBOM、Go 模块清单和许可证证据表，标签发布会创建或更新 GitHub Release，并把双架构制品发布到 Center。
-- 前端 CI 独立生成 npm CycloneDX SBOM、依赖树、许可证表和校验和制品。
-- 推送普通分支不会自动创建 Beta Release，也不会自动修改或推送仓库文件。
+- Web `Publish Web Assets`：Web 的 `main` 每次推送后完成类型检查、测试和生产构建，
+  使用一次性提交更新 `Publish` 产物分支，并记录源码 SHA、构建信息和摘要。
+- `Auto Release from Main`：Panel 的 `main` 每次推送后创建
+  `v<基础版本>-build.<运行序号>` 标签，并显式按该标签调度 `Release`。基础版本由
+  仓库变量 `AUTO_RELEASE_BASE_VERSION` 控制，默认 `0.1.0`。
+- `Release`：从 Web 私有仓库 `Publish` 分支读取并验证前端归档，嵌入后生成双架构
+  Panel 包、SHA-256、可选兼容签名清单、CycloneDX 1.6 SBOM、Go 模块清单和许可证
+  证据表，最后创建或更新 GitHub Release；自动 build 标签标记为 Pre-release。
+- Center 凭据已配置时继续上传双架构包；未配置时只跳过 Center，不影响 GitHub
+  Release 完成。
+
+首次启用时先提交并推送 Web 改动，等待 `Publish Web Assets` 成功创建 `Publish`
+分支，再提交并推送 Panel 改动。否则 Panel 的第一次 Release 会因为尚无可读取的
+Web `Publish` 分支而按预期失败，不会退回仓库内的旧前端包。
 
 发布标签前应先确保前后端改动已经提交，并执行：
 

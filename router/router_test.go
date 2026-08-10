@@ -516,6 +516,42 @@ func TestLoginUsesHttpOnlySessionCookie(t *testing.T) {
 	}
 }
 
+func TestNumericUsernameCanLogin(t *testing.T) {
+	t.Setenv("JWT_SECRET_KEY", "test-only-jwt-secret-at-least-32-bytes")
+	const (
+		username = "123"
+		password = "R7!mQ2#vL9@xZ4"
+	)
+	passwordHash, err := crypto.HashPassword(password)
+	if err != nil {
+		t.Fatal(err)
+	}
+	account := &models.User{
+		ID: 991, Username: username, Password: passwordHash,
+		IsAdmin: false, SecurityVersion: 1,
+	}
+	if err := app.DB().Create(account).Error; err != nil {
+		t.Fatalf("create numeric username test account: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = app.DB().Unscoped().Delete(&models.User{}, account.ID).Error
+	})
+
+	router := SetupRouter()
+	request := httptest.NewRequest(http.MethodPost, "/v1/login",
+		strings.NewReader(`{"username":"`+username+`","password":"`+password+`"}`))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("numeric username login status = %d; response=%s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), `"authenticated":true`) {
+		t.Fatalf("numeric username login was not authenticated: %s", response.Body.String())
+	}
+}
+
 func TestCookieAuthenticationRejectsCrossOriginMutation(t *testing.T) {
 	token := testToken(t)
 	router := SetupRouter()

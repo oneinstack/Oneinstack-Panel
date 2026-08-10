@@ -36,7 +36,7 @@ validate_path() {
 }
 validate_inputs() {
   case "${software_version}" in
-    1.26.2|1.28.2) ;;
+    1.26.2|1.28.2|1.31.0) ;;
     *) die "Unsupported managed Nginx version: ${software_version}" ;;
   esac
   [[ "${source_url}" == https://* ]] || die "SOURCE_URL must use HTTPS."

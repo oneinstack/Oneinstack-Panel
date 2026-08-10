@@ -51,15 +51,13 @@ system:
     acmeRenewBeforeDays: 30
     certificateExpiryWarningDays: 30
     acmeIssueTimeoutMinutes: 15
-    terminalEnabled: false
+    terminalEnabled: true
     terminalSessionMinutes: 15
     allowInsecureWebSocketInDev: false
     allowInlineStyle: false
     terminalIdleMinutes: 5
     terminalMaxConcurrent: 2
     terminalMaxPerUser: 1
-    terminalUser: "one-terminal"
-    terminalWorkingDirectory: "/var/lib/one-terminal"
 scriptCenter:
     enabled: false
     allowInsecureHTTP: false

@@ -38,10 +38,11 @@ func OpenWebShell(
 	sessionContext, cancel := context.WithTimeout(c.Request.Context(), policy.MaxDuration)
 	defer cancel()
 
-	command, identity, err := isolatedTerminalCommand(sessionContext, policy)
+	command, cleanupTerminalRC, err := terminalCommand(sessionContext, policy)
 	if err != nil {
 		return err
 	}
+	defer cleanupTerminalRC()
 	session, err := DefaultSessions.Acquire(claims, policy)
 	if err != nil {
 		return err
@@ -76,8 +77,8 @@ func OpenWebShell(
 	)
 	if err != nil {
 		closeReason = "process_start_failed"
-		writeTerminalNotice(connection, &writeMu, "无法启动低权限终端会话")
-		return fmt.Errorf("start isolated terminal: %w", err)
+		writeTerminalNotice(connection, &writeMu, "无法启动 root 终端会话")
+		return fmt.Errorf("start root terminal: %w", err)
 	}
 	defer terminal.Close()
 	defer stopTerminalProcess(command.Process, command.Wait)
@@ -85,10 +86,7 @@ func OpenWebShell(
 	writeTerminalNotice(
 		connection,
 		&writeMu,
-		fmt.Sprintf(
-			"安全终端已启动：用户 %s，无 sudo、无 Linux capabilities；会话和命令摘要将写入审计日志。\r\n",
-			identity.username,
-		),
+		"\x1b[38;5;45m◆ Root 终端已连接\x1b[0m  \x1b[38;5;245m当前会话拥有完整系统权限，操作事件将写入审计日志。\x1b[0m\r\n",
 	)
 
 	done := make(chan struct{})
@@ -137,7 +135,7 @@ func OpenWebShell(
 				finish("invalid_input")
 				break
 			}
-			if recordErr := session.RecordInput(decoded); recordErr != nil {
+			if recordErr := session.RecordInput(decoded, terminalInputVisible(terminal)); recordErr != nil {
 				writeTerminalNotice(
 					connection,
 					&writeMu,
@@ -151,7 +149,7 @@ func OpenWebShell(
 				break
 			}
 		case websocket.BinaryMessage:
-			if recordErr := session.RecordInput(data); recordErr != nil {
+			if recordErr := session.RecordInput(data, terminalInputVisible(terminal)); recordErr != nil {
 				writeTerminalNotice(
 					connection,
 					&writeMu,

@@ -18,13 +18,13 @@ func CreateTicket(c *gin.Context) {
 		return
 	}
 	securityStatus := sshservice.GetTerminalSecurityStatus()
-	if !securityStatus.IsolationAvailable {
+	if !securityStatus.Available {
 		core.HandleErrorWithStatus(
 			c,
 			http.StatusServiceUnavailable,
 			core.NewErrorWithDetail(
 				core.ErrSystemError,
-				"终端隔离环境不可用",
+				"终端运行环境不可用",
 				securityStatus.Reason,
 			),
 		)
@@ -120,11 +120,11 @@ func OpenSSH(c *gin.Context) {
 		)
 		return
 	}
-	if errors.Is(err, sshservice.ErrTerminalIsolationUnavailable) {
+	if errors.Is(err, sshservice.ErrTerminalUnavailable) {
 		core.HandleErrorWithStatus(
 			c,
 			http.StatusServiceUnavailable,
-			core.NewErrorWithDetail(core.ErrSystemError, "终端隔离环境不可用", err.Error()),
+			core.NewErrorWithDetail(core.ErrSystemError, "终端运行环境不可用", err.Error()),
 		)
 		return
 	}

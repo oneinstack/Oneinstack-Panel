@@ -162,3 +162,29 @@ func TestAuditQueriesAreBoundedAndEscapeWildcards(t *testing.T) {
 		t.Fatalf("unexpected escaped query result: %#v", result)
 	}
 }
+
+func TestAuditQuerySearchesTerminalCommandMessage(t *testing.T) {
+	manager := newTestManager(t)
+	if _, err := manager.Append(EventInput{
+		RequestID: "terminal-session", EventType: "terminal",
+		Action: "terminal.command.submit", Method: "PTY",
+		Status: 200, Outcome: "success", Username: "root",
+		Message: "command=systemctl restart nginx",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Append(EventInput{
+		RequestID: "request-2", Action: "get /v1/dashboard",
+		Method: "GET", Status: 200, Outcome: "success",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := manager.List(Filter{Query: "restart nginx"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Total != 1 || result.Items[0].Message != "command=systemctl restart nginx" {
+		t.Fatalf("terminal command message was not searchable: %#v", result)
+	}
+}

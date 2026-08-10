@@ -57,6 +57,4 @@ type System struct {
 	TerminalIdleMins              int      `mapstructure:"terminalIdleMinutes" json:"terminalIdleMinutes" yaml:"terminalIdleMinutes"`
 	TerminalMaxConcurrent         int      `mapstructure:"terminalMaxConcurrent" json:"terminalMaxConcurrent" yaml:"terminalMaxConcurrent"`
 	TerminalMaxPerUser            int      `mapstructure:"terminalMaxPerUser" json:"terminalMaxPerUser" yaml:"terminalMaxPerUser"`
-	TerminalUser                  string   `mapstructure:"terminalUser" json:"terminalUser" yaml:"terminalUser"`
-	TerminalWorkingDirectory      string   `mapstructure:"terminalWorkingDirectory" json:"terminalWorkingDirectory" yaml:"terminalWorkingDirectory"`
 }

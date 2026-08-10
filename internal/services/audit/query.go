@@ -172,8 +172,8 @@ func applyFilter(query *gorm.DB, filter Filter) *gorm.DB {
 	if value := strings.TrimSpace(filter.Query); value != "" {
 		pattern := containsPattern(value)
 		query = query.Where(
-			"request_id LIKE ? ESCAPE '\\' OR username LIKE ? ESCAPE '\\' OR action LIKE ? ESCAPE '\\' OR path LIKE ? ESCAPE '\\' OR remote_ip LIKE ? ESCAPE '\\'",
-			pattern, pattern, pattern, pattern, pattern,
+			"request_id LIKE ? ESCAPE '\\' OR username LIKE ? ESCAPE '\\' OR action LIKE ? ESCAPE '\\' OR path LIKE ? ESCAPE '\\' OR remote_ip LIKE ? ESCAPE '\\' OR message LIKE ? ESCAPE '\\'",
+			pattern, pattern, pattern, pattern, pattern, pattern,
 		)
 	}
 	return query

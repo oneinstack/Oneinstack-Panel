@@ -21,6 +21,7 @@ import (
 	softwareService "oneinstack/internal/services/software"
 	"oneinstack/internal/services/softwaretask"
 	storageService "oneinstack/internal/services/storage"
+	websiteService "oneinstack/internal/services/website"
 	"oneinstack/router/input"
 	"oneinstack/router/middleware"
 	"oneinstack/utils"
@@ -102,6 +103,11 @@ func getTaskManager() (*softwaretask.Manager, error) {
 				if _, err := installer.InstallTask(ctx, params, logPath, reporter); err != nil {
 					return err
 				}
+				if params.Key == "webserver" {
+					if err := restoreManagedWebsiteConfigs(ctx); err != nil {
+						return fmt.Errorf("restore managed website configurations: %w", err)
+					}
+				}
 				if params.Key == "db" && params.Pwd != "" {
 					if err := storageService.EnsureManagedLocalMySQLConnection(
 						params.Port,
@@ -142,6 +148,29 @@ func getTaskManager() (*softwaretask.Manager, error) {
 		return nil, err
 	}
 	return taskManager, nil
+}
+
+func restoreManagedWebsiteConfigs(ctx context.Context) error {
+	var installed models.Software
+	if err := app.DB().
+		Where("`key` = ? AND installed = ?", "webserver", true).
+		Order("id DESC").
+		First(&installed).Error; err != nil {
+		return fmt.Errorf("read installed Web server: %w", err)
+	}
+	component := strings.ToLower(strings.TrimSpace(installed.Component))
+	if component == "" {
+		component = "nginx"
+	}
+	if component != "nginx" && component != "openresty" {
+		return nil
+	}
+	service, err := websiteService.DefaultService()
+	if err != nil {
+		return err
+	}
+	_, err = service.RestoreMissingManagedConfigs(ctx)
+	return err
 }
 
 // DefaultTaskManager initializes the durable task service at server startup so

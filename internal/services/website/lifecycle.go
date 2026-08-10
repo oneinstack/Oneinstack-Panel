@@ -344,9 +344,10 @@ func (manager *LifecycleManager) run(ctx context.Context, done chan struct{}) {
 func (manager *LifecycleManager) runOnce(ctx context.Context) error {
 	trafficErr := manager.service.collectTraffic()
 	expirationErr := manager.service.disableExpired(ctx, time.Now())
+	_, restoreErr := manager.service.RestoreMissingManagedConfigs(ctx)
 	tamperErr := manager.service.enforceTamperProtection(ctx)
 	alertErr := manager.emitTrafficAlerts()
-	return errors.Join(trafficErr, expirationErr, tamperErr, alertErr)
+	return errors.Join(trafficErr, expirationErr, restoreErr, tamperErr, alertErr)
 }
 
 func (service *Service) enforceTamperProtection(ctx context.Context) error {

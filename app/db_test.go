@@ -164,7 +164,7 @@ func TestInitUserValidatesCredentialsAndReportsSetupState(t *testing.T) {
 		t.Fatal("expected a fresh database to have no users")
 	}
 
-	if err := InitUser("1invalid", "Str0ng!Secret"); err == nil {
+	if err := InitUser("invalid.name", "Str0ng!Secret"); err == nil {
 		t.Fatal("expected invalid username to be rejected")
 	}
 	if err := InitUser("operator", "weak"); err == nil {

@@ -82,13 +82,11 @@ func TestLoadConfigCreatesSecureDefault(t *testing.T) {
 		!strings.HasSuffix(ONE_CONFIG.System.ACMEChallengePath, "acme-webroot") {
 		t.Fatalf("unexpected certificate policy: %+v", ONE_CONFIG.System)
 	}
-	if ONE_CONFIG.System.TerminalEnabled ||
+	if !ONE_CONFIG.System.TerminalEnabled ||
 		ONE_CONFIG.System.TerminalSessionMins != 15 ||
 		ONE_CONFIG.System.TerminalIdleMins != 5 ||
 		ONE_CONFIG.System.TerminalMaxConcurrent != 2 ||
-		ONE_CONFIG.System.TerminalMaxPerUser != 1 ||
-		ONE_CONFIG.System.TerminalUser != "one-terminal" ||
-		ONE_CONFIG.System.TerminalWorkingDirectory != "/var/lib/one-terminal" {
+		ONE_CONFIG.System.TerminalMaxPerUser != 1 {
 		t.Fatalf("unexpected terminal policy: %+v", ONE_CONFIG.System)
 	}
 	if ONE_CONFIG.UpdateCenter.Enabled ||

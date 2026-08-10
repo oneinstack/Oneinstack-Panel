@@ -2,6 +2,7 @@ package website
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -154,6 +155,63 @@ func TestReadManagedConfigRepairsMissingEnabledWebsiteConfig(t *testing.T) {
 	}
 	if _, err := os.Stat(configPath); err != nil {
 		t.Fatalf("repaired configuration was not published: %v", err)
+	}
+}
+
+func TestRestoreMissingManagedConfigsAfterWebServerReinstall(t *testing.T) {
+	service := newLifecycleTestService(t)
+	preserved := &models.Website{
+		Domain: "preserved.example.com", Type: "static", RootDir: "/preserved",
+	}
+	restored := &models.Website{
+		Domain: "restored.example.com", Type: "static", RootDir: "/restored",
+	}
+	disabled := &models.Website{
+		Domain: "disabled.example.com", Type: "static", RootDir: "/disabled",
+	}
+	for _, site := range []*models.Website{preserved, restored, disabled} {
+		if err := service.Add(context.Background(), site); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := service.SetEnabled(context.Background(), disabled.ID, false); err != nil {
+		t.Fatal(err)
+	}
+
+	preservedPath := filepath.Join(service.Publisher.ConfigDir, "preserved.example.com.conf")
+	restoredPath := filepath.Join(service.Publisher.ConfigDir, "restored.example.com.conf")
+	disabledPath := filepath.Join(service.Publisher.ConfigDir, "disabled.example.com.conf")
+	customContent := "# retain the existing runtime configuration\n"
+	if err := os.WriteFile(preservedPath, []byte(customContent), 0640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(restoredPath); err != nil {
+		t.Fatal(err)
+	}
+
+	count, err := service.RestoreMissingManagedConfigs(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("restored config count = %d, want 1", count)
+	}
+	preservedContent, err := os.ReadFile(preservedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(preservedContent) != customContent {
+		t.Fatalf("existing website configuration was overwritten:\n%s", preservedContent)
+	}
+	restoredContent, err := os.ReadFile(restoredPath)
+	if err != nil {
+		t.Fatalf("missing enabled website configuration was not restored: %v", err)
+	}
+	if !strings.Contains(string(restoredContent), "server_name restored.example.com;") {
+		t.Fatalf("unexpected restored website configuration:\n%s", restoredContent)
+	}
+	if _, err := os.Stat(disabledPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("disabled website configuration was restored: %v", err)
 	}
 }
 

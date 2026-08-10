@@ -2,12 +2,14 @@ package access
 
 import (
 	"strconv"
+	"strings"
 
 	"oneinstack/app"
 	"oneinstack/core"
 	accessservice "oneinstack/internal/services/access"
 	"oneinstack/router/input"
 	"oneinstack/router/middleware"
+	"oneinstack/utils"
 
 	"github.com/gin-gonic/gin"
 )
@@ -56,6 +58,11 @@ func CreateUser(c *gin.Context) {
 	var request input.AccessCreateUserRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
 		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "用户创建参数格式不正确"))
+		return
+	}
+	request.Username = strings.TrimSpace(request.Username)
+	if err := utils.ValidateUsername(request.Username); err != nil {
+		core.HandleError(c, err)
 		return
 	}
 	user, err := accessservice.NewService(app.DB()).
