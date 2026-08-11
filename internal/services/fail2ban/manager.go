@@ -94,7 +94,7 @@ func (m *Manager) SubmitPolicyChange(request PolicyChangeRequest, userID int64, 
 	return m.submit(&models.Fail2banTask{
 		ID: uuid.NewString(), Operation: operation, PolicyID: policy.ID,
 		IdempotencyKey: key,
-		Status: models.Fail2banTaskQueued, Phase: "queued", Message: "规则变更已排队",
+		Status:         models.Fail2banTaskQueued, Phase: "queued", Message: "规则变更已排队",
 		RequestedBy: userID, TriggeredBy: normalizeTriggeredBy(triggeredBy), ParametersJSON: string(parameters),
 	})
 }
@@ -112,7 +112,7 @@ func (m *Manager) SubmitBan(operation string, request BanRequest, userID int64, 
 	task := &models.Fail2banTask{
 		ID: uuid.NewString(), Operation: operation, PolicyID: policy.ID, TargetIP: request.IP,
 		IdempotencyKey: digest("ban|" + operation + "|" + mustJSON(request)),
-		Status: models.Fail2banTaskQueued, Phase: "queued", Message: "IP 处置任务已排队",
+		Status:         models.Fail2banTaskQueued, Phase: "queued", Message: "IP 处置任务已排队",
 		RequestedBy: userID, TriggeredBy: normalizeTriggeredBy(triggeredBy), ParametersJSON: string(parameters),
 	}
 	if incident != nil {
