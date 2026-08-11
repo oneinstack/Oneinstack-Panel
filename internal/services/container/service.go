@@ -30,6 +30,8 @@ var (
 	ErrRuntimeUnavailable     = errors.New("container runtime unavailable")
 	ErrInvalidContainerConfig = errors.New("invalid container configuration")
 	ErrInvalidLogOptions      = errors.New("invalid container log options")
+	ErrInvalidRegistryInput   = errors.New("invalid container registry input")
+	ErrRegistryProbeFailed    = errors.New("container registry probe failed")
 	ErrImagePullFailed        = errors.New("container image pull failed")
 	ErrDockerCommandTimeout   = errors.New("docker command timed out")
 )
@@ -1758,7 +1760,11 @@ func (s *Service) TestRegistry(ctx context.Context, id uint) (RegistrySummary, e
 	}
 	response, requestErr := client.Do(req)
 	if requestErr != nil {
-		return s.updateRegistryStatus(record, models.RegistryStatusFailed, requestErr.Error())
+		result, updateErr := s.updateRegistryStatus(record, models.RegistryStatusFailed, registryProbeStatusMessage(requestErr))
+		if updateErr != nil {
+			return RegistrySummary{}, updateErr
+		}
+		return result, fmt.Errorf("%w: %v", ErrRegistryProbeFailed, requestErr)
 	}
 	defer response.Body.Close()
 	// Registry V2 endpoints commonly return 401 together with a Bearer challenge
@@ -1769,9 +1775,38 @@ func (s *Service) TestRegistry(ctx context.Context, id uint) (RegistrySummary, e
 		return s.updateRegistryStatus(record, models.RegistryStatusSuccess, "")
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 400 {
-		return s.updateRegistryStatus(record, models.RegistryStatusFailed, fmt.Sprintf("仓库返回 HTTP %d", response.StatusCode))
+		probeErr := fmt.Errorf("仓库返回 HTTP %d", response.StatusCode)
+		result, updateErr := s.updateRegistryStatus(record, models.RegistryStatusFailed, registryProbeStatusMessage(probeErr))
+		if updateErr != nil {
+			return RegistrySummary{}, updateErr
+		}
+		return result, fmt.Errorf("%w: %v", ErrRegistryProbeFailed, probeErr)
 	}
 	return s.updateRegistryStatus(record, models.RegistryStatusSuccess, "")
+}
+
+func registryProbeStatusMessage(err error) string {
+	lower := strings.ToLower(strings.TrimSpace(err.Error()))
+	switch {
+	case strings.Contains(lower, "no such host"), strings.Contains(lower, "server misbehaving"):
+		return "仓库域名解析失败，请检查仓库地址和面板服务器 DNS 配置"
+	case strings.Contains(lower, "connection refused"):
+		return "仓库拒绝连接，请检查仓库服务、端口和防火墙配置"
+	case strings.Contains(lower, "network is unreachable"), strings.Contains(lower, "no route to host"):
+		return "仓库网络不可达，请检查面板服务器的网络和路由配置"
+	case strings.Contains(lower, "timeout"), strings.Contains(lower, "timed out"), strings.Contains(lower, "deadline exceeded"):
+		return "仓库连接超时，请检查网络连通性和仓库服务状态"
+	case strings.Contains(lower, "x509"), strings.Contains(lower, "certificate"):
+		return "仓库 TLS 证书校验失败，请检查证书有效期、域名和信任链"
+	case strings.Contains(lower, "http 401"):
+		return "仓库身份认证失败，请检查认证配置和凭据"
+	case strings.Contains(lower, "http 403"):
+		return "仓库拒绝当前访问，请检查账号权限和访问策略"
+	case strings.Contains(lower, "仓库返回 http"):
+		return "仓库接口返回异常状态，请确认该地址支持 Docker Registry V2 API"
+	default:
+		return "仓库连接测试失败，请检查仓库地址、网络和服务状态"
+	}
 }
 
 func registryProbeEndpoint(record models.ContainerRegistry) string {
@@ -1813,28 +1848,43 @@ func encryptRegistryPassword(password string, enabled bool) (string, error) {
 
 func validateRegistryInput(input *RegistryInput) error {
 	input.Name = strings.TrimSpace(input.Name)
-	input.Address = strings.TrimRight(strings.TrimSpace(input.Address), "/")
+	input.Address = strings.TrimSpace(input.Address)
 	input.Protocol = strings.ToLower(strings.TrimSpace(input.Protocol))
 	if input.Name == "" || len(input.Name) > 120 {
-		return errors.New("仓库名称无效")
+		return registryValidationError("仓库名称无效")
 	}
 	if input.Protocol != "http" && input.Protocol != "https" {
-		return errors.New("仓库协议只支持 http 或 https")
+		return registryValidationError("仓库协议只支持 http 或 https")
 	}
-	if input.Address == "" || strings.ContainsAny(input.Address, " /\\\r\n") {
-		return errors.New("仓库地址无效")
+	if input.Address == "" || strings.ContainsAny(input.Address, " \\\r\n") {
+		return registryValidationError("仓库地址无效")
 	}
+	if strings.Contains(input.Address, "://") {
+		addressURL, err := url.Parse(input.Address)
+		if err != nil || !strings.EqualFold(addressURL.Scheme, input.Protocol) {
+			return registryValidationError("仓库地址协议必须与 protocol 一致")
+		}
+		if addressURL.Host == "" || addressURL.Path != "" && addressURL.Path != "/" || addressURL.RawQuery != "" || addressURL.Fragment != "" || addressURL.User != nil {
+			return registryValidationError("仓库地址无效")
+		}
+		input.Address = addressURL.Host
+	}
+	input.Address = strings.TrimRight(input.Address, "/")
 	parsed, err := url.Parse(input.Protocol + "://" + input.Address)
-	if err != nil || parsed.Host == "" || parsed.Path != "" {
-		return errors.New("仓库地址无效")
+	if err != nil || parsed.Host == "" || parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.User != nil {
+		return registryValidationError("仓库地址无效")
 	}
 	if input.AuthEnabled {
 		input.Username = strings.TrimSpace(input.Username)
 		if input.Username == "" || len(input.Username) > 128 {
-			return errors.New("仓库用户名无效")
+			return registryValidationError("仓库用户名无效")
 		}
 	}
 	return nil
+}
+
+func registryValidationError(message string) error {
+	return fmt.Errorf("%w: %s", ErrInvalidRegistryInput, message)
 }
 
 func (s *Service) inspectResource(ctx context.Context, kind, id string) (map[string]any, error) {

@@ -1078,7 +1078,11 @@ func TestRegistry(c *gin.Context) {
 	defer cancel()
 	result, err := service.TestRegistry(ctx, uint(id))
 	if err != nil {
-		recordAction(c, "container.registry.test", http.StatusInternalServerError, err)
+		status := http.StatusInternalServerError
+		if errors.Is(err, containerService.ErrRegistryProbeFailed) {
+			status = http.StatusBadGateway
+		}
+		recordAction(c, "container.registry.test", status, err)
 		operationError(c, err)
 		return
 	}
@@ -1247,6 +1251,19 @@ func operationError(c *gin.Context, err error) {
 		containerLogBadRequest(c, err)
 		return
 	}
+	if errors.Is(err, containerService.ErrInvalidRegistryInput) {
+		detail := strings.TrimSpace(strings.TrimPrefix(err.Error(), containerService.ErrInvalidRegistryInput.Error()+": "))
+		core.HandleError(c, core.NewErrorWithDetail(
+			core.ErrInvalidParameter,
+			"容器镜像仓库参数无效",
+			detail,
+		))
+		return
+	}
+	if errors.Is(err, containerService.ErrRegistryProbeFailed) {
+		core.HandleErrorWithStatus(c, http.StatusBadGateway, registryProbeError(err))
+		return
+	}
 	if errors.Is(err, containerService.ErrInvalidContainerConfig) {
 		core.HandleError(c, core.NewErrorWithDetail(
 			core.ErrBadRequest,
@@ -1288,6 +1305,30 @@ func operationError(c *gin.Context, err error) {
 		return
 	}
 	core.HandleError(c, core.WrapError(err, core.ErrInternalError, containerOperationMessage(c)))
+}
+
+func registryProbeError(err error) *core.AppError {
+	lower := strings.ToLower(strings.TrimSpace(err.Error()))
+	switch {
+	case strings.Contains(lower, "no such host"), strings.Contains(lower, "server misbehaving"):
+		return core.NewErrorWithDetail(core.ErrServiceUnavailable, "容器镜像仓库域名解析失败", "无法解析仓库域名，请检查仓库地址以及面板服务器的 DNS 配置。")
+	case strings.Contains(lower, "connection refused"):
+		return core.NewErrorWithDetail(core.ErrServiceUnavailable, "容器镜像仓库拒绝连接", "目标地址可访问，但仓库服务未接受连接；请检查服务、端口和防火墙配置。")
+	case strings.Contains(lower, "network is unreachable"), strings.Contains(lower, "no route to host"):
+		return core.NewErrorWithDetail(core.ErrServiceUnavailable, "容器镜像仓库网络不可达", "面板服务器当前没有到仓库的可用网络路由，请检查网络、路由和防火墙配置。")
+	case strings.Contains(lower, "timeout"), strings.Contains(lower, "timed out"), strings.Contains(lower, "deadline exceeded"):
+		return core.NewErrorWithDetail(core.ErrServiceUnavailable, "容器镜像仓库连接测试超时", "仓库未在限定时间内响应，请检查网络连通性和仓库服务状态。")
+	case strings.Contains(lower, "x509"), strings.Contains(lower, "certificate"):
+		return core.NewErrorWithDetail(core.ErrServiceUnavailable, "容器镜像仓库 TLS 证书校验失败", "请检查仓库证书的有效期、域名匹配和证书信任链。")
+	case strings.Contains(lower, "http 401"):
+		return core.NewErrorWithDetail(core.ErrServiceUnavailable, "容器镜像仓库身份认证失败", "仓库要求有效身份凭据，请检查是否启用认证以及用户名和密码是否正确。")
+	case strings.Contains(lower, "http 403"):
+		return core.NewErrorWithDetail(core.ErrServiceUnavailable, "容器镜像仓库拒绝当前访问", "仓库已收到请求但拒绝访问，请检查账号权限和仓库访问策略。")
+	case strings.Contains(lower, "仓库返回 http"):
+		return core.NewErrorWithDetail(core.ErrServiceUnavailable, "容器镜像仓库接口响应异常", "目标地址未返回可接受的 Registry V2 响应，请确认地址和仓库服务配置。")
+	default:
+		return core.NewErrorWithDetail(core.ErrServiceUnavailable, "容器镜像仓库连接测试失败", "请检查仓库地址、网络连通性和仓库服务状态后重试。")
+	}
 }
 
 func containerOperationMessage(c *gin.Context) string {
