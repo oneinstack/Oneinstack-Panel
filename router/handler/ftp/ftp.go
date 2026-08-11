@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log"
 	"mime"
 	"net/http"
 	"net/url"
@@ -908,14 +909,27 @@ func developmentFileRootFallback(rootPath string) (string, bool) {
 }
 
 func handleFileError(c *gin.Context, err error, message string) {
+	category := fileErrorCategory(err)
+	requestID, _ := c.Get(middleware.ContextRequestID)
+	action, _ := c.Get(fileOperationActionKey)
+	log.Printf(
+		"file operation failed request_id=%s action=%s category=%s errno=%s",
+		valueString(requestID), valueString(action), category, fileErrorErrno(err),
+	)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 		core.HandleError(c, core.WrapError(err, core.ErrFileNotFound, message))
 	case errors.Is(err, fs.ErrPermission):
 		core.HandleError(c, core.WrapError(err, core.ErrPermissionDenied, message))
 	case errors.Is(err, filemanager.ErrQuotaExceeded),
-		errors.Is(err, filemanager.ErrInsufficientSpace):
+		errors.Is(err, filemanager.ErrInsufficientSpace),
+		errors.Is(err, syscall.ENOSPC),
+		errors.Is(err, syscall.EDQUOT):
 		core.HandleError(c, core.WrapError(err, core.ErrInsufficientStorage, message))
+	case errors.Is(err, syscall.EBUSY):
+		core.HandleError(c, core.WrapError(err, core.ErrConflict, message))
+	case errors.Is(err, syscall.EROFS):
+		core.HandleError(c, core.WrapError(err, core.ErrPermissionDenied, message))
 	case errors.Is(err, filemanager.ErrRootOperation):
 		core.HandleError(c, core.WrapError(err, core.ErrForbidden, message))
 	case errors.Is(err, filemanager.ErrRevisionConflict):
@@ -932,7 +946,36 @@ func handleFileError(c *gin.Context, err error, message string) {
 	default:
 		core.HandleError(c, core.NewError(core.ErrInternalError, message))
 	}
-	finishFileOperation(c, "failure", message)
+	finishFileOperation(c, "failure", message+"（"+category+"）")
+}
+
+func fileErrorCategory(err error) string {
+	switch {
+	case errors.Is(err, syscall.EXDEV):
+		return "跨挂载点移动失败"
+	case errors.Is(err, syscall.ENOSPC), errors.Is(err, syscall.EDQUOT):
+		return "存储空间不足"
+	case errors.Is(err, syscall.EBUSY):
+		return "文件正在使用"
+	case errors.Is(err, syscall.EROFS):
+		return "文件系统只读"
+	case errors.Is(err, fs.ErrPermission):
+		return "权限不足"
+	case errors.Is(err, fs.ErrNotExist):
+		return "文件不存在"
+	case errors.Is(err, filemanager.ErrUnsupportedType):
+		return "文件类型不支持"
+	default:
+		return "文件系统错误"
+	}
+}
+
+func fileErrorErrno(err error) string {
+	var errno syscall.Errno
+	if errors.As(err, &errno) {
+		return errno.Error()
+	}
+	return "unknown"
 }
 
 func contentRevision(content []byte) string {

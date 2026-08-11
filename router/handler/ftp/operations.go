@@ -19,6 +19,7 @@ const (
 	fileOperationActionKey = "fileOperationAction"
 	fileOperationPathKey   = "fileOperationPath"
 	fileOperationDoneKey   = "fileOperationDone"
+	fileOperationStartKey  = "fileOperationStart"
 )
 
 func ListOperations(c *gin.Context) {
@@ -72,6 +73,7 @@ func startFileOperation(c *gin.Context, action, path string) {
 	}
 	c.Set(fileOperationActionKey, strings.TrimSpace(action))
 	c.Set(fileOperationPathKey, cleanAuditPath(path))
+	c.Set(fileOperationStartKey, time.Now())
 }
 
 func finishFileOperation(c *gin.Context, outcome, message string) {
@@ -102,23 +104,35 @@ func finishFileOperation(c *gin.Context, outcome, message string) {
 	if status == 0 {
 		status = http.StatusOK
 	}
+	contentLength := c.Request.ContentLength
+	if contentLength < 0 {
+		contentLength = 0
+	}
+	durationMS := int64(0)
+	if startedValue, exists := c.Get(fileOperationStartKey); exists {
+		if startedAt, ok := startedValue.(time.Time); ok {
+			durationMS = time.Since(startedAt).Milliseconds()
+		}
+	}
 	_, err := manager.Append(auditservice.EventInput{
-		RequestID: valueString(requestIDValue),
-		EventType: "file",
-		Action:    action,
-		Method:    c.Request.Method,
-		Route:     c.FullPath(),
-		Path:      valueString(pathValue),
-		Status:    status,
-		Outcome:   outcome,
-		Sensitive: true,
-		UserID:    userID,
-		Username:  valueString(usernameValue),
-		AuthMode:  valueString(authModeValue),
-		RemoteIP:  auditservice.RemoteIP(c.Request),
-		UserAgent: c.GetHeader("User-Agent"),
-		Message:   strings.TrimSpace(message),
-		CreatedAt: time.Now().UTC(),
+		RequestID:     valueString(requestIDValue),
+		EventType:     "file",
+		Action:        action,
+		Method:        c.Request.Method,
+		Route:         c.FullPath(),
+		Path:          valueString(pathValue),
+		Status:        status,
+		Outcome:       outcome,
+		Sensitive:     true,
+		UserID:        userID,
+		Username:      valueString(usernameValue),
+		AuthMode:      valueString(authModeValue),
+		RemoteIP:      auditservice.RemoteIP(c.Request),
+		UserAgent:     c.GetHeader("User-Agent"),
+		ContentLength: contentLength,
+		DurationMS:    durationMS,
+		Message:       strings.TrimSpace(message),
+		CreatedAt:     time.Now().UTC(),
 	})
 	if err != nil {
 		log.Printf("persist file operation audit: %v", err)

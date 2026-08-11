@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/google/uuid"
@@ -72,8 +73,16 @@ func (m *Manager) MoveToTrash(virtualPath, deletedBy string) (TrashEntry, error)
 
 	target := pathpkg.Join(trashFilesDirectory, entry.ID)
 	if err := m.renameRelativeExclusive(relative, target); err != nil {
-		_ = m.root.Remove(trashMetadataPath(entry.ID))
-		return TrashEntry{}, err
+		if !errors.Is(err, syscall.EXDEV) {
+			_ = m.root.Remove(trashMetadataPath(entry.ID))
+			return TrashEntry{}, err
+		}
+		if removeErr := m.root.Remove(trashMetadataPath(entry.ID)); removeErr != nil {
+			return TrashEntry{}, fmt.Errorf("prepare cross-mount trash move: %w", removeErr)
+		}
+		if err := m.moveToTrashAcrossMount(relative, target, entry); err != nil {
+			return TrashEntry{}, err
+		}
 	}
 	return entry, nil
 }
@@ -121,10 +130,149 @@ func (m *Manager) RestoreTrash(id string) (TrashEntry, error) {
 
 	source := pathpkg.Join(trashFilesDirectory, entry.ID)
 	if err := m.renameRelativeExclusive(source, relative); err != nil {
-		return TrashEntry{}, err
+		if !errors.Is(err, syscall.EXDEV) {
+			return TrashEntry{}, err
+		}
+		if err := m.restoreTrashAcrossMount(source, relative, entry.ID); err != nil {
+			return TrashEntry{}, err
+		}
 	}
 	_ = m.root.Remove(trashMetadataPath(entry.ID))
 	return entry, nil
+}
+
+// moveToTrashAcrossMount preserves recycle-bin semantics when the source is on
+// a separate mount (for example a systemd PrivateTmp bind mount). The copy is
+// committed inside the trash before the source is removed, so a failed copy
+// never destroys the original.
+func (m *Manager) moveToTrashAcrossMount(source, target string, entry TrashEntry) error {
+	partial := target + ".partial"
+	if err := m.copyTrashRelative(source, partial); err != nil {
+		_ = m.removeAllRelative(partial)
+		return fmt.Errorf("copy source into cross-mount trash: %w", err)
+	}
+	if err := m.renameRelativeExclusive(partial, target); err != nil {
+		_ = m.removeAllRelative(partial)
+		return fmt.Errorf("commit cross-mount trash copy: %w", err)
+	}
+	if err := m.writeTrashMetadata(entry); err != nil {
+		_ = m.removeAllRelative(target)
+		return fmt.Errorf("write cross-mount trash metadata: %w", err)
+	}
+	if err := m.removeAllRelative(source); err != nil {
+		// Keep the committed trash copy and metadata: removal can fail after
+		// partially processing a directory, and discarding the copy here could
+		// turn a recoverable failure into data loss.
+		return fmt.Errorf("remove source after cross-mount trash copy: %w", err)
+	}
+	return nil
+}
+
+func (m *Manager) restoreTrashAcrossMount(source, target, id string) error {
+	parent := pathpkg.Dir(target)
+	temporaryName := ".oneinstack-restore-" + id + ".partial"
+	temporary := pathpkg.Join(parent, temporaryName)
+	if err := m.copyTrashRelative(source, temporary); err != nil {
+		_ = m.removeAllRelative(temporary)
+		return fmt.Errorf("copy cross-mount trash entry for restore: %w", err)
+	}
+	if err := m.renameRelativeExclusive(temporary, target); err != nil {
+		_ = m.removeAllRelative(temporary)
+		return fmt.Errorf("commit cross-mount trash restore: %w", err)
+	}
+	if err := m.removeAllRelative(source); err != nil {
+		// The restored target is complete. Retain the trash metadata/source for
+		// manual reconciliation instead of deleting either potentially valid copy.
+		return fmt.Errorf("remove trash source after cross-mount restore: %w", err)
+	}
+	return nil
+}
+
+// copyTrashRelative copies regular files and directories without following
+// symbolic links. Unlike the public copy operation, trash must preserve links
+// as links so deleting across mounts has the same behavior as an atomic rename.
+func (m *Manager) copyTrashRelative(source, target string) error {
+	info, err := m.root.Lstat(source)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		sourceParent, err := m.root.Open(pathpkg.Dir(source))
+		if err != nil {
+			return err
+		}
+		defer sourceParent.Close()
+		targetParent, err := m.root.Open(pathpkg.Dir(target))
+		if err != nil {
+			return err
+		}
+		defer targetParent.Close()
+		linkTarget, err := readlinkAt(sourceParent, pathpkg.Base(source))
+		if err != nil {
+			return err
+		}
+		return symlinkAt(linkTarget, targetParent, pathpkg.Base(target))
+	}
+	if info.IsDir() {
+		if err := m.root.Mkdir(target, info.Mode().Perm()|0700); err != nil {
+			return err
+		}
+		directory, err := m.root.Open(source)
+		if err != nil {
+			return err
+		}
+		entries, readErr := directory.ReadDir(-1)
+		closeErr := directory.Close()
+		if readErr != nil {
+			return readErr
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+		for _, child := range entries {
+			if err := m.copyTrashRelative(
+				pathpkg.Join(source, child.Name()),
+				pathpkg.Join(target, child.Name()),
+			); err != nil {
+				return err
+			}
+		}
+		targetDirectory, err := m.root.Open(target)
+		if err != nil {
+			return err
+		}
+		chmodErr := targetDirectory.Chmod(info.Mode().Perm())
+		closeErr = targetDirectory.Close()
+		if chmodErr != nil {
+			return chmodErr
+		}
+		return closeErr
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%w: %s", ErrUnsupportedType, info.Mode().Type())
+	}
+
+	input, err := m.root.Open(source)
+	if err != nil {
+		return err
+	}
+	defer input.Close()
+	output, err := m.root.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if err != nil {
+		return err
+	}
+	_, copyErr := io.Copy(output, input)
+	if copyErr == nil {
+		copyErr = output.Sync()
+	}
+	if copyErr == nil {
+		copyErr = output.Chmod(info.Mode().Perm())
+	}
+	closeErr := output.Close()
+	if copyErr != nil {
+		return copyErr
+	}
+	return closeErr
 }
 
 func (m *Manager) DeleteTrashPermanently(id string) error {
