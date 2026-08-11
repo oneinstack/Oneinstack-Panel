@@ -207,7 +207,8 @@ func parseComponentServiceProbe(
 			return ComponentServiceProbe{}, fmt.Errorf("component status output is missing field %q", key)
 		}
 	}
-	if fields["component"] != definition.Component || fields["service"] != definition.ServiceName {
+	if fields["component"] != definition.Component ||
+		!serviceProbeIdentityMatches(definition, fields["service"]) {
 		return ComponentServiceProbe{}, fmt.Errorf("component status output identity does not match request")
 	}
 	for _, key := range []string{"load_state", "active_state", "sub_state", "unit_file_state"} {
@@ -233,6 +234,22 @@ func parseComponentServiceProbe(
 		RuntimeVersion: fields["runtime_version"],
 		CanReload:      canReload,
 	}, nil
+}
+
+func serviceProbeIdentityMatches(
+	definition ComponentServiceDefinition,
+	serviceName string,
+) bool {
+	if serviceName == definition.ServiceName {
+		return true
+	}
+	// Redis 7.4.8 packages installed the verified redis.service unit and emit
+	// service=redis. Newer packages use the canonical redis-server identity.
+	// Accept only this known legacy identity and normalize the API response to
+	// definition.ServiceName in parseComponentServiceProbe.
+	return definition.Component == "redis" &&
+		definition.ServiceName == "redis-server" &&
+		serviceName == "redis"
 }
 
 func ClassifyServiceProbeError(err error) (string, string) {
