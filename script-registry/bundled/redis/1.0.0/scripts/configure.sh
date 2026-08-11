@@ -4,7 +4,7 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 require_root; validate_inputs; ensure_account
 emit_progress 10 prepare_directories "正在创建 Redis 数据和配置目录"
 install -d -o redis -g redis -m 0750 -- "${data_dir}"
-install -d -m 0750 -- "${install_dir}/etc"
+install -d -o root -g redis -m 0750 -- "${install_dir}/etc"
 emit_progress 30 write_config "正在写入 Redis 配置"
 cat >"${install_dir}/etc/redis.conf" <<EOF
 bind ${redis_bind}
@@ -53,6 +53,22 @@ ReadWritePaths=${data_dir}
 WantedBy=multi-user.target
 EOF
 emit_progress 90 service_start "正在启动 Redis 服务"
-systemctl daemon-reload; systemctl enable --now redis
+systemctl daemon-reload
+systemctl enable redis
+systemctl restart redis
+export REDISCLI_AUTH="${redis_password}"
+redis_ready=false
+for _ in {1..20}; do
+  if systemctl is-active --quiet redis && [[ "$("${install_dir}/bin/redis-cli" -h 127.0.0.1 -p "${redis_port}" ping 2>/dev/null || true)" == "PONG" ]]; then
+    redis_ready=true
+    break
+  fi
+  sleep 0.5
+done
+if [[ "${redis_ready}" != "true" ]]; then
+  systemctl status redis.service --no-pager --lines=20 >&2 || true
+  journalctl -u redis.service --no-pager --lines=30 >&2 || true
+  die "Redis did not become ready."
+fi
 emit_progress 100 configure_completed "Redis 配置和服务部署完成"
 echo "Redis configuration and systemd service installed."
