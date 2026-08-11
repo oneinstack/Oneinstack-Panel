@@ -191,6 +191,11 @@ func createTables() error {
 		&models.IptablesRule{},
 		&models.FirewallPortForward{},
 		&models.FirewallAutoBlockConfig{},
+		&models.Fail2banPolicy{},
+		&models.SecurityIncident{},
+		&models.Fail2banTask{},
+		&models.Fail2banTaskEvent{},
+		&models.Fail2banState{},
 	)
 	if err != nil {
 		return err

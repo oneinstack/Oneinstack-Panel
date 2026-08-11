@@ -16,6 +16,7 @@ import (
 	bastionHandler "oneinstack/router/handler/bastion"
 	containerHandler "oneinstack/router/handler/container"
 	"oneinstack/router/handler/cron"
+	fail2banHandler "oneinstack/router/handler/fail2ban"
 	"oneinstack/router/handler/ftp"
 	"oneinstack/router/handler/health"
 	logHandler "oneinstack/router/handler/log"
@@ -132,6 +133,19 @@ func SetupRouter() *gin.Engine {
 		securityg.POST("/totp/confirm", securityHandler.ConfirmTOTP)
 		securityg.POST("/totp/disable", securityHandler.DisableTOTP)
 		securityg.POST("/totp/recovery-codes/regenerate", securityHandler.RegenerateRecoveryCodes)
+		fail2bang := securityg.Group("/fail2ban")
+		{
+			fail2bang.GET("/status", middleware.RequirePermission(accessservice.PermissionSecurityRead), fail2banHandler.Status)
+			fail2bang.GET("/templates", middleware.RequirePermission(accessservice.PermissionSecurityRead), fail2banHandler.Templates)
+			fail2bang.GET("/policies", middleware.RequirePermission(accessservice.PermissionSecurityRead), fail2banHandler.Policies)
+			fail2bang.GET("/bans", middleware.RequirePermission(accessservice.PermissionSecurityRead), fail2banHandler.Bans)
+			fail2bang.GET("/incidents", middleware.RequirePermission(accessservice.PermissionSecurityRead), fail2banHandler.Incidents)
+			fail2bang.POST("/incidents/:id/dismiss", middleware.RequirePermission(accessservice.PermissionSecurityWrite), fail2banHandler.DismissIncident)
+			fail2bang.GET("/tasks", middleware.RequirePermission(accessservice.PermissionSecurityRead), fail2banHandler.Tasks)
+			fail2bang.GET("/tasks/:id", middleware.RequirePermission(accessservice.PermissionSecurityRead), fail2banHandler.Task)
+			fail2bang.GET("/tasks/:id/events", middleware.RequirePermission(accessservice.PermissionSecurityRead), fail2banHandler.TaskEvents)
+			fail2bang.GET("/tasks/:id/log", middleware.RequirePermission(accessservice.PermissionSecurityRead), fail2banHandler.TaskLog)
+		}
 	}
 
 	accessg := protected.Group("/access")

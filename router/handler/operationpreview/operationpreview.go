@@ -13,6 +13,8 @@ import (
 	"oneinstack/internal/i18n"
 	"oneinstack/internal/models"
 	accessservice "oneinstack/internal/services/access"
+	auditservice "oneinstack/internal/services/audit"
+	fail2banservice "oneinstack/internal/services/fail2ban"
 	previewservice "oneinstack/internal/services/operationpreview"
 	safeservice "oneinstack/internal/services/safe"
 	softwareService "oneinstack/internal/services/software"
@@ -119,9 +121,9 @@ func Execute(c *gin.Context) {
 		writeConsumeError(c, err)
 		return
 	}
-	result, err := executeOperation(c.Request.Context(), operation, payload, userID)
+	result, err := executeOperation(c.Request.Context(), operation, payload, userID, auditservice.RemoteIP(c.Request))
 	if err != nil {
-		core.HandleError(c, core.WrapError(err, core.ErrConfigError, "执行已确认的操作预览失败"))
+		writeExecutionError(c, err)
 		return
 	}
 	c.JSON(http.StatusAccepted, core.SuccessResponseForContext(c, result))
@@ -210,11 +212,28 @@ func buildDocument(operation string, payload json.RawMessage) (previewservice.Do
 		document.Actions = []previewservice.Action{{Type: "system", Name: "应用面板访问配置", DisplayCommand: "由面板网络配置事务执行"}, {Type: "firewall", Name: "同步面板端口规则", DisplayCommand: "由受控防火墙适配器执行"}}
 		document.Impact = previewservice.Impact{WriteFiles: true, ModifyDatabase: true, RestartService: true, NetworkRisk: true}
 		document.Rollback = previewservice.Rollback{Supported: true, Summary: "由面板网络事务恢复配置文件和已准备的端口规则"}
+	case "fail2ban.policy_change":
+		var value fail2banservice.PolicyChangeRequest
+		if err := json.Unmarshal(payload, &value); err != nil {
+			return previewservice.Document{}, "", err
+		}
+		document.Files = []previewservice.FileChange{{Path: "Fail2ban 的 OneinStack 受管规则文件", Action: "create_update_or_delete", ChangeSummary: "原子应用固定模板规则"}}
+		document.Actions = []previewservice.Action{{Type: "command", Name: "校验 Fail2ban 配置", DisplayCommand: "fail2ban-client -t"}, {Type: "service", Name: "重新加载 Fail2ban", DisplayCommand: "fail2ban-client reload", Service: "fail2ban"}}
+		document.Impact = previewservice.Impact{WriteFiles: true, ModifyDatabase: true, ReloadService: true, NetworkRisk: value.Policy.Enabled && value.Policy.EnforcementMode == "autoBan"}
+		return document, value.Policy.BaseRevision, nil
+	case "fail2ban.ban", "fail2ban.unban":
+		var value fail2banservice.BanRequest
+		if err := json.Unmarshal(payload, &value); err != nil {
+			return previewservice.Document{}, "", err
+		}
+		document.Actions = []previewservice.Action{{Type: "firewall", Name: "通过受管 Fail2ban jail 处置单个 IP", DisplayCommand: "fail2ban-client set <managed-jail> banip|unbanip <ip>"}}
+		document.Impact = previewservice.Impact{ModifyDatabase: true, NetworkRisk: true}
+		document.Rollback = previewservice.Rollback{Supported: true, Summary: "可通过对应的解封或重新封禁任务恢复"}
 	}
 	return document, "", nil
 }
 
-func executeOperation(ctx context.Context, operation string, payload json.RawMessage, userID int64) (gin.H, error) {
+func executeOperation(ctx context.Context, operation string, payload json.RawMessage, userID int64, requestIP string) (gin.H, error) {
 	switch operation {
 	case "website.create":
 		var value models.Website
@@ -471,6 +490,30 @@ func executeOperation(ctx context.Context, operation string, payload json.RawMes
 			return nil, err
 		}
 		return gin.H{"operation": operation, "settings": settings, "status": "succeeded"}, nil
+	case "fail2ban.policy_change":
+		var value fail2banservice.PolicyChangeRequest
+		if err := json.Unmarshal(payload, &value); err != nil {
+			return nil, err
+		}
+		task, err := fail2banservice.DefaultManager().SubmitPolicyChange(value, userID, requestIP, "user")
+		if err != nil {
+			return nil, err
+		}
+		return gin.H(fail2banservice.TaskResult(task)), nil
+	case "fail2ban.ban", "fail2ban.unban":
+		var value fail2banservice.BanRequest
+		if err := json.Unmarshal(payload, &value); err != nil {
+			return nil, err
+		}
+		taskOperation := "ban_ip"
+		if operation == "fail2ban.unban" {
+			taskOperation = "unban_ip"
+		}
+		task, err := fail2banservice.DefaultManager().SubmitBan(taskOperation, value, userID, requestIP, "user")
+		if err != nil {
+			return nil, err
+		}
+		return gin.H(fail2banservice.TaskResult(task)), nil
 	default:
 		return nil, fmt.Errorf("unsupported operation %s", operation)
 	}
@@ -496,4 +539,19 @@ func writeConsumeError(c *gin.Context, err error) {
 	default:
 		core.HandleError(c, core.WrapError(err, core.ErrInternalError, "读取操作预览失败"))
 	}
+}
+
+func writeExecutionError(c *gin.Context, err error) {
+	code, message := core.ErrConfigError, "执行已确认的操作预览失败"
+	switch {
+	case errors.Is(err, fail2banservice.ErrValidation):
+		code, message = core.ErrValidationFailed, "入侵防护参数无效，请检查后重试"
+	case errors.Is(err, fail2banservice.ErrRevisionConflict):
+		code, message = core.ErrResourceStateInvalid, "规则已被其他操作修改，请刷新后重试"
+	case errors.Is(err, fail2banservice.ErrProtectedAddress):
+		code, message = core.ErrInsufficientPermissions, "该地址属于系统保护范围，不能封禁"
+	case errors.Is(err, fail2banservice.ErrUnavailable):
+		code, message = core.ErrServiceUnavailable, "Fail2ban 未安装、未验证或服务不可用"
+	}
+	core.HandleError(c, core.NewErrorWithDetail(code, message, err.Error()))
 }

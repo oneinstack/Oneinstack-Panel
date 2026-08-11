@@ -55,6 +55,11 @@ func (s *Service) SaveAutoBlockConfig(param *input.FirewallAutoBlockParam) (*mod
 	if err := s.db.Save(config).Error; err != nil {
 		return nil, err
 	}
+	if config.Enabled {
+		_ = s.db.Model(&models.Fail2banState{}).Where("id = ? AND migration_status = ?", 1, "not_required").Updates(map[string]any{
+			"migration_status": "pending", "migration_error": "",
+		}).Error
+	}
 	return config, nil
 }
 

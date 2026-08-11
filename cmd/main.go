@@ -13,6 +13,7 @@ import (
 	bastionservice "oneinstack/internal/services/bastion"
 	"oneinstack/internal/services/certificate"
 	"oneinstack/internal/services/databasetask"
+	fail2banservice "oneinstack/internal/services/fail2ban"
 	"oneinstack/internal/services/filemanager"
 	runtimelog "oneinstack/internal/services/log"
 	"oneinstack/internal/services/monitoring"
@@ -514,6 +515,7 @@ func startServer() error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	fail2banservice.DefaultManager().Start(ctx)
 	go safeservice.RunMaintenance(ctx)
 
 	httpAddress, _ := panelServer.NetworkAddress(networkConfig.BindAddress, networkConfig.HTTPPort)
