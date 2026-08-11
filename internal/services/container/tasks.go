@@ -23,6 +23,7 @@ const (
 	containerTaskWorkerCount = 2
 	containerTaskQueueSize   = 128
 	containerTaskLogDir      = "logs/container-tasks"
+	containerTaskTimeout     = 35 * time.Minute
 )
 
 type BuildTaskRequest struct {
@@ -385,7 +386,10 @@ func (m *CreateTaskManager) run(taskID string) {
 		m.fail(task.ID, "INVALID_REQUEST", err.Error())
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	// Pull/build commands have their own 30-minute ceiling. Keep a separate
+	// margin for the create and verify phases so a successful slow pull is not
+	// canceled immediately by the task-level deadline.
+	ctx, cancel := context.WithTimeout(context.Background(), containerTaskTimeout)
 	m.cancelMu.Lock()
 	m.cancels[task.ID] = cancel
 	m.cancelMu.Unlock()
@@ -426,8 +430,10 @@ func (m *CreateTaskManager) run(taskID string) {
 		}
 	}
 	if err != nil {
-		if ctx.Err() != nil || m.isCancelRequested(task.ID) {
+		if m.isCancelRequested(task.ID) || errors.Is(ctx.Err(), context.Canceled) {
 			m.finish(task.ID, models.ContainerTaskStatusCanceled, "ACTION_CANCELED", "容器任务已取消")
+		} else if errors.Is(err, ErrDockerCommandTimeout) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			m.fail(task.ID, "DOCKER_OPERATION_TIMEOUT", "Docker 操作超时，请检查测试环境 Docker daemon 的 DNS、代理或镜像加速配置后重试")
 		} else {
 			m.fail(task.ID, "DOCKER_OPERATION_FAILED", err.Error())
 		}

@@ -666,10 +666,10 @@ func (s *Service) ensureImage(ctx context.Context, reference string) error {
 		return err
 	}
 
-	if _, err := s.run(ctx, "pull", reference); err != nil {
-		return fmt.Errorf("%w: %s: %w", ErrImagePullFailed, reference, err)
-	}
-	return nil
+	// Remote pulls must use the long-running streaming path. The generic Docker
+	// command runner is intentionally capped at 60 seconds and is unsuitable for
+	// large images or slower test-environment registry links.
+	return s.PullImageStream(ctx, reference, nil)
 }
 
 func isImageNotFoundError(err error) bool {
@@ -1743,7 +1743,7 @@ func (s *Service) TestRegistry(ctx context.Context, id uint) (RegistrySummary, e
 	if err := db.First(&record, id).Error; err != nil {
 		return RegistrySummary{}, err
 	}
-	endpoint := record.Protocol + "://" + record.Address + "/v2/"
+	endpoint := registryProbeEndpoint(record)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return RegistrySummary{}, errors.New("仓库地址无效")
@@ -1761,10 +1761,28 @@ func (s *Service) TestRegistry(ctx context.Context, id uint) (RegistrySummary, e
 		return s.updateRegistryStatus(record, models.RegistryStatusFailed, requestErr.Error())
 	}
 	defer response.Body.Close()
+	// Registry V2 endpoints commonly return 401 together with a Bearer challenge
+	// when the endpoint is reachable but anonymous access is not allowed. For a
+	// connection-only check this is healthy; configured credentials still need a
+	// successful authenticated response.
+	if response.StatusCode == http.StatusUnauthorized && !record.AuthEnabled && strings.TrimSpace(response.Header.Get("WWW-Authenticate")) != "" {
+		return s.updateRegistryStatus(record, models.RegistryStatusSuccess, "")
+	}
 	if response.StatusCode < 200 || response.StatusCode >= 400 {
 		return s.updateRegistryStatus(record, models.RegistryStatusFailed, fmt.Sprintf("仓库返回 HTTP %d", response.StatusCode))
 	}
 	return s.updateRegistryStatus(record, models.RegistryStatusSuccess, "")
+}
+
+func registryProbeEndpoint(record models.ContainerRegistry) string {
+	address := strings.TrimRight(record.Address, "/")
+	// docker.io is the image-reference namespace. Docker Hub serves the Registry
+	// V2 API from registry-1.docker.io; probing docker.io follows the website path
+	// instead of checking the registry used by Docker pulls.
+	if strings.EqualFold(address, "docker.io") || strings.EqualFold(address, "index.docker.io") {
+		address = "registry-1.docker.io"
+	}
+	return record.Protocol + "://" + address + "/v2/"
 }
 
 func (s *Service) updateRegistryStatus(record models.ContainerRegistry, status, message string) (RegistrySummary, error) {
