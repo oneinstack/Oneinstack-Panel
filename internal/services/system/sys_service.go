@@ -148,8 +148,32 @@ func GetSystemInfo() (*output.SystemInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	// CPU Usage
-	cpuPercent, _ := cpu.Percent(time.Second, false)
+	// CPU Usage and capacity. CPU capacity is represented by logical cores so
+	// that used/available values remain meaningful on hosts with SMT enabled.
+	cpuPercent, err := cpu.Percent(time.Second, false)
+	if err != nil {
+		return nil, err
+	}
+	if len(cpuPercent) == 0 {
+		return nil, fmt.Errorf("cpu usage is unavailable")
+	}
+	logicalCores, err := cpu.Counts(true)
+	if err != nil {
+		return nil, err
+	}
+	physicalCores, err := cpu.Counts(false)
+	if err != nil {
+		return nil, err
+	}
+	usedPercent := cpuPercent[0]
+	if usedPercent < 0 {
+		usedPercent = 0
+	}
+	if usedPercent > 100 {
+		usedPercent = 100
+	}
+	totalCores := float64(logicalCores)
+	usedCores := totalCores * usedPercent / 100
 
 	// Memory Info
 	vmem, err := mem.VirtualMemory()
@@ -176,9 +200,17 @@ func GetSystemInfo() (*output.SystemInfo, error) {
 		return nil, err
 	}
 	sysinfo := &output.SystemInfo{
-		HostInfo:      info,
-		CPUInfo:       cpuInfo,
-		CPU:           cpuPercent,
+		HostInfo: info,
+		CPUInfo:  cpuInfo,
+		CPU:      cpuPercent,
+		CPUSummary: &output.CPUSummary{
+			Total:         totalCores,
+			Used:          usedCores,
+			Available:     totalCores - usedCores,
+			UsedPercent:   usedPercent,
+			LogicalCores:  logicalCores,
+			PhysicalCores: physicalCores,
+		},
 		Memory:        vmem,
 		DiskUsage:     diskUsages,
 		NetIOCounters: interfaces,

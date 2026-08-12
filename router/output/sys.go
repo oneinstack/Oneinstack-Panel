@@ -14,9 +14,20 @@ type SystemInfo struct {
 	HostInfo      *host.InfoStat         `json:"host_info"`
 	CPU           []float64              `json:"cpu_usage"`
 	CPUInfo       []cpu.InfoStat         `json:"cpu_info"`
+	CPUSummary    *CPUSummary            `json:"cpu_summary"`
 	Memory        *mem.VirtualMemoryStat `json:"memory_usage"`
 	DiskUsage     []disk.UsageStat       `json:"disk_usage"`
 	NetIOCounters []net.IOCountersStat   `json:"network_io"`
+}
+
+// CPUSummary 描述 CPU 总容量、已使用容量和可用容量，容量单位为逻辑核数。
+type CPUSummary struct {
+	Total         float64 `json:"total"`
+	Used          float64 `json:"used"`
+	Available     float64 `json:"available"`
+	UsedPercent   float64 `json:"usedPercent"`
+	LogicalCores  int     `json:"logical_cores"`
+	PhysicalCores int     `json:"physical_cores"`
 }
 
 type NetworkStats struct {
