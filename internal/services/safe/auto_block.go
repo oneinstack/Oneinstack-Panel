@@ -65,8 +65,11 @@ func (s *Service) SaveAutoBlockConfig(param *input.FirewallAutoBlockParam) (*mod
 
 func (s *Service) RunAutoBlock(ctx context.Context) (int, error) {
 	config, err := s.GetAutoBlockConfig()
-	if err != nil || !config.Enabled {
+	if err != nil {
 		return 0, err
+	}
+	if !config.Enabled {
+		return 0, ErrAutoBlockDisabled
 	}
 	if _, err := s.runner.LookPath("journalctl"); err != nil {
 		return 0, nil
@@ -138,7 +141,7 @@ func RunMaintenance(ctx context.Context) {
 		} else if cleaned > 0 {
 			log.Printf("firewall expired-rule cleanup removed %d rules", cleaned)
 		}
-		if blocked, err := service.RunAutoBlock(ctx); err != nil {
+		if blocked, err := service.RunAutoBlock(ctx); err != nil && !errors.Is(err, ErrAutoBlockDisabled) {
 			log.Printf("firewall automatic block scan failed: %v", err)
 		} else if blocked > 0 {
 			log.Printf("firewall automatic block scan added %d rules", blocked)

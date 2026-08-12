@@ -318,6 +318,9 @@ func (s *Service) Update(ctx context.Context, requested *models.IptablesRule) er
 		}
 		return fmt.Errorf("保存规则失败，原规则已恢复: %w", err)
 	}
+	if err := s.db.First(requested, old.ID).Error; err != nil {
+		return fmt.Errorf("读取更新后的规则失败: %w", err)
+	}
 	return nil
 }
 

@@ -133,15 +133,18 @@ func normalizeIPs(raw string) ([]string, error) {
 }
 
 func normalizePorts(raw, protocol string) ([]string, error) {
-	parts := splitValues(raw)
+	if strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
 	if protocol == "icmp" || protocol == "all" {
-		if len(parts) == 0 || (len(parts) == 1 && parts[0] == "0") {
-			return nil, nil
-		}
 		return nil, validationError("ICMP 或全协议规则不能指定端口")
 	}
-	if len(parts) == 0 || (len(parts) == 1 && parts[0] == "0") {
-		return nil, nil
+	parts := strings.Split(raw, ",")
+	for index := range parts {
+		parts[index] = strings.TrimSpace(parts[index])
+		if parts[index] == "" {
+			return nil, validationError("端口列表不能包含空项")
+		}
 	}
 	seen := make(map[string]struct{}, len(parts))
 	result := make([]string, 0, len(parts))
@@ -178,6 +181,17 @@ func normalizePorts(raw, protocol string) ([]string, error) {
 	return result, nil
 }
 
+// ValidateRule applies the same validation used by add, update, import, and
+// execution without mutating the caller's rule or changing system state.
+func (s *Service) ValidateRule(rule *models.IptablesRule) error {
+	if rule == nil {
+		return validationError("规则不能为空")
+	}
+	copyOfRule := *rule
+	_, err := normalizeRule(&copyOfRule, s.panelPort)
+	return err
+}
+
 func splitValues(raw string) []string {
 	values := strings.Split(raw, ",")
 	result := make([]string, 0, len(values))
@@ -209,6 +223,20 @@ func portSetContains(ports []string, port int) bool {
 
 func validationError(message string) error {
 	return fmt.Errorf("%w: %s", ErrValidation, message)
+}
+
+// ValidationMessage returns only the safe business reason from a wrapped
+// validation error, without exposing the internal sentinel text.
+func ValidationMessage(err error) string {
+	if err == nil {
+		return ""
+	}
+	message := strings.TrimSpace(err.Error())
+	marker := ErrValidation.Error() + ":"
+	if index := strings.LastIndex(message, marker); index >= 0 {
+		message = strings.TrimSpace(message[index+len(marker):])
+	}
+	return message
 }
 
 func applyNormalized(rule *models.IptablesRule, normalized normalizedRule) {

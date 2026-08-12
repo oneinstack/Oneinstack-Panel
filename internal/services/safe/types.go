@@ -18,9 +18,10 @@ const (
 )
 
 var (
-	ErrValidation  = errors.New("firewall validation failed")
-	ErrProtected   = errors.New("protected firewall rule")
-	ErrUnsupported = errors.New("unsupported firewall operation")
+	ErrValidation        = errors.New("firewall validation failed")
+	ErrProtected         = errors.New("protected firewall rule")
+	ErrUnsupported       = errors.New("unsupported firewall operation")
+	ErrAutoBlockDisabled = errors.New("firewall auto block is disabled")
 )
 
 type CommandRunner interface {

@@ -13,6 +13,7 @@ var (
 	rangePattern           = regexp.MustCompile(`^(.+?) 必须(?:是|在) ([0-9]+) 到 ([0-9]+) 之间(?:的整数)?$`)
 	maxLengthPattern       = regexp.MustCompile(`^(.+?) 最长为 ([0-9]+) 个字符$`)
 	retryAfterPattern      = regexp.MustCompile(`^请在 ([0-9]+) 秒后重试。?$`)
+	fail2banRatePattern    = regexp.MustCompile(`^(封禁|解封)预览请求过于频繁：(.+)$`)
 	confirmationPattern    = regexp.MustCompile(`^确认文本必须为 (.+)$`)
 	ruleExpiryPattern      = regexp.MustCompile(`^第 ([0-9]+) 条规则的过期时间格式错误$`)
 )
@@ -40,6 +41,13 @@ func LocalizeText(locale, text string) string {
 }
 
 func translateDynamicErrorText(text string) (string, bool) {
+	if matches := fail2banRatePattern.FindStringSubmatch(text); len(matches) == 3 {
+		action := "Ban"
+		if matches[1] == "解封" {
+			action = "Unban"
+		}
+		return fmt.Sprintf("%s preview requests for %s are too frequent", action, matches[2]), true
+	}
 	if matches := confirmationPattern.FindStringSubmatch(text); len(matches) == 2 {
 		return fmt.Sprintf("The confirmation text must be %s", matches[1]), true
 	}
@@ -855,6 +863,12 @@ var englishErrorTexts = map[string]string{
 	"请求的接口不存在":                                  "The requested API endpoint does not exist",
 	"请求的面板资源不存在":                                "The requested Panel resource does not exist",
 	"请求过于频繁，请在稍后重试":                             "Too many requests. Please try again later",
+	"端口列表不能包含空项":                                "The port list must not contain empty items",
+	"端口格式必须是单个端口或 start-end":                    "A port must be a single value or a start-end range",
+	"端口必须在 1-65535 之间":                          "Ports must be between 1 and 65535",
+	"端口范围无效":                                    "The port range is invalid",
+	"ICMP 或全协议规则不能指定端口":                         "ICMP and all-protocol rules cannot specify ports",
+	"自动封禁未启用，不能立即检测":                            "Automatic blocking is disabled, so an immediate scan cannot run",
 	"用户名或密码错误":                                  "The username or password is incorrect",
 	"当前密码错误":                                    "The current password is incorrect",
 	"当前面板密码错误":                                  "The current Panel password is incorrect",

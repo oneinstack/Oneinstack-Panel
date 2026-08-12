@@ -2,12 +2,15 @@ package middleware
 
 import (
 	"fmt"
+	"math"
 	"net/http"
-	"oneinstack/core"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
+
+	"oneinstack/core"
 )
 
 // RateLimiter 速率限制器
@@ -40,16 +43,29 @@ func NewRateLimiter(rate int, window time.Duration) *RateLimiter {
 
 // IsAllowed 检查是否允许请求
 func (rl *RateLimiter) IsAllowed(ip string) bool {
+	allowed, _ := rl.Allow(ip)
+	return allowed
+}
+
+// Allow checks a key and returns the exact time remaining in the current
+// sliding window. Rejected attempts are not appended and therefore cannot
+// extend the retry window.
+func (rl *RateLimiter) Allow(key string) (bool, time.Duration) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		key = "unknown"
+	}
 	rl.mutex.RLock()
-	visitor, exists := rl.visitors[ip]
+	visitor, exists := rl.visitors[key]
 	rl.mutex.RUnlock()
 
 	if !exists {
 		rl.mutex.Lock()
-		visitor = &Visitor{
-			requests: make([]time.Time, 0),
+		visitor, exists = rl.visitors[key]
+		if !exists {
+			visitor = &Visitor{requests: make([]time.Time, 0)}
+			rl.visitors[key] = visitor
 		}
-		rl.visitors[ip] = visitor
 		rl.mutex.Unlock()
 	}
 
@@ -70,12 +86,16 @@ func (rl *RateLimiter) IsAllowed(ip string) bool {
 
 	// 检查是否超过限制
 	if len(visitor.requests) >= rl.rate {
-		return false
+		retryAfter := visitor.requests[0].Add(rl.window).Sub(now)
+		if retryAfter < 0 {
+			retryAfter = 0
+		}
+		return false, retryAfter
 	}
 
 	// 添加当前请求
 	visitor.requests = append(visitor.requests, now)
-	return true
+	return true, 0
 }
 
 // cleanup 定期清理过期的访问者记录
@@ -104,13 +124,20 @@ func (rl *RateLimiter) cleanup() {
 
 // RateLimitMiddleware 速率限制中间件
 func RateLimitMiddleware(rate int, window time.Duration) gin.HandlerFunc {
+	return rateLimitMiddleware(rate, window, func(c *gin.Context) string {
+		return c.ClientIP()
+	})
+}
+
+func rateLimitMiddleware(rate int, window time.Duration, key func(*gin.Context) string) gin.HandlerFunc {
 	limiter := NewRateLimiter(rate, window)
 
 	return func(c *gin.Context) {
-		ip := c.ClientIP()
-
-		if !limiter.IsAllowed(ip) {
-			writeAPIError(c, http.StatusTooManyRequests, core.ErrRateLimitExceeded, "请求过于频繁，请在稍后重试", fmt.Sprintf("请在 %d 秒后重试。", int(window.Seconds())))
+		allowed, retryAfter := limiter.Allow(key(c))
+		if !allowed {
+			seconds := max(1, int(math.Ceil(retryAfter.Seconds())))
+			c.Header("Retry-After", fmt.Sprint(seconds))
+			writeAPIError(c, http.StatusTooManyRequests, core.ErrRateLimitExceeded, "请求过于频繁，请在稍后重试", fmt.Sprintf("请在 %d 秒后重试。", seconds))
 			return
 		}
 
@@ -126,6 +153,12 @@ func LoginRateLimitMiddleware() gin.HandlerFunc {
 
 // APIRateLimitMiddleware API通用速率限制中间件
 func APIRateLimitMiddleware() gin.HandlerFunc {
-	// API限制：每分钟最多100次请求
-	return RateLimitMiddleware(100, time.Minute)
+	// 按标准路由隔离额度，避免任务轮询、列表读取和操作预览互相阻断。
+	return rateLimitMiddleware(100, time.Minute, func(c *gin.Context) string {
+		route := c.FullPath()
+		if route == "" {
+			route = c.Request.URL.Path
+		}
+		return strings.Join([]string{c.ClientIP(), c.Request.Method, route}, "|")
+	})
 }

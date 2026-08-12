@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"net"
 	"net/http"
 	"strings"
+	"time"
 
 	"oneinstack/app"
 	"oneinstack/core"
@@ -37,6 +40,8 @@ type executeRequest struct {
 	Confirm bool `json:"confirm"`
 }
 
+var fail2banPreviewLimiter = middleware.NewRateLimiter(10, time.Minute)
+
 func Preview(c *gin.Context) {
 	var request previewRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
@@ -57,9 +62,38 @@ func Preview(c *gin.Context) {
 		core.HandleError(c, core.NewError(core.ErrUnauthorized, "无法识别当前用户"))
 		return
 	}
+	if operation == "fail2ban.ban" || operation == "fail2ban.unban" {
+		target, ok := fail2banPreviewTarget(request.Payload)
+		if ok {
+			key := fmt.Sprintf("%d|%s|%s", userID, operation, target)
+			allowed, retryAfter := fail2banPreviewLimiter.Allow(key)
+			if !allowed {
+				seconds := max(1, int(math.Ceil(retryAfter.Seconds())))
+				c.Header("Retry-After", fmt.Sprint(seconds))
+				action := "封禁"
+				if operation == "fail2ban.unban" {
+					action = "解封"
+				}
+				core.HandleErrorWithStatus(c, http.StatusTooManyRequests, core.NewErrorWithDetail(
+					core.ErrRateLimitExceeded,
+					fmt.Sprintf("%s预览请求过于频繁：%s", action, target),
+					fmt.Sprintf("请在 %d 秒后重试。", seconds),
+				))
+				return
+			}
+		}
+	}
 	document, resourceVersion, err := buildDocument(operation, request.Payload)
 	if err != nil {
-		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "生成操作预览失败"))
+		if errors.Is(err, safeservice.ErrValidation) {
+			message := safeservice.ValidationMessage(err)
+			if message == "" {
+				message = "防火墙参数无效"
+			}
+			core.HandleError(c, core.NewError(core.ErrBadRequest, message))
+		} else {
+			core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "生成操作预览失败"))
+		}
 		return
 	}
 	service := previewservice.New(app.DB())
@@ -70,6 +104,21 @@ func Preview(c *gin.Context) {
 	}
 	localizeDocument(c.GetString("locale"), created)
 	core.HandleSuccess(c, created)
+}
+
+func fail2banPreviewTarget(payload json.RawMessage) (string, bool) {
+	var request fail2banservice.BanRequest
+	if err := json.Unmarshal(payload, &request); err != nil {
+		return "", false
+	}
+	if ip := net.ParseIP(strings.TrimSpace(request.IP)); ip != nil {
+		return ip.String(), true
+	}
+	incidentID := strings.TrimSpace(request.IncidentID)
+	if incidentID != "" && len(incidentID) <= 64 {
+		return "incident:" + incidentID, true
+	}
+	return "", false
 }
 
 func localizeDocument(locale string, document *previewservice.Document) {
@@ -239,6 +288,28 @@ func buildDocument(operation string, payload json.RawMessage) (previewservice.Do
 			document.Impact = previewservice.Impact{NetworkRisk: true}
 			document.Rollback = previewservice.Rollback{Supported: true, Summary: "可通过反向设置 Ping 响应状态恢复"}
 		} else {
+			var value struct {
+				Action string              `json:"action"`
+				Rule   models.IptablesRule `json:"rule"`
+			}
+			if err := json.Unmarshal(payload, &value); err != nil {
+				return previewservice.Document{}, "", err
+			}
+			hasRule := hasFirewallRuleFields(fields) || fields["rule"] != nil
+			if hasFirewallRuleFields(fields) {
+				if err := json.Unmarshal(payload, &value.Rule); err != nil {
+					return previewservice.Document{}, "", err
+				}
+			}
+			action := strings.ToLower(strings.TrimSpace(value.Action))
+			if action == "create" {
+				action = "add"
+			}
+			if action == "add" || action == "update" || (action == "" && hasRule) {
+				if err := safeservice.NewDefaultService().ValidateRule(&value.Rule); err != nil {
+					return previewservice.Document{}, "", err
+				}
+			}
 			document.Actions = []previewservice.Action{{Type: "firewall", Name: "修改防火墙规则", DisplayCommand: "由检测到的防火墙后端执行受控规则动作"}}
 			document.Impact = previewservice.Impact{ModifyDatabase: true, NetworkRisk: true}
 			document.Rollback = previewservice.Rollback{Supported: true, Summary: "失败时恢复已应用的规则操作和持久化状态"}

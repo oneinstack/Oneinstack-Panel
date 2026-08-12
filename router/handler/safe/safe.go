@@ -389,7 +389,13 @@ func InstallFirewall(c *gin.Context) {
 func handleServiceError(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, safeservice.ErrValidation):
-		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "防火墙参数无效"))
+		message := safeservice.ValidationMessage(err)
+		if message == "" {
+			message = "防火墙参数无效"
+		}
+		core.HandleError(c, core.NewError(core.ErrBadRequest, message))
+	case errors.Is(err, safeservice.ErrAutoBlockDisabled):
+		core.HandleErrorWithStatus(c, http.StatusConflict, core.NewError(core.ErrResourceStateInvalid, "自动封禁未启用，不能立即检测"))
 	case errors.Is(err, safeservice.ErrProtected):
 		core.HandleError(c, core.WrapError(err, core.ErrForbidden, "系统保护规则不可修改"))
 	case errors.Is(err, safeservice.ErrUnsupported):
