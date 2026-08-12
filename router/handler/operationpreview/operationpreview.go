@@ -14,6 +14,7 @@ import (
 	"oneinstack/internal/models"
 	accessservice "oneinstack/internal/services/access"
 	auditservice "oneinstack/internal/services/audit"
+	configsnapshot "oneinstack/internal/services/configsnapshot"
 	fail2banservice "oneinstack/internal/services/fail2ban"
 	previewservice "oneinstack/internal/services/operationpreview"
 	safeservice "oneinstack/internal/services/safe"
@@ -160,10 +161,56 @@ func buildDocument(operation string, payload json.RawMessage) (previewservice.Do
 		Rollback:  previewservice.Rollback{Supported: true, Summary: "执行失败时由对应业务事务或任务流程尝试恢复"},
 	}
 	switch operation {
-	case "website.create", "website.update":
+	case "website.create":
 		document.Files = []previewservice.FileChange{{Path: "受管 Nginx 虚拟主机目录/<name>.conf", Action: "create_or_update", ChangeSummary: "写入网站虚拟主机配置"}}
 		document.Actions = []previewservice.Action{{Type: "command", Name: "校验 Nginx 配置", DisplayCommand: "nginx -t"}, {Type: "service", Name: "重新加载 Nginx", DisplayCommand: "nginx -s reload", Service: "nginx"}}
 		document.Impact = previewservice.Impact{WriteFiles: true, ModifyDatabase: true, ReloadService: true}
+	case "website.update":
+		var discriminator struct {
+			Action string `json:"action"`
+		}
+		if err := json.Unmarshal(payload, &discriminator); err != nil {
+			return previewservice.Document{}, "", err
+		}
+		switch strings.ToLower(strings.TrimSpace(discriminator.Action)) {
+		case "web_server_config":
+			var request website.WebServerConfigUpdate
+			if err := json.Unmarshal(payload, &request); err != nil {
+				return previewservice.Document{}, "", err
+			}
+			manager, err := website.NewDefaultWebServerConfigManager()
+			if err != nil {
+				return previewservice.Document{}, "", err
+			}
+			current, err := manager.Read(request.Path)
+			if err != nil {
+				return previewservice.Document{}, "", err
+			}
+			if !strings.EqualFold(current.Revision, strings.TrimSpace(request.Revision)) {
+				return previewservice.Document{}, "", fmt.Errorf(
+					"%w: configuration changed after it was opened; reload it before saving",
+					website.ErrWebServerConfigConflict,
+				)
+			}
+			document.Files = []previewservice.FileChange{{Path: current.Path, Action: "update", ChangeSummary: "更新 Web 服务器受管配置"}}
+			document.Actions = []previewservice.Action{{Type: "command", Name: "校验 Nginx 配置", DisplayCommand: "nginx -t"}, {Type: "service", Name: "重新加载 Nginx", DisplayCommand: "nginx -s reload", Service: "nginx"}}
+			document.Impact = previewservice.Impact{WriteFiles: true, ModifyDatabase: true, ReloadService: true}
+			document.Rollback = previewservice.Rollback{Supported: true, Summary: "执行前创建配置快照，校验或重载失败时恢复原配置"}
+			return document, current.Revision, nil
+		case "":
+			var value models.Website
+			if err := json.Unmarshal(payload, &value); err != nil {
+				return previewservice.Document{}, "", err
+			}
+			if value.ID <= 0 {
+				return previewservice.Document{}, "", errors.New("website ID is required")
+			}
+			document.Files = []previewservice.FileChange{{Path: "受管 Nginx 虚拟主机目录/<name>.conf", Action: "create_or_update", ChangeSummary: "写入网站虚拟主机配置"}}
+			document.Actions = []previewservice.Action{{Type: "command", Name: "校验 Nginx 配置", DisplayCommand: "nginx -t"}, {Type: "service", Name: "重新加载 Nginx", DisplayCommand: "nginx -s reload", Service: "nginx"}}
+			document.Impact = previewservice.Impact{WriteFiles: true, ModifyDatabase: true, ReloadService: true}
+		default:
+			return previewservice.Document{}, "", errors.New("不支持的网站更新操作")
+		}
 	case "website.toggle":
 		document.Files = []previewservice.FileChange{{Path: "受管 Nginx 虚拟主机目录/<name>.conf", Action: "enable_or_remove", ChangeSummary: "启用或停用网站虚拟主机配置"}}
 		document.Actions = []previewservice.Action{{Type: "service", Name: "重新加载 Nginx", DisplayCommand: "nginx -s reload", Service: "nginx"}}
@@ -249,6 +296,22 @@ func executeOperation(ctx context.Context, operation string, payload json.RawMes
 		}
 		return gin.H{"operation": operation, "resourceId": value.ID, "status": "succeeded"}, nil
 	case "website.update":
+		var discriminator struct {
+			Action string `json:"action"`
+		}
+		if err := json.Unmarshal(payload, &discriminator); err != nil {
+			return nil, err
+		}
+		if strings.EqualFold(strings.TrimSpace(discriminator.Action), "web_server_config") {
+			var request website.WebServerConfigUpdate
+			if err := json.Unmarshal(payload, &request); err != nil {
+				return nil, err
+			}
+			return executeWebServerConfigUpdate(ctx, operation, request, userID, requestIP)
+		}
+		if strings.TrimSpace(discriminator.Action) != "" {
+			return nil, errors.New("不支持的网站更新操作")
+		}
 		var value models.Website
 		if err := json.Unmarshal(payload, &value); err != nil {
 			return nil, err
@@ -517,6 +580,83 @@ func executeOperation(ctx context.Context, operation string, payload json.RawMes
 	default:
 		return nil, fmt.Errorf("unsupported operation %s", operation)
 	}
+}
+
+func executeWebServerConfigUpdate(
+	ctx context.Context,
+	operation string,
+	request website.WebServerConfigUpdate,
+	userID int64,
+	requestIP string,
+) (gin.H, error) {
+	manager, err := website.NewDefaultWebServerConfigManager()
+	if err != nil {
+		return nil, err
+	}
+	before, err := manager.Read(request.Path)
+	if err != nil {
+		return nil, err
+	}
+	snapshotService := configsnapshot.Default()
+	snapshot, err := snapshotService.Create(configsnapshot.CreateInput{
+		ResourceType: "nginx",
+		ResourceID:   request.Path,
+		Operation:    "update",
+		Before:       before,
+		After:        request,
+		RequestedBy:  userID,
+		Artifact:     []byte(before.Content),
+		ArtifactName: "nginx-before.conf",
+	})
+	if err != nil {
+		return nil, err
+	}
+	result, err := manager.Update(ctx, request)
+	if err != nil {
+		_ = snapshotService.Mark(snapshot.ID, "failed", err.Error())
+		recordWebServerConfigAudit(snapshot.ID, request.Path, "failed", err.Error(), userID, requestIP)
+		return nil, err
+	}
+	_ = snapshotService.MarkWithAfter(snapshot.ID, result, "succeeded", "")
+	recordWebServerConfigAudit(snapshot.ID, request.Path, "succeeded", "Nginx 受管配置已发布", userID, requestIP)
+	return gin.H{
+		"operation":  operation,
+		"status":     "succeeded",
+		"snapshotId": snapshot.ID,
+		"config":     result,
+	}, nil
+}
+
+func recordWebServerConfigAudit(snapshotID, path, status, message string, userID int64, requestIP string) {
+	manager := auditservice.Default()
+	if manager == nil {
+		return
+	}
+	outcome := "success"
+	httpStatus := http.StatusAccepted
+	if status == "failed" {
+		outcome = "failure"
+		httpStatus = http.StatusInternalServerError
+	}
+	_, _ = manager.Append(auditservice.EventInput{
+		EventType: "configuration",
+		Action:    "config.snapshot.update",
+		Method:    http.MethodPost,
+		Route:     "/v1/operations/:previewId/execute",
+		Path:      "/v1/operations/execute",
+		Status:    httpStatus,
+		Outcome:   outcome,
+		Sensitive: true,
+		UserID:    userID,
+		RemoteIP:  requestIP,
+		Message: fmt.Sprintf(
+			"snapshot=%s resource=nginx/%s status=%s %s",
+			snapshotID,
+			path,
+			status,
+			strings.TrimSpace(message),
+		),
+	})
 }
 
 func hasFirewallRuleFields(fields map[string]json.RawMessage) bool {
