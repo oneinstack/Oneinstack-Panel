@@ -5,6 +5,7 @@ import (
 	"oneinstack/app"
 	"oneinstack/internal/models"
 	"oneinstack/internal/services"
+	"oneinstack/internal/services/scriptregistry"
 	"oneinstack/router/input"
 	"oneinstack/router/output"
 	"oneinstack/utils"
@@ -165,6 +166,8 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 				"MAX(resource) as resource," +
 				"MAX(is_update) as is_update," +
 				"MAX(CASE WHEN installed = 1 THEN install_version ELSE '' END) as install_version," +
+				"MAX(CASE WHEN installed = 1 THEN installed_package_version ELSE '' END) as installed_package_version," +
+				"MAX(CASE WHEN catalog_visible = 1 AND recommended = 1 THEN latest_package_version ELSE '' END) as latest_package_version," +
 				"MAX(CASE WHEN installed = 1 THEN 1 ELSE 0 END) as installed," +
 				"MAX(CASE WHEN catalog_visible = 1 AND installable = 1 THEN 1 ELSE 0 END) as installable," +
 				"MAX(CASE WHEN catalog_visible = 1 AND recommended = 1 THEN version ELSE '' END) as recommended_version," +
@@ -253,24 +256,27 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 	var groupedResults []output.Software
 	for i, item := range paginated.Data {
 		groupedResults = append(groupedResults, output.Software{
-			Id:                 item.Id,
-			Describe:           item.Describe,
-			Installed:          item.Installed,
-			Name:               item.Name,
-			Key:                item.Key,
-			Component:          item.Component,
-			Icon:               item.Icon,
-			Type:               item.Type,
-			Status:             item.Status,
-			Resource:           item.Resource,
-			InstallVersion:     item.InstallVersion,
-			RecommendedVersion: item.RecommendedVersion,
-			Installable:        item.Installable,
-			CatalogManaged:     item.CatalogManaged,
-			IsUpdate:           item.IsUpdate,
-			Log:                item.Log,
-			Tags:               item.Tags,
-			Versions:           strings.Split(item.Versions, ","),
+			Id:                      item.Id,
+			Describe:                item.Describe,
+			Installed:               item.Installed,
+			Name:                    item.Name,
+			Key:                     item.Key,
+			Component:               item.Component,
+			Icon:                    item.Icon,
+			Type:                    item.Type,
+			Status:                  item.Status,
+			Resource:                item.Resource,
+			InstallVersion:          item.InstallVersion,
+			InstalledPackageVersion: item.InstalledPackageVersion,
+			LatestPackageVersion:    item.LatestPackageVersion,
+			UpdateReason:            softwareUpdateReason(item),
+			RecommendedVersion:      item.RecommendedVersion,
+			Installable:             item.Installable,
+			CatalogManaged:          item.CatalogManaged,
+			IsUpdate:                item.IsUpdate,
+			Log:                     item.Log,
+			Tags:                    item.Tags,
+			Versions:                strings.Split(item.Versions, ","),
 		})
 		var params []*output.SoftParam
 		_ = json.Unmarshal([]byte(item.Params), &params)
@@ -291,6 +297,29 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 	}, nil
 }
 
+func softwareUpdateReason(item models.Softwares) string {
+	if !item.IsUpdate {
+		return ""
+	}
+	softwareChanged := strings.TrimSpace(item.InstallVersion) != "" &&
+		strings.TrimSpace(item.RecommendedVersion) != "" &&
+		strings.TrimSpace(item.InstallVersion) != strings.TrimSpace(item.RecommendedVersion)
+	packageChanged := strings.TrimSpace(item.InstalledPackageVersion) != "" &&
+		strings.TrimSpace(item.LatestPackageVersion) != "" &&
+		scriptregistry.ComparePackageVersions(
+			item.LatestPackageVersion,
+			item.InstalledPackageVersion,
+		) > 0
+	switch {
+	case softwareChanged && packageChanged:
+		return "both"
+	case packageChanged:
+		return "component_package"
+	default:
+		return "software_version"
+	}
+}
+
 // remove software
 func Remove(param *input.RemoveParams) (bool, error) {
 	_, softwareKey, err := componentForRemove(param.Name)
@@ -306,11 +335,12 @@ func Remove(param *input.RemoveParams) (bool, error) {
 		return false, err
 	}
 	tx := app.DB().Model(&models.Software{}).Where("`key` = ? AND installed = ?", softwareKey, true).Updates(map[string]interface{}{
-		"status":          models.Soft_Status_Default,
-		"log":             logFile,
-		"installed":       false,
-		"install_version": "",
-		"is_update":       false,
+		"status":                    models.Soft_Status_Default,
+		"log":                       logFile,
+		"installed":                 false,
+		"install_version":           "",
+		"installed_package_version": "",
+		"is_update":                 false,
 	})
 	if tx.Error != nil {
 		return false, tx.Error

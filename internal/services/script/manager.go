@@ -303,11 +303,11 @@ func (sm *ScriptManager) ExecuteScriptTask(
 	if strings.EqualFold(scriptInfo.ActionName, "uninstall") ||
 		scriptInfo.Type == ScriptTypeUninstall {
 		sm.updateSoftwareStatus(params, models.Soft_Status_Default, logName)
-		sm.updateSoftwareInstallInfo(params, false, "")
+		sm.updateSoftwareInstallInfo(params, false, "", "")
 		return logName, nil
 	}
 	sm.updateSoftwareStatus(params, models.Soft_Status_Suc, logName)
-	sm.updateSoftwareInstallInfo(params, true, params.Version)
+	sm.updateSoftwareInstallInfo(params, true, params.Version, scriptInfo.PackageVersion)
 	return logName, nil
 }
 
@@ -406,7 +406,7 @@ func (sm *ScriptManager) executeScriptAsync(scriptInfo *ScriptInfo, scriptPath s
 
 	// 更新最终状态
 	sm.updateSoftwareStatus(params, status, filepath.Base(logPath))
-	sm.updateSoftwareInstallInfo(params, installed, installVersion)
+	sm.updateSoftwareInstallInfo(params, installed, installVersion, scriptInfo.PackageVersion)
 }
 
 func (sm *ScriptManager) runInstallActions(scriptInfo *ScriptInfo, installPath string, output *os.File) error {
@@ -836,24 +836,35 @@ func (sm *ScriptManager) updateSoftwareStatus(params *input.InstallParams, statu
 }
 
 // updateSoftwareInstallInfo 更新软件安装信息
-func (sm *ScriptManager) updateSoftwareInstallInfo(params *input.InstallParams, installed bool, version string) {
+func (sm *ScriptManager) updateSoftwareInstallInfo(
+	params *input.InstallParams,
+	installed bool,
+	version string,
+	packageVersions ...string,
+) {
+	packageVersion := ""
+	if len(packageVersions) > 0 {
+		packageVersion = strings.TrimSpace(packageVersions[0])
+	}
 	if installed {
 		if err := app.DB().Transaction(func(tx *gorm.DB) error {
 			if err := tx.Model(&models.Software{}).
 				Where("`key` = ? AND version <> ?", params.Key, params.Version).
 				Updates(map[string]interface{}{
-					"installed":       false,
-					"install_version": "",
-					"is_update":       false,
+					"installed":                 false,
+					"install_version":           "",
+					"installed_package_version": "",
+					"is_update":                 false,
 				}).Error; err != nil {
 				return err
 			}
 			return tx.Model(&models.Software{}).
 				Where("`key` = ? AND version = ?", params.Key, params.Version).
 				Updates(map[string]interface{}{
-					"installed":       true,
-					"install_version": version,
-					"is_update":       false,
+					"installed":                 true,
+					"install_version":           version,
+					"installed_package_version": packageVersion,
+					"is_update":                 false,
 				}).Error
 		}); err != nil {
 			fmt.Printf("Update software install state failed: %v\n", err)
@@ -863,10 +874,11 @@ func (sm *ScriptManager) updateSoftwareInstallInfo(params *input.InstallParams, 
 	if err := app.DB().Model(&models.Software{}).
 		Where("`key` = ? AND installed = ?", params.Key, true).
 		Updates(map[string]interface{}{
-			"installed":       false,
-			"install_version": "",
-			"is_update":       false,
-			"status":          models.Soft_Status_Default,
+			"installed":                 false,
+			"install_version":           "",
+			"installed_package_version": "",
+			"is_update":                 false,
+			"status":                    models.Soft_Status_Default,
 		}).Error; err != nil {
 		fmt.Printf("Update software install state failed: %v\n", err)
 	}

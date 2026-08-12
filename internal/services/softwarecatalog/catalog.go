@@ -19,6 +19,7 @@ import (
 
 	"oneinstack/config"
 	"oneinstack/internal/models"
+	"oneinstack/internal/services/scriptregistry"
 
 	"gorm.io/gorm"
 )
@@ -162,6 +163,9 @@ func (m *Manager) Sync(ctx context.Context) (Status, error) {
 				return m.failSync(fmt.Errorf("check local software catalog: %w", checkErr))
 			}
 			if complete {
+				if refreshErr := m.refreshPackageVersions(ctx); refreshErr != nil {
+					return m.failSync(fmt.Errorf("refresh component package versions: %w", refreshErr))
+				}
 				now := m.now().UTC()
 				state.ID = 1
 				state.Mode = "center"
@@ -195,7 +199,8 @@ func (m *Manager) Sync(ctx context.Context) (Status, error) {
 		if err := m.verify(document); err != nil {
 			return m.failSync(fmt.Errorf("verify Center software catalog: %w", err))
 		}
-		if err := m.apply(document); err != nil {
+		packageVersions := m.resolvePackageVersions(ctx, document)
+		if err := m.apply(document, packageVersions); err != nil {
 			return m.failSync(fmt.Errorf("apply Center software catalog: %w", err))
 		}
 		return m.Status()
@@ -255,19 +260,23 @@ func (m *Manager) Status() (Status, error) {
 	return status, nil
 }
 
-func (m *Manager) apply(document Document) error {
+func (m *Manager) apply(document Document, packageVersions map[string]string) error {
 	now := m.now().UTC()
 	productCount := 0
 	versionCount := 0
 	err := m.db.Transaction(func(tx *gorm.DB) error {
+		if err := backfillInstalledPackageVersions(tx); err != nil {
+			return err
+		}
 		if err := tx.Session(&gorm.Session{AllowGlobalUpdate: true}).
 			Model(&models.Software{}).
 			Updates(map[string]any{
-				"catalog_managed": true,
-				"catalog_visible": false,
-				"installable":     false,
-				"recommended":     false,
-				"is_update":       false,
+				"catalog_managed":        true,
+				"catalog_visible":        false,
+				"installable":            false,
+				"recommended":            false,
+				"is_update":              false,
+				"latest_package_version": "",
 			}).Error; err != nil {
 			return err
 		}
@@ -300,22 +309,23 @@ func (m *Manager) apply(document Document) error {
 					return result.Error
 				}
 				values := map[string]any{
-					"name":             product.Name,
-					"component":        product.Component,
-					"describe":         product.Description,
-					"type":             product.Type,
-					"tags":             strings.Join(product.Tags, ","),
-					"params":           string(parameters),
-					"resource":         "center",
-					"catalog_managed":  true,
-					"catalog_channel":  version.Channel,
-					"catalog_visible":  product.Visible && version.Enabled,
-					"installable":      product.Installable && version.Enabled,
-					"recommended":      version.Recommended,
-					"catalog_order":    product.Order,
-					"version_order":    version.Order,
-					"catalog_revision": document.Revision,
-					"release_notes":    version.ReleaseNotes,
+					"name":                   product.Name,
+					"component":              product.Component,
+					"describe":               product.Description,
+					"type":                   product.Type,
+					"tags":                   strings.Join(product.Tags, ","),
+					"params":                 string(parameters),
+					"resource":               "center",
+					"catalog_managed":        true,
+					"catalog_channel":        version.Channel,
+					"catalog_visible":        product.Visible && version.Enabled,
+					"installable":            product.Installable && version.Enabled,
+					"recommended":            version.Recommended,
+					"catalog_order":          product.Order,
+					"version_order":          version.Order,
+					"catalog_revision":       document.Revision,
+					"release_notes":          version.ReleaseNotes,
+					"latest_package_version": packageVersions[packageVersionKey(product.Component, version.Version, version.Channel)],
 				}
 				if product.Icon != "" {
 					values["icon"] = product.Icon
@@ -346,7 +356,12 @@ func (m *Manager) apply(document Document) error {
 					if installedVersion == "" {
 						installedVersion = installed.Version
 					}
-					if installedVersion != recommendedVersion {
+					latestPackageVersion := packageVersions[packageVersionKey(product.Component, recommendedVersion, m.config.Channel)]
+					installedPackageVersion := strings.TrimSpace(installed.InstalledPackageVersion)
+					softwareUpdate := installedVersion != recommendedVersion
+					packageUpdate := installedPackageVersion != "" && latestPackageVersion != "" &&
+						scriptregistry.ComparePackageVersions(latestPackageVersion, installedPackageVersion) > 0
+					if softwareUpdate || packageUpdate {
 						if err := tx.Model(&models.Software{}).
 							Where("`key` = ?", product.Key).
 							Update("is_update", true).Error; err != nil {
@@ -374,6 +389,185 @@ func (m *Manager) apply(document Document) error {
 		return tx.Save(&state).Error
 	})
 	return err
+}
+
+func backfillInstalledPackageVersions(tx *gorm.DB) error {
+	if !tx.Migrator().HasTable(&models.SoftwareTask{}) {
+		return nil
+	}
+	var installedRows []models.Software
+	if err := tx.Where(
+		"installed = ? AND COALESCE(installed_package_version, '') = ''",
+		true,
+	).Find(&installedRows).Error; err != nil {
+		return err
+	}
+	for _, installed := range installedRows {
+		var task models.SoftwareTask
+		err := tx.Where(
+			"software_key = ? AND status = ? AND operation IN ? AND COALESCE(resolved_version, '') <> ''",
+			installed.Key,
+			models.SoftwareTaskStatusSucceeded,
+			[]string{"install", "upgrade"},
+		).Order("finished_at DESC, created_at DESC").First(&task).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if err := tx.Model(&models.Software{}).
+			Where("id = ?", installed.Id).
+			Update("installed_package_version", strings.TrimSpace(task.ResolvedVersion)).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (m *Manager) resolvePackageVersions(ctx context.Context, document Document) map[string]string {
+	resolved := make(map[string]string)
+	var installedRows []models.Software
+	if err := m.db.Where("installed = ?", true).Find(&installedRows).Error; err != nil {
+		return resolved
+	}
+	installedKeys := make(map[string]struct{}, len(installedRows))
+	for _, installed := range installedRows {
+		installedKeys[installed.Key] = struct{}{}
+	}
+	registry, err := scriptregistry.New(m.config)
+	if err != nil {
+		return resolved
+	}
+	for _, product := range document.Products {
+		if _, installed := installedKeys[product.Key]; !installed {
+			continue
+		}
+		for _, version := range product.Versions {
+			if version.Channel != m.config.Channel || !version.Enabled ||
+				!version.Recommended || !product.Installable {
+				continue
+			}
+			key := packageVersionKey(product.Component, version.Version, version.Channel)
+			if _, exists := resolved[key]; exists {
+				continue
+			}
+			packageVersion, resolveErr := registry.ResolvePackageVersionChannel(
+				ctx,
+				product.Component,
+				version.Version,
+				version.Channel,
+			)
+			if resolveErr == nil {
+				resolved[key] = packageVersion
+			}
+		}
+	}
+	return resolved
+}
+
+func packageVersionKey(component, softwareVersion, channel string) string {
+	return component + "\x00" + softwareVersion + "\x00" + channel
+}
+
+func (m *Manager) refreshPackageVersions(ctx context.Context) error {
+	var installedRows []models.Software
+	if err := m.db.Where(
+		"installed = ?",
+		true,
+	).Find(&installedRows).Error; err != nil {
+		return err
+	}
+	rows := make([]models.Software, 0, len(installedRows))
+	for _, installed := range installedRows {
+		var recommended models.Software
+		err := m.db.Where(
+			"`key` = ? AND catalog_managed = ? AND installable = ? AND recommended = ?",
+			installed.Key,
+			true,
+			true,
+			true,
+		).First(&recommended).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		rows = append(rows, recommended)
+	}
+	registry, err := scriptregistry.New(m.config)
+	if err != nil {
+		return err
+	}
+	resolved := make(map[int]string, len(rows))
+	for _, row := range rows {
+		resolved[row.Id] = ""
+		packageVersion, resolveErr := registry.ResolvePackageVersionChannel(
+			ctx,
+			row.Component,
+			row.Version,
+			row.CatalogChannel,
+		)
+		if resolveErr == nil {
+			resolved[row.Id] = packageVersion
+		}
+	}
+	return m.db.Transaction(func(tx *gorm.DB) error {
+		if err := backfillInstalledPackageVersions(tx); err != nil {
+			return err
+		}
+		for rowID, packageVersion := range resolved {
+			if err := tx.Model(&models.Software{}).
+				Where("id = ?", rowID).
+				Update("latest_package_version", packageVersion).Error; err != nil {
+				return err
+			}
+		}
+		if err := tx.Model(&models.Software{}).
+			Where("catalog_managed = ?", true).
+			Update("is_update", false).Error; err != nil {
+			return err
+		}
+		installedRows = nil
+		if err := tx.Where("installed = ?", true).Find(&installedRows).Error; err != nil {
+			return err
+		}
+		for _, installed := range installedRows {
+			var recommended models.Software
+			err := tx.Where(
+				"`key` = ? AND catalog_managed = ? AND installable = ? AND recommended = ?",
+				installed.Key,
+				true,
+				true,
+				true,
+			).First(&recommended).Error
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			installedVersion := strings.TrimSpace(installed.InstallVersion)
+			if installedVersion == "" {
+				installedVersion = strings.TrimSpace(installed.Version)
+			}
+			packageUpdate := installed.InstalledPackageVersion != "" &&
+				recommended.LatestPackageVersion != "" &&
+				scriptregistry.ComparePackageVersions(
+					recommended.LatestPackageVersion,
+					installed.InstalledPackageVersion,
+				) > 0
+			if installedVersion != recommended.Version || packageUpdate {
+				if err := tx.Model(&models.Software{}).
+					Where("`key` = ?", installed.Key).
+					Update("is_update", true).Error; err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
 }
 
 func (m *Manager) verify(document Document) error {

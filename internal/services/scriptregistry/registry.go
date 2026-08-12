@@ -97,6 +97,36 @@ func (r *Registry) ResolveChannel(
 	}
 }
 
+// ResolvePackageVersionChannel returns the newest signed package version that
+// Center resolves for this Panel host without downloading or extracting the
+// package. Catalog synchronization uses it to detect component-package
+// upgrades independently from the software version.
+func (r *Registry) ResolvePackageVersionChannel(
+	ctx context.Context,
+	component string,
+	softwareVersion string,
+	channel string,
+) (string, error) {
+	if !r.config.Enabled {
+		return "", errors.New("script center is disabled")
+	}
+	channel = strings.ToLower(strings.TrimSpace(channel))
+	selected := *r
+	if channel != "" {
+		switch channel {
+		case "stable", "beta", "development":
+			selected.config.Channel = channel
+		default:
+			return "", fmt.Errorf("invalid package channel %q", channel)
+		}
+	}
+	metadata, err := selected.resolveRemoteMetadata(ctx, component, softwareVersion)
+	if err != nil {
+		return "", err
+	}
+	return metadata.Manifest.Component.Version, nil
+}
+
 // ResolveInstalled resolves a package for an already installed software
 // version. New installations remain pinned to the configured channel through
 // Resolve, while lifecycle and configuration operations may reuse a verified
@@ -314,8 +344,16 @@ func packageSupportsActions(manifest Manifest, requiredActions []string) bool {
 }
 
 func (r *Registry) resolveRemote(ctx context.Context, component, softwareVersion string) (Package, error) {
-	if err := r.checkReady(ctx); err != nil {
+	metadata, err := r.resolveRemoteMetadata(ctx, component, softwareVersion)
+	if err != nil {
 		return Package{}, err
+	}
+	return r.downloadAndPrepare(ctx, metadata)
+}
+
+func (r *Registry) resolveRemoteMetadata(ctx context.Context, component, softwareVersion string) (Metadata, error) {
+	if err := r.checkReady(ctx); err != nil {
+		return Metadata{}, err
 	}
 	requestBody, err := json.Marshal(ResolveRequest{
 		Component:       component,
@@ -324,37 +362,37 @@ func (r *Registry) resolveRemote(ctx context.Context, component, softwareVersion
 		Host:            r.host,
 	})
 	if err != nil {
-		return Package{}, fmt.Errorf("encode resolve request: %w", err)
+		return Metadata{}, fmt.Errorf("encode resolve request: %w", err)
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, r.endpoint("/v1/packages/resolve"), bytes.NewReader(requestBody))
 	if err != nil {
-		return Package{}, fmt.Errorf("create resolve request: %w", err)
+		return Metadata{}, fmt.Errorf("create resolve request: %w", err)
 	}
 	request.Header.Set("Content-Type", "application/json")
 	response, err := r.client.Do(request)
 	if err != nil {
-		return Package{}, fmt.Errorf("resolve package: %w", err)
+		return Metadata{}, fmt.Errorf("resolve package: %w", err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return Package{}, decodeAPIError(response)
+		return Metadata{}, decodeAPIError(response)
 	}
 	var metadata Metadata
 	if err := decodeLimitedJSON(response.Body, &metadata); err != nil {
-		return Package{}, fmt.Errorf("decode package metadata: %w", err)
+		return Metadata{}, fmt.Errorf("decode package metadata: %w", err)
 	}
 	if metadata.Manifest.Component.ID != component ||
 		!metadata.Manifest.supportsSoftwareVersion(softwareVersion) ||
 		metadata.Manifest.Component.Channel != r.config.Channel {
-		return Package{}, fmt.Errorf("script center returned a package that does not match the request")
+		return Metadata{}, fmt.Errorf("script center returned a package that does not match the request")
 	}
 	if err := metadata.Manifest.validate(); err != nil {
-		return Package{}, err
+		return Metadata{}, err
 	}
 	if err := r.verifyMetadata(metadata); err != nil {
-		return Package{}, err
+		return Metadata{}, err
 	}
-	return r.downloadAndPrepare(ctx, metadata)
+	return metadata, nil
 }
 
 func (r *Registry) checkReady(ctx context.Context) error {
@@ -600,4 +638,10 @@ func compareVersions(left, right string) int {
 		}
 	}
 	return strings.Compare(left, right)
+}
+
+// ComparePackageVersions compares component package versions using the same
+// ordering as package resolution.
+func ComparePackageVersions(left, right string) int {
+	return compareVersions(left, right)
 }
