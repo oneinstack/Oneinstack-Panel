@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"oneinstack/app"
 	"oneinstack/internal/models"
@@ -34,6 +35,8 @@ var (
 	ErrRevisionConflict = errors.New("fail2ban policy revision conflict")
 	ErrProtectedAddress = errors.New("protected address cannot be banned")
 	ErrUnavailable      = errors.New("fail2ban service is unavailable")
+	ErrConfigValidation = errors.New("Fail2ban 配置校验失败")
+	ErrReload           = errors.New("Fail2ban 重载失败")
 )
 
 type Template struct {
@@ -132,6 +135,10 @@ func templateByKey(key string) (Template, bool) {
 }
 
 func (s *Service) NormalizePolicyChange(request PolicyChangeRequest, userID int64) (PolicyChangeRequest, *models.Fail2banPolicy, error) {
+	return s.normalizePolicyChange(request, userID, false)
+}
+
+func (s *Service) normalizePolicyChange(request PolicyChangeRequest, userID int64, preserveCreateID bool) (PolicyChangeRequest, *models.Fail2banPolicy, error) {
 	if s == nil || s.db == nil {
 		return request, nil, ErrUnavailable
 	}
@@ -160,7 +167,15 @@ func (s *Service) NormalizePolicyChange(request PolicyChangeRequest, userID int6
 
 	input := request.Policy
 	if request.Action == "create" {
-		input.ID = uuid.NewString()
+		if preserveCreateID {
+			parsed, err := uuid.Parse(strings.TrimSpace(input.ID))
+			if err != nil || parsed == uuid.Nil {
+				return request, nil, validation("规则 ID 无效")
+			}
+			input.ID = parsed.String()
+		} else {
+			input.ID = uuid.NewString()
+		}
 	} else {
 		input.ID = existing.ID
 	}
@@ -226,7 +241,8 @@ func (s *Service) NormalizePolicyChange(request PolicyChangeRequest, userID int6
 }
 
 func (s *Service) ApplyPolicyChange(ctx context.Context, request PolicyChangeRequest, userID int64) (*models.Fail2banPolicy, error) {
-	request, policy, err := s.NormalizePolicyChange(request, userID)
+	preserveCreateID := strings.EqualFold(strings.TrimSpace(request.Action), "create") && strings.TrimSpace(request.Policy.ID) != ""
+	request, policy, err := s.normalizePolicyChange(request, userID, preserveCreateID)
 	if err != nil {
 		return nil, err
 	}
@@ -312,10 +328,10 @@ func (s *Service) renderPolicy(policy *models.Fail2banPolicy) ([]byte, error) {
 
 func (s *Service) validateAndReload(ctx context.Context) error {
 	if _, err := run(ctx, "-t"); err != nil {
-		return fmt.Errorf("Fail2ban 配置校验失败: %w", err)
+		return fmt.Errorf("%w: %v", ErrConfigValidation, err)
 	}
 	if _, err := run(ctx, "reload"); err != nil {
-		return fmt.Errorf("Fail2ban 重载失败: %w", err)
+		return fmt.Errorf("%w: %v", ErrReload, err)
 	}
 	return nil
 }
@@ -482,9 +498,29 @@ func run(ctx context.Context, args ...string) (string, error) {
 	output, err := command.CombinedOutput()
 	text := strings.TrimSpace(string(output))
 	if err != nil {
-		return text, fmt.Errorf("fail2ban-client %s failed", strings.Join(args, " "))
+		message := fmt.Sprintf("fail2ban-client %s failed", strings.Join(args, " "))
+		if detail := sanitizeCommandOutput(text); detail != "" {
+			message += ": " + detail
+		}
+		return text, errors.New(message)
 	}
 	return text, nil
+}
+
+func sanitizeCommandOutput(value string) string {
+	value = strings.Map(func(char rune) rune {
+		if unicode.IsControl(char) {
+			return ' '
+		}
+		return char
+	}, value)
+	value = strings.Join(strings.Fields(value), " ")
+	const maxRunes = 320
+	runes := []rune(value)
+	if len(runes) > maxRunes {
+		return string(runes[:maxRunes]) + "..."
+	}
+	return value
 }
 
 func validation(message string) error { return fmt.Errorf("%w: %s", ErrValidation, message) }

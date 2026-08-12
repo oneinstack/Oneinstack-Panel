@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -229,14 +230,24 @@ func (m *Manager) execute(parent context.Context, id string) {
 
 func (m *Manager) fail(task *models.Fail2banTask, code string, cause error) {
 	finished := time.Now().UTC()
-	message := "安全任务执行失败"
-	if cause != nil {
-		message = cause.Error()
-	}
+	message := taskFailureMessage(cause)
 	_ = m.update(task, map[string]any{
 		"status": models.Fail2banTaskFailed, "phase": "failed", "message": "安全任务执行失败",
 		"error_code": code, "error_message": message, "finished_at": &finished,
 	}, "failed", "error", message)
+}
+
+func taskFailureMessage(cause error) string {
+	if cause == nil {
+		return "安全任务执行失败"
+	}
+	message := strings.TrimSpace(cause.Error())
+	const maxRunes = 500
+	runes := []rune(message)
+	if len(runes) > maxRunes {
+		return string(runes[:maxRunes]) + "..."
+	}
+	return message
 }
 
 func (m *Manager) update(task *models.Fail2banTask, values map[string]any, eventType, level, message string) error {
@@ -312,6 +323,10 @@ func taskErrorCode(err error) string {
 		return "PROTECTED_ADDRESS"
 	case errors.Is(err, ErrUnavailable):
 		return "SERVICE_UNAVAILABLE"
+	case errors.Is(err, ErrConfigValidation):
+		return "FAIL2BAN_CONFIG_INVALID"
+	case errors.Is(err, ErrReload):
+		return "FAIL2BAN_RELOAD_FAILED"
 	default:
 		return "APPLY_FAILED"
 	}

@@ -226,8 +226,18 @@ func (m *Manager) collectOne(server *models.BastionServer) {
 		return
 	}
 
+	if strings.TrimSpace(server.OSInfo) == "" {
+		probeCtx, probeCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		probeResult := Probe(probeCtx, server, password)
+		probeCancel()
+		if probeResult.Reachable {
+			if err := m.updateServerOSInfo(server, probeResult.OSInfo); err != nil {
+				log.Printf("bastion: persist system info for %s: %v", server.Name, err)
+			}
+		}
+	}
+
 	m.updateServerStatus(server, models.BastionStatusOnline, "")
-	server.OSInfo = "" // will be set via probe separately
 	_ = m.db.Model(server).Updates(map[string]interface{}{
 		"status":       models.BastionStatusOnline,
 		"status_error": "",
@@ -506,7 +516,25 @@ func (m *Manager) TestConnection(id uint, password string) (*ProbeResult, error)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	return Probe(ctx, &server, password), nil
+	result := Probe(ctx, &server, password)
+	if result.Reachable {
+		if err := m.updateServerOSInfo(&server, result.OSInfo); err != nil {
+			return nil, fmt.Errorf("保存服务器系统信息失败: %w", err)
+		}
+	}
+	return result, nil
+}
+
+func (m *Manager) updateServerOSInfo(server *models.BastionServer, osInfo string) error {
+	info := strings.TrimSpace(osInfo)
+	if info == "" || info == server.OSInfo {
+		return nil
+	}
+	if err := m.db.Model(server).Update("os_info", info).Error; err != nil {
+		return err
+	}
+	server.OSInfo = info
+	return nil
 }
 
 // GetMetrics 获取指定服务器的历史指标
