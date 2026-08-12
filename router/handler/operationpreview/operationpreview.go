@@ -268,6 +268,9 @@ func buildDocument(operation string, payload json.RawMessage) (previewservice.Do
 					website.ErrWebServerConfigConflict,
 				)
 			}
+			if err := manager.ValidateContent(context.Background(), request.Content); err != nil {
+				return previewservice.Document{}, "", fmt.Errorf("%w: %v", website.ErrWebServerConfigValidate, err)
+			}
 			document.Files = []previewservice.FileChange{{Path: current.Path, Action: "update", ChangeSummary: "更新 Web 服务器受管配置"}}
 			document.Actions = []previewservice.Action{{Type: "command", Name: "校验 Nginx 配置", DisplayCommand: "nginx -t"}, {Type: "service", Name: "重新加载 Nginx", DisplayCommand: "nginx -s reload", Service: "nginx"}}
 			document.Impact = previewservice.Impact{WriteFiles: true, ModifyDatabase: true, ReloadService: true}
@@ -794,6 +797,8 @@ func writeConsumeError(c *gin.Context, err error) {
 func writeExecutionError(c *gin.Context, err error) {
 	code, message := core.ErrConfigError, "执行已确认的操作预览失败"
 	switch {
+	case errors.Is(err, website.ErrWebServerConfigValidate):
+		code, message = core.ErrConfigValidateFailed, "Web Server 配置校验失败，原配置已恢复"
 	case errors.Is(err, fail2banservice.ErrValidation):
 		code, message = core.ErrValidationFailed, "入侵防护参数无效，请检查后重试"
 	case errors.Is(err, fail2banservice.ErrRevisionConflict):

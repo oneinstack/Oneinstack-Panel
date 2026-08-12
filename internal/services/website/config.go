@@ -29,6 +29,7 @@ const (
 var (
 	ErrWebServerUnavailable    = errors.New("supported web server unavailable")
 	ErrWebServerConfigConflict = errors.New("web server configuration revision conflict")
+	ErrWebServerConfigValidate = errors.New("web server configuration validation failed")
 	ErrNginxUnavailable        = ErrWebServerUnavailable
 	domainLabelPattern         = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
 	configNamePattern          = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,252}\.conf$`)

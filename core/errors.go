@@ -4,10 +4,13 @@ import (
 	"fmt"
 	"net/http"
 	"oneinstack/internal/i18n"
+	"regexp"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 )
+
+var webServerConfigLinePattern = regexp.MustCompile(`(?:^|\s)(?:[^\s:]+/)?candidate\.conf:(\d+)(?::\s*)?(.*)$`)
 
 // ErrorCode 错误码类型。
 // 0 is reserved for successful responses; non-zero values are stable API codes.
@@ -211,6 +214,9 @@ func safeErrorDetail(err *AppError) string {
 func classifyErrorDetail(detail string) string {
 	lower := strings.ToLower(detail)
 	switch {
+	case strings.Contains(lower, "web server configuration validation failed"),
+		strings.Contains(lower, "configuration validation failed"):
+		return formatWebServerConfigValidationDetail(detail)
 	case strings.Contains(lower, "record not found"),
 		strings.Contains(lower, "no longer available"):
 		return "目标资源不存在、已被删除或状态已变化，请刷新列表并确认资源标识后重试。"
@@ -263,6 +269,18 @@ func classifyErrorDetail(detail string) string {
 	default:
 		return ""
 	}
+}
+
+func formatWebServerConfigValidationDetail(detail string) string {
+	matches := webServerConfigLinePattern.FindStringSubmatch(detail)
+	if len(matches) == 3 {
+		diagnostic := strings.TrimSpace(matches[2])
+		if diagnostic == "" {
+			return fmt.Sprintf("Web Server 配置语法错误：第 %s 行。原配置已自动恢复，请修正后重新预览。", matches[1])
+		}
+		return fmt.Sprintf("Web Server 配置语法错误：第 %s 行；Nginx 诊断：%s。原配置已自动恢复，请修正后重新预览。", matches[1], diagnostic)
+	}
+	return "Web Server 配置语法校验失败，原配置已自动恢复；请检查 Nginx/OpenResty 指令格式后重新预览。"
 }
 
 func containsSensitiveErrorDetail(detail string) bool {

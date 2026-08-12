@@ -147,7 +147,7 @@ func UpdateWebsiteManagedConfig(c *gin.Context) {
 		c.Request.Context(), id, request.Content, request.Revision,
 	)
 	if err != nil {
-		core.HandleError(c, core.WrapError(err, core.ErrConfigError, "网站配置校验或发布失败"))
+		handleWebServerConfigError(c, err, "网站配置校验或发布失败")
 		return
 	}
 	core.HandleSuccess(c, result)

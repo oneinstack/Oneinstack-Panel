@@ -106,6 +106,12 @@ func handleWebServerConfigError(c *gin.Context, err error, message string) {
 			core.ErrConflict,
 			"配置文件已发生变化，请重新读取后再保存",
 		))
+	case errors.Is(err, websiteService.ErrWebServerConfigValidate):
+		core.HandleError(c, core.WrapError(
+			err,
+			core.ErrConfigValidateFailed,
+			"Web Server 配置语法校验失败，原配置已恢复",
+		))
 	default:
 		core.HandleError(c, core.WrapError(err, core.ErrConfigError, message))
 	}

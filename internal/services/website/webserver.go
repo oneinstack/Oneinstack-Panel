@@ -265,6 +265,46 @@ func (manager *WebServerConfigManager) Read(relativePath string) (WebServerConfi
 	return manager.readPath(relativePath, true)
 }
 
+// ValidateContent checks a proposed managed server configuration without
+// touching the live configuration tree or reloading the service.
+func (manager *WebServerConfigManager) ValidateContent(ctx context.Context, content string) error {
+	if err := manager.validate(); err != nil {
+		return err
+	}
+	if len(content) > maxWebServerConfigBytes {
+		return fmt.Errorf("configuration exceeds the %d byte limit", maxWebServerConfigBytes)
+	}
+	if strings.ContainsRune(content, 0) {
+		return errors.New("configuration contains a NUL byte")
+	}
+
+	directory, err := os.MkdirTemp(app.GetBasePath(), ".oneinstack-web-server-preview-")
+	if err != nil {
+		return fmt.Errorf("create temporary configuration directory: %w", err)
+	}
+	defer os.RemoveAll(directory)
+	configDir := filepath.Join(directory, "conf.d")
+	if err := os.MkdirAll(configDir, 0750); err != nil {
+		return fmt.Errorf("create temporary configuration directory: %w", err)
+	}
+	candidate := filepath.Join(configDir, "candidate.conf")
+	if err := os.WriteFile(candidate, []byte(content), 0640); err != nil {
+		return fmt.Errorf("write temporary configuration: %w", err)
+	}
+	mainConfig := filepath.Join(directory, "nginx.conf")
+	mainContent := "events {}\nhttp {\n"
+	if mimeTypes := filepath.Join(manager.Server.ConfigRoot, "mime.types"); isRegularFile(mimeTypes) {
+		mainContent += fmt.Sprintf("include %s;\n", mimeTypes)
+	}
+	mainContent += "include conf.d/candidate.conf;\n}\n"
+	if err := os.WriteFile(mainConfig, []byte(mainContent), 0640); err != nil {
+		return fmt.Errorf("write temporary main configuration: %w", err)
+	}
+	timeoutCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	return manager.run(timeoutCtx, "-t", "-p", ensureTrailingSeparator(directory), "-c", mainConfig)
+}
+
 func (manager *WebServerConfigManager) Update(
 	ctx context.Context,
 	request WebServerConfigUpdate,
@@ -323,17 +363,18 @@ func (manager *WebServerConfigManager) Update(
 	}
 
 	if err := manager.testConfiguration(ctx); err != nil {
+		validationErr := fmt.Errorf("%w: %v", ErrWebServerConfigValidate, err)
 		restoreErr := restoreWebServerConfig(target, original, fileInfo.Mode())
 		if restoreErr != nil {
 			return WebServerConfigUpdateResult{}, fmt.Errorf(
-				"configuration validation failed: %w; restore failed: %v",
-				err,
+				"%w; restore failed: %v",
+				validationErr,
 				restoreErr,
 			)
 		}
 		return WebServerConfigUpdateResult{}, fmt.Errorf(
-			"configuration validation failed; previous content restored: %w",
-			err,
+			"%w; previous content restored",
+			validationErr,
 		)
 	}
 
