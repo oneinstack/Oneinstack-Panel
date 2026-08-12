@@ -157,7 +157,7 @@ func Execute(c *gin.Context) {
 		return
 	}
 	previewService := previewservice.New(app.DB())
-	operation, err := previewService.Peek(c.Param("previewId"), userID)
+	operation, resourceVersion, err := previewService.Peek(c.Param("previewId"), userID)
 	if err != nil {
 		writeConsumeError(c, err)
 		return
@@ -166,7 +166,11 @@ func Execute(c *gin.Context) {
 		core.HandleError(c, err)
 		return
 	}
-	operation, payload, _, err := previewService.Consume(c.Param("previewId"), userID)
+	if err := validatePreviewTarget(operation, resourceVersion); err != nil {
+		writeConsumeError(c, err)
+		return
+	}
+	operation, payload, _, _, err := previewService.Consume(c.Param("previewId"), userID)
 	if err != nil {
 		writeConsumeError(c, err)
 		return
@@ -177,6 +181,29 @@ func Execute(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusAccepted, core.SuccessResponseForContext(c, result))
+}
+
+func validatePreviewTarget(operation, resourceVersion string) error {
+	if operation != "website.update" || !strings.HasPrefix(resourceVersion, "web-server|") {
+		return nil
+	}
+	parts := strings.Split(resourceVersion, "|")
+	if len(parts) < 2 || !strings.HasPrefix(parts[1], "path=") {
+		return previewservice.ErrRequestChanged
+	}
+	path := strings.TrimPrefix(parts[1], "path=")
+	manager, err := website.NewDefaultWebServerConfigManager()
+	if err != nil {
+		return previewservice.ErrRequestChanged
+	}
+	current, err := manager.Read(path)
+	if err != nil {
+		return previewservice.ErrRequestChanged
+	}
+	if webServerTargetVersion(path, current.Revision, manager.Server) != resourceVersion {
+		return previewservice.ErrRequestChanged
+	}
+	return nil
 }
 
 func supportedOperation(operation string) bool {
@@ -245,7 +272,7 @@ func buildDocument(operation string, payload json.RawMessage) (previewservice.Do
 			document.Actions = []previewservice.Action{{Type: "command", Name: "校验 Nginx 配置", DisplayCommand: "nginx -t"}, {Type: "service", Name: "重新加载 Nginx", DisplayCommand: "nginx -s reload", Service: "nginx"}}
 			document.Impact = previewservice.Impact{WriteFiles: true, ModifyDatabase: true, ReloadService: true}
 			document.Rollback = previewservice.Rollback{Supported: true, Summary: "执行前创建配置快照，校验或重载失败时恢复原配置"}
-			return document, current.Revision, nil
+			return document, webServerTargetVersion(request.Path, current.Revision, manager.Server), nil
 		case "":
 			var value models.Website
 			if err := json.Unmarshal(payload, &value); err != nil {
@@ -696,6 +723,18 @@ func executeWebServerConfigUpdate(
 		"snapshotId": snapshot.ID,
 		"config":     result,
 	}, nil
+}
+
+func webServerTargetVersion(path, revision string, server website.WebServerInfo) string {
+	return fmt.Sprintf(
+		"web-server|path=%s|binary=%s|prefix=%s|config=%s|main=%s|revision=%s",
+		path,
+		server.BinaryPath,
+		server.Prefix,
+		server.ConfigRoot,
+		server.MainConfigPath,
+		revision,
+	)
 }
 
 func recordWebServerConfigAudit(snapshotID, path, status, message string, userID int64, requestIP string) {

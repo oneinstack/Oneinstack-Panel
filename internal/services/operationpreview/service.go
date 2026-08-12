@@ -146,66 +146,66 @@ func (s *Service) Create(operation string, userID int64, payload json.RawMessage
 	return &document, nil
 }
 
-func (s *Service) Consume(id string, userID int64) (string, json.RawMessage, *Document, error) {
+func (s *Service) Consume(id string, userID int64) (string, json.RawMessage, *Document, string, error) {
 	if s == nil || s.db == nil {
-		return "", nil, nil, errors.New("operation preview database is not configured")
+		return "", nil, nil, "", errors.New("operation preview database is not configured")
 	}
 	var record models.OperationPreview
 	if err := s.db.Where("id = ? AND user_id = ?", strings.TrimSpace(id), userID).First(&record).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return "", nil, nil, ErrNotFound
+			return "", nil, nil, "", ErrNotFound
 		}
-		return "", nil, nil, err
+		return "", nil, nil, "", err
 	}
 	now := s.currentTime()
 	if record.ConsumedAt != nil {
-		return "", nil, nil, ErrConsumed
+		return "", nil, nil, "", ErrConsumed
 	}
 	if !record.ExpiresAt.After(now) {
-		return "", nil, nil, ErrExpired
+		return "", nil, nil, "", ErrExpired
 	}
 	var document Document
 	if err := json.Unmarshal([]byte(record.PreviewJSON), &document); err != nil {
-		return "", nil, nil, err
+		return "", nil, nil, "", err
 	}
 	decrypted, err := utils.DecryptCredential(record.EncryptedPayload, credentialPurpose)
 	if err != nil {
-		return "", nil, nil, fmt.Errorf("decrypt operation preview payload: %w", err)
+		return "", nil, nil, "", fmt.Errorf("decrypt operation preview payload: %w", err)
 	}
 	result := s.db.Model(&models.OperationPreview{}).
 		Where("id = ? AND consumed_at IS NULL", record.ID).
 		Updates(map[string]any{"consumed_at": now})
 	if result.Error != nil {
-		return "", nil, nil, result.Error
+		return "", nil, nil, "", result.Error
 	}
 	if result.RowsAffected != 1 {
-		return "", nil, nil, ErrConsumed
+		return "", nil, nil, "", ErrConsumed
 	}
-	return record.Operation, json.RawMessage(decrypted), &document, nil
+	return record.Operation, json.RawMessage(decrypted), &document, record.ResourceVersion, nil
 }
 
 // Peek returns the non-sensitive operation metadata so callers can authorize
 // an execution before consuming the single-use preview.
-func (s *Service) Peek(id string, userID int64) (string, error) {
+func (s *Service) Peek(id string, userID int64) (string, string, error) {
 	if s == nil || s.db == nil {
-		return "", errors.New("operation preview database is not configured")
+		return "", "", errors.New("operation preview database is not configured")
 	}
 	var record models.OperationPreview
-	if err := s.db.Select("id", "operation", "expires_at", "consumed_at").
+	if err := s.db.Select("id", "operation", "resource_version", "expires_at", "consumed_at").
 		Where("id = ? AND user_id = ?", strings.TrimSpace(id), userID).
 		First(&record).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return "", ErrNotFound
+			return "", "", ErrNotFound
 		}
-		return "", err
+		return "", "", err
 	}
 	if record.ConsumedAt != nil {
-		return "", ErrConsumed
+		return "", "", ErrConsumed
 	}
 	if !record.ExpiresAt.After(s.currentTime()) {
-		return "", ErrExpired
+		return "", "", ErrExpired
 	}
-	return record.Operation, nil
+	return record.Operation, record.ResourceVersion, nil
 }
 
 func (s *Service) currentTime() time.Time {

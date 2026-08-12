@@ -133,7 +133,28 @@ func DetectWebServer() (WebServerInfo, error) {
 	})
 
 	selected := ranked[0].candidate
+	running := make([]webServerCandidate, 0, len(ranked))
+	for _, item := range ranked {
+		if runningExecutables[canonicalPath(filepath.Clean(item.candidate.Binary))] {
+			running = append(running, item.candidate)
+		}
+	}
+	if len(running) > 1 {
+		return WebServerInfo{}, fmt.Errorf(
+			"%w: multiple running web servers were detected; select a single managed instance",
+			ErrWebServerUnavailable,
+		)
+	}
+	if len(running) == 1 {
+		selected = running[0]
+	}
+
 	configRoot := filepath.Clean(selected.Config)
+	prefix := filepath.Clean(selected.Prefix)
+	if detectedPrefix, detectedConfig, ok := inspectWebServerLayout(selected.Binary); ok {
+		prefix = detectedPrefix
+		configRoot = detectedConfig
+	}
 	mainConfig := filepath.Join(configRoot, "nginx.conf")
 	configurationAvailable := isRegularFile(mainConfig)
 	siteConfigDir := detectSiteConfigDir(configRoot, mainConfig)
@@ -146,7 +167,7 @@ func DetectWebServer() (WebServerInfo, error) {
 		Version:                version,
 		Running:                runningExecutables[canonicalPath(selected.Binary)],
 		BinaryPath:             filepath.Clean(selected.Binary),
-		Prefix:                 filepath.Clean(selected.Prefix),
+		Prefix:                 prefix,
 		ConfigRoot:             configRoot,
 		MainConfigPath:         mainConfig,
 		SiteConfigDir:          siteConfigDir,
@@ -531,9 +552,13 @@ func webServerCandidates() []webServerCandidate {
 			Component: "nginx",
 			Name:      "Nginx",
 			Binary:    "/usr/sbin/nginx",
-			Prefix:    "/etc/nginx",
-			Config:    "/etc/nginx",
-			Priority:  20,
+			// Ubuntu/Debian packages keep the runtime prefix under
+			// /usr/share/nginx while the main configuration lives in
+			// /etc/nginx. Nginx resolves relative module and temp paths
+			// from this prefix when the manager runs -t or reload.
+			Prefix:   "/usr/share/nginx",
+			Config:   "/etc/nginx",
+			Priority: 20,
 		},
 		webServerCandidate{
 			Component: "nginx",
@@ -555,6 +580,11 @@ func webServerCandidates() []webServerCandidate {
 				name = "OpenResty"
 				prefix = "/usr/local/openresty/nginx"
 				config = filepath.Join(prefix, "conf")
+			} else if path == "/usr/sbin/nginx" {
+				// Ubuntu/Debian package layout: binary in /usr/sbin,
+				// runtime prefix in /usr/share/nginx, config in /etc/nginx.
+				prefix = "/usr/share/nginx"
+				config = "/etc/nginx"
 			}
 			candidates = append(candidates, webServerCandidate{
 				Component: component,
@@ -618,6 +648,28 @@ func inspectWebServerVersion(binary string) string {
 	match := webServerVersionPattern.FindStringSubmatch(string(output))
 	if len(match) == 2 {
 		return match[1]
+	}
+	return ""
+}
+
+func inspectWebServerLayout(binary string) (string, string, bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	output, _ := exec.CommandContext(ctx, binary, "-V").CombinedOutput()
+	text := string(output)
+	prefix := parseConfigureArgument(text, "--prefix=")
+	configPath := parseConfigureArgument(text, "--conf-path=")
+	if prefix == "" || configPath == "" || !filepath.IsAbs(prefix) || !filepath.IsAbs(configPath) {
+		return "", "", false
+	}
+	return filepath.Clean(prefix), filepath.Clean(filepath.Dir(configPath)), true
+}
+
+func parseConfigureArgument(output, key string) string {
+	for _, field := range strings.Fields(output) {
+		if strings.HasPrefix(field, key) {
+			return strings.Trim(strings.TrimPrefix(field, key), "'")
+		}
 	}
 	return ""
 }
