@@ -59,6 +59,15 @@ func GetSoftware(c *gin.Context) {
 	core.HandleSuccess(c, data)
 }
 
+func ListSoftwareCategories(c *gin.Context) {
+	categories, err := softwareService.ListCategories()
+	if err != nil {
+		core.HandleError(c, core.WrapError(err, core.ErrInternalError, "查询软件分类失败"))
+		return
+	}
+	core.HandleSuccess(c, categories)
+}
+
 func GetLogContent(c *gin.Context) {
 	param := c.Query("fn")
 	if manager, err := getTaskManager(); err == nil {

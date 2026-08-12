@@ -276,6 +276,7 @@ var englishTerms = map[string]string{
 	"证书任务日志":         "certificate task log",
 	"证书签发":           "certificate issuance",
 	"软件":             "software",
+	"软件分类":           "software categories",
 	"软件列表":           "software list",
 	"软件安装":           "software installation",
 	"软件卸载":           "software removal",

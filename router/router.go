@@ -276,6 +276,7 @@ func SetupRouter() *gin.Engine {
 	softg := protected.Group("/soft")
 	{
 		softg.POST("/list", middleware.RequirePermission(accessservice.PermissionSoftwareRead), software.GetSoftware)
+		softg.GET("/categories", middleware.RequirePermission(accessservice.PermissionSoftwareRead), software.ListSoftwareCategories)
 		softg.GET("/catalog/status", middleware.RequirePermission(accessservice.PermissionSoftwareRead), software.GetSoftwareCatalogStatus)
 		softg.POST("/catalog/sync", middleware.RequirePermission(accessservice.PermissionSoftwareWrite), software.SyncSoftwareCatalog)
 		softg.GET("/getlog", middleware.RequirePermission(accessservice.PermissionSoftwareRead), software.GetLogContent)

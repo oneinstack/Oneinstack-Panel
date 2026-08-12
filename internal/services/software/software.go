@@ -8,8 +8,85 @@ import (
 	"oneinstack/router/input"
 	"oneinstack/router/output"
 	"oneinstack/utils"
+	"slices"
 	"strings"
 )
+
+var softwareCategoryOrder = []string{
+	"建站",
+	"数据库",
+	"Web服务器",
+	"运行环境",
+	"缓存",
+	"实用工具",
+	"容器",
+	"安全",
+	"云存储",
+	"AI / 大模型",
+}
+
+type Category struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
+	Count int    `json:"count"`
+}
+
+func ListCategories() ([]Category, error) {
+	var rows []struct {
+		Key  string
+		Tags string
+	}
+	if err := app.DB().Model(&models.Software{}).
+		Where("(catalog_visible = ? OR installed = ?)", true, true).
+		Select("`key`, tags").
+		Group("`key`, tags").
+		Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+
+	counts := make(map[string]int)
+	productKeys := make(map[string]struct{})
+	productCategories := make(map[string]map[string]struct{})
+	for _, row := range rows {
+		productKeys[row.Key] = struct{}{}
+		if productCategories[row.Key] == nil {
+			productCategories[row.Key] = make(map[string]struct{})
+		}
+		for _, value := range strings.Split(row.Tags, ",") {
+			name := strings.TrimSpace(value)
+			if name == "" {
+				continue
+			}
+			if _, exists := productCategories[row.Key][name]; exists {
+				continue
+			}
+			productCategories[row.Key][name] = struct{}{}
+			counts[name]++
+		}
+	}
+	otherCount := 0
+	for key := range productKeys {
+		if len(productCategories[key]) == 0 {
+			otherCount++
+		}
+	}
+
+	categories := []Category{{Name: "全部", Value: "", Count: len(productKeys)}}
+	for _, name := range softwareCategoryOrder {
+		categories = append(categories, Category{Name: name, Value: name, Count: counts[name]})
+		delete(counts, name)
+	}
+	remaining := make([]string, 0, len(counts))
+	for name := range counts {
+		remaining = append(remaining, name)
+	}
+	slices.Sort(remaining)
+	for _, name := range remaining {
+		categories = append(categories, Category{Name: name, Value: name, Count: counts[name]})
+	}
+	categories = append(categories, Category{Name: "其他", Value: "其他", Count: otherCount})
+	return categories, nil
+}
 
 func RunInstall(p *input.InstallParams) (string, error) {
 	op, err := NewInstallOP(p)
@@ -141,7 +218,14 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 	}
 
 	if param.Tags != "" {
-		tx = tx.Where("tags LIKE ?", "%"+param.Tags+"%")
+		if param.Tags == "其他" {
+			tx = tx.Having("MAX(CASE WHEN TRIM(COALESCE(tags, '')) <> '' THEN 1 ELSE 0 END) = 0")
+		} else {
+			tx = tx.Having(
+				"MAX(CASE WHEN tags LIKE ? THEN 1 ELSE 0 END) = 1",
+				"%"+param.Tags+"%",
+			)
+		}
 	}
 
 	paginated, err := services.Paginate[models.Softwares](tx, &models.Softwares{}, &input.Page{
