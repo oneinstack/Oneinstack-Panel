@@ -333,9 +333,27 @@ func CancelExecution(c *gin.Context) {
 			core.NewError(core.ErrNotFound, "执行记录不存在"))
 		return
 	}
-	if err != nil {
+	if errors.Is(err, cron.ErrExecutionNotRunning) {
 		core.HandleErrorWithStatus(c, http.StatusConflict,
-			core.WrapError(err, core.ErrBadRequest, "取消执行失败"))
+			core.NewErrorWithDetail(
+				core.ErrConflict,
+				"该执行已结束，无法取消",
+				"请刷新执行记录，确认任务状态后再操作。",
+			))
+		return
+	}
+	if errors.Is(err, cron.ErrExecutionNotActive) {
+		core.HandleErrorWithStatus(c, http.StatusConflict,
+			core.NewErrorWithDetail(
+				core.ErrConflict,
+				"该执行当前无法取消",
+				"当前 Panel 进程未持有该执行的活动上下文，请刷新执行记录；如果仍显示运行中，请检查 Panel 是否发生重启或采用多实例部署。",
+			))
+		return
+	}
+	if err != nil {
+		core.HandleError(c,
+			core.WrapError(err, core.ErrInternalError, "取消执行失败"))
 		return
 	}
 	c.JSON(http.StatusAccepted, core.SuccessResponseForContext(c, execution))

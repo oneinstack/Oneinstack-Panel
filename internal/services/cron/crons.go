@@ -31,6 +31,13 @@ const (
 )
 
 var (
+	// ErrExecutionNotRunning indicates that the persisted execution is terminal.
+	ErrExecutionNotRunning = errors.New("execution is no longer running")
+	// ErrExecutionNotActive indicates that this process cannot signal the execution.
+	ErrExecutionNotActive = errors.New("execution is not active in this panel process")
+)
+
+var (
 	taskCredentialPattern = regexp.MustCompile(`(?i)(authorization|cookie|password|passwd|pwd|token|secret)(["']?\s*[:=]\s*["']?)([^,"'\s;]+)`)
 	taskBearerPattern     = regexp.MustCompile(`(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+`)
 )
@@ -621,13 +628,13 @@ func (cs *CronService) CancelExecution(executionID uint) (*models.JobExecution, 
 		return nil, err
 	}
 	if execution.Status != "running" {
-		return nil, errors.New("execution is no longer running")
+		return nil, ErrExecutionNotRunning
 	}
 	cs.mu.Lock()
 	active := cs.active[execution.CronJobID]
 	if active == nil || active.executionID != execution.ID {
 		cs.mu.Unlock()
-		return nil, errors.New("execution is not active in this panel process")
+		return nil, ErrExecutionNotActive
 	}
 	active.reason = "USER_CANCELED"
 	active.cancel()

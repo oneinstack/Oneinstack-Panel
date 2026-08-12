@@ -926,4 +926,10 @@ var englishErrorTexts = map[string]string{
 	"配置应用失败，请检查配置内容和目标服务状态，修正后重新提交。":                "The configuration could not be applied. Check its contents and the target service status, then retry.",
 	"服务器处理当前操作时发生异常，请稍后重试；若持续失败，请结合请求时间查看服务器日志。":    "The server encountered an error while processing this operation. Retry later and check the server logs using the request time if the problem continues.",
 	"当前操作未完成，请刷新状态后重试；若持续失败，请查看服务器日志。":              "The operation did not complete. Refresh the status and retry; check the server logs if the problem continues.",
+
+	"该执行当前无法取消":           "The execution cannot currently be canceled",
+	"该执行已结束，无法取消":         "The execution has already ended and cannot be canceled",
+	"请刷新执行记录，确认任务状态后再操作。": "Refresh the execution records and confirm the task status before trying again.",
+	"当前 Panel 进程未持有该执行的活动上下文，请刷新执行记录；如果仍显示运行中，" +
+		"请检查 Panel 是否发生重启或采用多实例部署。": "The current Panel process does not own the active execution context. Refresh the execution records. If it still appears to be running, check whether Panel restarted or is deployed with multiple instances.",
 }
