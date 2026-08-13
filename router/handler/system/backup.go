@@ -64,6 +64,9 @@ func CreatePanelBackup(c *gin.Context) {
 	})
 	request.Passphrase = ""
 	if err != nil {
+		if errors.Is(err, panelbackup.ErrInvalidBackup) {
+			log.Printf("panel backup create validation failed stage=%s", panelbackup.ValidationStageOf(err))
+		}
 		handlePanelBackupError(c, err, "创建 Panel 备份失败")
 		return
 	}
@@ -265,7 +268,7 @@ func handlePanelBackupError(c *gin.Context, err error, message string) {
 	case errors.Is(err, panelbackup.ErrInvalidPassphrase):
 		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "备份密码错误或不符合要求"))
 	case errors.Is(err, panelbackup.ErrInvalidBackup):
-		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "备份包格式、完整性或兼容性校验失败"))
+		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, panelbackup.ValidationFailureMessage(err)))
 	case errors.Is(err, panelbackup.ErrRestoreBusy), errors.Is(err, panelbackup.ErrRecoveryNeeded):
 		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, message))
 	case errors.Is(err, context.Canceled):
