@@ -12,38 +12,46 @@
 - [English](README.md)
 - [简体中文](README-zh.md)
 
+Latest tagged build: `v0.3.0-build.11` (the main branch contains follow-up fixes)
+
 ## 🚀 Features
 
 - 🛡️ Visual server status monitoring (CPU/Memory/Disk/Network)
-- 🔧 One-click installation of common services/software (Nginx/MySQL/Redis etc.)
-- 🔐 Automatic firewall configuration and management
+- 🔧 Software store and component-package management (Nginx/MySQL/Redis/PHP, etc.)
+- 🐳 Docker container, image, network, volume, Compose, and controlled terminal management
+- 🔐 Firewall, port forwarding, auto-blocking, Fail2ban, and SSH management
 - 🧾 HMAC-protected operation audit with filtering, integrity checks, and CSV export
-- 🌐 Website/FTP management
+- 🌐 Website, Nginx configuration, HTTPS certificates, and ACME renewal
+- 📁 File management, trash, file sharing, database, and backup/restore workflows
 - 🔄 Scheduled task management (Crontab)
-- [x] 📊 Real-time log viewing and analysis
-- [x] Database visual management
-- [x] ⚡ Built-in BBR network acceleration optimization
-- [x] 📡 Multi-language interface support
+- 📈 Metric history, service health checks, monitoring rules, alert events, and notification channels
+- 🖥️ Bastion-host server management, connection tests, and metric collection
+- 🧩 Configuration snapshots, diffs, preview execution, approvals, and audit
+- [x] 📊 Real-time runtime log viewing and analysis
+- [x] 📡 Multi-language API responses and user interface
 
 ## 📦 Quick Installation
 
-### Verified system requirements
+### System requirements
 
-- OS: Ubuntu 22.04 LTS or Ubuntu 24.04 LTS
-- Architecture: amd64; arm64 packages are built but remain outside the first
-  production compatibility matrix
+- OS: Linux; verified on Ubuntu, Debian, CentOS, RHEL, Rocky, AlmaLinux,
+  OpenCloudOS, and Anolis
+- Architecture: linux/amd64 and linux/arm64
 - Memory: Recommended 1GB+
 - Disk Space: At least 20GB free space
-- Root privileges required
+- Root privileges, systemd, and `prlimit` required
+
+Unverified Linux distributions can be explicitly installed with
+`--allow-unsupported`; verified distributions are recommended for production.
 
 Download the matching release archive and its `.sha256` file, verify it, and
 extract it. Create the administrator password file without exposing the
 password in shell history:
 
 ```bash
-sha256sum -c one-linux-amd64-v0.1.0.tar.gz.sha256
-tar -xzf one-linux-amd64-v0.1.0.tar.gz
-cd one-linux-amd64-v0.1.0
+sha256sum -c one-linux-amd64-v0.3.0-build.11.tar.gz.sha256
+tar -xzf one-linux-amd64-v0.3.0-build.11.tar.gz
+cd one-linux-amd64-v0.3.0-build.11
 read -r -s -p "Initial administrator password: " PANEL_PASSWORD
 printf '\n'
 sudo install -m 0600 /dev/null /run/one-admin-password
@@ -82,31 +90,33 @@ administrator can install the signed release assigned by Center from
 sudo one update check
 sudo one update apply --yes
 sudo one update status
+sudo one update rollback --yes
 ```
 
-Center controls channels, percentage rollout, instance targeting, and
-revocation. Panel still verifies the pinned Ed25519 key, manifest, artifact
-size, and SHA-256 before running a database migration preflight, atomically
-switching releases, and checking readiness. A failed update restores the
-previous binary, database, configuration, and bundled component scripts. See
-[BUILD.md](BUILD.md) for key configuration, manual recovery, and release
-operations.
+Center controls release channels, percentage rollout, instance targeting, and
+version revocation. Panel does not trust Center's network response directly:
+it verifies the pinned Ed25519 key, manifest, artifact size, and SHA-256 before
+running a database migration preflight, atomically switching releases, and
+checking readiness. A failed update restores the previous binary, database,
+configuration, and bundled component scripts. See [BUILD.md](BUILD.md) for key
+configuration, manual recovery, and release operations.
 
-### Center-controlled software store
+### Center-controlled software store and panel updates
 
-The software store and the component-package registry use the same trusted
-Center connection. Configure `scriptCenter.enabled`, `scriptCenter.url`, and
-the pinned Ed25519 public key in `scriptCenter.trustedKeys`. Panel downloads
-`/v1/software/catalog` at startup and every 15 minutes by default.
+The software store and component-package registry use the same trusted Center
+connection. Configure `scriptCenter.enabled`, `scriptCenter.url`, and the
+pinned Ed25519 public key in `scriptCenter.trustedKeys`. Panel downloads
+`/v1/software/catalog` at startup and synchronizes it every 15 minutes by
+default.
 
-Center controls which applications and versions are visible, which version is
-recommended, whether new installations are allowed, ordering, tags, release
-notes, and the component package used for each application. Panel verifies the
-catalog signature and revision before applying it in one database transaction.
-If Center is temporarily unavailable, the last verified snapshot remains
-usable. An application removed from Center is hidden for new installations,
-while an already-installed instance remains visible for service management and
-uninstallation.
+Center controls the applications and versions shown in the store, recommended
+versions, whether new installations are allowed, ordering, tags, release
+notes, and the component package used for each application. Panel applies a
+new catalog in one database transaction only after verifying its signature and
+revision. If Center is temporarily unavailable, the last verified snapshot
+remains usable. An application removed from Center is no longer available for
+new installations, while an already-installed instance remains visible for
+service management and uninstallation.
 
 ```yaml
 scriptCenter:
@@ -117,12 +127,20 @@ scriptCenter:
   catalogStaleAfterHours: 24
   trustedKeys:
     center-key-id: 'BASE64_ED25519_PUBLIC_KEY'
+
+updateCenter:
+  enabled: true
+  centerUrl: 'https://center.example.com'
+  channel: 'stable'
+  healthTimeoutSeconds: 60
+  backupRetention: 5
+  trustedKeys: {}
 ```
 
 For a loopback-only development Center using HTTP, set
 `allowInsecureHTTP: true`. Production Center connections must use HTTPS.
-Administrators can see the active source and manually refresh the catalog from
-the software-store page.
+Administrators can see the active data source on the software-store page and
+manually refresh the catalog.
 
 Normal uninstall preserves configuration, database, logs, and backups:
 
@@ -151,6 +169,9 @@ sudo ./install.sh uninstall --purge --yes
 - SSH port management
 - System service management
 - Scheduled task management
+- Monitoring rules, service health checks, and alert notifications
+- Configuration snapshots, preview execution, approvals, and audit
+- Bastion-host servers and session metrics
 
 ![alt text](img/3.png)
 
@@ -158,15 +179,17 @@ sudo ./install.sh uninstall --purge --yes
 
 ### Application Management
 
-- One-click installation:
-  - Web Server: Nginx
-  - Databases: MySQL/Redis
-  - Runtimes: PHP/Java
+- Software store and signed component packages
+- Software installation, upgrades, uninstallation, and service configuration
+- Docker containers, images, networks, volumes, and Compose
+- Database connections, backups, and restores
 
 ### Website Management
 
-- Static hosting
-- Reverse Proxy
+- Website lifecycle, configuration preview, and snapshot restore
+- Static hosting and reverse proxy
+- HTTPS certificates, ACME issuance, renewal, and disabling
+- Website backups, restores, and task logs
 
 ## 🛠️ Technology Stack
 
@@ -174,6 +197,7 @@ sudo ./install.sh uninstall --purge --yes
 - Frontend Framework: Vue.js
 - Database: SQLite
 - Process Management: Systemd
+- Production Targets: Linux amd64/arm64
 
 ## 🤝 Contributions
 

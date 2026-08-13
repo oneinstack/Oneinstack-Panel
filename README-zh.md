@@ -7,35 +7,47 @@
 
 > 一款开源的 Linux 服务器运维管理面板，让服务器管理更简单、更安全、更高效
 
+## 语言
+
+- [简体中文](README-zh.md)
+- [English](README.md)
+
+当前最新构建：`v0.3.0-build.11`（主分支包含后续修复）
+
 ## 🚀 功能特性
 
 - 🛡️ 可视化服务器状态监控（CPU/内存/磁盘/网络）
-- 🔧 一键安装常用服务/软件（Nginx/MySQL/Redis 等）
-- 🔐 自动防火墙配置与管理
+- 🔧 软件商城与组件包管理（Nginx/MySQL/Redis/PHP 等）
+- 🐳 Docker 容器、镜像、网络、卷、Compose 和受控终端管理
+- 🔐 防火墙、端口转发、自动封禁、Fail2ban 与 SSH 管理
 - 🧾 HMAC 防篡改操作审计、筛选、完整性校验和 CSV 导出
-- 🌐 网站/FTP
+- 🌐 网站、Nginx 配置、HTTPS 证书和 ACME 自动续期
+- 📁 文件管理、回收站、文件分享、数据库和备份恢复
 - 🔄 定时任务管理（Crontab）
-- [ x ] 📊 实时日志查看与分析
-- [ x ] 数据库可视化管理
-- [ x ] ⚡ 内置 BBR 网络加速优化
-- [ x ] 📡 支持多语言操作界面
+- 📈 指标历史、服务健康检查、监控规则、告警事件和通知渠道
+- 🖥️ 堡垒机服务器管理、连接测试和指标采集
+- 🧩 配置快照、差异查看、预览执行、审批和审计
+- [x] 📊 实时运行日志查看与分析
+- [x] 📡 多语言 API 响应和操作界面
 
 ## 📦 快速安装
 
-### 已验证系统要求
+### 系统要求
 
-- 操作系统：Ubuntu 22.04 LTS、Ubuntu 24.04 LTS
-- 架构：首发生产矩阵为 amd64；arm64 已构建发布包，但暂未进入首发生产兼容矩阵
+- 操作系统：Linux；已验证 Ubuntu、Debian、CentOS、RHEL、Rocky、AlmaLinux、OpenCloudOS 和 Anolis
+- 架构：linux/amd64 和 linux/arm64
 - 内存：推荐 1GB 以上
 - 磁盘空间：至少 20GB 可用空间
-- 需要 root 权限
+- 需要 root 权限、systemd 和 `prlimit`
+
+未验证的 Linux 发行版可显式使用 `--allow-unsupported`，但生产环境建议使用已验证发行版。
 
 下载匹配架构的发布包及对应 `.sha256` 文件，验证并解压。初始管理员密码通过权限受控的文件传入，不写入 Shell 历史：
 
 ```bash
-sha256sum -c one-linux-amd64-v0.1.0.tar.gz.sha256
-tar -xzf one-linux-amd64-v0.1.0.tar.gz
-cd one-linux-amd64-v0.1.0
+sha256sum -c one-linux-amd64-v0.3.0-build.11.tar.gz.sha256
+tar -xzf one-linux-amd64-v0.3.0-build.11.tar.gz
+cd one-linux-amd64-v0.3.0-build.11
 read -r -s -p "请输入初始管理员密码: " PANEL_PASSWORD
 printf '\n'
 sudo install -m 0600 /dev/null /run/one-admin-password
@@ -64,22 +76,22 @@ sudo ./install.sh --force
 sudo one update check
 sudo one update apply --yes
 sudo one update status
+sudo one update rollback --yes
 ```
 
-Center 统一控制稳定版、测试版、灰度百分比、实例白名单和版本撤回；Panel 不直接信任 Center 的网络响应，而是再次校验固定 Ed25519 公钥、清单、制品大小和 SHA-256，再执行数据库迁移预检、版本原子切换和健康检查。失败时自动恢复旧二进制、数据库、配置和内置脚本。密钥配置、手工恢复和发布流程见 [BUILD.md](BUILD.md)。
+Center 统一控制发布渠道、灰度百分比、实例范围和版本撤回；Panel 不直接信任 Center 的网络响应，而是再次校验固定 Ed25519 公钥、清单、制品大小和 SHA-256，再执行数据库迁移预检、版本原子切换和就绪检查。失败时自动恢复旧二进制、数据库、配置和内置组件脚本。密钥配置、手工恢复和发布流程见 [BUILD.md](BUILD.md)。
 
-### Center 控制软件商城
+### Center 控制的软件商城与面板更新
 
-软件商城和组件脚本包共用同一套可信 Center 连接。配置
+软件商城和组件脚本包注册中心共用同一套可信 Center 连接。配置
 `scriptCenter.enabled`、`scriptCenter.url` 和
-`scriptCenter.trustedKeys` 中固定的 Ed25519 公钥后，Panel 会在启动时立即
-获取 `/v1/software/catalog`，默认每 15 分钟自动同步一次。
+`scriptCenter.trustedKeys` 中固定的 Ed25519 公钥后，Panel 会在启动时获取
+`/v1/software/catalog`，默认每 15 分钟自动同步一次。
 
-Center 统一控制商城显示的软件、版本、推荐版本、是否允许安装、排序、标签、
-更新说明以及对应的脚本组件。Panel 只有在签名和目录摘要校验通过后，才会在
-一个数据库事务中应用新目录。Center 临时离线时继续使用上一次可信快照；
-Center 移除的软件不再允许新装，但已经安装的实例仍会显示，可继续管理服务
-或卸载。
+Center 统一控制商城显示的软件和版本、推荐版本、是否允许新装、排序、标签、
+更新说明以及对应的组件包。Panel 只有在目录签名和修订摘要校验通过后，才会
+在一个数据库事务中应用新目录。Center 临时不可用时继续使用上一次可信快照；
+Center 移除的软件不再允许新装，但已经安装的实例仍会显示，可继续管理服务或卸载。
 
 ```yaml
 scriptCenter:
@@ -90,11 +102,18 @@ scriptCenter:
   catalogStaleAfterHours: 24
   trustedKeys:
     center-key-id: 'BASE64_ED25519_PUBLIC_KEY'
+
+updateCenter:
+  enabled: true
+  centerUrl: 'https://center.example.com'
+  channel: 'stable'
+  healthTimeoutSeconds: 60
+  backupRetention: 5
+  trustedKeys: {}
 ```
 
-只在本机开发 Center 使用 HTTP 时设置 `allowInsecureHTTP: true`，生产环境
-必须使用 HTTPS。管理员可在软件商城顶部查看当前数据来源、同步时间和错误，
-也可以手动立即同步。
+仅在本机开发 Center 且使用 HTTP 时设置 `allowInsecureHTTP: true`，生产环境
+必须使用 HTTPS。管理员可在软件商城页面查看当前数据来源，并手动刷新目录。
 
 普通卸载会保留配置、数据库、日志和备份：
 
@@ -124,6 +143,9 @@ sudo ./install.sh uninstall --purge --yes
 
 - 系统服务管理
 - 定时任务管理
+- 监控规则、服务健康检查和告警通知
+- 配置快照、预览执行、审批和审计
+- 堡垒机服务器与会话指标
 
 ![alt 属性文本](img/3.png)
 
@@ -131,15 +153,17 @@ sudo ./install.sh uninstall --purge --yes
 
 ### 应用管理
 
-- 一键安装：
-  - Web 服务器：Nginx
-  - 数据库：MySQL/Redis
-  - 运行环境：PHP/JAVA
+- 软件商城与签名组件包
+- 软件安装、升级、卸载和服务配置
+- Docker 容器、镜像、网络、卷和 Compose
+- 数据库连接、备份和恢复
 
 ### 网站管理
 
-- 静态代理
-- 反向代理
+- 网站生命周期、配置预览与快照恢复
+- 静态托管和反向代理
+- HTTPS 证书、ACME 签发、续期和停用
+- 网站备份、恢复和任务日志
 
 ## 🛠️ 技术架构
 
@@ -147,6 +171,7 @@ sudo ./install.sh uninstall --purge --yes
 - 前端框架：Vue.js
 - 数据库：SQLite
 - 进程管理：Systemd
+- 生产目标：Linux amd64/arm64
 
 ## 🤝 参与贡献
 
