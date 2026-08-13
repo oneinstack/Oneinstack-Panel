@@ -60,7 +60,7 @@ var backupRestoreCmd = &cobra.Command{
 		})
 		if _, err := manager.Preflight(cmd.Context(), request.BackupID, request.Passphrase); err != nil {
 			writeStatus(failedRestoreStatus(request.BackupID, startedAt, err))
-			return err
+			return fmt.Errorf("panel backup restore preflight failed at %s", panelbackup.ValidationStageOf(err))
 		}
 		runner := panelupdate.OSCommandRunner{}
 		writeStatus(panelbackup.RestoreStatus{
@@ -220,9 +220,13 @@ func isPanelBackupCommand(command *cobra.Command) bool {
 
 func failedRestoreStatus(backupID string, startedAt time.Time, cause error) panelbackup.RestoreStatus {
 	finishedAt := time.Now().UTC()
+	message := "Panel 恢复执行失败"
+	if panelbackup.ValidationStageOf(cause) != "unknown" {
+		message = panelbackup.ValidationFailureMessage(cause)
+	}
 	return panelbackup.RestoreStatus{
 		State: panelbackup.StatusFailed, BackupID: backupID,
-		Message: cause.Error(), StartedAt: &startedAt,
+		Message: message, StartedAt: &startedAt,
 		UpdatedAt: finishedAt, FinishedAt: &finishedAt,
 	}
 }

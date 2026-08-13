@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"mime"
 	"net/http"
 	"strconv"
@@ -168,6 +169,7 @@ func PreflightPanelBackup(c *gin.Context) {
 	result, err := manager.Preflight(c.Request.Context(), c.Param("id"), request.Passphrase)
 	request.Passphrase = ""
 	if err != nil {
+		log.Printf("panel backup preflight failed backup_id=%s stage=%s", c.Param("id"), panelbackup.ValidationStageOf(err))
 		handlePanelBackupError(c, err, "备份恢复预检失败")
 		return
 	}
@@ -197,6 +199,7 @@ func RestorePanelBackup(c *gin.Context) {
 		return
 	}
 	if _, err := manager.Preflight(c.Request.Context(), c.Param("id"), request.Passphrase); err != nil {
+		log.Printf("panel backup restore preflight failed backup_id=%s stage=%s", c.Param("id"), panelbackup.ValidationStageOf(err))
 		handlePanelBackupError(c, err, "备份恢复预检失败")
 		return
 	}

@@ -28,6 +28,62 @@ var (
 	ErrRecoveryNeeded    = errors.New("an interrupted panel restore must be recovered")
 )
 
+// ValidationStage identifies the safe, high-level stage at which a backup
+// failed validation. It is intentionally free of paths, SQL, and secrets.
+type ValidationStage string
+
+const (
+	ValidationStageIntegrity ValidationStage = "integrity"
+	ValidationStageDecrypt   ValidationStage = "decrypt"
+	ValidationStageManifest  ValidationStage = "manifest"
+	ValidationStageConfig    ValidationStage = "config"
+	ValidationStageDatabase  ValidationStage = "database"
+)
+
+type validationStageError struct {
+	stage ValidationStage
+	err   error
+}
+
+func (e *validationStageError) Error() string { return string(e.stage) + ": " + e.err.Error() }
+func (e *validationStageError) Unwrap() error { return e.err }
+
+func withValidationStage(stage ValidationStage, err error) error {
+	if err == nil {
+		return nil
+	}
+	return &validationStageError{stage: stage, err: err}
+}
+
+// ValidationStageOf returns a coarse validation stage for safe diagnostics.
+func ValidationStageOf(err error) ValidationStage {
+	var stageErr *validationStageError
+	if errors.As(err, &stageErr) {
+		return stageErr.stage
+	}
+	return "unknown"
+}
+
+// ValidationFailureMessage is safe to persist in restore status and logs.
+// It deliberately omits the wrapped error because it may contain paths or
+// implementation details from the host.
+func ValidationFailureMessage(err error) string {
+	switch ValidationStageOf(err) {
+	case ValidationStageIntegrity:
+		return "备份文件完整性校验失败"
+	case ValidationStageDecrypt:
+		return "备份解密校验失败"
+	case ValidationStageManifest:
+		return "备份清单校验失败"
+	case ValidationStageConfig:
+		return "备份配置校验失败"
+	case ValidationStageDatabase:
+		return "备份数据库校验失败"
+	default:
+		return "备份恢复预检失败"
+	}
+}
+
 type Config struct {
 	BasePath        string
 	ConfigPath      string

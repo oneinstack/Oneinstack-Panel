@@ -186,6 +186,15 @@ func (m *Manager) Create(ctx context.Context, options CreateOptions) (BackupInfo
 		SHA256: info.SHA256, FileCount: len(manifest.Files),
 		IncludesCertificates: manifest.IncludesCertificates,
 	}
+	// Validate the exact archive that was just written before publishing its
+	// metadata. This keeps a successful create operation equivalent to a
+	// backup that can pass the restore preflight.
+	prepared, err := m.prepare(ctx, result, options.Passphrase)
+	if err != nil {
+		_ = os.Remove(finalPath)
+		return BackupInfo{}, err
+	}
+	prepared.Cleanup()
 	if err := m.writeMetadata(result); err != nil {
 		_ = os.Remove(finalPath)
 		return BackupInfo{}, err
@@ -686,10 +695,13 @@ func (m *Manager) prepare(ctx context.Context, info BackupInfo, passphrase strin
 	}
 	actual, err := backupFileInfo(archivePath)
 	if err != nil {
-		return preparedBackup{}, err
+		return preparedBackup{}, withValidationStage(ValidationStageIntegrity, err)
 	}
 	if actual.Size != info.Size || actual.SHA256 != info.SHA256 {
-		return preparedBackup{}, fmt.Errorf("%w: encrypted archive digest does not match metadata", ErrInvalidBackup)
+		return preparedBackup{}, withValidationStage(
+			ValidationStageIntegrity,
+			fmt.Errorf("%w: encrypted archive digest does not match metadata", ErrInvalidBackup),
+		)
 	}
 	workspace, err := os.MkdirTemp(m.config.BackupRoot, ".preflight-*")
 	if err != nil {
@@ -703,7 +715,7 @@ func (m *Manager) prepare(ctx context.Context, info BackupInfo, passphrase strin
 	plainArchive := filepath.Join(workspace, "payload.tar.gz")
 	if _, err := decryptArchive(archivePath, plainArchive, passphrase, m.config.MaxBackupBytes); err != nil {
 		cleanup()
-		return preparedBackup{}, err
+		return preparedBackup{}, withValidationStage(ValidationStageDecrypt, err)
 	}
 	extractedRoot := filepath.Join(workspace, "payload")
 	if err := os.Mkdir(extractedRoot, 0700); err != nil {
@@ -713,16 +725,16 @@ func (m *Manager) prepare(ctx context.Context, info BackupInfo, passphrase strin
 	manifest, err := m.extractAndValidate(ctx, plainArchive, extractedRoot)
 	if err != nil {
 		cleanup()
-		return preparedBackup{}, err
+		return preparedBackup{}, withValidationStage(ValidationStageManifest, err)
 	}
 	_ = os.Remove(plainArchive)
 	if err := validateBackupConfig(filepath.Join(extractedRoot, "config", "config.yaml"), m.config.CertificatePath); err != nil {
 		cleanup()
-		return preparedBackup{}, err
+		return preparedBackup{}, withValidationStage(ValidationStageConfig, err)
 	}
 	if err := validateSQLiteSnapshot(filepath.Join(extractedRoot, "database", "myadmin.db")); err != nil {
 		cleanup()
-		return preparedBackup{}, err
+		return preparedBackup{}, withValidationStage(ValidationStageDatabase, err)
 	}
 	return preparedBackup{Manifest: manifest, Root: extractedRoot, Cleanup: cleanup}, nil
 }
