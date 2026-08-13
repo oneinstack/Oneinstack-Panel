@@ -10,7 +10,10 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-var webServerConfigLinePattern = regexp.MustCompile(`(?:candidate|nginx)\.conf:(\d+)(?::\s*)?(.*)$`)
+// Nginx/OpenResty may report the temporary candidate, the main file, or an
+// included .conf file. Keep the basename generic so diagnostics do not fall
+// back to the unhelpful generic message for site configurations.
+var webServerConfigLinePattern = regexp.MustCompile(`(?i)([a-z0-9_.-]+\.conf):(\d+)(?::\s*)?(.*)$`)
 
 // ErrorCode 错误码类型。
 // 0 is reserved for successful responses; non-zero values are stable API codes.
@@ -280,10 +283,10 @@ func formatWebServerConfigValidationDetail(detail string) string {
 	}
 	for _, line := range strings.Split(strings.ReplaceAll(detail, "\r\n", "\n"), "\n") {
 		matches := webServerConfigLinePattern.FindStringSubmatch(line)
-		if len(matches) != 3 {
+		if len(matches) != 4 {
 			continue
 		}
-		diagnostic := strings.TrimSpace(matches[2])
+		diagnostic := strings.TrimSpace(matches[3])
 		prefix := strings.TrimSpace(line[:strings.Index(line, matches[0])])
 		// Nginx commonly prints: nginx: [emerg] <reason> in <path>:<line>.
 		// Keep the reason but omit the disposable/absolute path.
@@ -297,14 +300,55 @@ func formatWebServerConfigValidationDetail(detail string) string {
 			diagnostic = prefix
 		}
 		if diagnostic == "" {
-			return fmt.Sprintf("Web Server 配置语法错误：第 %s 行。%s", matches[1], suffix)
+			return fmt.Sprintf("Web Server 配置语法错误：第 %s 行。%s", matches[2], suffix)
 		}
-		return fmt.Sprintf("Web Server 配置语法错误：第 %s 行；Nginx 诊断：%s。%s", matches[1], diagnostic, suffix)
+		return fmt.Sprintf("Web Server 配置语法错误：第 %s 行；Nginx 诊断：%s。%s", matches[2], diagnostic, suffix)
 	}
 	if restored {
 		return "Web Server 配置语法校验失败，原配置已自动恢复；请检查 Nginx/OpenResty 指令格式后重新预览。"
 	}
+	if preflight := formatWebServerConfigPreflightDetail(detail); preflight != "" {
+		return fmt.Sprintf("Web Server 配置预检失败：%s。%s", preflight, suffix)
+	}
 	return "Web Server 配置语法校验失败，预览阶段未写入原配置；请检查 Nginx/OpenResty 指令格式后重新预览。"
+}
+
+// formatWebServerConfigPreflightDetail keeps errors raised while assembling
+// the disposable preview configuration actionable. These errors happen
+// before nginx -t, so they do not contain a line number to parse.
+func formatWebServerConfigPreflightDetail(detail string) string {
+	lower := strings.ToLower(detail)
+	switch {
+	case strings.Contains(lower, "configuration exceeds the"):
+		return "配置内容超过允许大小限制"
+	case strings.Contains(lower, "configuration contains a nul byte"):
+		return "配置内容包含不允许的 NUL 字节"
+	case strings.Contains(lower, "include path is empty"):
+		return "include 指令未提供文件路径"
+	case strings.Contains(lower, "dynamic web server configuration include"):
+		return "不支持包含变量的动态 include，请改用固定文件路径"
+	case strings.Contains(lower, "include nesting exceeds"):
+		return "include 嵌套层级超过允许限制"
+	case strings.Contains(lower, "includes exceed"):
+		return "include 依赖文件数量超过允许限制"
+	case strings.Contains(lower, "include is missing"):
+		return "include 依赖文件不存在"
+	case strings.Contains(lower, "include is outside the managed roots"):
+		return "include 依赖文件超出受管配置目录范围"
+	case strings.Contains(lower, "include escapes the managed root"):
+		return "include 路径逃逸受管配置目录"
+	case strings.Contains(lower, "include cannot be a symbolic link"):
+		return "include 依赖文件不能是符号链接"
+	case strings.Contains(lower, "invalid web server configuration include"):
+		return "include 文件路径格式无效"
+	case strings.Contains(lower, "read web server include"):
+		return "include 依赖文件无法读取"
+	case strings.Contains(lower, "stage web server include"),
+		strings.Contains(lower, "create web server include directory"):
+		return "include 依赖文件无法暂存到预览目录"
+	default:
+		return ""
+	}
 }
 
 func containsSensitiveErrorDetail(detail string) bool {

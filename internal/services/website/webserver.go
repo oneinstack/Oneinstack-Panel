@@ -331,12 +331,19 @@ func (manager *WebServerConfigManager) ValidateContent(ctx context.Context, rela
 	); err != nil {
 		return err
 	}
+	includeContents := []string{content}
+	if samePath(target, manager.Server.MainConfigPath) {
+		// Main configuration content is the actual proposed root file and its
+		// relative includes must be staged. The site preview main file is
+		// synthetic and is intentionally excluded from this scan because its
+		// candidate include exists only inside the disposable directory.
+		includeContents = append(includeContents, previewMainContent)
+	}
 	if err := stageCustomConfigIncludes(
 		directory,
 		manager.Server.Prefix,
 		manager.Server.ConfigRoot,
-		content,
-		previewMainContent,
+		includeContents...,
 	); err != nil {
 		return err
 	}
