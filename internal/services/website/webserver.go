@@ -23,8 +23,10 @@ import (
 )
 
 const (
-	maxWebServerConfigBytes = 1024 * 1024
-	maxWebServerConfigFiles = 500
+	maxWebServerConfigBytes         = 1024 * 1024
+	maxWebServerConfigFiles         = 500
+	maxWebServerIncludeDepth        = 32
+	maxWebServerPreviewDependencies = 500
 )
 
 var (
@@ -288,6 +290,7 @@ func (manager *WebServerConfigManager) ValidateContent(ctx context.Context, rela
 	}
 	defer os.RemoveAll(directory)
 	mainConfig := filepath.Join(directory, "nginx.conf")
+	previewMainContent := ""
 	if samePath(target, manager.Server.MainConfigPath) {
 		// The main file must be validated as the root configuration. Putting it
 		// inside http{} makes valid top-level directives such as user/events/http
@@ -295,7 +298,8 @@ func (manager *WebServerConfigManager) ValidateContent(ctx context.Context, rela
 		if err := stageRelativeConfigIncludes(directory, manager.Server.ConfigRoot); err != nil {
 			return err
 		}
-		if err := os.WriteFile(mainConfig, []byte(content), 0640); err != nil {
+		previewMainContent = content
+		if err := os.WriteFile(mainConfig, []byte(previewMainContent), 0640); err != nil {
 			return fmt.Errorf("write temporary main configuration: %w", err)
 		}
 	} else {
@@ -312,17 +316,208 @@ func (manager *WebServerConfigManager) ValidateContent(ctx context.Context, rela
 			mainContent += fmt.Sprintf("include %s;\n", mimeTypes)
 		}
 		mainContent += "include conf.d/candidate.conf;\n}\n"
-		if err := os.WriteFile(mainConfig, []byte(mainContent), 0640); err != nil {
+		previewMainContent = mainContent
+		if err := os.WriteFile(mainConfig, []byte(previewMainContent), 0640); err != nil {
 			return fmt.Errorf("write temporary main configuration: %w", err)
 		}
 	}
-	// Site configurations commonly use relative includes such as
-	// "include fastcgi_params;". Because the validation runs with a
-	// temporary prefix, those files must be staged beside the temporary
-	// main configuration or nginx will reject an otherwise valid proposal.
-	for _, name := range []string{"fastcgi_params", "scgi_params", "uwsgi_params"} {
-		source := filepath.Join(manager.Server.ConfigRoot, name)
-		if !isRegularFile(source) {
+	// The validation runs with a temporary prefix. Stage common relative
+	// includes beside the temporary main configuration so both main and site
+	// configurations resolve the same dependencies as the live installation.
+	if err := stageRelativeConfigFiles(
+		directory,
+		manager.Server.Prefix,
+		manager.Server.ConfigRoot,
+	); err != nil {
+		return err
+	}
+	if err := stageCustomConfigIncludes(
+		directory,
+		manager.Server.Prefix,
+		manager.Server.ConfigRoot,
+		content,
+		previewMainContent,
+	); err != nil {
+		return err
+	}
+	timeoutCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	return manager.run(timeoutCtx, "-t", "-p", ensureTrailingSeparator(directory), "-c", mainConfig)
+}
+
+var nginxIncludePattern = regexp.MustCompile(`(?m)^[\t ]*include[\t ]+([^;#]+);`)
+
+// stageCustomConfigIncludes stages fixed custom include dependencies while
+// preserving their relative paths in the disposable prefix. Dynamic includes
+// cannot be resolved safely during preview and are rejected explicitly.
+func stageCustomConfigIncludes(directory, prefix, configRoot string, contents ...string) error {
+	visited := make(map[string]struct{})
+	staged := 0
+	for _, content := range contents {
+		if err := collectConfigIncludes(
+			directory,
+			filepath.Clean(prefix),
+			filepath.Clean(configRoot),
+			filepath.Clean(configRoot),
+			content,
+			0,
+			visited,
+			&staged,
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func collectConfigIncludes(
+	directory, prefix, configRoot, baseDir, content string,
+	depth int,
+	visited map[string]struct{}, staged *int,
+) error {
+	if depth > maxWebServerIncludeDepth {
+		return fmt.Errorf("web server configuration include nesting exceeds %d levels", maxWebServerIncludeDepth)
+	}
+	for _, match := range nginxIncludePattern.FindAllStringSubmatch(content, -1) {
+		expression := strings.TrimSpace(match[1])
+		if len(expression) >= 2 && ((expression[0] == '"' && expression[len(expression)-1] == '"') ||
+			(expression[0] == '\'' && expression[len(expression)-1] == '\'')) {
+			expression = expression[1 : len(expression)-1]
+		}
+		if expression == "" {
+			return errors.New("web server configuration include path is empty")
+		}
+		if strings.ContainsRune(expression, '$') {
+			return fmt.Errorf("dynamic web server configuration include is not supported: %s", expression)
+		}
+
+		matches, root, err := resolveConfigInclude(expression, baseDir, prefix, configRoot)
+		if err != nil {
+			return err
+		}
+		if len(matches) == 0 {
+			if hasGlobPattern(expression) {
+				continue
+			}
+			return fmt.Errorf("web server configuration include is missing: %s", expression)
+		}
+		for _, source := range matches {
+			info, err := os.Lstat(source)
+			if err != nil {
+				return fmt.Errorf("inspect web server include %s: %w", expression, err)
+			}
+			if info.Mode()&os.ModeSymlink != 0 {
+				return fmt.Errorf("web server configuration include cannot be a symbolic link: %s", expression)
+			}
+			if !info.Mode().IsRegular() {
+				continue
+			}
+			canonical := canonicalPath(source)
+			if _, exists := visited[canonical]; exists {
+				continue
+			}
+			visited[canonical] = struct{}{}
+			(*staged)++
+			if *staged > maxWebServerPreviewDependencies {
+				return fmt.Errorf("web server configuration includes exceed %d files", maxWebServerPreviewDependencies)
+			}
+
+			data, err := readBoundedFile(source, maxWebServerConfigBytes)
+			if err != nil {
+				return fmt.Errorf("read web server include %s: %w", expression, err)
+			}
+			if !filepath.IsAbs(expression) {
+				relative, relErr := filepath.Rel(root, source)
+				if relErr != nil || relative == "." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+					return fmt.Errorf("web server configuration include escapes its root: %s", expression)
+				}
+				target := filepath.Join(directory, relative)
+				if err := os.MkdirAll(filepath.Dir(target), 0750); err != nil {
+					return fmt.Errorf("create web server include directory: %w", err)
+				}
+				if err := os.WriteFile(target, data, 0640); err != nil {
+					return fmt.Errorf("stage web server include %s: %w", expression, err)
+				}
+			}
+
+			if err := collectConfigIncludes(
+				directory,
+				prefix,
+				configRoot,
+				filepath.Dir(source),
+				string(data),
+				depth+1,
+				visited,
+				staged,
+			); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func resolveConfigInclude(expression, baseDir, prefix, configRoot string) ([]string, string, error) {
+	if filepath.IsAbs(expression) {
+		matches, err := filepath.Glob(filepath.Clean(expression))
+		if err != nil {
+			return nil, "", fmt.Errorf("invalid web server configuration include %s: %w", expression, err)
+		}
+		for _, match := range matches {
+			if !pathWithinRoot(match, configRoot) && !pathWithinRoot(match, prefix) {
+				return nil, "", fmt.Errorf("web server configuration include is outside the managed roots: %s", expression)
+			}
+		}
+		return matches, "", nil
+	}
+	cleaned := filepath.Clean(filepath.FromSlash(expression))
+	if cleaned == "." || cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
+		return nil, "", fmt.Errorf("web server configuration include escapes the managed root: %s", expression)
+	}
+	for _, root := range []string{baseDir, configRoot, prefix} {
+		candidate := filepath.Join(root, cleaned)
+		matches, err := filepath.Glob(candidate)
+		if err != nil {
+			return nil, "", fmt.Errorf("invalid web server configuration include %s: %w", expression, err)
+		}
+		if len(matches) > 0 {
+			return matches, root, nil
+		}
+	}
+	return nil, "", nil
+}
+
+func hasGlobPattern(path string) bool {
+	return strings.ContainsAny(path, "*?[")
+}
+
+func pathWithinRoot(path, root string) bool {
+	relative, err := filepath.Rel(filepath.Clean(root), filepath.Clean(path))
+	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) && !filepath.IsAbs(relative)
+}
+
+// stageRelativeConfigFiles stages the common files referenced by Nginx
+// configurations with relative include paths. Prefer the detected config root,
+// then the detected runtime prefix to support custom Nginx/OpenResty layouts.
+func stageRelativeConfigFiles(directory, prefix, configRoot string) error {
+	for _, name := range []string{
+		"mime.types",
+		"fastcgi_params",
+		"scgi_params",
+		"uwsgi_params",
+		"koi-utf",
+		"koi-win",
+		"win-utf",
+	} {
+		source := ""
+		for _, root := range []string{configRoot, prefix} {
+			candidate := filepath.Join(root, name)
+			if isRegularFile(candidate) {
+				source = candidate
+				break
+			}
+		}
+		if source == "" {
 			continue
 		}
 		data, readErr := readBoundedFile(source, maxWebServerConfigBytes)
@@ -333,9 +528,7 @@ func (manager *WebServerConfigManager) ValidateContent(ctx context.Context, rela
 			return fmt.Errorf("stage web server include %s: %w", name, writeErr)
 		}
 	}
-	timeoutCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
-	defer cancel()
-	return manager.run(timeoutCtx, "-t", "-p", ensureTrailingSeparator(directory), "-c", mainConfig)
+	return nil
 }
 
 // stageRelativeConfigIncludes makes relative includes resolve against the
