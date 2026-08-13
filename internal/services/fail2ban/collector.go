@@ -20,6 +20,7 @@ import (
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type detectorEvent struct {
@@ -59,15 +60,27 @@ func (m *Manager) collect(ctx context.Context) {
 	}
 }
 
-func (m *Manager) ensureMigrationTask() error {
+func ensureState(db *gorm.DB) (models.Fail2banState, error) {
+	seed := models.Fail2banState{ID: 1, MigrationStatus: "pending"}
+	if err := db.Clauses(clause.OnConflict{DoNothing: true}).Create(&seed).Error; err != nil {
+		return models.Fail2banState{}, err
+	}
 	var state models.Fail2banState
-	if err := m.db.FirstOrCreate(&state, models.Fail2banState{ID: 1, MigrationStatus: "pending"}).Error; err != nil {
+	if err := db.First(&state, 1).Error; err != nil {
+		return models.Fail2banState{}, err
+	}
+	return state, nil
+}
+
+func (m *Manager) ensureMigrationTask() error {
+	state, err := ensureState(m.db)
+	if err != nil {
 		return err
 	}
 	if state.MigrationStatus != "pending" {
 		return nil
 	}
-	_, err := m.SubmitMigration()
+	_, err = m.SubmitMigration()
 	return err
 }
 
@@ -122,8 +135,8 @@ func (m *Manager) collectAuditIncidents(ctx context.Context) error {
 }
 
 func (m *Manager) collectDetectorEvents(ctx context.Context) error {
-	var state models.Fail2banState
-	if err := m.db.FirstOrCreate(&state, models.Fail2banState{ID: 1, MigrationStatus: "pending"}).Error; err != nil {
+	state, err := ensureState(m.db)
+	if err != nil {
 		return err
 	}
 	file, err := os.Open(eventSpoolPath())
@@ -215,8 +228,8 @@ func (m *Manager) allowAutoBan() bool {
 }
 
 func (m *Manager) migrateLegacy(ctx context.Context) error {
-	var state models.Fail2banState
-	if err := m.db.FirstOrCreate(&state, models.Fail2banState{ID: 1, MigrationStatus: "pending"}).Error; err != nil {
+	state, err := ensureState(m.db)
+	if err != nil {
 		return err
 	}
 	if state.MigrationStatus == "completed" || state.MigrationStatus == "not_required" {

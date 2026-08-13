@@ -122,6 +122,9 @@ func Templates() []Template {
 		{Key: "panel-login", Name: "Panel 登录防护", Description: "根据 Panel 安全审计中的连续登录失败生成事件", DefaultMaxRetry: 8, DefaultFindTime: 600, DefaultBanTime: 86400, ProtectedPorts: port, SupportsDetection: true},
 		{Key: "nginx-http-auth", Name: "Nginx HTTP 认证防护", Description: "检测 Nginx HTTP 基础认证失败", DefaultMaxRetry: 5, DefaultFindTime: 600, DefaultBanTime: 3600, ProtectedPorts: "http,https", SupportsDetection: true},
 		{Key: "nginx-botsearch", Name: "Nginx 恶意扫描防护", Description: "检测针对常见敏感路径的恶意扫描", DefaultMaxRetry: 5, DefaultFindTime: 600, DefaultBanTime: 3600, ProtectedPorts: "http,https", SupportsDetection: true},
+		{Key: "mysql-auth", Name: "MySQL 登录防护", Description: "检测 MySQL 登录认证失败", DefaultMaxRetry: 5, DefaultFindTime: 600, DefaultBanTime: 3600, ProtectedPorts: "3306", SupportsDetection: true},
+		{Key: "redis-auth", Name: "Redis 认证防护", Description: "检测 Redis 认证失败和未授权访问", DefaultMaxRetry: 5, DefaultFindTime: 600, DefaultBanTime: 3600, ProtectedPorts: "6379", SupportsDetection: true},
+		{Key: "vsftpd-auth", Name: "FTP 登录防护", Description: "检测 vsftpd FTP 登录失败", DefaultMaxRetry: 5, DefaultFindTime: 600, DefaultBanTime: 3600, ProtectedPorts: "21", SupportsDetection: true},
 	}
 }
 
@@ -182,7 +185,16 @@ func (s *Service) normalizePolicyChange(request PolicyChangeRequest, userID int6
 	input.Template = strings.ToLower(strings.TrimSpace(input.Template))
 	template, ok := templateByKey(input.Template)
 	if !ok {
-		return request, nil, validation("规则模板只支持 sshd、panel-login、nginx-http-auth 或 nginx-botsearch")
+		return request, nil, validation("规则模板只支持 sshd、panel-login、nginx-http-auth、nginx-botsearch、mysql-auth、redis-auth 或 vsftpd-auth")
+	}
+	if request.Action == "create" {
+		var sameTemplateCount int64
+		if err := s.db.Model(&models.Fail2banPolicy{}).Where("template = ?", input.Template).Count(&sameTemplateCount).Error; err != nil {
+			return request, nil, err
+		}
+		if sameTemplateCount > 0 {
+			return request, nil, validation(fmt.Sprintf("策略模板“%s”（%s）已存在，请直接编辑现有策略，不要重复添加。", template.Name, input.Template))
+		}
 	}
 	input.Name = strings.TrimSpace(input.Name)
 	if input.Name == "" || len([]rune(input.Name)) > 64 {
@@ -301,10 +313,11 @@ func (s *Service) renderPolicy(policy *models.Fail2banPolicy) ([]byte, error) {
 	}
 	ignore := effectiveIgnoreIPs(policy.IgnoreIPs)
 	enabled := strconv.FormatBool(policy.Enabled)
+	filterName := templateFilterName(policy.Template)
 	var builder strings.Builder
 	fmt.Fprintf(&builder, "# Managed by OneinStack Panel. Do not edit.\n# revision=%s\n\n", policy.Revision)
 	if policy.DetectorJail != "" {
-		fmt.Fprintf(&builder, "[%s]\nenabled = %s\nfilter = %s\n", policy.DetectorJail, enabled, policy.Template)
+		fmt.Fprintf(&builder, "[%s]\nenabled = %s\nfilter = %s\n", policy.DetectorJail, enabled, filterName)
 		switch policy.Template {
 		case "sshd":
 			builder.WriteString("backend = systemd\n")
@@ -316,6 +329,12 @@ func (s *Service) renderPolicy(policy *models.Fail2banPolicy) ([]byte, error) {
 				}
 			}
 			fmt.Fprintf(&builder, "logpath = %s\n", path)
+		case "mysql-auth", "redis-auth", "vsftpd-auth":
+			path, err := detectionLogPath(policy.Template, policy.Enabled)
+			if err != nil {
+				return nil, err
+			}
+			fmt.Fprintf(&builder, "logpath = %s\n", path)
 		}
 		fmt.Fprintf(&builder, "port = %s\nmaxretry = %d\nfindtime = %d\nbantime = 1\nignoreip = %s\naction = oneinstack-report\n\n",
 			template.ProtectedPorts, policy.MaxRetry, policy.FindTimeSeconds, strings.Join(ignore, " "))
@@ -324,6 +343,64 @@ func (s *Service) renderPolicy(policy *models.Fail2banPolicy) ([]byte, error) {
 		policy.JailName, enabled, manualLogPath, template.ProtectedPorts,
 		policy.FindTimeSeconds, policy.BanTimeSeconds, strings.Join(ignore, " "))
 	return []byte(builder.String()), nil
+}
+
+func templateFilterName(template string) string {
+	switch template {
+	case "mysql-auth":
+		return "mysqld-auth"
+	case "redis-auth":
+		return "redis"
+	case "vsftpd-auth":
+		return "vsftpd"
+	default:
+		return template
+	}
+}
+
+func detectionLogPath(template string, required bool) (string, error) {
+	filter := templateFilterName(template)
+	filterFound := false
+	for _, root := range []string{"/etc/fail2ban/filter.d", "/usr/share/fail2ban/filter.d"} {
+		if info, err := os.Stat(filepath.Join(root, filter+".conf")); err == nil && info.Mode().IsRegular() {
+			filterFound = true
+			break
+		}
+	}
+	if required && !filterFound {
+		return "", validation(fmt.Sprintf("%s 防护不可用：未找到 Fail2ban 过滤器 %s，请先安装对应的 Fail2ban 过滤器包", templateDisplayName(template), filter))
+	}
+
+	paths := detectionLogCandidates(template)
+	for _, path := range paths {
+		if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() {
+			return path, nil
+		}
+	}
+	if required {
+		return "", validation(fmt.Sprintf("%s 防护不可用：未找到可读取的日志文件，已检查 %s", templateDisplayName(template), strings.Join(paths, "、")))
+	}
+	return paths[0], nil
+}
+
+func detectionLogCandidates(template string) []string {
+	switch template {
+	case "mysql-auth":
+		return []string{"/data/mysql/mysql-error.log", "/var/lib/mysql/mysql-error.log", "/var/log/mysql/error.log", "/var/log/mysqld.log"}
+	case "redis-auth":
+		return []string{"/usr/local/redis/var/redis.log", "/var/log/redis/redis-server.log", "/var/log/redis.log"}
+	case "vsftpd-auth":
+		return []string{"/var/log/vsftpd.log", "/var/log/secure", "/var/log/auth.log"}
+	default:
+		return []string{}
+	}
+}
+
+func templateDisplayName(template string) string {
+	if item, ok := templateByKey(template); ok {
+		return item.Name
+	}
+	return template
 }
 
 func (s *Service) validateAndReload(ctx context.Context) error {
@@ -341,7 +418,9 @@ func (s *Service) Status(ctx context.Context) (*Status, error) {
 	if s == nil || s.db == nil {
 		return nil, ErrUnavailable
 	}
-	_ = s.db.FirstOrCreate(&result.Migration, models.Fail2banState{ID: 1, MigrationStatus: "pending"}).Error
+	if state, err := ensureState(s.db); err == nil {
+		result.Migration = state
+	}
 	var managedPolicies int64
 	_ = s.db.Model(&models.Fail2banPolicy{}).Count(&managedPolicies).Error
 	result.ManagedPolicies = int(managedPolicies)
