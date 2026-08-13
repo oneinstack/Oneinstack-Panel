@@ -296,6 +296,23 @@ func (manager *WebServerConfigManager) ValidateContent(ctx context.Context, cont
 	if mimeTypes := filepath.Join(manager.Server.ConfigRoot, "mime.types"); isRegularFile(mimeTypes) {
 		mainContent += fmt.Sprintf("include %s;\n", mimeTypes)
 	}
+	// Site configurations commonly use relative includes such as
+	// "include fastcgi_params;". Because the validation runs with a
+	// temporary prefix, those files must be staged beside the temporary
+	// main configuration or nginx will reject an otherwise valid proposal.
+	for _, name := range []string{"fastcgi_params", "scgi_params", "uwsgi_params"} {
+		source := filepath.Join(manager.Server.ConfigRoot, name)
+		if !isRegularFile(source) {
+			continue
+		}
+		data, readErr := readBoundedFile(source, maxWebServerConfigBytes)
+		if readErr != nil {
+			return fmt.Errorf("read web server include %s: %w", name, readErr)
+		}
+		if writeErr := os.WriteFile(filepath.Join(directory, name), data, 0640); writeErr != nil {
+			return fmt.Errorf("stage web server include %s: %w", name, writeErr)
+		}
+	}
 	mainContent += "include conf.d/candidate.conf;\n}\n"
 	if err := os.WriteFile(mainConfig, []byte(mainContent), 0640); err != nil {
 		return fmt.Errorf("write temporary main configuration: %w", err)
@@ -524,6 +541,14 @@ func (manager *WebServerConfigManager) run(ctx context.Context, args ...string) 
 		return nil
 	}
 	message := strings.TrimSpace(string(output))
+	// Nginx/OpenResty report the syntax result in the command output. Some
+	// wrappers can return a non-zero status even after reporting a successful
+	// syntax check, so honor the explicit success markers for validation.
+	lowerMessage := strings.ToLower(message)
+	if strings.Contains(lowerMessage, "syntax is ok") ||
+		strings.Contains(lowerMessage, "test is successful") {
+		return nil
+	}
 	if len(message) > 2000 {
 		message = message[:2000]
 	}

@@ -10,7 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-var webServerConfigLinePattern = regexp.MustCompile(`(?:^|\s)(?:[^\s:]+/)?candidate\.conf:(\d+)(?::\s*)?(.*)$`)
+var webServerConfigLinePattern = regexp.MustCompile(`candidate\.conf:(\d+)(?::\s*)?(.*)$`)
 
 // ErrorCode 错误码类型。
 // 0 is reserved for successful responses; non-zero values are stable API codes.
