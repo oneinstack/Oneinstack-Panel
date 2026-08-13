@@ -91,6 +91,12 @@ func Preview(c *gin.Context) {
 				message = "防火墙参数无效"
 			}
 			core.HandleError(c, core.NewError(core.ErrBadRequest, message))
+		} else if errors.Is(err, website.ErrWebServerConfigValidate) {
+			core.HandleError(c, core.WrapError(
+				err,
+				core.ErrConfigValidateFailed,
+				"Web Server 配置语法校验失败，请根据诊断信息修正后重新预览",
+			))
 		} else {
 			core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "生成操作预览失败"))
 		}
@@ -268,7 +274,7 @@ func buildDocument(operation string, payload json.RawMessage) (previewservice.Do
 					website.ErrWebServerConfigConflict,
 				)
 			}
-			if err := manager.ValidateContent(context.Background(), request.Content); err != nil {
+			if err := manager.ValidateContent(context.Background(), request.Path, request.Content); err != nil {
 				return previewservice.Document{}, "", fmt.Errorf("%w: %v", website.ErrWebServerConfigValidate, err)
 			}
 			document.Files = []previewservice.FileChange{{Path: current.Path, Action: "update", ChangeSummary: "更新 Web 服务器受管配置"}}

@@ -10,7 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-var webServerConfigLinePattern = regexp.MustCompile(`candidate\.conf:(\d+)(?::\s*)?(.*)$`)
+var webServerConfigLinePattern = regexp.MustCompile(`(?:candidate|nginx)\.conf:(\d+)(?::\s*)?(.*)$`)
 
 // ErrorCode 错误码类型。
 // 0 is reserved for successful responses; non-zero values are stable API codes.
@@ -272,15 +272,39 @@ func classifyErrorDetail(detail string) string {
 }
 
 func formatWebServerConfigValidationDetail(detail string) string {
-	matches := webServerConfigLinePattern.FindStringSubmatch(detail)
-	if len(matches) == 3 {
-		diagnostic := strings.TrimSpace(matches[2])
-		if diagnostic == "" {
-			return fmt.Sprintf("Web Server 配置语法错误：第 %s 行。原配置已自动恢复，请修正后重新预览。", matches[1])
-		}
-		return fmt.Sprintf("Web Server 配置语法错误：第 %s 行；Nginx 诊断：%s。原配置已自动恢复，请修正后重新预览。", matches[1], diagnostic)
+	restored := strings.Contains(strings.ToLower(detail), "previous content restored") ||
+		strings.Contains(strings.ToLower(detail), "original configuration restored")
+	suffix := "预览阶段未写入原配置，请修正后重新预览。"
+	if restored {
+		suffix = "原配置已自动恢复，请修正后重新预览。"
 	}
-	return "Web Server 配置语法校验失败，原配置已自动恢复；请检查 Nginx/OpenResty 指令格式后重新预览。"
+	for _, line := range strings.Split(strings.ReplaceAll(detail, "\r\n", "\n"), "\n") {
+		matches := webServerConfigLinePattern.FindStringSubmatch(line)
+		if len(matches) != 3 {
+			continue
+		}
+		diagnostic := strings.TrimSpace(matches[2])
+		prefix := strings.TrimSpace(line[:strings.Index(line, matches[0])])
+		// Nginx commonly prints: nginx: [emerg] <reason> in <path>:<line>.
+		// Keep the reason but omit the disposable/absolute path.
+		if marker := strings.LastIndex(prefix, "] "); marker >= 0 {
+			prefix = strings.TrimSpace(prefix[marker+2:])
+		}
+		if marker := strings.LastIndex(prefix, " in "); marker >= 0 {
+			prefix = strings.TrimSpace(prefix[:marker])
+		}
+		if prefix != "" {
+			diagnostic = prefix
+		}
+		if diagnostic == "" {
+			return fmt.Sprintf("Web Server 配置语法错误：第 %s 行。%s", matches[1], suffix)
+		}
+		return fmt.Sprintf("Web Server 配置语法错误：第 %s 行；Nginx 诊断：%s。%s", matches[1], diagnostic, suffix)
+	}
+	if restored {
+		return "Web Server 配置语法校验失败，原配置已自动恢复；请检查 Nginx/OpenResty 指令格式后重新预览。"
+	}
+	return "Web Server 配置语法校验失败，预览阶段未写入原配置；请检查 Nginx/OpenResty 指令格式后重新预览。"
 }
 
 func containsSensitiveErrorDetail(detail string) bool {

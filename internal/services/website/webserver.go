@@ -267,7 +267,7 @@ func (manager *WebServerConfigManager) Read(relativePath string) (WebServerConfi
 
 // ValidateContent checks a proposed managed server configuration without
 // touching the live configuration tree or reloading the service.
-func (manager *WebServerConfigManager) ValidateContent(ctx context.Context, content string) error {
+func (manager *WebServerConfigManager) ValidateContent(ctx context.Context, relativePath, content string) error {
 	if err := manager.validate(); err != nil {
 		return err
 	}
@@ -277,24 +277,44 @@ func (manager *WebServerConfigManager) ValidateContent(ctx context.Context, cont
 	if strings.ContainsRune(content, 0) {
 		return errors.New("configuration contains a NUL byte")
 	}
+	target, _, err := resolveManagedConfigPath(manager.Server.ConfigRoot, relativePath)
+	if err != nil {
+		return err
+	}
 
 	directory, err := os.MkdirTemp(app.GetBasePath(), ".oneinstack-web-server-preview-")
 	if err != nil {
 		return fmt.Errorf("create temporary configuration directory: %w", err)
 	}
 	defer os.RemoveAll(directory)
-	configDir := filepath.Join(directory, "conf.d")
-	if err := os.MkdirAll(configDir, 0750); err != nil {
-		return fmt.Errorf("create temporary configuration directory: %w", err)
-	}
-	candidate := filepath.Join(configDir, "candidate.conf")
-	if err := os.WriteFile(candidate, []byte(content), 0640); err != nil {
-		return fmt.Errorf("write temporary configuration: %w", err)
-	}
 	mainConfig := filepath.Join(directory, "nginx.conf")
-	mainContent := "events {}\nhttp {\n"
-	if mimeTypes := filepath.Join(manager.Server.ConfigRoot, "mime.types"); isRegularFile(mimeTypes) {
-		mainContent += fmt.Sprintf("include %s;\n", mimeTypes)
+	if samePath(target, manager.Server.MainConfigPath) {
+		// The main file must be validated as the root configuration. Putting it
+		// inside http{} makes valid top-level directives such as user/events/http
+		// appear in the wrong context and always fail validation.
+		if err := stageRelativeConfigIncludes(directory, manager.Server.ConfigRoot); err != nil {
+			return err
+		}
+		if err := os.WriteFile(mainConfig, []byte(content), 0640); err != nil {
+			return fmt.Errorf("write temporary main configuration: %w", err)
+		}
+	} else {
+		configDir := filepath.Join(directory, "conf.d")
+		if err := os.MkdirAll(configDir, 0750); err != nil {
+			return fmt.Errorf("create temporary configuration directory: %w", err)
+		}
+		candidate := filepath.Join(configDir, "candidate.conf")
+		if err := os.WriteFile(candidate, []byte(content), 0640); err != nil {
+			return fmt.Errorf("write temporary configuration: %w", err)
+		}
+		mainContent := "events {}\nhttp {\n"
+		if mimeTypes := filepath.Join(manager.Server.ConfigRoot, "mime.types"); isRegularFile(mimeTypes) {
+			mainContent += fmt.Sprintf("include %s;\n", mimeTypes)
+		}
+		mainContent += "include conf.d/candidate.conf;\n}\n"
+		if err := os.WriteFile(mainConfig, []byte(mainContent), 0640); err != nil {
+			return fmt.Errorf("write temporary main configuration: %w", err)
+		}
 	}
 	// Site configurations commonly use relative includes such as
 	// "include fastcgi_params;". Because the validation runs with a
@@ -313,13 +333,41 @@ func (manager *WebServerConfigManager) ValidateContent(ctx context.Context, cont
 			return fmt.Errorf("stage web server include %s: %w", name, writeErr)
 		}
 	}
-	mainContent += "include conf.d/candidate.conf;\n}\n"
-	if err := os.WriteFile(mainConfig, []byte(mainContent), 0640); err != nil {
-		return fmt.Errorf("write temporary main configuration: %w", err)
-	}
 	timeoutCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	return manager.run(timeoutCtx, "-t", "-p", ensureTrailingSeparator(directory), "-c", mainConfig)
+}
+
+// stageRelativeConfigIncludes makes relative includes resolve against the
+// disposable prefix while keeping the live configuration tree untouched.
+func stageRelativeConfigIncludes(directory, configRoot string) error {
+	for _, name := range []string{"conf.d", "sites-enabled", "modules-enabled"} {
+		sourceDir := filepath.Join(configRoot, name)
+		entries, err := os.ReadDir(sourceDir)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return fmt.Errorf("read web server include directory %s: %w", name, err)
+		}
+		targetDir := filepath.Join(directory, name)
+		if err := os.MkdirAll(targetDir, 0750); err != nil {
+			return fmt.Errorf("create web server include directory %s: %w", name, err)
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
+				continue
+			}
+			data, err := readBoundedFile(filepath.Join(sourceDir, entry.Name()), maxWebServerConfigBytes)
+			if err != nil {
+				return fmt.Errorf("read web server include %s/%s: %w", name, entry.Name(), err)
+			}
+			if err := os.WriteFile(filepath.Join(targetDir, entry.Name()), data, 0640); err != nil {
+				return fmt.Errorf("stage web server include %s/%s: %w", name, entry.Name(), err)
+			}
+		}
+	}
+	return nil
 }
 
 func (manager *WebServerConfigManager) Update(
