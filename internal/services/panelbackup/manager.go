@@ -888,7 +888,7 @@ func readBackupConfig(path, expectedCertificatePath string) (backupRuntimeConfig
 	if !ok {
 		return result, fmt.Errorf("%w: system configuration is missing", ErrInvalidBackup)
 	}
-	portValue, ok := yamlMapValue(system, "port")
+	portValue, ok := yamlValue(system, "port")
 	if !ok {
 		return result, fmt.Errorf("%w: panel HTTP port is invalid", ErrInvalidBackup)
 	}
@@ -923,24 +923,31 @@ func readBackupConfig(path, expectedCertificatePath string) (backupRuntimeConfig
 }
 
 func yamlMapValue(values map[string]any, name string) (map[string]any, bool) {
+	value, ok := yamlValue(values, name)
+	if !ok {
+		return nil, false
+	}
+	result, ok := value.(map[string]any)
+	return result, ok
+}
+
+func yamlValue(values map[string]any, name string) (any, bool) {
 	for key, value := range values {
 		if !strings.EqualFold(key, name) {
 			continue
 		}
-		result, ok := value.(map[string]any)
-		return result, ok
+		return value, true
 	}
 	return nil, false
 }
 
 func yamlStringValue(values map[string]any, name string) (string, bool) {
-	for key, value := range values {
-		if strings.EqualFold(key, name) {
-			result, ok := value.(string)
-			return result, ok
-		}
+	value, ok := yamlValue(values, name)
+	if !ok {
+		return "", false
 	}
-	return "", false
+	result, ok := value.(string)
+	return result, ok
 }
 
 func (m *Manager) HealthURL() (string, error) {
