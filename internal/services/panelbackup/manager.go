@@ -880,31 +880,36 @@ func readBackupConfig(path, expectedCertificatePath string) (backupRuntimeConfig
 	if err != nil || len(content) == 0 || len(content) > 4<<20 {
 		return result, fmt.Errorf("%w: config.yaml cannot be read", ErrInvalidBackup)
 	}
-	var candidate struct {
-		System struct {
-			Port            string `yaml:"port"`
-			JWTSecret       string `yaml:"jwtSecret"`
-			CredentialKey   string `yaml:"credentialKey"`
-			CertificatePath string `yaml:"certificatePath"`
-		} `yaml:"system"`
-	}
-	decoder := yaml.NewDecoder(strings.NewReader(string(content)))
-	decoder.KnownFields(false)
-	if err := decoder.Decode(&candidate); err != nil {
+	var document map[string]any
+	if err := yaml.Unmarshal(content, &document); err != nil {
 		return result, fmt.Errorf("%w: config.yaml is invalid", ErrInvalidBackup)
 	}
-	port, err := strconv.Atoi(strings.TrimSpace(candidate.System.Port))
+	system, ok := yamlMapValue(document, "system")
+	if !ok {
+		return result, fmt.Errorf("%w: system configuration is missing", ErrInvalidBackup)
+	}
+	portValue, ok := yamlMapValue(system, "port")
+	if !ok {
+		return result, fmt.Errorf("%w: panel HTTP port is invalid", ErrInvalidBackup)
+	}
+	port, err := strconv.Atoi(strings.TrimSpace(fmt.Sprint(portValue)))
 	if err != nil || port < 1 || port > 65535 {
 		return result, fmt.Errorf("%w: panel HTTP port is invalid", ErrInvalidBackup)
 	}
-	if len(strings.TrimSpace(candidate.System.JWTSecret)) < 32 {
+	jwtSecret, ok := yamlStringValue(system, "jwtSecret")
+	if !ok || len(strings.TrimSpace(jwtSecret)) < 32 {
 		return result, fmt.Errorf("%w: JWT key is missing", ErrInvalidBackup)
 	}
-	key, err := hex.DecodeString(strings.TrimSpace(candidate.System.CredentialKey))
+	credentialKey, ok := yamlStringValue(system, "credentialKey")
+	key, err := hex.DecodeString(strings.TrimSpace(credentialKey))
 	if err != nil || len(key) != 32 {
 		return result, fmt.Errorf("%w: credential encryption key is invalid", ErrInvalidBackup)
 	}
-	certificatePath := filepath.Clean(strings.TrimSpace(candidate.System.CertificatePath))
+	certificatePathValue, ok := yamlStringValue(system, "certificatePath")
+	if !ok {
+		return result, fmt.Errorf("%w: certificate path is missing", ErrInvalidBackup)
+	}
+	certificatePath := filepath.Clean(strings.TrimSpace(certificatePathValue))
 	if expectedCertificatePath != "." && certificatePath != expectedCertificatePath {
 		return result, fmt.Errorf(
 			"%w: certificate path %q does not match this Panel path %q",
@@ -915,6 +920,27 @@ func readBackupConfig(path, expectedCertificatePath string) (backupRuntimeConfig
 	}
 	result.Port = strconv.Itoa(port)
 	return result, nil
+}
+
+func yamlMapValue(values map[string]any, name string) (map[string]any, bool) {
+	for key, value := range values {
+		if !strings.EqualFold(key, name) {
+			continue
+		}
+		result, ok := value.(map[string]any)
+		return result, ok
+	}
+	return nil, false
+}
+
+func yamlStringValue(values map[string]any, name string) (string, bool) {
+	for key, value := range values {
+		if strings.EqualFold(key, name) {
+			result, ok := value.(string)
+			return result, ok
+		}
+	}
+	return "", false
 }
 
 func (m *Manager) HealthURL() (string, error) {
