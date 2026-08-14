@@ -127,6 +127,53 @@ func (r *Registry) ResolvePackageVersionChannel(
 	return metadata.Manifest.Component.Version, nil
 }
 
+// PackageAvailableChannel reports whether Center has a published package for
+// the requested software version, without applying this host's compatibility.
+func (r *Registry) PackageAvailableChannel(
+	ctx context.Context,
+	component string,
+	softwareVersion string,
+	channel string,
+) (bool, error) {
+	if !r.config.Enabled {
+		return false, errors.New("script center is disabled")
+	}
+	channel = strings.ToLower(strings.TrimSpace(channel))
+	switch channel {
+	case "stable", "beta", "development":
+	default:
+		return false, fmt.Errorf("invalid package channel %q", channel)
+	}
+	body, err := json.Marshal(struct {
+		Component       string `json:"component"`
+		SoftwareVersion string `json:"softwareVersion"`
+		Channel         string `json:"channel"`
+	}{component, softwareVersion, channel})
+	if err != nil {
+		return false, fmt.Errorf("encode package availability request: %w", err)
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, r.endpoint("/v1/packages/available"), bytes.NewReader(body))
+	if err != nil {
+		return false, fmt.Errorf("create package availability request: %w", err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := r.client.Do(request)
+	if err != nil {
+		return false, fmt.Errorf("check package availability: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return false, decodeAPIError(response)
+	}
+	var result struct {
+		Available bool `json:"available"`
+	}
+	if err := decodeLimitedJSON(response.Body, &result); err != nil {
+		return false, fmt.Errorf("decode package availability: %w", err)
+	}
+	return result.Available, nil
+}
+
 // ResolveInstalled resolves a package for an already installed software
 // version. New installations remain pinned to the configured channel through
 // Resolve, while lifecycle and configuration operations may reuse a verified

@@ -83,17 +83,20 @@ type unsignedDocument struct {
 }
 
 type Status struct {
-	Enabled       bool       `json:"enabled"`
-	Mode          string     `json:"mode"`
-	Revision      string     `json:"revision,omitempty"`
-	KeyID         string     `json:"keyId,omitempty"`
-	ProductCount  int        `json:"productCount"`
-	VersionCount  int        `json:"versionCount"`
-	LastSyncedAt  *time.Time `json:"lastSyncedAt,omitempty"`
-	LastAttemptAt *time.Time `json:"lastAttemptAt,omitempty"`
-	LastError     string     `json:"lastError,omitempty"`
-	Stale         bool       `json:"stale"`
-	Channel       string     `json:"channel"`
+	Enabled                 bool       `json:"enabled"`
+	Mode                    string     `json:"mode"`
+	Revision                string     `json:"revision,omitempty"`
+	KeyID                   string     `json:"keyId,omitempty"`
+	ProductCount            int        `json:"productCount"`
+	VersionCount            int        `json:"versionCount"`
+	InstallableProductCount int        `json:"installableProductCount"`
+	InstallableVersionCount int        `json:"installableVersionCount"`
+	MissingPackageCount     int        `json:"missingPackageCount"`
+	LastSyncedAt            *time.Time `json:"lastSyncedAt,omitempty"`
+	LastAttemptAt           *time.Time `json:"lastAttemptAt,omitempty"`
+	LastError               string     `json:"lastError,omitempty"`
+	Stale                   bool       `json:"stale"`
+	Channel                 string     `json:"channel"`
 }
 
 type Manager struct {
@@ -166,6 +169,13 @@ func (m *Manager) Sync(ctx context.Context) (Status, error) {
 				if refreshErr := m.refreshPackageVersions(ctx); refreshErr != nil {
 					return m.failSync(fmt.Errorf("refresh component package versions: %w", refreshErr))
 				}
+				packageCounts, countErr := m.refreshPackageAvailability(ctx, state.Channel, state.Revision)
+				if countErr != nil {
+					return m.failSync(fmt.Errorf("refresh component package counts: %w", countErr))
+				}
+				state.InstallableProductCount = packageCounts.InstallableProductCount
+				state.InstallableVersionCount = packageCounts.InstallableVersionCount
+				state.MissingPackageCount = packageCounts.MissingPackageCount
 				now := m.now().UTC()
 				state.ID = 1
 				state.Mode = "center"
@@ -200,7 +210,8 @@ func (m *Manager) Sync(ctx context.Context) (Status, error) {
 			return m.failSync(fmt.Errorf("verify Center software catalog: %w", err))
 		}
 		packageVersions := m.resolvePackageVersions(ctx, document)
-		if err := m.apply(document, packageVersions); err != nil {
+		publishedPackageVersions := m.resolvePublishedPackageVersions(ctx, document)
+		if err := m.apply(document, packageVersions, publishedPackageVersions); err != nil {
 			return m.failSync(fmt.Errorf("apply Center software catalog: %w", err))
 		}
 		return m.Status()
@@ -224,16 +235,19 @@ func (m *Manager) Status() (Status, error) {
 		return Status{}, err
 	}
 	status := Status{
-		Enabled:       m.config.Enabled,
-		Mode:          state.Mode,
-		Revision:      state.Revision,
-		KeyID:         state.KeyID,
-		ProductCount:  state.ProductCount,
-		VersionCount:  state.VersionCount,
-		LastSyncedAt:  state.LastSyncedAt,
-		LastAttemptAt: state.LastAttemptAt,
-		LastError:     state.LastError,
-		Channel:       m.config.Channel,
+		Enabled:                 m.config.Enabled,
+		Mode:                    state.Mode,
+		Revision:                state.Revision,
+		KeyID:                   state.KeyID,
+		ProductCount:            state.ProductCount,
+		VersionCount:            state.VersionCount,
+		InstallableProductCount: state.InstallableProductCount,
+		InstallableVersionCount: state.InstallableVersionCount,
+		MissingPackageCount:     state.MissingPackageCount,
+		LastSyncedAt:            state.LastSyncedAt,
+		LastAttemptAt:           state.LastAttemptAt,
+		LastError:               state.LastError,
+		Channel:                 m.config.Channel,
 	}
 	if status.Mode == "" {
 		status.Mode = "local"
@@ -260,10 +274,13 @@ func (m *Manager) Status() (Status, error) {
 	return status, nil
 }
 
-func (m *Manager) apply(document Document, packageVersions map[string]string) error {
+func (m *Manager) apply(document Document, packageVersions, publishedPackageVersions map[string]string) error {
 	now := m.now().UTC()
 	productCount := 0
 	versionCount := 0
+	installableProductCount := 0
+	installableVersionCount := 0
+	missingPackageCount := 0
 	err := m.db.Transaction(func(tx *gorm.DB) error {
 		if err := backfillInstalledPackageVersions(tx); err != nil {
 			return err
@@ -297,12 +314,23 @@ func (m *Manager) apply(document Document, packageVersions map[string]string) er
 				continue
 			}
 			productCount++
+			productHasInstallableVersion := false
 			parameters, err := json.Marshal(product.Parameters)
 			if err != nil {
 				return err
 			}
 			for _, version := range applicableVersions {
 				versionCount++
+				key := packageVersionKey(product.Component, version.Version, version.Channel)
+				packagePublished := publishedPackageVersions[key] != ""
+				packageAvailable := packageVersions[key] != ""
+				if !packagePublished {
+					missingPackageCount++
+				}
+				if product.Installable && version.Enabled && packageAvailable {
+					installableVersionCount++
+					productHasInstallableVersion = true
+				}
 				var row models.Software
 				result := tx.Where("`key` = ? AND version = ?", product.Key, version.Version).First(&row)
 				if result.Error != nil && !errors.Is(result.Error, gorm.ErrRecordNotFound) {
@@ -348,6 +376,9 @@ func (m *Manager) apply(document Document, packageVersions map[string]string) er
 					return err
 				}
 			}
+			if productHasInstallableVersion {
+				installableProductCount++
+			}
 			if recommendedVersion != "" {
 				var installed models.Software
 				if err := tx.Where("`key` = ? AND installed = ?", product.Key, true).
@@ -374,17 +405,20 @@ func (m *Manager) apply(document Document, packageVersions map[string]string) er
 			}
 		}
 		state := models.SoftwareCatalogState{
-			ID:            1,
-			Mode:          "center",
-			Channel:       m.config.Channel,
-			Revision:      document.Revision,
-			KeyID:         document.KeyID,
-			ProductCount:  productCount,
-			VersionCount:  versionCount,
-			LastSyncedAt:  &now,
-			LastAttemptAt: &now,
-			LastError:     "",
-			UpdatedAt:     now,
+			ID:                      1,
+			Mode:                    "center",
+			Channel:                 m.config.Channel,
+			Revision:                document.Revision,
+			KeyID:                   document.KeyID,
+			ProductCount:            productCount,
+			VersionCount:            versionCount,
+			InstallableProductCount: installableProductCount,
+			InstallableVersionCount: installableVersionCount,
+			MissingPackageCount:     missingPackageCount,
+			LastSyncedAt:            &now,
+			LastAttemptAt:           &now,
+			LastError:               "",
+			UpdatedAt:               now,
 		}
 		return tx.Save(&state).Error
 	})
@@ -427,25 +461,13 @@ func backfillInstalledPackageVersions(tx *gorm.DB) error {
 
 func (m *Manager) resolvePackageVersions(ctx context.Context, document Document) map[string]string {
 	resolved := make(map[string]string)
-	var installedRows []models.Software
-	if err := m.db.Where("installed = ?", true).Find(&installedRows).Error; err != nil {
-		return resolved
-	}
-	installedKeys := make(map[string]struct{}, len(installedRows))
-	for _, installed := range installedRows {
-		installedKeys[installed.Key] = struct{}{}
-	}
 	registry, err := scriptregistry.New(m.config)
 	if err != nil {
 		return resolved
 	}
 	for _, product := range document.Products {
-		if _, installed := installedKeys[product.Key]; !installed {
-			continue
-		}
 		for _, version := range product.Versions {
-			if version.Channel != m.config.Channel || !version.Enabled ||
-				!version.Recommended || !product.Installable {
+			if version.Channel != m.config.Channel {
 				continue
 			}
 			key := packageVersionKey(product.Component, version.Version, version.Channel)
@@ -464,6 +486,69 @@ func (m *Manager) resolvePackageVersions(ctx context.Context, document Document)
 		}
 	}
 	return resolved
+}
+
+func (m *Manager) resolvePublishedPackageVersions(ctx context.Context, document Document) map[string]string {
+	resolved := make(map[string]string)
+	registry, err := scriptregistry.New(m.config)
+	if err != nil {
+		return resolved
+	}
+	for _, product := range document.Products {
+		for _, version := range product.Versions {
+			if version.Channel != m.config.Channel {
+				continue
+			}
+			key := packageVersionKey(product.Component, version.Version, version.Channel)
+			available, availabilityErr := registry.PackageAvailableChannel(
+				ctx, product.Component, version.Version, version.Channel,
+			)
+			if availabilityErr == nil && available {
+				resolved[key] = version.Version
+			}
+		}
+	}
+	return resolved
+}
+
+type packageAvailabilityCounts struct {
+	InstallableProductCount int
+	InstallableVersionCount int
+	MissingPackageCount     int
+}
+
+func (m *Manager) refreshPackageAvailability(ctx context.Context, channel, revision string) (packageAvailabilityCounts, error) {
+	var rows []models.Software
+	if err := m.db.Where(
+		"catalog_managed = ? AND catalog_channel = ? AND catalog_revision = ?",
+		true, channel, revision,
+	).Find(&rows).Error; err != nil {
+		return packageAvailabilityCounts{}, err
+	}
+	registry, err := scriptregistry.New(m.config)
+	if err != nil {
+		return packageAvailabilityCounts{}, err
+	}
+	counts := packageAvailabilityCounts{}
+	installableProducts := make(map[string]struct{})
+	for _, row := range rows {
+		packageAvailable, availabilityErr := registry.PackageAvailableChannel(
+			ctx, row.Component, row.Version, row.CatalogChannel,
+		)
+		if availabilityErr != nil || !packageAvailable {
+			counts.MissingPackageCount++
+			continue
+		}
+		packageVersion, resolveErr := registry.ResolvePackageVersionChannel(
+			ctx, row.Component, row.Version, row.CatalogChannel,
+		)
+		if row.Installable && resolveErr == nil && strings.TrimSpace(packageVersion) != "" {
+			counts.InstallableVersionCount++
+			installableProducts[row.Key] = struct{}{}
+		}
+	}
+	counts.InstallableProductCount = len(installableProducts)
+	return counts, nil
 }
 
 func packageVersionKey(component, softwareVersion, channel string) string {

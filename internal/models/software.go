@@ -65,17 +65,20 @@ type Softwares struct {
 // The software rows remain the offline cache; this record only describes
 // provenance, freshness, and the last synchronization error.
 type SoftwareCatalogState struct {
-	ID            uint       `json:"-" gorm:"primaryKey"`
-	Mode          string     `json:"mode" gorm:"size:32;not null"`
-	Channel       string     `json:"channel,omitempty" gorm:"size:32"`
-	Revision      string     `json:"revision,omitempty" gorm:"size:64"`
-	KeyID         string     `json:"keyId,omitempty" gorm:"size:64"`
-	ProductCount  int        `json:"productCount"`
-	VersionCount  int        `json:"versionCount"`
-	LastSyncedAt  *time.Time `json:"lastSyncedAt,omitempty"`
-	LastAttemptAt *time.Time `json:"lastAttemptAt,omitempty"`
-	LastError     string     `json:"lastError,omitempty" gorm:"size:1024"`
-	UpdatedAt     time.Time  `json:"updatedAt"`
+	ID                      uint       `json:"-" gorm:"primaryKey"`
+	Mode                    string     `json:"mode" gorm:"size:32;not null"`
+	Channel                 string     `json:"channel,omitempty" gorm:"size:32"`
+	Revision                string     `json:"revision,omitempty" gorm:"size:64"`
+	KeyID                   string     `json:"keyId,omitempty" gorm:"size:64"`
+	ProductCount            int        `json:"productCount"`
+	VersionCount            int        `json:"versionCount"`
+	InstallableProductCount int        `json:"installableProductCount"`
+	InstallableVersionCount int        `json:"installableVersionCount"`
+	MissingPackageCount     int        `json:"missingPackageCount"`
+	LastSyncedAt            *time.Time `json:"lastSyncedAt,omitempty"`
+	LastAttemptAt           *time.Time `json:"lastAttemptAt,omitempty"`
+	LastError               string     `json:"lastError,omitempty" gorm:"size:1024"`
+	UpdatedAt               time.Time  `json:"updatedAt"`
 }
 
 func (SoftwareCatalogState) TableName() string {
