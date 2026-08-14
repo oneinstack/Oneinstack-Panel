@@ -10,9 +10,13 @@ CEND="[END]"
 if [ -d "${db_install_dir}/support-files" ]; then
   echo "${CMSG}Stopping MySQL service...${CEND}"
   service mysqld stop > /dev/null 2>&1
+  systemctl disable --now mysqld > /dev/null 2>&1 || true
 
   echo "${CMSG}Removing MySQL installation files...${CEND}"
   rm -rf ${db_install_dir} /etc/init.d/mysqld /etc/my.cnf* /etc/ld.so.conf.d/*{mysql,mariadb,percona}*.conf
+  rm -f /etc/rc*.d/*mysqld
+  systemctl daemon-reload
+  systemctl reset-failed mysqld.service mysql.service > /dev/null 2>&1 || true
 
   echo "${CMSG}Deleting MySQL user...${CEND}"
   id -u mysql >/dev/null 2>&1 && userdel mysql

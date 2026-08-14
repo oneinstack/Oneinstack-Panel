@@ -129,14 +129,19 @@ func (m *Manager) Submit(request InstallRequest, requestedBy int64) (*models.Sof
 }
 
 func (m *Manager) SubmitUninstall(name, version string, requestedBy int64) (*models.SoftwareTask, error) {
+	return m.SubmitUninstallWithParameters(name, version, nil, requestedBy)
+}
+
+func (m *Manager) SubmitUninstallWithParameters(name, version string, parameters map[string]string, requestedBy int64) (*models.SoftwareTask, error) {
 	key, err := m.softwareKeyForUninstall(name)
 	if err != nil {
 		return nil, err
 	}
 	return m.submit(InstallRequest{
-		Operation: "uninstall",
-		Key:       key,
-		Version:   version,
+		Operation:  "uninstall",
+		Key:        key,
+		Version:    version,
+		Parameters: parameters,
 	}, requestedBy)
 }
 

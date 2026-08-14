@@ -126,7 +126,7 @@ func RemoveSoftware(c *gin.Context) {
 		core.HandleError(c, appErr)
 		return
 	}
-	task, err := manager.SubmitUninstall(req.Name, req.Version, userID)
+	task, err := manager.SubmitUninstallWithParameters(req.Name, req.Version, req.Parameters, userID)
 	if err != nil {
 		appErr := core.WrapError(err, core.ErrBadRequest, "创建卸载任务失败")
 		core.HandleError(c, appErr)

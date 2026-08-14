@@ -494,7 +494,7 @@ func componentServiceStatusesFor(
 ) ([]componentServiceStatus, error) {
 	var installedRows []models.Software
 	if err := database.
-		Where("`key` IN ? AND installed = ?", []string{"webserver", "db", "php", "redis"}, true).
+		Where("`key` IN ? AND installed = ?", []string{"webserver", "db", "mysql", "mariadb", "percona", "php", "redis"}, true).
 		Order("install_time DESC").
 		Find(&installedRows).Error; err != nil {
 		return nil, err

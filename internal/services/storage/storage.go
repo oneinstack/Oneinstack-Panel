@@ -298,7 +298,7 @@ func RedisKeyList(param *input.QueryParam) (*PaginatedKeysInfo, error) {
 func CheckStorage() (bool, bool) {
 	// 检查是否安装了Mysql
 	mysql := &models.Software{}
-	mysqlTx := app.DB().Model(&models.Software{}).Where("`key` = ? AND installed = ?", "db", 1).First(mysql)
+	mysqlTx := app.DB().Model(&models.Software{}).Where("`key` IN ? AND installed = ?", models.DatabaseSoftwareKeys, 1).First(mysql)
 	mysqlInstalled := mysqlTx.Error == nil && mysqlTx.RowsAffected > 0
 
 	// 检查是否安装了Redis
@@ -645,7 +645,7 @@ func storageConnectionOutput(item *models.Storage) output.StorageConnection {
 func ensureRecordedLocalMySQLConnection() (*models.Storage, error) {
 	var installed models.Software
 	if err := app.DB().
-		Where("`key` = ? AND installed = ?", "db", true).
+		Where("`key` IN ? AND installed = ?", models.DatabaseSoftwareKeys, true).
 		Order("install_time DESC").
 		First(&installed).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {

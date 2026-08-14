@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -63,8 +64,9 @@ func getTaskManager() (*softwaretask.Manager, error) {
 					_, err := installer.UninstallTask(
 						ctx,
 						&input.RemoveParams{
-							Name:    request.Key,
-							Version: request.Version,
+							Name:       request.Key,
+							Version:    request.Version,
+							Parameters: request.Parameters,
 						},
 						logPath,
 						reporter,
@@ -110,7 +112,7 @@ func getTaskManager() (*softwaretask.Manager, error) {
 						return fmt.Errorf("restore managed website configurations: %w", err)
 					}
 				}
-				if params.Key == "db" && params.Pwd != "" {
+				if slices.Contains(models.DatabaseSoftwareKeys, params.Key) && params.Pwd != "" {
 					if err := storageService.EnsureManagedLocalMySQLConnection(
 						params.Port,
 						params.Username,
@@ -189,7 +191,7 @@ func SubmitInstallationTask(
 	req input.InstallParams,
 	requestedBy int64,
 ) (*models.SoftwareTask, error) {
-	if req.Key == "db" {
+	if slices.Contains(models.DatabaseSoftwareKeys, req.Key) {
 		req.Port = "3306"
 		req.Username = "root"
 		if strings.TrimSpace(req.Pwd) == "" {
@@ -203,7 +205,7 @@ func SubmitInstallationTask(
 			} else {
 				var installed int64
 				if err := app.DB().Model(&models.Software{}).
-					Where("`key` = ? AND installed = ?", "db", true).
+					Where("`key` IN ? AND installed = ?", models.DatabaseSoftwareKeys, true).
 					Count(&installed).Error; err != nil {
 					return nil, fmt.Errorf("check current MySQL installation: %w", err)
 				}

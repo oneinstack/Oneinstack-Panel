@@ -6,6 +6,11 @@ import (
 	"gorm.io/gorm"
 )
 
+// DatabaseSoftwareKeys are the catalog keys that provide the panel's
+// relational-database capability. Keep capability checks independent from the
+// selected database implementation.
+var DatabaseSoftwareKeys = []string{"db", "mysql", "mariadb", "percona"}
+
 const (
 	Soft_Status_Default = 0
 	Soft_Status_Ing     = 1

@@ -205,8 +205,9 @@ func (installer *Installer) getUninstallScript(
 		return nil, nil, err
 	}
 	installParams := &input.InstallParams{
-		Key:     softwareKey,
-		Version: params.Version,
+		Key:        softwareKey,
+		Version:    params.Version,
+		Parameters: params.Parameters,
 	}
 	installer.setScriptParams(scriptInfo, installParams)
 	return scriptInfo, installParams, nil

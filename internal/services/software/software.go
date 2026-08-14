@@ -240,15 +240,25 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 	}
 
 	failedTaskByKey := make(map[string]models.SoftwareTask)
+	latestTaskByKey := make(map[string]models.SoftwareTask)
 	var failedTasks []models.SoftwareTask
 	if taskErr := app.DB().
-		Where("status IN ?", []string{models.SoftwareTaskStatusFailed, models.SoftwareTaskStatusInterrupted}).
+		Where("status IN ?", []string{
+			models.SoftwareTaskStatusSucceeded,
+			models.SoftwareTaskStatusFailed,
+			models.SoftwareTaskStatusCanceled,
+			models.SoftwareTaskStatusInterrupted,
+		}).
 		Order("created_at DESC").
 		Find(&failedTasks).Error; taskErr == nil {
 		for _, task := range failedTasks {
-			if _, exists := failedTaskByKey[task.SoftwareKey]; !exists {
+			if _, exists := latestTaskByKey[task.SoftwareKey]; exists {
+				continue
+			}
+			if task.Status == models.SoftwareTaskStatusFailed || task.Status == models.SoftwareTaskStatusInterrupted {
 				failedTaskByKey[task.SoftwareKey] = task
 			}
+			latestTaskByKey[task.SoftwareKey] = task
 		}
 	}
 

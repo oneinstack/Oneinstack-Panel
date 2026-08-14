@@ -463,6 +463,7 @@ func (sm *ScriptManager) runInstallActionsContext(
 			output,
 			observer,
 		); err != nil {
+			_, _ = fmt.Fprintf(output, "ERROR: %s action failed: %v\n", action.name, err)
 			if scriptInfo.RollbackPath != "" && action.name != "precheck" &&
 				!isServiceControlAction(mainAction) {
 				_, _ = fmt.Fprintln(output, "\n===== rollback =====")
@@ -865,6 +866,7 @@ func (sm *ScriptManager) updateSoftwareInstallInfo(
 					"install_version":           version,
 					"installed_package_version": packageVersion,
 					"is_update":                 false,
+					"install_time":              time.Now(),
 				}).Error
 		}); err != nil {
 			fmt.Printf("Update software install state failed: %v\n", err)
