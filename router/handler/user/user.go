@@ -167,6 +167,7 @@ func LoginHandler(c *gin.Context) {
 	c.Set(middleware.ContextAuthMode, middleware.AuthModeCookie)
 	c.Set(middleware.ContextSessionID, sessionRecord.ID)
 	accessSummary, _ := accessservice.NewService(app.DB()).LoadUserAccess(account.ID)
+	authorizationMatrix := middleware.BuildAuthorizationMatrix(accessSummary)
 
 	// 记录成功登录日志
 	log.CreateLog(&models.SystemLog{
@@ -195,14 +196,15 @@ func LoginHandler(c *gin.Context) {
 		"mustChangePassword": account.MustChangePassword,
 		"requiresTwoFactor":  false,
 		"user": gin.H{
-			"id":           account.ID,
-			"username":     account.Username,
-			"isAdmin":      account.IsAdmin,
-			"isSuperAdmin": account.IsAdmin,
-			"roles":        roleItems(accessSummary),
-			"permissions":  permissionItems(accessSummary),
-			"canApprove":   accessSummary != nil && accessSummary.CanApprove,
-			"totpEnabled":  totpEnabled,
+			"id":                  account.ID,
+			"username":            account.Username,
+			"isAdmin":             account.IsAdmin,
+			"isSuperAdmin":        account.IsAdmin,
+			"firstAccessibleMenu": authorizationMatrix.FirstAccessibleMenu,
+			"roles":               roleItems(accessSummary),
+			"permissions":         permissionItems(accessSummary),
+			"canApprove":          accessSummary != nil && accessSummary.CanApprove,
+			"totpEnabled":         totpEnabled,
 		},
 	})
 }

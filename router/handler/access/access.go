@@ -126,12 +126,13 @@ func buildMeResponse(locale string, access *accessservice.UserAccess) gin.H {
 	}
 	matrix := middleware.BuildAuthorizationMatrix(access)
 	return gin.H{
-		"id":           access.UserID,
-		"username":     access.Username,
-		"isAdmin":      access.IsSuperAdmin,
-		"isSuperAdmin": access.IsSuperAdmin,
-		"roles":        roles,
-		"permissions":  access.Permissions,
+		"id":                  access.UserID,
+		"username":            access.Username,
+		"isAdmin":             access.IsSuperAdmin,
+		"isSuperAdmin":        access.IsSuperAdmin,
+		"firstAccessibleMenu": matrix.FirstAccessibleMenu,
+		"roles":               roles,
+		"permissions":         access.Permissions,
 		"scopes": gin.H{
 			"runtimeLog": matrix.Menu["runtimeLog"],
 			"audit":      matrix.Menu["audit"],
@@ -140,6 +141,7 @@ func buildMeResponse(locale string, access *accessservice.UserAccess) gin.H {
 			"approval":   matrix.Scopes["approval"],
 			"file":       matrix.Scopes["file"],
 			"bastion":    matrix.Menu["bastion"],
+			"terminal":   matrix.Menu["terminal"],
 		},
 	}
 }

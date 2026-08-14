@@ -21,10 +21,11 @@ const (
 )
 
 type AuthorizationMatrix struct {
-	Menu             map[string]bool            `json:"menu"`
-	Actions          map[string]bool            `json:"actions"`
-	ApprovalPolicies map[string]bool            `json:"approvalPolicies"`
-	Scopes           map[string]map[string]bool `json:"scopes"`
+	Menu                map[string]bool            `json:"menu"`
+	FirstAccessibleMenu string                     `json:"firstAccessibleMenu,omitempty"`
+	Actions             map[string]bool            `json:"actions"`
+	ApprovalPolicies    map[string]bool            `json:"approvalPolicies"`
+	Scopes              map[string]map[string]bool `json:"scopes"`
 }
 
 type menuVisibilityRule struct {
@@ -262,9 +263,17 @@ func BuildAuthorizationMatrix(access *accessservice.UserAccess) AuthorizationMat
 	for operation, permission := range accessservice.OperationPermissions() {
 		actions[operation] = has(permission)
 	}
+	firstAccessibleMenu := ""
+	for _, rule := range authorizationMenuRules {
+		if rule.key != "logout" && menu[rule.key] {
+			firstAccessibleMenu = rule.key
+			break
+		}
+	}
 	return AuthorizationMatrix{
-		Menu:    menu,
-		Actions: actions,
+		Menu:                menu,
+		FirstAccessibleMenu: firstAccessibleMenu,
+		Actions:             actions,
 		ApprovalPolicies: map[string]bool{
 			"website.delete":             true,
 			"website.restore":            true,
