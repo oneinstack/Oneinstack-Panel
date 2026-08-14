@@ -74,6 +74,8 @@ func ADDLib(c *gin.Context) {
 		core.HandleError(c, appErr)
 		return
 	}
+	// The caller may receive the newly created credential so it can be saved
+	// during provisioning; reading an existing credential remains restricted.
 	core.HandleSuccess(c, credential)
 }
 
@@ -256,22 +258,6 @@ func RevealLibraryCredential(c *gin.Context) {
 		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "数据库标识无效"))
 		return
 	}
-	if shouldRequestDatabaseApproval(c) {
-		approval, createErr := createDatabaseApproval(c, ApprovalActionDatabaseCredentialReveal, "", strconv.FormatInt(id, 10), RevealCredentialApprovalPayload{
-			LibraryID: id,
-			Reason:    "查看数据库明文凭据",
-		})
-		if createErr != nil {
-			core.HandleError(c, core.WrapError(createErr, core.ErrBadRequest, "创建数据库凭据审批失败"))
-			return
-		}
-		c.JSON(202, core.SuccessResponseForContext(c, gin.H{
-			"mode":       "approval_pending",
-			"approvalId": approval.ID,
-			"status":     approval.Status,
-		}))
-		return
-	}
 	credential, err := storage.GetLibraryCredential(id)
 	if err != nil {
 		code, message := core.ErrInternalError, "读取数据库账号失败"
@@ -309,6 +295,8 @@ func UpdateLibraryCredential(c *gin.Context) {
 		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "修改数据库账号密码失败"))
 		return
 	}
+	// Return the newly rotated password to the operator who explicitly set it.
+	// Reading an existing credential remains restricted to the reveal endpoint.
 	core.HandleSuccess(c, credential)
 }
 

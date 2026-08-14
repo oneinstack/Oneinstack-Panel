@@ -216,7 +216,7 @@ func SetupRouter() *gin.Engine {
 		storageg.POST("/addlib", middleware.RequirePermission("database.write"), storage.ADDLib)
 		storageg.POST("/dellib", middleware.RequirePermission("database.write"), storage.DeleteLibrary)
 		storageg.POST("/libraries/:id/credential/reveal",
-			middleware.RequirePermission("database.write"), storage.RevealLibraryCredential)
+			middleware.RequirePermission(accessservice.PermissionDatabaseWrite), storage.RevealLibraryCredential)
 		storageg.POST("/libraries/:id/credential/update",
 			middleware.RequirePermission("database.write"), storage.UpdateLibraryCredential)
 		storageg.POST("/updateconn", middleware.RequirePermission("database.write"), storage.UpdateStorage)

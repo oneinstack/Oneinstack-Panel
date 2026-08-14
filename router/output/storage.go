@@ -35,5 +35,5 @@ type DatabaseCredential struct {
 	LibraryID int64  `json:"libraryId"`
 	Database  string `json:"database"`
 	Username  string `json:"username"`
-	Password  string `json:"password"`
+	Password  string `json:"password,omitempty"`
 }

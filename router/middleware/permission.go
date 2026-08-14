@@ -273,7 +273,7 @@ func BuildAuthorizationMatrix(access *accessservice.UserAccess) AuthorizationMat
 			"certificate.issue":          true,
 			"certificate.renew":          true,
 			"certificate.disable":        true,
-			"database.credential.reveal": true,
+			"database.credential.reveal": false,
 			"file.delete":                true,
 			"file.trash.empty":           true,
 			"file.trash.delete":          true,
