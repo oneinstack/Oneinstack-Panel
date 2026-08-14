@@ -30,6 +30,7 @@ type InstallRequest struct {
 	Port                  string
 	Username              string
 	Password              string
+	Parameters            map[string]string
 	Revision              string
 	PreviousConfiguration map[string]string
 	Configuration         map[string]string

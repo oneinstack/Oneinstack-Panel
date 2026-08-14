@@ -516,6 +516,20 @@ func (installer *Installer) setScriptParams(scriptInfo *script.ScriptInfo, param
 			}
 		}
 	}
+	// Component-specific install fields are accepted only when declared by the
+	// resolved signed manifest. This supports new Center components without
+	// hard-coding their parameter names while preventing arbitrary environment
+	// variable injection.
+	for _, parameter := range scriptInfo.ParameterSpecs {
+		for key, value := range params.Parameters {
+			parameterKey := strings.NewReplacer("-", "_", ".", "_").Replace(strings.ToLower(key))
+			manifestKey := strings.NewReplacer("-", "_", ".", "_").Replace(strings.ToLower(parameter.Name))
+			if parameterKey == manifestKey && value != "" {
+				scriptInfo.Params[parameter.Name] = value
+				break
+			}
+		}
+	}
 
 	// 通用参数
 	scriptInfo.Params["SOFTWARE_VERSION"] = params.Version

@@ -95,11 +95,12 @@ func getTaskManager() (*softwaretask.Manager, error) {
 					return err
 				}
 				params := &input.InstallParams{
-					Key:      request.Key,
-					Version:  request.Version,
-					Port:     request.Port,
-					Username: request.Username,
-					Pwd:      request.Password,
+					Key:        request.Key,
+					Version:    request.Version,
+					Port:       request.Port,
+					Username:   request.Username,
+					Pwd:        request.Password,
+					Parameters: request.Parameters,
 				}
 				if _, err := installer.InstallTask(ctx, params, logPath, reporter); err != nil {
 					return err
@@ -222,11 +223,12 @@ func SubmitInstallationTask(
 		return nil, err
 	}
 	return manager.Submit(softwaretask.InstallRequest{
-		Key:      req.Key,
-		Version:  req.Version,
-		Port:     req.Port,
-		Username: req.Username,
-		Password: req.Pwd,
+		Key:        req.Key,
+		Version:    req.Version,
+		Port:       req.Port,
+		Username:   req.Username,
+		Password:   req.Pwd,
+		Parameters: req.Parameters,
 	}, requestedBy)
 }
 

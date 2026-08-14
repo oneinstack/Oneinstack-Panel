@@ -1,11 +1,53 @@
 package input
 
+import (
+	"encoding/json"
+	"fmt"
+)
+
 type InstallParams struct {
 	Key      string `json:"key"`      //安装的服务
 	Version  string `json:"version"`  //安装的版本
 	Port     string `json:"port"`     //端口
 	Username string `json:"username"` //账号
 	Pwd      string `json:"pwd"`      //密码
+	// Parameters contains component-specific values declared by the signed
+	// package manifest. It is intentionally not persisted with task metadata.
+	Parameters map[string]string `json:"parameters,omitempty"`
+}
+
+// UnmarshalJSON keeps the legacy flat install form compatible with component
+// packages: fields such as BACKUP_ENDPOINT are collected instead of being
+// silently discarded by encoding/json. The executor still applies a manifest
+// allowlist before exporting them to the action environment.
+func (p *InstallParams) UnmarshalJSON(data []byte) error {
+	type alias InstallParams
+	var decoded alias
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	values := make(map[string]json.RawMessage)
+	if err := json.Unmarshal(data, &values); err != nil {
+		return err
+	}
+	parameters := make(map[string]string, len(decoded.Parameters)+len(values))
+	for key, value := range decoded.Parameters {
+		parameters[key] = value
+	}
+	known := map[string]bool{"key": true, "version": true, "port": true, "username": true, "pwd": true, "parameters": true}
+	for key, raw := range values {
+		if known[key] {
+			continue
+		}
+		var value string
+		if err := json.Unmarshal(raw, &value); err != nil {
+			return fmt.Errorf("install parameter %s must be a string", key)
+		}
+		parameters[key] = value
+	}
+	decoded.Parameters = parameters
+	*p = InstallParams(decoded)
+	return nil
 }
 
 type RemoveParams struct {
