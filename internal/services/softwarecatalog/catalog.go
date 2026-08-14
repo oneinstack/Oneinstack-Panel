@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -465,6 +466,7 @@ func (m *Manager) resolvePackageVersions(ctx context.Context, document Document)
 	if err != nil {
 		return resolved
 	}
+	requests := make([]scriptregistry.PackageBatchRequest, 0)
 	for _, product := range document.Products {
 		for _, version := range product.Versions {
 			if version.Channel != m.config.Channel {
@@ -474,15 +476,26 @@ func (m *Manager) resolvePackageVersions(ctx context.Context, document Document)
 			if _, exists := resolved[key]; exists {
 				continue
 			}
-			packageVersion, resolveErr := registry.ResolvePackageVersionChannel(
-				ctx,
-				product.Component,
-				version.Version,
-				version.Channel,
-			)
+			requests = append(requests, scriptregistry.PackageBatchRequest{
+				Component: product.Component, SoftwareVersion: version.Version, Channel: version.Channel,
+			})
+		}
+	}
+	requests = dedupePackageBatchRequests(requests)
+	versions, batchErr := registry.ResolvePackageVersionChannelBatch(ctx, requests)
+	if errors.Is(batchErr, scriptregistry.ErrBatchUnsupported) {
+		versions = make(map[string]string, len(requests))
+		for _, item := range requests {
+			version, resolveErr := registry.ResolvePackageVersionChannel(ctx, item.Component, item.SoftwareVersion, item.Channel)
 			if resolveErr == nil {
-				resolved[key] = packageVersion
+				versions[packageVersionKey(item.Component, item.SoftwareVersion, item.Channel)] = version
 			}
+		}
+		batchErr = nil
+	}
+	if batchErr == nil {
+		for key, version := range versions {
+			resolved[key] = version
 		}
 	}
 	return resolved
@@ -494,17 +507,36 @@ func (m *Manager) resolvePublishedPackageVersions(ctx context.Context, document 
 	if err != nil {
 		return resolved
 	}
+	requests := make([]scriptregistry.PackageBatchRequest, 0)
 	for _, product := range document.Products {
 		for _, version := range product.Versions {
 			if version.Channel != m.config.Channel {
 				continue
 			}
-			key := packageVersionKey(product.Component, version.Version, version.Channel)
-			available, availabilityErr := registry.PackageAvailableChannel(
-				ctx, product.Component, version.Version, version.Channel,
-			)
-			if availabilityErr == nil && available {
-				resolved[key] = version.Version
+			requests = append(requests, scriptregistry.PackageBatchRequest{
+				Component: product.Component, SoftwareVersion: version.Version, Channel: version.Channel,
+			})
+		}
+	}
+	requests = dedupePackageBatchRequests(requests)
+	available, batchErr := registry.PackageAvailableChannelBatch(ctx, requests)
+	if errors.Is(batchErr, scriptregistry.ErrBatchUnsupported) {
+		available = make(map[string]bool, len(requests))
+		for _, item := range requests {
+			ok, availabilityErr := registry.PackageAvailableChannel(ctx, item.Component, item.SoftwareVersion, item.Channel)
+			if availabilityErr == nil {
+				available[packageVersionKey(item.Component, item.SoftwareVersion, item.Channel)] = ok
+			}
+		}
+		batchErr = nil
+	}
+	if batchErr == nil {
+		for key, ok := range available {
+			if ok {
+				parts := strings.Split(key, "\x00")
+				if len(parts) == 3 {
+					resolved[key] = parts[1]
+				}
 			}
 		}
 	}
@@ -531,18 +563,68 @@ func (m *Manager) refreshPackageAvailability(ctx context.Context, channel, revis
 	}
 	counts := packageAvailabilityCounts{}
 	installableProducts := make(map[string]struct{})
+	requests := make([]scriptregistry.PackageBatchRequest, 0, len(rows))
 	for _, row := range rows {
-		packageAvailable, availabilityErr := registry.PackageAvailableChannel(
-			ctx, row.Component, row.Version, row.CatalogChannel,
-		)
-		if availabilityErr != nil || !packageAvailable {
+		requests = append(requests, scriptregistry.PackageBatchRequest{
+			Component: row.Component, SoftwareVersion: row.Version, Channel: row.CatalogChannel,
+		})
+	}
+	requests = dedupePackageBatchRequests(requests)
+	if len(requests) == 0 {
+		log.Printf("software catalog: skip Center package counts request rows=%d uniqueRequests=0", len(rows))
+		return counts, nil
+	}
+	log.Printf("software catalog: package counts availability rows=%d uniqueRequests=%d", len(rows), len(requests))
+	available, availabilityErr := registry.PackageAvailableChannelBatch(ctx, requests)
+	if errors.Is(availabilityErr, scriptregistry.ErrBatchUnsupported) {
+		available = make(map[string]bool, len(requests))
+		for _, item := range requests {
+			ok, itemErr := registry.PackageAvailableChannel(ctx, item.Component, item.SoftwareVersion, item.Channel)
+			if itemErr == nil {
+				available[packageVersionKey(item.Component, item.SoftwareVersion, item.Channel)] = ok
+			}
+		}
+		availabilityErr = nil
+	}
+	if availabilityErr != nil {
+		return counts, availabilityErr
+	}
+	availableCount := 0
+	for _, ok := range available {
+		if ok {
+			availableCount++
+		}
+	}
+	resolveRequests := make([]scriptregistry.PackageBatchRequest, 0)
+	for _, row := range rows {
+		key := packageVersionKey(row.Component, row.Version, row.CatalogChannel)
+		if !available[key] {
 			counts.MissingPackageCount++
 			continue
 		}
-		packageVersion, resolveErr := registry.ResolvePackageVersionChannel(
-			ctx, row.Component, row.Version, row.CatalogChannel,
-		)
-		if row.Installable && resolveErr == nil && strings.TrimSpace(packageVersion) != "" {
+		resolveRequests = append(resolveRequests, scriptregistry.PackageBatchRequest{
+			Component: row.Component, SoftwareVersion: row.Version, Channel: row.CatalogChannel,
+		})
+	}
+	resolveRequests = dedupePackageBatchRequests(resolveRequests)
+	log.Printf("software catalog: package counts available=%d resolveRequests=%d", availableCount, len(resolveRequests))
+	packageVersions, resolveErr := registry.ResolvePackageVersionChannelBatch(ctx, resolveRequests)
+	if errors.Is(resolveErr, scriptregistry.ErrBatchUnsupported) {
+		packageVersions = make(map[string]string, len(resolveRequests))
+		for _, item := range resolveRequests {
+			version, itemErr := registry.ResolvePackageVersionChannel(ctx, item.Component, item.SoftwareVersion, item.Channel)
+			if itemErr == nil {
+				packageVersions[packageVersionKey(item.Component, item.SoftwareVersion, item.Channel)] = version
+			}
+		}
+		resolveErr = nil
+	}
+	if resolveErr != nil {
+		return counts, resolveErr
+	}
+	for _, row := range rows {
+		key := packageVersionKey(row.Component, row.Version, row.CatalogChannel)
+		if row.Installable && strings.TrimSpace(packageVersions[key]) != "" {
 			counts.InstallableVersionCount++
 			installableProducts[row.Key] = struct{}{}
 		}
@@ -553,6 +635,23 @@ func (m *Manager) refreshPackageAvailability(ctx context.Context, channel, revis
 
 func packageVersionKey(component, softwareVersion, channel string) string {
 	return component + "\x00" + softwareVersion + "\x00" + channel
+}
+
+func dedupePackageBatchRequests(requests []scriptregistry.PackageBatchRequest) []scriptregistry.PackageBatchRequest {
+	if len(requests) < 2 {
+		return requests
+	}
+	seen := make(map[string]struct{}, len(requests))
+	unique := make([]scriptregistry.PackageBatchRequest, 0, len(requests))
+	for _, request := range requests {
+		key := packageVersionKey(request.Component, request.SoftwareVersion, request.Channel)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		unique = append(unique, request)
+	}
+	return unique
 }
 
 func (m *Manager) refreshPackageVersions(ctx context.Context) error {

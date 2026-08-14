@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -29,6 +30,36 @@ type Registry struct {
 	client  *http.Client
 	baseURL *url.URL
 	host    Host
+}
+
+var ErrBatchUnsupported = errors.New("script center batch endpoint is unsupported")
+
+const packageBatchLimit = 512
+
+type PackageBatchRequest struct {
+	Component       string `json:"component"`
+	SoftwareVersion string `json:"softwareVersion"`
+	Channel         string `json:"channel"`
+	Host            Host   `json:"host,omitempty"`
+}
+
+type packageBatchResolveResponse struct {
+	Results []struct {
+		Component       string   `json:"component"`
+		SoftwareVersion string   `json:"softwareVersion"`
+		Channel         string   `json:"channel"`
+		Metadata        Metadata `json:"metadata"`
+		ErrorCode       string   `json:"errorCode"`
+	} `json:"results"`
+}
+
+type packageBatchAvailableResponse struct {
+	Results []struct {
+		Component       string `json:"component"`
+		SoftwareVersion string `json:"softwareVersion"`
+		Channel         string `json:"channel"`
+		Available       bool   `json:"available"`
+	} `json:"results"`
 }
 
 func New(centerConfig config.ScriptCenter) (*Registry, error) {
@@ -172,6 +203,155 @@ func (r *Registry) PackageAvailableChannel(
 		return false, fmt.Errorf("decode package availability: %w", err)
 	}
 	return result.Available, nil
+}
+
+func (r *Registry) PackageAvailableChannelBatch(ctx context.Context, requests []PackageBatchRequest) (map[string]bool, error) {
+	if !r.config.Enabled {
+		return nil, errors.New("script center is disabled")
+	}
+	if len(requests) == 0 {
+		return map[string]bool{}, nil
+	}
+	available := make(map[string]bool, len(requests))
+	for start := 0; start < len(requests); start += packageBatchLimit {
+		end := start + packageBatchLimit
+		if end > len(requests) {
+			end = len(requests)
+		}
+		part, err := r.packageAvailableChannelBatchOnce(ctx, requests[start:end])
+		if err != nil {
+			return nil, err
+		}
+		for key, value := range part {
+			available[key] = value
+		}
+	}
+	return available, nil
+}
+
+func (r *Registry) packageAvailableChannelBatchOnce(ctx context.Context, requests []PackageBatchRequest) (map[string]bool, error) {
+	log.Printf("software catalog: Center package availability batch requests=%d", len(requests))
+	wireRequests := make([]struct {
+		Component       string `json:"component"`
+		SoftwareVersion string `json:"softwareVersion"`
+		Channel         string `json:"channel"`
+	}, 0, len(requests))
+	for _, item := range requests {
+		wireRequests = append(wireRequests, struct {
+			Component       string `json:"component"`
+			SoftwareVersion string `json:"softwareVersion"`
+			Channel         string `json:"channel"`
+		}{
+			Component: item.Component, SoftwareVersion: item.SoftwareVersion, Channel: item.Channel,
+		})
+	}
+	body, err := json.Marshal(struct {
+		Requests any `json:"requests"`
+	}{wireRequests})
+	if err != nil {
+		return nil, fmt.Errorf("encode package availability batch request: %w", err)
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, r.endpoint("/v1/packages/available/batch"), bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("create package availability batch request: %w", err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := r.client.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("check package availability batch: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode == http.StatusNotFound {
+		return nil, ErrBatchUnsupported
+	}
+	if response.StatusCode != http.StatusOK {
+		return nil, decodeAPIError(response)
+	}
+	var result packageBatchAvailableResponse
+	if err := decodeLimitedJSON(response.Body, &result); err != nil {
+		return nil, fmt.Errorf("decode package availability batch: %w", err)
+	}
+	available := make(map[string]bool, len(result.Results))
+	for _, item := range result.Results {
+		available[batchKey(item.Component, item.SoftwareVersion, item.Channel)] = item.Available
+	}
+	return available, nil
+}
+
+func (r *Registry) ResolvePackageVersionChannelBatch(ctx context.Context, requests []PackageBatchRequest) (map[string]string, error) {
+	if !r.config.Enabled {
+		return nil, errors.New("script center is disabled")
+	}
+	if len(requests) == 0 {
+		return map[string]string{}, nil
+	}
+	versions := make(map[string]string, len(requests))
+	for start := 0; start < len(requests); start += packageBatchLimit {
+		end := start + packageBatchLimit
+		if end > len(requests) {
+			end = len(requests)
+		}
+		part, err := r.resolvePackageVersionChannelBatchOnce(ctx, requests[start:end])
+		if err != nil {
+			return nil, err
+		}
+		for key, value := range part {
+			versions[key] = value
+		}
+	}
+	return versions, nil
+}
+
+func (r *Registry) resolvePackageVersionChannelBatchOnce(ctx context.Context, requests []PackageBatchRequest) (map[string]string, error) {
+	log.Printf("software catalog: Center package resolve batch requests=%d", len(requests))
+	for index := range requests {
+		requests[index].Host = r.host
+	}
+	body, err := json.Marshal(struct {
+		Requests []PackageBatchRequest `json:"requests"`
+	}{requests})
+	if err != nil {
+		return nil, fmt.Errorf("encode package resolve batch request: %w", err)
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, r.endpoint("/v1/packages/resolve/batch"), bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("create package resolve batch request: %w", err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := r.client.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("resolve package batch: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode == http.StatusNotFound {
+		return nil, ErrBatchUnsupported
+	}
+	if response.StatusCode != http.StatusOK {
+		return nil, decodeAPIError(response)
+	}
+	var result packageBatchResolveResponse
+	if err := decodeLimitedJSON(response.Body, &result); err != nil {
+		return nil, fmt.Errorf("decode package resolve batch: %w", err)
+	}
+	versions := make(map[string]string, len(result.Results))
+	for _, item := range result.Results {
+		if item.ErrorCode != "" || item.Metadata.Manifest.Component.Version == "" {
+			continue
+		}
+		if err := item.Metadata.Manifest.validate(); err != nil || item.Metadata.Manifest.Component.ID != item.Component ||
+			!item.Metadata.Manifest.supportsSoftwareVersion(item.SoftwareVersion) || item.Metadata.Manifest.Component.Channel != item.Channel {
+			continue
+		}
+		if err := r.verifyMetadata(item.Metadata); err != nil {
+			continue
+		}
+		versions[batchKey(item.Component, item.SoftwareVersion, item.Channel)] = item.Metadata.Manifest.Component.Version
+	}
+	return versions, nil
+}
+
+func batchKey(component, softwareVersion, channel string) string {
+	return component + "\x00" + softwareVersion + "\x00" + channel
 }
 
 // ResolveInstalled resolves a package for an already installed software
