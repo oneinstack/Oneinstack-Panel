@@ -536,6 +536,42 @@ func (access *UserAccess) HasPermission(code string) bool {
 	return false
 }
 
+// CanControlServiceComponent applies the built-in role scope to service
+// control. Broad software operators retain access to every supported service,
+// while website and database administrators only control their own services.
+func (access *UserAccess) CanControlServiceComponent(component string) bool {
+	if access == nil {
+		return false
+	}
+	if access.IsSuperAdmin || access.HasPermission(PermissionSoftwareWrite) {
+		return true
+	}
+
+	component = strings.ToLower(strings.TrimSpace(component))
+	if component == "webserver" {
+		component = "nginx"
+	}
+	scopedRole := false
+	for _, role := range access.Roles {
+		switch role.Code {
+		case RoleWebsiteAdmin:
+			scopedRole = true
+			if component == "nginx" || component == "php" {
+				return true
+			}
+		case RoleDatabaseAdmin:
+			scopedRole = true
+			if component == "mysql" || component == "redis" {
+				return true
+			}
+		}
+	}
+
+	// Preserve existing behavior for custom roles that explicitly receive the
+	// generic service-control permission.
+	return !scopedRole && access.HasPermission(PermissionServiceWrite)
+}
+
 func (service *Service) ListRoles() ([]RoleSummary, error) {
 	if service.db == nil {
 		return nil, errors.New("database is not initialized")

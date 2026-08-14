@@ -105,6 +105,10 @@ func RunComponentServiceAction(c *gin.Context) {
 		core.HandleError(c, core.NewError(core.ErrBadRequest, "该组件不支持安全重载，请使用重启"))
 		return
 	}
+	if access, hasAccessContext := middleware.UserAccess(c); hasAccessContext && !access.CanControlServiceComponent(definition.Component) {
+		core.HandleError(c, core.NewError(core.ErrForbidden, "当前角色无权控制该组件服务"))
+		return
+	}
 	userID, ok := middleware.AuthenticatedUserID(c)
 	if !ok {
 		core.HandleError(c, core.NewError(core.ErrUnauthorized, "无法识别当前用户"))

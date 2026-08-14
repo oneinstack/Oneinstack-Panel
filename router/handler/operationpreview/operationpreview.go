@@ -57,6 +57,10 @@ func Preview(c *gin.Context) {
 		core.HandleError(c, err)
 		return
 	}
+	if err := requireServiceComponentPermission(c, operation, request.Payload); err != nil {
+		core.HandleError(c, err)
+		return
+	}
 	userID, ok := middleware.AuthenticatedUserID(c)
 	if !ok {
 		core.HandleError(c, core.NewError(core.ErrUnauthorized, "无法识别当前用户"))
@@ -181,6 +185,10 @@ func Execute(c *gin.Context) {
 		writeConsumeError(c, err)
 		return
 	}
+	if err := requireServiceComponentPermission(c, operation, payload); err != nil {
+		core.HandleError(c, err)
+		return
+	}
 	result, err := executeOperation(c.Request.Context(), operation, payload, userID, auditservice.RemoteIP(c.Request))
 	if err != nil {
 		writeExecutionError(c, err)
@@ -229,6 +237,23 @@ func requireOperationPermission(c *gin.Context, operation string) *core.AppError
 	permission, supported := accessservice.OperationPermission(operation)
 	if !supported || !userAccess.HasPermission(permission) {
 		return core.NewError(core.ErrForbidden, "没有执行该操作的权限")
+	}
+	return nil
+}
+
+func requireServiceComponentPermission(c *gin.Context, operation string, payload json.RawMessage) *core.AppError {
+	if operation != "software.service_action" {
+		return nil
+	}
+	var request struct {
+		Component string `json:"component"`
+	}
+	if err := json.Unmarshal(payload, &request); err != nil || strings.TrimSpace(request.Component) == "" {
+		return core.NewError(core.ErrBadRequest, "服务控制组件参数不正确")
+	}
+	access, ok := middleware.UserAccess(c)
+	if !ok || !access.CanControlServiceComponent(request.Component) {
+		return core.NewError(core.ErrForbidden, "当前角色无权控制该组件服务")
 	}
 	return nil
 }
