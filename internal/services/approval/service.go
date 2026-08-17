@@ -18,7 +18,11 @@ type Service struct {
 
 // ErrRequesterCannotReview is returned when an approval requester tries to
 // approve or reject their own pending request.
-var ErrRequesterCannotReview = errors.New("requester cannot review own request")
+var (
+	ErrRequesterCannotReview = errors.New("requester cannot review own request")
+	ErrApprovalNotPending    = errors.New("approval request is not pending")
+	ErrApprovalExpired       = errors.New("approval request has expired")
+)
 
 type CreateInput struct {
 	Module          string
@@ -165,14 +169,14 @@ func (service *Service) Approve(id string, approverID int64, approverName, comme
 		return nil, ErrRequesterCannotReview
 	}
 	if request.Status != models.ApprovalStatusPending {
-		return nil, errors.New("approval request is not pending")
+		return nil, ErrApprovalNotPending
 	}
 	if !request.ExpiresAt.IsZero() && time.Now().UTC().After(request.ExpiresAt) {
 		if err := service.db.Model(&models.ApprovalRequest{}).Where("id = ?", request.ID).
 			Update("status", models.ApprovalStatusExpired).Error; err != nil {
 			return nil, err
 		}
-		return nil, errors.New("approval request has expired")
+		return nil, ErrApprovalExpired
 	}
 	now := time.Now().UTC()
 	err = service.db.Model(&models.ApprovalRequest{}).Where("id = ?", request.ID).Updates(map[string]any{
@@ -197,7 +201,14 @@ func (service *Service) Reject(id string, approverID int64, approverName, commen
 		return nil, ErrRequesterCannotReview
 	}
 	if request.Status != models.ApprovalStatusPending {
-		return nil, errors.New("approval request is not pending")
+		return nil, ErrApprovalNotPending
+	}
+	if !request.ExpiresAt.IsZero() && time.Now().UTC().After(request.ExpiresAt) {
+		if err := service.db.Model(&models.ApprovalRequest{}).Where("id = ?", request.ID).
+			Update("status", models.ApprovalStatusExpired).Error; err != nil {
+			return nil, err
+		}
+		return nil, ErrApprovalExpired
 	}
 	now := time.Now().UTC()
 	err = service.db.Model(&models.ApprovalRequest{}).Where("id = ?", request.ID).Updates(map[string]any{
