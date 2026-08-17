@@ -22,9 +22,16 @@ type OperationResult struct {
 }
 
 // Measure returns the regular-file bytes and entry count for a file tree.
-// Symbolic links and special files are rejected so copy/archive never follows
-// a link outside the managed root.
+// Symbolic links and special files are rejected so copy never follows a link
+// outside the managed root.
 func (m *Manager) Measure(virtualPath string) (OperationResult, error) {
+	return m.measure(virtualPath, false)
+}
+
+// measure calculates the source size without following symbolic links. Archive
+// creation preserves symbolic links as tar entries, while copy operations keep
+// rejecting them.
+func (m *Manager) measure(virtualPath string, allowSymbolicLinks bool) (OperationResult, error) {
 	relative, err := m.Relative(virtualPath)
 	if err != nil {
 		return OperationResult{}, err
@@ -36,7 +43,7 @@ func (m *Manager) Measure(virtualPath string) (OperationResult, error) {
 	if err != nil {
 		return OperationResult{}, err
 	}
-	if rootInfo.Mode()&os.ModeSymlink != 0 {
+	if !allowSymbolicLinks && rootInfo.Mode()&os.ModeSymlink != 0 {
 		return OperationResult{}, fmt.Errorf("%w: symbolic links cannot be copied or archived", ErrUnsupportedType)
 	}
 	result := OperationResult{Path: m.VirtualPath(relative)}
@@ -48,10 +55,10 @@ func (m *Manager) Measure(virtualPath string) (OperationResult, error) {
 		if err != nil {
 			return err
 		}
-		if info.Mode()&os.ModeSymlink != 0 {
+		if !allowSymbolicLinks && info.Mode()&os.ModeSymlink != 0 {
 			return fmt.Errorf("%w: symbolic links cannot be copied or archived", ErrUnsupportedType)
 		}
-		if !info.IsDir() && !info.Mode().IsRegular() {
+		if !info.IsDir() && !info.Mode().IsRegular() && !(allowSymbolicLinks && info.Mode()&os.ModeSymlink != 0) {
 			return fmt.Errorf("%w: %s", ErrUnsupportedType, info.Mode().Type())
 		}
 		result.Entries++
@@ -166,7 +173,7 @@ func (m *Manager) Archive(source, targetDir, archiveName string) (result Operati
 		strings.HasPrefix(targetRelative, sourceRelative+"/") {
 		return OperationResult{}, fmt.Errorf("%w: archive cannot be created inside source", ErrInvalidPath)
 	}
-	if _, err := m.Measure(source); err != nil {
+	if _, err := m.measure(source, true); err != nil {
 		return OperationResult{}, err
 	}
 
@@ -196,10 +203,8 @@ func (m *Manager) Archive(source, targetDir, archiveName string) (result Operati
 		if err != nil {
 			return err
 		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			return ErrUnsupportedType
-		}
-		if !info.IsDir() && !info.Mode().IsRegular() {
+		isSymbolicLink := info.Mode()&os.ModeSymlink != 0
+		if !isSymbolicLink && !info.IsDir() && !info.Mode().IsRegular() {
 			return ErrUnsupportedType
 		}
 		relativeName := "."
@@ -210,7 +215,22 @@ func (m *Manager) Archive(source, targetDir, archiveName string) (result Operati
 		if relativeName != "." {
 			archivePath = pathpkg.Join(baseName, relativeName)
 		}
-		header, err := tar.FileInfoHeader(info, "")
+		linkTarget := ""
+		if isSymbolicLink {
+			parent, openErr := m.root.Open(pathpkg.Dir(current))
+			if openErr != nil {
+				return openErr
+			}
+			linkTarget, err = readlinkAt(parent, pathpkg.Base(current))
+			closeErr := parent.Close()
+			if err != nil {
+				return err
+			}
+			if closeErr != nil {
+				return closeErr
+			}
+		}
+		header, err := tar.FileInfoHeader(info, linkTarget)
 		if err != nil {
 			return err
 		}

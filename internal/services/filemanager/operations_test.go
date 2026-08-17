@@ -108,12 +108,15 @@ func TestCopyMoveRenameAndArchive(t *testing.T) {
 	}
 }
 
-func TestCopyAndArchiveRejectSymbolicLinks(t *testing.T) {
+func TestCopyRejectsAndArchivePreservesSymbolicLinks(t *testing.T) {
 	rootPath := t.TempDir()
 	if err := os.WriteFile(filepath.Join(rootPath, "target.txt"), []byte("secret"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink("target.txt", filepath.Join(rootPath, "link.txt")); err != nil {
+	if err := os.Mkdir(filepath.Join(rootPath, "source"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../target.txt", filepath.Join(rootPath, "source", "link.txt")); err != nil {
 		t.Fatal(err)
 	}
 	manager, err := New(rootPath)
@@ -122,10 +125,36 @@ func TestCopyAndArchiveRejectSymbolicLinks(t *testing.T) {
 	}
 	defer manager.Close()
 
-	if _, err := manager.Copy("/link.txt", "/", "copy.txt", false); !errors.Is(err, ErrUnsupportedType) {
+	if _, err := manager.Copy("/source", "/", "copy", false); !errors.Is(err, ErrUnsupportedType) {
 		t.Fatalf("copy symlink error=%v, want ErrUnsupportedType", err)
 	}
-	if _, err := manager.Archive("/link.txt", "/", "link.tar.gz"); !errors.Is(err, ErrUnsupportedType) {
-		t.Fatalf("archive symlink error=%v, want ErrUnsupportedType", err)
+	archived, err := manager.Archive("/source", "/", "link.tar.gz")
+	if err != nil {
+		t.Fatalf("archive symlink: %v", err)
+	}
+	if archived.Entries != 2 || archived.Bytes != 0 {
+		t.Fatalf("unexpected archive result: %+v", archived)
+	}
+	archiveFile, err := os.Open(filepath.Join(rootPath, "link.tar.gz"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer archiveFile.Close()
+	gzipReader, err := gzip.NewReader(archiveFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer gzipReader.Close()
+	tarReader := tar.NewReader(gzipReader)
+	_, err = tarReader.Next()
+	if err != nil {
+		t.Fatal(err)
+	}
+	header, err := tarReader.Next()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if header.Typeflag != tar.TypeSymlink || header.Linkname != "../target.txt" {
+		t.Fatalf("archive link header=%+v", header)
 	}
 }
