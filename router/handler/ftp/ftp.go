@@ -102,6 +102,10 @@ func ListDirectory(c *gin.Context) {
 
 	fileInfos := make([]gin.H, 0, len(entries))
 	favoritePaths := make([]string, 0, len(entries))
+	canDelete := false
+	if access, ok := middleware.UserAccess(c); ok {
+		canDelete = access.HasPermission(accessservice.PermissionFileDelete)
+	}
 	for _, entry := range entries {
 		childRelative := pathpkg.Join(relative, entry.Name())
 		if relative == "." {
@@ -142,6 +146,7 @@ func ListDirectory(c *gin.Context) {
 			"modTime":     info.ModTime().Format("2006-01-02 15:04:05"),
 			"size":        utils.FormatBytes(info.Size()),
 			"favoriteID":  favoriteMap[childPath],
+			"canDelete":   canDelete,
 		})
 	}
 	core.HandleSuccess(c, gin.H{"files": fileInfos, "path": manager.VirtualPath(relative)})
