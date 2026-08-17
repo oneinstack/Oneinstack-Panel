@@ -716,6 +716,7 @@ var englishErrorTexts = map[string]string{
 	"安全设置操作失败":          "The security settings operation failed",
 	"审批拒绝失败":            "Failed to reject the approval request",
 	"审批通过失败":            "Failed to approve the approval request",
+	"申请人不能审批自己的申请":      "The requester cannot approve their own approval request",
 	"审计日志 ID 无效，请提供正整数": "The audit event ID is invalid. Provide a positive integer",
 	"审计日志不存在或已被清理":      "The audit event does not exist or has been cleaned up",
 	"审计日志筛选条件无效，请检查页码、时间范围和数量限制": "The audit-log filters are invalid. Check the page, time range, and result limit",

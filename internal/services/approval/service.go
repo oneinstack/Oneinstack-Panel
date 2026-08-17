@@ -16,6 +16,10 @@ type Service struct {
 	db *gorm.DB
 }
 
+// ErrRequesterCannotReview is returned when an approval requester tries to
+// approve or reject their own pending request.
+var ErrRequesterCannotReview = errors.New("requester cannot review own request")
+
 type CreateInput struct {
 	Module          string
 	Action          string
@@ -59,6 +63,44 @@ func (service *Service) Create(input CreateInput) (*models.ApprovalRequest, erro
 	if err != nil {
 		return nil, err
 	}
+	return service.create(input, string(payload))
+}
+
+// CreateOrReusePending returns an existing unexpired pending request when the
+// requester submits exactly the same approval intent again. The payload is
+// part of the match so changed high-risk options always require new approval.
+func (service *Service) CreateOrReusePending(input CreateInput) (*models.ApprovalRequest, bool, error) {
+	if service.db == nil {
+		return nil, false, errors.New("database is not initialized")
+	}
+	payload, err := json.Marshal(input.Payload)
+	if err != nil {
+		return nil, false, err
+	}
+
+	var existing models.ApprovalRequest
+	err = service.db.Where(
+		"module = ? AND action = ? AND resource_id = ? AND requested_by = ? AND status = ? AND payload_snapshot = ? AND expires_at > ?",
+		strings.TrimSpace(input.Module),
+		strings.TrimSpace(input.Action),
+		strings.TrimSpace(input.ResourceID),
+		input.RequestedBy,
+		models.ApprovalStatusPending,
+		string(payload),
+		time.Now().UTC(),
+	).Order("created_at DESC").First(&existing).Error
+	if err == nil {
+		return &existing, true, nil
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, false, err
+	}
+
+	request, err := service.create(input, string(payload))
+	return request, false, err
+}
+
+func (service *Service) create(input CreateInput, payload string) (*models.ApprovalRequest, error) {
 	expiresAt := input.ExpiresAt.UTC()
 	if expiresAt.IsZero() {
 		expiresAt = time.Now().UTC().Add(24 * time.Hour)
@@ -72,7 +114,7 @@ func (service *Service) Create(input CreateInput) (*models.ApprovalRequest, erro
 		RiskLevel:       defaultString(strings.TrimSpace(input.RiskLevel), "high"),
 		Status:          models.ApprovalStatusPending,
 		Reason:          strings.TrimSpace(input.Reason),
-		PayloadSnapshot: string(payload),
+		PayloadSnapshot: payload,
 		RequestedBy:     input.RequestedBy,
 		RequestedByName: strings.TrimSpace(input.RequestedByName),
 		ExpiresAt:       expiresAt,
@@ -120,7 +162,7 @@ func (service *Service) Approve(id string, approverID int64, approverName, comme
 		return nil, err
 	}
 	if request.RequestedBy == approverID {
-		return nil, errors.New("requester cannot approve own request")
+		return nil, ErrRequesterCannotReview
 	}
 	if request.Status != models.ApprovalStatusPending {
 		return nil, errors.New("approval request is not pending")
@@ -152,7 +194,7 @@ func (service *Service) Reject(id string, approverID int64, approverName, commen
 		return nil, err
 	}
 	if request.RequestedBy == approverID {
-		return nil, errors.New("requester cannot reject own request")
+		return nil, ErrRequesterCannotReview
 	}
 	if request.Status != models.ApprovalStatusPending {
 		return nil, errors.New("approval request is not pending")

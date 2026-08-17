@@ -105,7 +105,7 @@ func Delete(c *gin.Context) {
 		return
 	}
 	if shouldRequestWebsiteApproval(c) {
-		approval, err := createWebsiteApproval(c, ApprovalActionWebsiteDelete, request.ConfirmName, strconv.FormatInt(request.ID, 10), DeleteApprovalPayload{
+		approval, reused, err := createOrReuseWebsiteApproval(c, ApprovalActionWebsiteDelete, request.ConfirmName, strconv.FormatInt(request.ID, 10), DeleteApprovalPayload{
 			ID:          request.ID,
 			DatabaseID:  request.DatabaseID,
 			DeleteFiles: request.DeleteFiles,
@@ -119,6 +119,7 @@ func Delete(c *gin.Context) {
 			"mode":       "approval_pending",
 			"approvalId": approval.ID,
 			"status":     approval.Status,
+			"reused":     reused,
 		}))
 		return
 	}

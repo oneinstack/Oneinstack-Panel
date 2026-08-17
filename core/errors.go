@@ -54,6 +54,7 @@ const (
 	ErrInsufficientPermissions ErrorCode = 1203
 	ErrPermissionUnavailable   ErrorCode = 1204
 	ErrCSRFRejected            ErrorCode = 1205
+	ErrApprovalSelfReview      ErrorCode = 1206
 
 	// 系统、配置及依赖错误码
 	ErrSystemError                 ErrorCode = 3000
@@ -377,6 +378,8 @@ func defaultErrorDetail(code ErrorCode) string {
 		ErrMissingToken, ErrEmptyToken, ErrInvalidTokenFormat, ErrSessionRequired,
 		ErrSessionInvalidated, ErrInvalidTerminalTicket:
 		return "当前登录凭据无效或已过期，请重新登录后再执行该操作。"
+	case ErrApprovalSelfReview:
+		return "审批申请人不能审批或拒绝自己的申请，请由其他有审批权限的账号处理。"
 	case ErrForbidden, ErrPermissionDenied, ErrAdminRequired, ErrInsufficientPermissions,
 		ErrCSRFRejected, ErrPasswordChangeRequired:
 		return "当前账号缺少执行该操作所需的权限或安全条件，请联系管理员授权后重试。"
@@ -449,6 +452,8 @@ func defaultEnglishErrorMessage(code ErrorCode) string {
 		ErrMissingToken, ErrEmptyToken, ErrInvalidTokenFormat, ErrSessionRequired,
 		ErrSessionInvalidated, ErrInvalidTerminalTicket:
 		return "Authentication is required or has expired"
+	case ErrApprovalSelfReview:
+		return "The requester cannot review their own approval request"
 	case ErrForbidden, ErrPermissionDenied, ErrAdminRequired, ErrInsufficientPermissions,
 		ErrCSRFRejected, ErrPasswordChangeRequired:
 		return "You do not have permission to perform this operation"
@@ -484,6 +489,8 @@ func defaultEnglishErrorDetail(code ErrorCode) string {
 		ErrMissingToken, ErrEmptyToken, ErrInvalidTokenFormat, ErrSessionRequired,
 		ErrSessionInvalidated, ErrInvalidTerminalTicket:
 		return "The current login credential is missing, invalid, or expired. Sign in again and retry the operation."
+	case ErrApprovalSelfReview:
+		return "The requester cannot approve or reject their own request. Ask another account with approval permission to review it."
 	case ErrForbidden, ErrPermissionDenied, ErrAdminRequired, ErrInsufficientPermissions,
 		ErrCSRFRejected, ErrPasswordChangeRequired:
 		return "The current account does not meet the permission or security requirements for this operation. Contact an administrator if access is required."
@@ -557,7 +564,7 @@ func getHTTPStatusCode(code ErrorCode) int {
 		ErrSessionInvalidated, ErrInvalidTerminalTicket:
 		return http.StatusUnauthorized
 	case ErrForbidden, ErrPermissionDenied, ErrAdminRequired, ErrInsufficientPermissions,
-		ErrCSRFRejected, ErrPasswordChangeRequired:
+		ErrCSRFRejected, ErrPasswordChangeRequired, ErrApprovalSelfReview:
 		return http.StatusForbidden
 	case ErrNotFound, ErrUserNotFound, ErrSoftwareNotFound, ErrWebsiteNotFound, ErrFileNotFound:
 		return http.StatusNotFound

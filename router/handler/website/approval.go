@@ -76,6 +76,26 @@ func createWebsiteApproval(c *gin.Context, action, resourceName, resourceID stri
 	})
 }
 
+func createOrReuseWebsiteApproval(c *gin.Context, action, resourceName, resourceID string, payload interface{}) (*models.ApprovalRequest, bool, error) {
+	userID, _ := middleware.AuthenticatedUserID(c)
+	access, _ := middleware.UserAccess(c)
+	username := ""
+	if access != nil {
+		username = access.Username
+	}
+	return approvalservice.NewService(app.DB()).CreateOrReusePending(approvalservice.CreateInput{
+		Module:          "website",
+		Action:          action,
+		ResourceID:      resourceID,
+		ResourceName:    resourceName,
+		RiskLevel:       "high",
+		Reason:          action,
+		Payload:         payload,
+		RequestedBy:     userID,
+		RequestedByName: username,
+	})
+}
+
 func canAccessWebsiteTask(c *gin.Context, requestedBy int64) bool {
 	userID, ok := middleware.AuthenticatedUserID(c)
 	if !ok {

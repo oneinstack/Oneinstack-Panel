@@ -95,6 +95,10 @@ func Approve(c *gin.Context) {
 	}
 	request, err := approvalservice.NewService(app.DB()).Approve(c.Param("id"), userID, access.Username, review.Comment)
 	if err != nil {
+		if errors.Is(err, approvalservice.ErrRequesterCannotReview) {
+			core.HandleError(c, core.NewError(core.ErrApprovalSelfReview, "申请人不能审批自己的申请"))
+			return
+		}
 		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "审批通过失败"))
 		return
 	}
@@ -121,6 +125,10 @@ func Reject(c *gin.Context) {
 	}
 	request, err := approvalservice.NewService(app.DB()).Reject(c.Param("id"), userID, access.Username, review.Comment)
 	if err != nil {
+		if errors.Is(err, approvalservice.ErrRequesterCannotReview) {
+			core.HandleError(c, core.NewError(core.ErrApprovalSelfReview, "申请人不能审批自己的申请"))
+			return
+		}
 		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "审批拒绝失败"))
 		return
 	}
