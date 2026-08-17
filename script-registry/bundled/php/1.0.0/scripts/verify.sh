@@ -10,6 +10,8 @@ emit_progress 55 verify_version "正在核对 PHP 版本"
 "${install_dir}/bin/php" -r 'exit(version_compare(PHP_VERSION, getenv("SOFTWARE_VERSION"), ">=") ? 0 : 1);'
 emit_progress 75 health_check "正在检查 PHP-FPM Socket"
 test -S /dev/shm/php-cgi.sock
+verify_runtime_permissions
+commit_external_php
 emit_progress 90 finalize_state "正在确认 PHP 安装状态"
 mv -f -- "${state_dir}/pending-version" "${state_dir}/version"
 mv -f -- "${state_dir}/pending-patch-version" "${state_dir}/patch-version"

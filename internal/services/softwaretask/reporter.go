@@ -202,10 +202,15 @@ func (r *Reporter) OnRollbackComplete(rollbackErr error) {
 		code = "rollback_failed"
 		message = "回滚失败：" + safeErrorMessage(rollbackErr)
 	}
-	_ = r.publishLocked(taskUpdate{
+	update := taskUpdate{
 		message:        message,
 		rollbackStatus: status,
-	}, eventData{
+	}
+	if rollbackErr != nil {
+		update.recoveryStatus = "recovery_required"
+		update.recoveryMessage = "自动回滚失败；已保留迁移快照，请根据任务日志执行恢复"
+	}
+	_ = r.publishLocked(update, eventData{
 		eventType: "warning",
 		level:     level,
 		code:      code,
@@ -282,6 +287,8 @@ type taskUpdate struct {
 	errorCode       string
 	errorMessage    string
 	rollbackStatus  string
+	recoveryStatus  string
+	recoveryMessage string
 	startTask       bool
 	finishedAt      *time.Time
 	setFailurePhase bool
@@ -331,6 +338,12 @@ func (r *Reporter) publishLocked(update taskUpdate, event eventData) error {
 		}
 		if update.rollbackStatus != "" {
 			task.RollbackStatus = update.rollbackStatus
+		}
+		if update.recoveryStatus != "" {
+			task.RecoveryStatus = update.recoveryStatus
+		}
+		if update.recoveryMessage != "" {
+			task.RecoveryMessage = update.recoveryMessage
 		}
 		if update.startTask && task.StartedAt == nil {
 			now := time.Now()

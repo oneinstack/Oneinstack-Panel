@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/common.sh"
-require_root; validate_inputs; validate_install_version; ensure_account
+require_root; validate_inputs; ensure_account
 emit_progress 10 prepare_directories "正在创建 Nginx 配置目录"
-install -d -m 0755 -- "${web_root}" "${web_root}/default" "${log_dir}" "${install_dir}/conf/conf.d"
-chown -R "${run_user}:${run_group}" "${web_root}" "${log_dir}"
+install -d -m 0755 -- "${install_dir}/conf/conf.d"
+normalize_runtime_permissions
 emit_progress 30 write_config "正在写入 Nginx 主配置"
 cat >"${install_dir}/conf/nginx.conf" <<EOF
 user ${run_user} ${run_group};
@@ -40,6 +40,7 @@ server {
     }
 }
 EOF
+migrate_external_nginx_config
 latest_removed=""
 for candidate in "${state_dir}"/removed/*; do
   [[ -d "${candidate}/install/conf/conf.d" ]] || continue
@@ -67,9 +68,9 @@ Wants=network-online.target
 [Service]
 Type=forking
 PIDFile=${install_dir}/logs/nginx.pid
-ExecStartPre=${install_dir}/sbin/nginx -t -q -g daemon on; master_process on;
-ExecStart=${install_dir}/sbin/nginx -g daemon on; master_process on;
-ExecReload=${install_dir}/sbin/nginx -g daemon on; master_process on; -s reload
+ExecStartPre=${install_dir}/sbin/nginx -t -q
+ExecStart=${install_dir}/sbin/nginx
+ExecReload=${install_dir}/sbin/nginx -s reload
 ExecStop=-${install_dir}/sbin/nginx -s quit
 PrivateTmp=true
 LimitNOFILE=65535

@@ -86,7 +86,8 @@ type ExecutionObserver interface {
 }
 
 var componentExecutionLocks sync.Map
-var progressCodePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
+var progressCodePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{0,95}$`)
+var sensitiveLogAssignmentPattern = regexp.MustCompile(`(?i)(password|passwd|secret|token|cookie|authorization|private[_-]?key)([[:space:]]*[:=][[:space:]]*)([^[:space:]]+)`)
 
 // GetScript 获取脚本内容
 func (sm *ScriptManager) GetScript(scriptType ScriptType, name string) (*ScriptInfo, error) {
@@ -287,6 +288,15 @@ func (sm *ScriptManager) ExecuteScriptTask(
 	}()
 
 	logName := filepath.Base(logPath)
+	runtimeInfo := *scriptInfo
+	runtimeInfo.Params = make(map[string]string, len(scriptInfo.Params)+3)
+	for key, value := range scriptInfo.Params {
+		runtimeInfo.Params[key] = value
+	}
+	runtimeInfo.Params["ONEINSTACK_TASK_ID"] = taskIDFromLogPath(logPath)
+	runtimeInfo.Params["ONEINSTACK_COMPONENT"] = scriptInfo.Name
+	runtimeInfo.Params["ONEINSTACK_SOFTWARE_VERSION"] = scriptInfo.Version
+	scriptInfo = &runtimeInfo
 	updatesInstallState := !isServiceControlAction(scriptInfo.ActionName)
 	if updatesInstallState {
 		sm.updateSoftwareStatus(params, models.Soft_Status_Ing, logName)
@@ -346,6 +356,7 @@ func (sm *ScriptManager) ExecuteProbe(
 		scriptInfo.timeout(actionName),
 		bounded,
 		nil,
+		lifecycleLogContext{output: bounded},
 	); err != nil {
 		return nil, fmt.Errorf("%s action failed: %w", actionName, err)
 	}
@@ -443,10 +454,25 @@ func (sm *ScriptManager) runInstallActionsContext(
 			}{name: "verify", path: scriptInfo.VerifyPath},
 		)
 	}
-	for _, action := range actions {
+	for index, action := range actions {
 		if action.path == "" {
 			continue
 		}
+		step := fmt.Sprintf("%02d.%s", index+1, action.name)
+		startedAt := time.Now()
+		writeLifecycleLog(output, lifecycleLogEntry{
+			Timestamp:       startedAt.UTC().Format(time.RFC3339Nano),
+			Component:       scriptInfo.Name,
+			SoftwareVersion: scriptInfo.Version,
+			TaskID:          scriptInfo.Params["ONEINSTACK_TASK_ID"],
+			Action:          mainAction,
+			Phase:           action.name,
+			Step:            step,
+			Result:          "started",
+			ResourceType:    "component",
+			Resource:        scriptInfo.Name,
+			Message:         action.name + " action started",
+		})
 		if observer != nil {
 			observer.OnActionStart(action.name)
 		}
@@ -462,11 +488,50 @@ func (sm *ScriptManager) runInstallActionsContext(
 			scriptInfo.timeout(action.name),
 			output,
 			observer,
+			lifecycleLogContext{
+				component:       scriptInfo.Name,
+				softwareVersion: scriptInfo.Version,
+				taskID:          scriptInfo.Params["ONEINSTACK_TASK_ID"],
+				mainAction:      mainAction,
+				phase:           action.name,
+				step:            step,
+				output:          output,
+			},
 		); err != nil {
+			writeLifecycleLog(output, lifecycleLogEntry{
+				Timestamp:       time.Now().UTC().Format(time.RFC3339Nano),
+				Component:       scriptInfo.Name,
+				SoftwareVersion: scriptInfo.Version,
+				TaskID:          scriptInfo.Params["ONEINSTACK_TASK_ID"],
+				Action:          mainAction,
+				Phase:           action.name,
+				Step:            step,
+				Result:          "failed",
+				DurationMS:      time.Since(startedAt).Milliseconds(),
+				ResourceType:    "component",
+				Resource:        scriptInfo.Name,
+				ErrorCode:       lifecycleErrorCode(action.name, err),
+				ErrorSummary:    sanitizeLifecycleValue(err.Error(), 512),
+				Message:         action.name + " action failed",
+			})
 			_, _ = fmt.Fprintf(output, "ERROR: %s action failed: %v\n", action.name, err)
 			if scriptInfo.RollbackPath != "" && action.name != "precheck" &&
 				!isServiceControlAction(mainAction) {
 				_, _ = fmt.Fprintln(output, "\n===== rollback =====")
+				rollbackStartedAt := time.Now()
+				writeLifecycleLog(output, lifecycleLogEntry{
+					Timestamp:       rollbackStartedAt.UTC().Format(time.RFC3339Nano),
+					Component:       scriptInfo.Name,
+					SoftwareVersion: scriptInfo.Version,
+					TaskID:          scriptInfo.Params["ONEINSTACK_TASK_ID"],
+					Action:          mainAction,
+					Phase:           "rollback",
+					Step:            "rollback",
+					Result:          "started",
+					ResourceType:    "component",
+					Resource:        scriptInfo.Name,
+					Message:         "rollback action started",
+				})
 				if observer != nil {
 					observer.OnRollbackStart()
 				}
@@ -479,19 +544,72 @@ func (sm *ScriptManager) runInstallActionsContext(
 					scriptInfo.timeout("rollback"),
 					output,
 					nil,
+					lifecycleLogContext{
+						component:       scriptInfo.Name,
+						softwareVersion: scriptInfo.Version,
+						taskID:          scriptInfo.Params["ONEINSTACK_TASK_ID"],
+						mainAction:      mainAction,
+						phase:           "rollback",
+						step:            "rollback",
+						output:          output,
+					},
 				)
 				if observer != nil {
 					observer.OnRollbackComplete(rollbackErr)
 				}
 				if rollbackErr != nil {
+					writeLifecycleLog(output, lifecycleLogEntry{
+						Timestamp:       time.Now().UTC().Format(time.RFC3339Nano),
+						Component:       scriptInfo.Name,
+						SoftwareVersion: scriptInfo.Version,
+						TaskID:          scriptInfo.Params["ONEINSTACK_TASK_ID"],
+						Action:          mainAction,
+						Phase:           "rollback",
+						Step:            "rollback",
+						Result:          "failed",
+						DurationMS:      time.Since(rollbackStartedAt).Milliseconds(),
+						ResourceType:    "component",
+						Resource:        scriptInfo.Name,
+						ErrorCode:       lifecycleErrorCode("rollback", rollbackErr),
+						ErrorSummary:    sanitizeLifecycleValue(rollbackErr.Error(), 512),
+						Message:         "rollback action failed; manual recovery is required",
+					})
 					return fmt.Errorf("%s action failed: %v; rollback failed: %v", action.name, err, rollbackErr)
 				}
+				writeLifecycleLog(output, lifecycleLogEntry{
+					Timestamp:       time.Now().UTC().Format(time.RFC3339Nano),
+					Component:       scriptInfo.Name,
+					SoftwareVersion: scriptInfo.Version,
+					TaskID:          scriptInfo.Params["ONEINSTACK_TASK_ID"],
+					Action:          mainAction,
+					Phase:           "rollback",
+					Step:            "rollback",
+					Result:          "succeeded",
+					DurationMS:      time.Since(rollbackStartedAt).Milliseconds(),
+					ResourceType:    "component",
+					Resource:        scriptInfo.Name,
+					Message:         "rollback action completed",
+				})
 			}
 			return fmt.Errorf("%s action failed: %w", action.name, err)
 		}
 		if observer != nil {
 			observer.OnActionComplete(action.name)
 		}
+		writeLifecycleLog(output, lifecycleLogEntry{
+			Timestamp:       time.Now().UTC().Format(time.RFC3339Nano),
+			Component:       scriptInfo.Name,
+			SoftwareVersion: scriptInfo.Version,
+			TaskID:          scriptInfo.Params["ONEINSTACK_TASK_ID"],
+			Action:          mainAction,
+			Phase:           action.name,
+			Step:            step,
+			Result:          "succeeded",
+			DurationMS:      time.Since(startedAt).Milliseconds(),
+			ResourceType:    "component",
+			Resource:        scriptInfo.Name,
+			Message:         action.name + " action completed",
+		})
 	}
 	return nil
 }
@@ -515,7 +633,18 @@ func (sm *ScriptManager) runAction(actionPath, workingDir string, params map[str
 		timeout,
 		output,
 		nil,
+		lifecycleLogContext{output: output},
 	)
+}
+
+type lifecycleLogContext struct {
+	component       string
+	softwareVersion string
+	taskID          string
+	mainAction      string
+	phase           string
+	step            string
+	output          io.Writer
 }
 
 func (sm *ScriptManager) runActionContext(
@@ -527,6 +656,7 @@ func (sm *ScriptManager) runActionContext(
 	timeout time.Duration,
 	output io.Writer,
 	observer ExecutionObserver,
+	logContext lifecycleLogContext,
 ) error {
 	info, err := os.Lstat(actionPath)
 	if err != nil {
@@ -577,7 +707,7 @@ func (sm *ScriptManager) runActionContext(
 	progressDone := make(chan struct{})
 	go func() {
 		defer close(progressDone)
-		consumeProgressEvents(progressReader, actionName, observer)
+		consumeProgressEvents(progressReader, actionName, observer, logContext)
 	}()
 
 	if err := cmd.Start(); err != nil {
@@ -587,7 +717,6 @@ func (sm *ScriptManager) runActionContext(
 	}
 	_ = progressWriter.Close()
 	runErr := cmd.Wait()
-	_ = progressReader.Close()
 	<-progressDone
 	if runErr != nil {
 		if parent.Err() != nil {
@@ -608,11 +737,29 @@ type structuredProgress struct {
 	Message string `json:"message"`
 }
 
-func consumeProgressEvents(reader io.Reader, actionName string, observer ExecutionObserver) {
-	if observer == nil {
-		_, _ = io.Copy(io.Discard, reader)
-		return
-	}
+type lifecycleLogEntry struct {
+	Timestamp       string `json:"timestamp"`
+	Component       string `json:"component"`
+	SoftwareVersion string `json:"softwareVersion"`
+	TaskID          string `json:"taskId"`
+	Action          string `json:"action"`
+	Phase           string `json:"phase"`
+	Step            string `json:"step"`
+	Result          string `json:"result"`
+	DurationMS      int64  `json:"durationMs"`
+	ResourceType    string `json:"resourceType"`
+	Resource        string `json:"resource"`
+	ErrorCode       string `json:"errorCode"`
+	ErrorSummary    string `json:"errorSummary"`
+	Message         string `json:"message"`
+}
+
+func consumeProgressEvents(
+	reader io.Reader,
+	actionName string,
+	observer ExecutionObserver,
+	logContext lifecycleLogContext,
+) {
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 1024), 64*1024)
 	for scanner.Scan() {
@@ -628,8 +775,68 @@ func consumeProgressEvents(reader io.Reader, actionName string, observer Executi
 		if event.Message == "" {
 			continue
 		}
-		observer.OnActionProgress(actionName, event.Percent, event.Code, event.Message)
+		if logContext.output != nil {
+			writeLifecycleLog(logContext.output, lifecycleLogEntry{
+				Timestamp:       time.Now().UTC().Format(time.RFC3339Nano),
+				Component:       logContext.component,
+				SoftwareVersion: logContext.softwareVersion,
+				TaskID:          logContext.taskID,
+				Action:          logContext.mainAction,
+				Phase:           logContext.phase,
+				Step:            event.Code,
+				Result:          "progress",
+				ResourceType:    "component",
+				Resource:        logContext.component,
+				Message:         event.Message,
+			})
+		}
+		if observer != nil {
+			observer.OnActionProgress(actionName, event.Percent, event.Code, event.Message)
+		}
 	}
+}
+
+func writeLifecycleLog(output io.Writer, entry lifecycleLogEntry) {
+	if output == nil {
+		return
+	}
+	encoded, err := json.Marshal(entry)
+	if err != nil {
+		return
+	}
+	_, _ = output.Write(append(encoded, '\n'))
+}
+
+func taskIDFromLogPath(logPath string) string {
+	name := strings.TrimSuffix(filepath.Base(logPath), filepath.Ext(logPath))
+	return strings.TrimPrefix(name, "task_")
+}
+
+func lifecycleErrorCode(action string, err error) string {
+	action = strings.ToUpper(strings.TrimSpace(action))
+	if action == "" {
+		action = "ACTION"
+	}
+	suffix := "FAILED"
+	if errors.Is(err, context.Canceled) {
+		suffix = "CANCELED"
+	} else if errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "exceeded timeout") {
+		suffix = "TIMEOUT"
+	}
+	return action + "_" + suffix
+}
+
+func sanitizeLifecycleValue(value string, limit int) string {
+	value = strings.TrimSpace(strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, value))
+	if len(value) > limit {
+		value = value[:limit]
+	}
+	return value
 }
 
 func sanitizeProgressMessage(message string) string {
@@ -702,14 +909,9 @@ func (w *redactingWriter) Write(data []byte) (int, error) {
 	defer w.mu.Unlock()
 	originalLength := len(data)
 	w.pending += string(data)
-	if len(w.secrets) == 0 {
-		_, err := io.WriteString(w.target, w.pending)
-		w.pending = ""
-		return originalLength, err
-	}
 	retain := w.maxSecret - 1
-	if retain < 0 {
-		retain = 0
+	if retain < 255 {
+		retain = 255
 	}
 	flushAt := len(w.pending) - retain
 	if flushAt <= 0 {
@@ -755,7 +957,7 @@ func redactExactValues(value string, secrets []string) string {
 	for _, secret := range secrets {
 		value = strings.ReplaceAll(value, secret, "[REDACTED]")
 	}
-	return value
+	return sensitiveLogAssignmentPattern.ReplaceAllString(value, `${1}${2}[REDACTED]`)
 }
 
 func (scriptInfo *ScriptInfo) timeout(action string) time.Duration {

@@ -109,6 +109,30 @@ func TestManagerCancelsRunningTask(t *testing.T) {
 	}
 }
 
+func TestManagerMarksRecoveryRequiredWhenRollbackFails(t *testing.T) {
+	db := openTaskTestDB(t)
+	manager := NewManager(db, t.TempDir(), func(
+		ctx context.Context,
+		request InstallRequest,
+		logPath string,
+		reporter *Reporter,
+	) error {
+		reporter.OnActionStart("install")
+		reporter.OnRollbackStart()
+		reporter.OnRollbackComplete(errors.New("restore service failed"))
+		return errors.New("install failed")
+	})
+	task, err := manager.Submit(InstallRequest{Key: "redis", Version: "7.4.8"}, 9)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task = waitForTaskStatus(t, manager, task.ID, models.SoftwareTaskStatusFailed)
+	if task.RollbackStatus != models.SoftwareTaskRollbackFailed ||
+		task.RecoveryStatus != "recovery_required" || task.RecoveryMessage == "" {
+		t.Fatalf("unexpected recovery state: %#v", task)
+	}
+}
+
 func TestManagerRejectsMutuallyExclusiveDatabaseInstall(t *testing.T) {
 	db := openTaskTestDB(t)
 	if err := db.Create(&models.Software{

@@ -2,6 +2,8 @@
 set -Eeuo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 require_root; validate_inputs
+[[ -f "${state_dir}/version" ]] ||
+  die "Managed Nginx state is missing; refusing to remove unowned resources."
 removed_dir="${state_dir}/removed/$(date -u +%Y%m%dT%H%M%SZ)"
 install -d -m 0750 -- "${removed_dir}"
 stop_nginx 2>/dev/null || true

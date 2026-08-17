@@ -3,6 +3,7 @@ set -Eeuo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 emit_progress 5 validate_inputs "正在校验 PHP 安装参数"
 require_root; validate_inputs
+require_command dpkg-query
 emit_progress 40 check_host "正在检查操作系统兼容性"
 check_host
 emit_progress 75 check_disk "正在检查 PHP 编译空间"

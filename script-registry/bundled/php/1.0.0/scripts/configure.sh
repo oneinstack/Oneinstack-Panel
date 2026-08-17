@@ -42,6 +42,8 @@ catch_workers_output = yes
 clear_env = yes
 security.limit_extensions = .php
 EOF
+migrate_external_php_config
+normalize_runtime_permissions
 emit_progress 68 write_service "正在写入 PHP-FPM systemd 服务"
 cat >"${unit_file}" <<EOF
 [Unit]

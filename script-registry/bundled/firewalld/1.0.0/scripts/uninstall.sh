@@ -4,6 +4,8 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
 require_root
 validate_inputs
+[[ -f "${installed_marker}" ]] ||
+  die "Managed firewalld state is missing; refusing to remove an external package."
 if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
   die "Disable firewalld from the Security page before uninstalling it."
 fi

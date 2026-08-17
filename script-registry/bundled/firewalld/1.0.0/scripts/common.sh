@@ -7,6 +7,7 @@ software_version="${SOFTWARE_VERSION:-1.0.0}"
 state_root="${ONEINSTACK_COMPONENT_STATE:-/var/lib/oneinstack/components}"
 state_dir="${state_root}/${component_id}"
 installed_marker="${state_dir}/installed-by-oneinstack"
+migration_dir="${state_dir}/migration"
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 emit_progress() {
@@ -14,7 +15,7 @@ emit_progress() {
   [[ "${fd}" =~ ^[0-9]+$ ]] || return 0
   message="${message//\\/\\\\}"; message="${message//\"/\\\"}"; message="${message//$'\n'/ }"
   printf '{"type":"progress","percent":%s,"code":"%s","message":"%s"}\n' \
-    "${percent}" "${code}" "${message}" >&"${fd}" || true
+    "${percent}" "${code}" "${message}" >&"${fd}" 2>/dev/null || true
 }
 require_root() { [[ "$(id -u)" -eq 0 ]] || die "This action must run as root."; }
 require_command() { command -v "$1" >/dev/null 2>&1 || die "Required command is missing: $1"; }
@@ -85,6 +86,35 @@ firewalld_configuration_valid() {
   command -v firewall-offline-cmd >/dev/null 2>&1 &&
     firewall-offline-cmd --check-config >/dev/null 2>&1
 }
+snapshot_existing() {
+  rm -rf -- "${migration_dir}"
+  install -d -m 0700 -- "${migration_dir}"
+  firewalld_package_installed && : >"${migration_dir}/package-existed" || true
+  [[ -d /etc/firewalld ]] && cp -a -- /etc/firewalld "${migration_dir}/config"
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl is-active --quiet firewalld 2>/dev/null && : >"${migration_dir}/was-active" || true
+    systemctl is-enabled --quiet firewalld 2>/dev/null && : >"${migration_dir}/was-enabled" || true
+  fi
+  emit_progress 25 migration.snapshot.created "firewalld package, configuration, and service snapshot created"
+}
+restore_existing() {
+  ensure_firewalld_stopped
+  if [[ ! -f "${migration_dir}/package-existed" ]]; then
+    remove_firewalld_package
+  fi
+  if [[ -d "${migration_dir}/config" ]]; then
+    rm -rf -- /etc/firewalld
+    mv -- "${migration_dir}/config" /etc/firewalld
+  fi
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl daemon-reload
+    [[ -f "${migration_dir}/was-enabled" ]] && systemctl enable firewalld 2>/dev/null || true
+    [[ -f "${migration_dir}/was-active" ]] && systemctl start firewalld 2>/dev/null || true
+  fi
+  rm -f -- "${installed_marker}"
+  emit_progress 100 rollback.service.restored "Previous firewalld package, configuration, and service state restored"
+}
+commit_migration() { rm -rf -- "${migration_dir}"; }
 install_firewalld_package() {
   local manager policy_created=0
   manager="$(detect_package_manager)" || die "No supported package manager was found."
@@ -108,6 +138,16 @@ install_firewalld_package() {
     dnf) dnf install -y firewalld setup ;;
     yum) yum install -y firewalld setup ;;
     zypper) zypper --non-interactive install --no-recommends firewalld netcfg ;;
+  esac
+}
+reinstall_firewalld_package() {
+  local manager
+  manager="$(detect_package_manager)" || die "No supported package manager was found."
+  case "${manager}" in
+    apt) DEBIAN_FRONTEND=noninteractive apt-get install --reinstall -y firewalld ;;
+    dnf) dnf reinstall -y firewalld ;;
+    yum) yum reinstall -y firewalld ;;
+    zypper) zypper --non-interactive install --force firewalld ;;
   esac
 }
 remove_firewalld_package() {

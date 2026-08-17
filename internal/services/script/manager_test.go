@@ -3,8 +3,10 @@ package script
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -210,6 +212,23 @@ func TestRedactingWriterRedactsSecretsAcrossWriteBoundaries(t *testing.T) {
 	}
 }
 
+func TestRedactingWriterRedactsSensitiveAssignments(t *testing.T) {
+	var output bytes.Buffer
+	writer := newRedactingWriter(&output, nil)
+	if _, err := writer.Write([]byte("user=panel password=visible token:abc cookie=session-id\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	value := output.String()
+	for _, secret := range []string{"visible", "abc", "session-id"} {
+		if strings.Contains(value, secret) {
+			t.Fatalf("sensitive assignment leaked: %q", value)
+		}
+	}
+}
+
 func TestRunActionReadsStructuredProgressFromFD3(t *testing.T) {
 	directory := t.TempDir()
 	action := filepath.Join(directory, "progress.sh")
@@ -232,6 +251,7 @@ func TestRunActionReadsStructuredProgressFromFD3(t *testing.T) {
 		time.Second,
 		&output,
 		observer,
+		lifecycleLogContext{},
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -245,6 +265,107 @@ func TestRunActionReadsStructuredProgressFromFD3(t *testing.T) {
 		observer.progress[0].code != "compile" ||
 		observer.progress[0].message != "正在编译" {
 		t.Fatalf("unexpected progress events: %#v", observer.progress)
+	}
+}
+
+func TestRunInstallActionsWritesStructuredLifecycleLog(t *testing.T) {
+	directory := t.TempDir()
+	action := filepath.Join(directory, "install.sh")
+	if err := os.WriteFile(action, []byte(
+		"#!/usr/bin/env bash\n"+
+			"set -euo pipefail\n"+
+			"printf '%s\\n' '{\"type\":\"progress\",\"percent\":40,\"code\":\"migration_snapshot_created\",\"message\":\"snapshot ready\"}' >&3\n",
+	), 0700); err != nil {
+		t.Fatal(err)
+	}
+	info := &ScriptInfo{
+		Name:       "redis",
+		Version:    "7.4.8",
+		Path:       action,
+		WorkingDir: directory,
+		ActionName: "install",
+		Params: map[string]string{
+			"ONEINSTACK_TASK_ID": "task-id",
+		},
+		Timeouts: map[string]time.Duration{"install": time.Second},
+	}
+	var output bytes.Buffer
+	redactedOutput := newRedactingWriter(&output, nil)
+	observer := &recordingExecutionObserver{}
+	if err := NewScriptManager().runInstallActionsContext(
+		context.Background(), info, action, redactedOutput, observer,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := redactedOutput.Flush(); err != nil {
+		t.Fatal(err)
+	}
+
+	var entries []lifecycleLogEntry
+	for _, line := range strings.Split(output.String(), "\n") {
+		if !strings.HasPrefix(line, "{") {
+			continue
+		}
+		var entry lifecycleLogEntry
+		if err := json.Unmarshal([]byte(line), &entry); err == nil {
+			entries = append(entries, entry)
+		}
+	}
+	if len(entries) != 3 {
+		t.Fatalf("lifecycle entries = %d, output=%q", len(entries), output.String())
+	}
+	if entries[0].Result != "started" || entries[1].Result != "progress" ||
+		entries[2].Result != "succeeded" {
+		t.Fatalf("unexpected lifecycle results: %#v", entries)
+	}
+	for _, entry := range entries {
+		if entry.Component != "redis" || entry.SoftwareVersion != "7.4.8" ||
+			entry.TaskID != "task-id" || entry.Action != "install" || entry.Phase != "install" {
+			t.Fatalf("incomplete lifecycle context: %#v", entry)
+		}
+	}
+}
+
+func TestRunInstallActionsWritesRollbackLifecycleLog(t *testing.T) {
+	directory := t.TempDir()
+	action := filepath.Join(directory, "install.sh")
+	rollback := filepath.Join(directory, "rollback.sh")
+	if err := os.WriteFile(action, []byte("#!/usr/bin/env bash\nexit 9\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(rollback, []byte("#!/usr/bin/env bash\nprintf 'restored\\n'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	info := &ScriptInfo{
+		Name:         "redis",
+		Version:      "7.4.8",
+		Path:         action,
+		RollbackPath: rollback,
+		WorkingDir:   directory,
+		ActionName:   "install",
+		Params:       map[string]string{"ONEINSTACK_TASK_ID": "task-id"},
+		Timeouts:     map[string]time.Duration{"install": time.Second, "rollback": time.Second},
+	}
+	var output bytes.Buffer
+	redactedOutput := newRedactingWriter(&output, nil)
+	err := NewScriptManager().runInstallActionsContext(
+		context.Background(), info, action, redactedOutput, &recordingExecutionObserver{},
+	)
+	if err == nil {
+		t.Fatal("expected install failure")
+	}
+	if flushErr := redactedOutput.Flush(); flushErr != nil {
+		t.Fatal(flushErr)
+	}
+	var rollbackResults []string
+	for _, line := range strings.Split(output.String(), "\n") {
+		var entry lifecycleLogEntry
+		if json.Unmarshal([]byte(line), &entry) == nil && entry.Phase == "rollback" {
+			rollbackResults = append(rollbackResults, entry.Result)
+		}
+	}
+	if !reflect.DeepEqual(rollbackResults, []string{"started", "succeeded"}) {
+		t.Fatalf("rollback lifecycle results = %#v, output=%q", rollbackResults, output.String())
 	}
 }
 

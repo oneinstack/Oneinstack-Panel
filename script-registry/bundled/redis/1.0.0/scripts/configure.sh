@@ -4,6 +4,7 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 require_root; validate_inputs; ensure_account
 emit_progress 10 prepare_directories "正在创建 Redis 数据和配置目录"
 install -d -o redis -g redis -m 0750 -- "${data_dir}"
+migrate_external_redis_data
 install -d -o root -g redis -m 0750 -- "${install_dir}/etc"
 emit_progress 30 write_config "正在写入 Redis 配置"
 cat >"${install_dir}/etc/redis.conf" <<EOF
@@ -30,6 +31,7 @@ save 60 10000
 EOF
 if [[ -n "${redis_password}" ]]; then printf 'requirepass %s\n' "${redis_password}" >>"${install_dir}/etc/redis.conf"; fi
 chown root:redis "${install_dir}/etc/redis.conf"; chmod 0640 "${install_dir}/etc/redis.conf"
+normalize_runtime_permissions
 emit_progress 65 write_service "正在写入 Redis systemd 服务"
 cat >"${unit_file}" <<EOF
 [Unit]

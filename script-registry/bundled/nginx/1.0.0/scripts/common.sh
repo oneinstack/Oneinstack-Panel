@@ -17,6 +17,7 @@ rollback_dir="${state_dir}/rollback"
 unit_file="/etc/systemd/system/nginx.service"
 nginx_binary="${install_dir}/sbin/nginx"
 nginx_pid_file="${install_dir}/logs/nginx.pid"
+external_migration_dir="${rollback_dir}/external"
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 emit_progress() {
@@ -24,7 +25,7 @@ emit_progress() {
   [[ "${fd}" =~ ^[0-9]+$ ]] || return 0
   message="${message//\\/\\\\}"; message="${message//\"/\\\"}"; message="${message//$'\n'/ }"
   printf '{"type":"progress","percent":%s,"code":"%s","message":"%s"}\n' \
-    "${percent}" "${code}" "${message}" >&"${fd}" || true
+    "${percent}" "${code}" "${message}" >&"${fd}" 2>/dev/null || true
 }
 require_root() { [[ "$(id -u)" -eq 0 ]] || die "This action must run as root."; }
 require_command() { command -v "$1" >/dev/null 2>&1 || die "Required command not found: $1"; }
@@ -35,19 +36,12 @@ validate_path() {
   case "${value}" in /|/usr|/usr/local|/etc|/var|/data|/home|/root) die "${label} is too broad: ${value}" ;; esac
 }
 validate_inputs() {
-  case "${software_version}" in
-    1.26.2|1.28.2|1.31.0) ;;
-    *) die "Unsupported managed Nginx version: ${software_version}" ;;
-  esac
+  [[ "${software_version}" == "1.28.2" ]] || die "Unsupported Nginx version: ${software_version}"
   [[ "${source_url}" == https://* ]] || die "SOURCE_URL must use HTTPS."
   [[ "${source_sha256}" =~ ^[0-9a-f]{64}$ ]] || die "SOURCE_SHA256 must be a lowercase SHA-256 digest."
   validate_identifier "${run_user}"; validate_identifier "${run_group}"
   validate_path "${install_dir}" INSTALL_DIR; validate_path "${web_root}" WEB_ROOT
   validate_path "${log_dir}" LOG_DIR; validate_path "${state_root}" ONEINSTACK_COMPONENT_STATE
-}
-validate_install_version() {
-  [[ "${software_version}" == "1.28.2" ]] ||
-    die "This bundled package only installs Nginx 1.28.2; ${software_version} is supported for existing-installation lifecycle actions only."
 }
 check_host() {
   [[ -r /etc/os-release ]] || die "/etc/os-release is unavailable."
@@ -102,6 +96,24 @@ ensure_account() {
   getent group "${run_group}" >/dev/null || groupadd --system "${run_group}"
   id "${run_user}" >/dev/null 2>&1 || useradd --system --gid "${run_group}" --home-dir /nonexistent --shell /usr/sbin/nologin "${run_user}"
 }
+normalize_runtime_permissions() {
+  ensure_account
+  [[ -d "${web_root}" ]] || install -d -o "${run_user}" -g "${run_group}" -m 0755 -- "${web_root}"
+  [[ -d "${web_root}/default" ]] || install -d -o "${run_user}" -g "${run_group}" -m 0755 -- "${web_root}/default"
+  [[ -d "${log_dir}" ]] || install -d -o "${run_user}" -g "${run_group}" -m 0750 -- "${log_dir}"
+  chmod 0755 "${install_dir}" "${install_dir}/sbin" "${nginx_binary}"
+  emit_progress 20 permissions.runtime.applied "Nginx web and log directory permissions applied"
+}
+verify_runtime_permissions() {
+  require_command runuser
+  runuser -u "${run_user}" -- test -r "${web_root}/default/index.html" ||
+    die "Nginx worker user cannot read the managed web root."
+  runuser -u "${run_user}" -- test -x "${web_root}" ||
+    die "Nginx worker user cannot traverse the managed web root."
+  runuser -u "${run_user}" -- test -w "${log_dir}" ||
+    die "Nginx worker user cannot write the managed log directory."
+  emit_progress 25 permissions.runtime.verified "Nginx runtime access verified as ${run_user}"
+}
 download_verified() {
   local destination="$1"
   curl --proto '=https' --tlsv1.2 --fail --location --retry 3 --connect-timeout 20 --output "${destination}" "${source_url}"
@@ -119,6 +131,56 @@ nginx_is_running() {
   local pid=""
   [[ -r "${nginx_pid_file}" ]] && read -r pid <"${nginx_pid_file}"
   [[ "${pid}" =~ ^[0-9]+$ ]] && kill -0 "${pid}" 2>/dev/null
+}
+external_nginx_detected() {
+  [[ ! -f "${state_dir}/version" ]] &&
+    { [[ -d /etc/nginx ]] || command -v nginx >/dev/null 2>&1 ||
+      dpkg-query -W -f='${Status}' nginx 2>/dev/null | grep -Fq 'install ok installed'; }
+}
+snapshot_external_nginx() {
+  external_nginx_detected || return 0
+  install -d -m 0700 -- "${external_migration_dir}"
+  [[ -d /etc/nginx ]] && cp -a -- /etc/nginx "${external_migration_dir}/config"
+  dpkg-query -W -f='${binary:Package}\n' 'nginx*' 2>/dev/null |
+    sort -u >"${external_migration_dir}/packages" || true
+  while IFS= read -r package; do
+    [[ -n "${package}" ]] || continue
+    dpkg-query -W -f='${binary:Package}\t${Version}\n' "${package}" >>"${external_migration_dir}/package-versions"
+  done <"${external_migration_dir}/packages"
+  : >"${external_migration_dir}/detected"
+  emit_progress 20 migration.snapshot.created "External Nginx configuration and package inventory captured"
+}
+migrate_external_nginx_config() {
+  [[ -d "${external_migration_dir}/config" ]] || return 0
+  local source destination index=0
+  shopt -s nullglob
+  for source in "${external_migration_dir}/config/conf.d/"*.conf \
+    "${external_migration_dir}/config/sites-enabled/"*; do
+    [[ -f "${source}" && ! -L "${source}" ]] || continue
+    if grep -Eq '/etc/nginx|include[[:space:]]+[^;]*\*' "${source}"; then
+      die "External Nginx configuration cannot be migrated safely: $(basename -- "${source}")"
+    fi
+    index=$((index + 1))
+    destination="${install_dir}/conf/conf.d/migrated-$(printf '%03d' "${index}")-$(basename -- "${source}")"
+    install -m 0640 -- "${source}" "${destination}"
+    emit_progress 55 migration.config.copied "Migrated Nginx virtual-host configuration $(basename -- "${source}")"
+  done
+  shopt -u nullglob
+}
+commit_external_nginx() {
+  [[ -f "${external_migration_dir}/detected" ]] || return 0
+  local packages=()
+  mapfile -t packages <"${external_migration_dir}/packages"
+  if ((${#packages[@]} > 0)); then
+    emit_progress 82 migration.package.removing "Removing replaced external Nginx packages"
+    DEBIAN_FRONTEND=noninteractive apt-get remove -y "${packages[@]}"
+  fi
+  rm -rf -- /etc/nginx
+  systemctl daemon-reload
+  systemctl enable --now nginx.service
+  "${nginx_binary}" -t
+  nginx_is_running || die "Managed Nginx stopped after external package removal."
+  emit_progress 88 migration.commit.completed "External Nginx package and configuration replacement committed"
 }
 start_nginx() {
   if systemd_available; then
@@ -154,11 +216,23 @@ prepare_rollback() {
   if nginx_is_running; then : >"${rollback_dir}/was-active"; stop_nginx; fi
   [[ ! -e "${install_dir}" ]] || mv -- "${install_dir}" "${rollback_dir}/install"
   [[ ! -e "${unit_file}" ]] || cp -a -- "${unit_file}" "${rollback_dir}/nginx.service"
+  snapshot_external_nginx
 }
 restore_rollback() {
   stop_nginx 2>/dev/null || true
   [[ ! -e "${install_dir}" ]] || rm -rf -- "${install_dir}"
   [[ ! -e "${rollback_dir}/install" ]] || mv -- "${rollback_dir}/install" "${install_dir}"
+  if [[ -s "${external_migration_dir}/package-versions" ]]; then
+    local specifications=() package version
+    while IFS=$'\t' read -r package version; do
+      [[ -n "${package}" && -n "${version}" ]] && specifications+=("${package}=${version}")
+    done <"${external_migration_dir}/package-versions"
+    ((${#specifications[@]} == 0)) || DEBIAN_FRONTEND=noninteractive apt-get install -y "${specifications[@]}"
+  fi
+  if [[ -d "${external_migration_dir}/config" ]]; then
+    rm -rf -- /etc/nginx
+    cp -a -- "${external_migration_dir}/config" /etc/nginx
+  fi
   if [[ -e "${rollback_dir}/nginx.service" ]]; then cp -a -- "${rollback_dir}/nginx.service" "${unit_file}"; else rm -f -- "${unit_file}"; fi
   systemd_available && systemctl daemon-reload
   [[ ! -e "${rollback_dir}/was-active" ]] || start_nginx

@@ -3,6 +3,12 @@ set -Eeuo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 emit_progress 5 validate_inputs "正在校验 Redis 安装参数"
 require_root; validate_inputs
+require_command ss
+listener="$(ss -H -ltnp "sport = :${redis_port}" 2>/dev/null || true)"
+if [[ -n "${listener}" ]]; then
+  [[ "${listener}" == *redis-server* ]] || die "Redis port ${redis_port} is occupied by an unrelated process."
+  emit_progress 60 conflict.port.detected "Existing Redis listener detected and will be migrated"
+fi
 emit_progress 40 check_host "正在检查操作系统兼容性"
 check_host
 emit_progress 75 check_disk "正在检查 Redis 编译空间"

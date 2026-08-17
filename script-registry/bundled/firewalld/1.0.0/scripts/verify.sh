@@ -21,5 +21,6 @@ emit_progress 85 verify_disabled "正在确认防火墙等待安全启用"
 if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
   die "firewalld unexpectedly started before the Panel port was protected."
 fi
+commit_migration
 emit_progress 100 verify_completed "firewalld 安装验证完成，可在安全页启用"
 echo "firewalld installation verified."
