@@ -137,7 +137,8 @@ func ArchiveFileOrDir(c *gin.Context) {
 	// The protected route always establishes the authenticated user. Keeping a
 	// zero value here also lets trusted in-process callers submit a task.
 	userID, _ := middleware.AuthenticatedUserID(c)
-	task, err := submitArchiveTask(input, userID)
+	settings := currentFileSettings()
+	task, err := submitArchiveTask(input, userID, manager.RootPath(), settings.capacityPolicy)
 	if err != nil {
 		handleFileError(c, err, "创建归档任务失败")
 		return

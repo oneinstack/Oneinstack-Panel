@@ -16,6 +16,9 @@ type FileArchiveTask struct {
 	SourcePath     string     `json:"sourcePath" gorm:"size:1024;not null"`
 	TargetDir      string     `json:"targetDir" gorm:"size:1024;not null"`
 	ArchiveName    string     `json:"archiveName" gorm:"size:255;not null"`
+	FileRootPath   string     `json:"-" gorm:"size:1024;not null"`
+	QuotaBytes     int64      `json:"-" gorm:"not null;default:0"`
+	MinFreeBytes   int64      `json:"-" gorm:"not null;default:0"`
 	ResultPath     string     `json:"resultPath,omitempty" gorm:"size:1024"`
 	Entries        int        `json:"entries,omitempty"`
 	Bytes          int64      `json:"bytes,omitempty"`
@@ -25,6 +28,7 @@ type FileArchiveTask struct {
 	CurrentPath    string     `json:"currentPath,omitempty" gorm:"size:1024"`
 	Status         string     `json:"status" gorm:"size:16;not null;index:idx_file_archive_task_status_created"`
 	Message        string     `json:"message" gorm:"size:512;not null"`
+	ErrorCode      string     `json:"errorCode,omitempty" gorm:"size:64"`
 	RequestedBy    int64      `json:"requestedBy" gorm:"not null;index"`
 	StartedAt      *time.Time `json:"startedAt,omitempty"`
 	FinishedAt     *time.Time `json:"finishedAt,omitempty"`

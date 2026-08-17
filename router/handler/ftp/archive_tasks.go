@@ -1,7 +1,10 @@
 package ftp
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
+	"log"
 	"math"
 	"net/http"
 	"path/filepath"
@@ -43,13 +46,14 @@ func StartArchiveTaskManager() error {
 	return startErr
 }
 
-func submitArchiveTask(input archiveTaskInput, requestedBy int64) (*models.FileArchiveTask, error) {
+func submitArchiveTask(input archiveTaskInput, requestedBy int64, rootPath string, capacityPolicy filemanager.CapacityPolicy) (*models.FileArchiveTask, error) {
 	if err := StartArchiveTaskManager(); err != nil {
 		return nil, err
 	}
 	now := time.Now().UTC()
 	task := &models.FileArchiveTask{
 		ID: uuid.NewString(), SourcePath: input.Path, TargetDir: input.TargetDir, ArchiveName: input.ArchiveName,
+		FileRootPath: rootPath, QuotaBytes: capacityPolicy.QuotaBytes, MinFreeBytes: capacityPolicy.MinFreeBytes,
 		Status: models.FileArchiveTaskStatusQueued, Message: "归档任务已进入队列", RequestedBy: requestedBy,
 		CreatedAt: now, UpdatedAt: now,
 	}
@@ -77,21 +81,22 @@ func runArchiveTask(taskID string) {
 	}).Error; err != nil {
 		return
 	}
-	manager, err := newArchiveTaskFileManager()
+	manager, err := newArchiveTaskFileManager(task.FileRootPath)
 	var measured filemanager.OperationResult
 	if err == nil {
 		defer manager.Close()
 		measured, err = manager.MeasureForArchive(task.SourcePath)
 	}
 	if err == nil {
-		settings := currentFileSettings()
-		reservation, reserveErr := reserveArchiveCapacity(manager, measured.Bytes, settings.capacityPolicy)
+		reservation, reserveErr := reserveArchiveCapacity(manager, measured.Bytes, filemanager.CapacityPolicy{
+			QuotaBytes: task.QuotaBytes, MinFreeBytes: task.MinFreeBytes,
+		})
 		if reserveErr != nil {
 			err = reserveErr
 		} else {
 			defer reservation.Release()
 			reporter := newArchiveTaskProgressReporter(&task)
-			result, archiveErr := manager.ArchiveWithProgress(task.SourcePath, task.TargetDir, task.ArchiveName, reporter.Report)
+			result, archiveErr := archiveWithAvailableName(manager, &task, reporter.Report)
 			if archiveErr != nil {
 				err = archiveErr
 			} else {
@@ -100,7 +105,73 @@ func runArchiveTask(taskID string) {
 			}
 		}
 	}
-	failArchiveTask(&task)
+	failArchiveTask(&task, err)
+}
+
+func archiveWithAvailableName(manager *filemanager.Manager, task *models.FileArchiveTask, report filemanager.ArchiveProgressFunc) (filemanager.OperationResult, error) {
+	requestedName := task.ArchiveName
+	for attempt := 0; attempt < 10; attempt++ {
+		name, err := nextArchiveName(manager, task.TargetDir, requestedName, time.Now().UTC())
+		if err != nil {
+			return filemanager.OperationResult{}, err
+		}
+		if name != task.ArchiveName {
+			task.ArchiveName = name
+			if err := app.DB().Model(task).Updates(map[string]any{"archive_name": name, "updated_at": time.Now().UTC()}).Error; err != nil {
+				return filemanager.OperationResult{}, err
+			}
+		}
+		result, err := manager.ArchiveWithProgress(task.SourcePath, task.TargetDir, name, report)
+		if !errors.Is(err, fs.ErrExist) {
+			return result, err
+		}
+	}
+	return filemanager.OperationResult{}, fmt.Errorf("%w: failed to allocate unique archive name", fs.ErrExist)
+}
+
+func nextArchiveName(manager *filemanager.Manager, targetDir, requestedName string, now time.Time) (string, error) {
+	requestedName = strings.TrimSpace(requestedName)
+	if !strings.HasSuffix(strings.ToLower(requestedName), ".tar.gz") {
+		return "", filemanager.ErrInvalidName
+	}
+	exists, err := archiveNameExists(manager, targetDir, requestedName)
+	if err != nil {
+		return "", err
+	}
+	if !exists {
+		return requestedName, nil
+	}
+	base := requestedName[:len(requestedName)-len(".tar.gz")]
+	timestamped := base + "-" + now.Format("20060102-150405")
+	for sequence := 0; sequence < 1000; sequence++ {
+		candidate := timestamped + ".tar.gz"
+		if sequence > 0 {
+			candidate = fmt.Sprintf("%s-%d.tar.gz", timestamped, sequence+1)
+		}
+		exists, err := archiveNameExists(manager, targetDir, candidate)
+		if err != nil {
+			return "", err
+		}
+		if !exists {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("%w: too many archive files with the same timestamp", fs.ErrExist)
+}
+
+func archiveNameExists(manager *filemanager.Manager, targetDir, name string) (bool, error) {
+	relative, err := manager.Join(targetDir, name)
+	if err != nil {
+		return false, err
+	}
+	_, _, err = manager.Stat(manager.VirtualPath(relative))
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func reserveArchiveCapacity(manager *filemanager.Manager, bytes int64, policy filemanager.CapacityPolicy) (*filemanager.CapacityReservation, error) {
@@ -108,14 +179,9 @@ func reserveArchiveCapacity(manager *filemanager.Manager, bytes int64, policy fi
 	return reservation, err
 }
 
-func newArchiveTaskFileManager() (*filemanager.Manager, error) {
-	rootPath := strings.TrimSpace(app.ONE_CONFIG.System.DefaultPath)
+func newArchiveTaskFileManager(rootPath string) (*filemanager.Manager, error) {
+	rootPath = strings.TrimSpace(rootPath)
 	manager, err := filemanager.New(rootPath)
-	if err != nil {
-		if fallbackRoot, ok := developmentFileRootFallback(rootPath); ok {
-			manager, err = filemanager.New(fallbackRoot)
-		}
-	}
 	if err != nil {
 		return nil, err
 	}
@@ -158,11 +224,33 @@ func (r *archiveTaskProgressReporter) Report(progress filemanager.ArchiveProgres
 	}).Error
 }
 
-func failArchiveTask(task *models.FileArchiveTask) {
+func failArchiveTask(task *models.FileArchiveTask, cause error) {
 	now := time.Now().UTC()
+	code, message := archiveTaskFailure(cause)
+	log.Printf("file archive task failed task_id=%s code=%s cause=%v", task.ID, code, cause)
 	_ = app.DB().Model(task).Updates(map[string]any{
-		"status": models.FileArchiveTaskStatusFailed, "message": "创建压缩包失败", "finished_at": now, "updated_at": now,
+		"status": models.FileArchiveTaskStatusFailed, "message": message, "error_code": code,
+		"finished_at": now, "updated_at": now,
 	}).Error
+}
+
+func archiveTaskFailure(cause error) (code, message string) {
+	switch {
+	case errors.Is(cause, fs.ErrExist):
+		return "FILE_ARCHIVE_EXISTS", "压缩包已存在，请更换名称"
+	case errors.Is(cause, fs.ErrPermission):
+		return "FILE_ARCHIVE_PERMISSION_DENIED", "无权在目标目录创建压缩包"
+	case errors.Is(cause, fs.ErrNotExist):
+		return "FILE_ARCHIVE_PATH_NOT_FOUND", "压缩源或目标目录不存在"
+	case errors.Is(cause, filemanager.ErrQuotaExceeded), errors.Is(cause, filemanager.ErrInsufficientSpace):
+		return "FILE_ARCHIVE_INSUFFICIENT_SPACE", "创建压缩包所需存储容量不足"
+	case errors.Is(cause, filemanager.ErrInvalidName):
+		return "FILE_ARCHIVE_INVALID_NAME", "压缩包名称无效"
+	case errors.Is(cause, filemanager.ErrInvalidPath), errors.Is(cause, filemanager.ErrRootOperation):
+		return "FILE_ARCHIVE_INVALID_PATH", "归档路径无效或已发生变化"
+	default:
+		return "FILE_ARCHIVE_FAILED", "创建压缩包失败"
+	}
 }
 
 func GetArchiveTask(c *gin.Context) {
