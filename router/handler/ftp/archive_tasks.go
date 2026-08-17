@@ -111,7 +111,7 @@ func runArchiveTask(taskID string) {
 func archiveWithAvailableName(manager *filemanager.Manager, task *models.FileArchiveTask, report filemanager.ArchiveProgressFunc) (filemanager.OperationResult, error) {
 	requestedName := task.ArchiveName
 	for attempt := 0; attempt < 10; attempt++ {
-		name, err := nextArchiveName(manager, task.TargetDir, requestedName, time.Now().UTC())
+		name, err := nextArchiveName(manager, task.TargetDir, requestedName)
 		if err != nil {
 			return filemanager.OperationResult{}, err
 		}
@@ -129,7 +129,7 @@ func archiveWithAvailableName(manager *filemanager.Manager, task *models.FileArc
 	return filemanager.OperationResult{}, fmt.Errorf("%w: failed to allocate unique archive name", fs.ErrExist)
 }
 
-func nextArchiveName(manager *filemanager.Manager, targetDir, requestedName string, now time.Time) (string, error) {
+func nextArchiveName(manager *filemanager.Manager, targetDir, requestedName string) (string, error) {
 	requestedName = strings.TrimSpace(requestedName)
 	if !strings.HasSuffix(strings.ToLower(requestedName), ".tar.gz") {
 		return "", filemanager.ErrInvalidName
@@ -142,12 +142,8 @@ func nextArchiveName(manager *filemanager.Manager, targetDir, requestedName stri
 		return requestedName, nil
 	}
 	base := requestedName[:len(requestedName)-len(".tar.gz")]
-	timestamped := base + "-" + now.Format("20060102-150405")
-	for sequence := 0; sequence < 1000; sequence++ {
-		candidate := timestamped + ".tar.gz"
-		if sequence > 0 {
-			candidate = fmt.Sprintf("%s-%d.tar.gz", timestamped, sequence+1)
-		}
+	for sequence := 1; sequence <= 1000; sequence++ {
+		candidate := fmt.Sprintf("%s(%d).tar.gz", base, sequence)
 		exists, err := archiveNameExists(manager, targetDir, candidate)
 		if err != nil {
 			return "", err
@@ -156,7 +152,7 @@ func nextArchiveName(manager *filemanager.Manager, targetDir, requestedName stri
 			return candidate, nil
 		}
 	}
-	return "", fmt.Errorf("%w: too many archive files with the same timestamp", fs.ErrExist)
+	return "", fmt.Errorf("%w: too many archive files with the same name", fs.ErrExist)
 }
 
 func archiveNameExists(manager *filemanager.Manager, targetDir, name string) (bool, error) {
