@@ -235,7 +235,16 @@ func mergeWebsiteSettingsConfig(previous, rendered, current string) string {
 			continue
 		}
 		if currentStart < currentIndex {
-			manual := currentLines[currentStart:currentIndex]
+			manual := filterConflictingManualConfig(
+				currentLines[currentStart:currentIndex], renderedLines,
+			)
+			if len(manual) == 0 {
+				if baseIndex < len(baseLines) {
+					previousBase = baseIndex
+					currentStart = currentIndex + 1
+				}
+				continue
+			}
 			if renderedIndex, ok := baseToRendered[previousBase]; ok {
 				insertAfter[renderedIndex] = append(insertAfter[renderedIndex], manual)
 			} else {
@@ -259,6 +268,122 @@ func mergeWebsiteSettingsConfig(previous, rendered, current string) string {
 		}
 	}
 	return strings.Join(merged, "\n") + "\n"
+}
+
+// filterConflictingManualConfig keeps manual additions unless the regenerated
+// configuration now owns the same directive or location. This lets a
+// structured setting take precedence over a conflicting manual edit while
+// preserving unrelated, user-managed blocks.
+func filterConflictingManualConfig(manual, rendered []string) []string {
+	renderedLocations := make(map[string]struct{})
+	renderedDirectives := make(map[string]struct{})
+	for _, line := range rendered {
+		if key, ok := configLocationKey(line); ok {
+			renderedLocations[key] = struct{}{}
+		}
+		if key, ok := managedDirectiveKey(line); ok {
+			renderedDirectives[key] = struct{}{}
+		}
+	}
+
+	kept := make([]string, 0, len(manual))
+	for index := 0; index < len(manual); {
+		if key, ok := configLocationKey(manual[index]); ok {
+			block, next := configBlock(manual, index)
+			if _, conflict := renderedLocations[key]; !conflict {
+				kept = append(kept, block...)
+			}
+			index = next
+			continue
+		}
+		if key, ok := managedDirectiveKey(manual[index]); ok {
+			if _, conflict := renderedDirectives[key]; conflict {
+				index++
+				continue
+			}
+		}
+		kept = append(kept, manual[index])
+		index++
+	}
+	return kept
+}
+
+func configLocationKey(line string) (string, bool) {
+	line = strings.TrimSpace(line)
+	openBrace := strings.Index(line, "{")
+	if openBrace < 0 {
+		return "", false
+	}
+	fields := strings.Fields(strings.TrimSpace(line[:openBrace]))
+	if len(fields) < 2 || fields[0] != "location" {
+		return "", false
+	}
+	pathIndex := 1
+	if fields[pathIndex] == "=" || fields[pathIndex] == "^~" ||
+		fields[pathIndex] == "~" || fields[pathIndex] == "~*" {
+		pathIndex++
+	}
+	if pathIndex >= len(fields) {
+		return "", false
+	}
+	path := fields[pathIndex]
+	if strings.HasPrefix(path, "/") {
+		path = strings.TrimSuffix(path, "/")
+		if path == "" {
+			path = "/"
+		}
+	}
+	return path, true
+}
+
+func configBlock(lines []string, start int) ([]string, int) {
+	depth := 0
+	for index := start; index < len(lines); index++ {
+		depth += strings.Count(lines[index], "{") - strings.Count(lines[index], "}")
+		if depth == 0 {
+			return lines[start : index+1], index + 1
+		}
+	}
+	return lines[start:], len(lines)
+}
+
+func managedDirectiveKey(line string) (string, bool) {
+	fields := strings.Fields(strings.TrimSpace(line))
+	if len(fields) == 0 {
+		return "", false
+	}
+	switch fields[0] {
+	case "root", "index", "autoindex", "access_log", "error_log", "limit_rate", "limit_rate_after", "try_files", "fastcgi_pass", "fastcgi_index", "include", "fastcgi_param":
+		return fields[0], true
+	case "add_header":
+		if len(fields) > 1 {
+			return fields[0] + " " + fields[1], true
+		}
+	}
+	return "", false
+}
+
+// preserveCustomWebsiteConfig reapplies manually added configuration fragments
+// while a managed website configuration is being regenerated. The caller must
+// provide the configuration generated from the website's state before its
+// change; that makes managed changes authoritative without discarding custom
+// directives in the active file.
+func (service *Service) preserveCustomWebsiteConfig(
+	site *models.Website,
+	previous, rendered string,
+) (string, error) {
+	configPath, err := service.ConfigFile(site)
+	if err != nil {
+		return "", err
+	}
+	current, err := readBoundedFile(configPath, maxWebServerConfigBytes)
+	if errors.Is(err, os.ErrNotExist) {
+		return rendered, nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return mergeWebsiteSettingsConfig(previous, rendered, string(current)), nil
 }
 
 func configLines(content string) []string {

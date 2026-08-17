@@ -319,6 +319,21 @@ func (service *Service) Update(ctx context.Context, param *models.Website) error
 	if err != nil {
 		return err
 	}
+	previousTLSOptions, err := service.activeTLSOptions(existing.ID, existing.Domain)
+	if err != nil {
+		return err
+	}
+	previous, err := prepareWebsiteWithTLSAndSettings(
+		&existing,
+		service.WebRoot,
+		service.LogRoot,
+		service.challengeRoot(),
+		previousTLSOptions,
+		settings,
+	)
+	if err != nil {
+		return err
+	}
 	prepared, err := prepareWebsiteWithTLSAndSettings(
 		param,
 		service.WebRoot,
@@ -390,6 +405,11 @@ func (service *Service) Update(ctx context.Context, param *models.Website) error
 		changes := map[string]*string{prepared.configName: nil}
 		if prepared.model.Enabled {
 			content := prepared.config
+			merged, mergeErr := service.preserveCustomWebsiteConfig(&existing, previous.config, content)
+			if mergeErr != nil {
+				return mergeErr
+			}
+			content = merged
 			changes[prepared.configName] = &content
 		}
 		if oldName != prepared.configName {
@@ -774,6 +794,21 @@ func (deployer *CertificateDeployer) publish(
 	if err != nil {
 		return nil, err
 	}
+	previousTLSOptions, err := deployer.service.activeTLSOptions(site.ID, site.Domain)
+	if err != nil {
+		return nil, err
+	}
+	previous, err := prepareWebsiteWithTLSAndSettings(
+		&site,
+		deployer.service.WebRoot,
+		deployer.service.LogRoot,
+		deployer.service.challengeRoot(),
+		previousTLSOptions,
+		settings,
+	)
+	if err != nil {
+		return nil, err
+	}
 	prepared, err := prepareWebsiteWithTLSAndSettings(
 		&site,
 		deployer.service.WebRoot,
@@ -786,6 +821,10 @@ func (deployer *CertificateDeployer) publish(
 		return nil, err
 	}
 	content := prepared.config
+	content, err = deployer.service.preserveCustomWebsiteConfig(&site, previous.config, content)
+	if err != nil {
+		return nil, err
+	}
 	return deployer.service.Publisher.Publish(ctx, map[string]*string{
 		prepared.configName: &content,
 	})
