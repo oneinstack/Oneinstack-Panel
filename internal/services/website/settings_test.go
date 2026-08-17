@@ -54,6 +54,19 @@ func TestWebsiteUpdateSettingsPersistsAndPublishes(t *testing.T) {
 	if err := service.Add(context.Background(), site); err != nil {
 		t.Fatal(err)
 	}
+	configPath := filepath.Join(service.Publisher.ConfigDir, "settings.example.com.conf")
+	before, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := "    # custom directive\n    add_header X-Manual retained always;\n"
+	index := strings.LastIndex(string(before), "\n}")
+	if index < 0 {
+		t.Fatal("generated config has no server closing brace")
+	}
+	if err := os.WriteFile(configPath, []byte(string(before[:index])+"\n"+marker+string(before[index:])), 0640); err != nil {
+		t.Fatal(err)
+	}
 	document, err := service.UpdateSettings(context.Background(), site.ID, WebsiteSettings{
 		DefaultDocuments: "home.html index.html", DirectoryListing: true,
 		PHPBackend: "unix:/dev/shm/php-cgi.sock", SecurityHeaders: true,
@@ -65,13 +78,14 @@ func TestWebsiteUpdateSettingsPersistsAndPublishes(t *testing.T) {
 	if document.Settings.DefaultDocuments != "home.html index.html" {
 		t.Fatalf("settings were not returned: %#v", document.Settings)
 	}
-	content, err := os.ReadFile(filepath.Join(service.Publisher.ConfigDir, "settings.example.com.conf"))
+	content, err := os.ReadFile(configPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(content), "index home.html index.html;") ||
 		!strings.Contains(string(content), "autoindex on;") ||
-		!strings.Contains(string(content), "X-Frame-Options") {
+		!strings.Contains(string(content), "X-Frame-Options") ||
+		!strings.Contains(string(content), "add_header X-Manual retained always;") {
 		t.Fatalf("published config did not include settings:\n%s", content)
 	}
 	stored, err := service.GetSettings(site.ID)

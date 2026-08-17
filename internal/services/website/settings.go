@@ -131,12 +131,27 @@ func (service *Service) UpdateSettings(
 	if err != nil {
 		return nil, err
 	}
+	_, previousRecord, err := service.loadSettings(id)
+	if err != nil {
+		return nil, err
+	}
 	settings.UpdatedAt = time.Now()
 	record, err := settings.toModel(id)
 	if err != nil {
 		return nil, err
 	}
 	tlsOptions, err := service.activeTLSOptions(site.ID, site.Domain)
+	if err != nil {
+		return nil, err
+	}
+	previous, err := prepareWebsiteWithTLSAndSettings(
+		site,
+		service.WebRoot,
+		service.LogRoot,
+		service.challengeRoot(),
+		tlsOptions,
+		previousRecord,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -161,6 +176,19 @@ func (service *Service) UpdateSettings(
 			return nil
 		}
 		content := prepared.config
+		if site.Enabled {
+			configPath, pathErr := service.ConfigFile(site)
+			if pathErr != nil {
+				return pathErr
+			}
+			current, readErr := readBoundedFile(configPath, maxWebServerConfigBytes)
+			if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+				return readErr
+			}
+			if readErr == nil {
+				content = mergeWebsiteSettingsConfig(previous.config, prepared.config, string(current))
+			}
+		}
 		published, publishErr := service.Publisher.Publish(ctx, map[string]*string{
 			prepared.configName: &content,
 		})
@@ -177,6 +205,102 @@ func (service *Service) UpdateSettings(
 		return nil, err
 	}
 	return &WebsiteSettingsDocument{Website: *site, Settings: settings}, nil
+}
+
+// mergeWebsiteSettingsConfig applies the structured-settings render while
+// retaining lines added manually to the active configuration. It deliberately
+// uses the previous generated config as the base: fields controlled by website
+// settings still change, while additions such as comments, directives and
+// location blocks remain at their original relative position.
+func mergeWebsiteSettingsConfig(previous, rendered, current string) string {
+	baseLines := configLines(previous)
+	renderedLines := configLines(rendered)
+	currentLines := configLines(current)
+	baseToCurrent := lcsLineMatches(baseLines, currentLines)
+	baseToRendered := lcsLineMatches(baseLines, renderedLines)
+	if len(baseToCurrent) == len(baseLines) && len(currentLines) == len(baseLines) {
+		return rendered
+	}
+
+	insertAfter := make(map[int][][]string)
+	currentStart := 0
+	previousBase := -1
+	for baseIndex := 0; baseIndex <= len(baseLines); baseIndex++ {
+		currentIndex, matched := baseToCurrent[baseIndex]
+		if baseIndex == len(baseLines) {
+			currentIndex = len(currentLines)
+			matched = true
+		}
+		if !matched {
+			continue
+		}
+		if currentStart < currentIndex {
+			manual := currentLines[currentStart:currentIndex]
+			if renderedIndex, ok := baseToRendered[previousBase]; ok {
+				insertAfter[renderedIndex] = append(insertAfter[renderedIndex], manual)
+			} else {
+				insertAfter[-1] = append(insertAfter[-1], manual)
+			}
+		}
+		if baseIndex < len(baseLines) {
+			previousBase = baseIndex
+			currentStart = currentIndex + 1
+		}
+	}
+
+	merged := make([]string, 0, len(renderedLines)+len(currentLines)-len(baseLines))
+	for _, block := range insertAfter[-1] {
+		merged = append(merged, block...)
+	}
+	for index, line := range renderedLines {
+		merged = append(merged, line)
+		for _, block := range insertAfter[index] {
+			merged = append(merged, block...)
+		}
+	}
+	return strings.Join(merged, "\n") + "\n"
+}
+
+func configLines(content string) []string {
+	content = strings.TrimSuffix(content, "\n")
+	if content == "" {
+		return nil
+	}
+	return strings.Split(content, "\n")
+}
+
+// lcsLineMatches maps each line index in base to its identical line in other.
+// Website configurations are intentionally bounded, making this predictable
+// O(n*m) merge safe and easier to audit than a heuristic text replacement.
+func lcsLineMatches(base, other []string) map[int]int {
+	dp := make([][]int, len(base)+1)
+	for i := range dp {
+		dp[i] = make([]int, len(other)+1)
+	}
+	for i := len(base) - 1; i >= 0; i-- {
+		for j := len(other) - 1; j >= 0; j-- {
+			if base[i] == other[j] {
+				dp[i][j] = dp[i+1][j+1] + 1
+			} else if dp[i+1][j] >= dp[i][j+1] {
+				dp[i][j] = dp[i+1][j]
+			} else {
+				dp[i][j] = dp[i][j+1]
+			}
+		}
+	}
+	matches := make(map[int]int)
+	for i, j := 0, 0; i < len(base) && j < len(other); {
+		if base[i] == other[j] {
+			matches[i] = j
+			i++
+			j++
+		} else if dp[i+1][j] >= dp[i][j+1] {
+			i++
+		} else {
+			j++
+		}
+	}
+	return matches
 }
 
 func (service *Service) ReadLog(id int64, logType string, lineLimit int) (*WebsiteLogDocument, error) {
