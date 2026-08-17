@@ -992,7 +992,11 @@ func validateParameters(scriptInfo *ScriptInfo) error {
 			value = spec.Default
 			scriptInfo.Params[spec.Name] = value
 		}
-		if spec.Required && value == "" {
+		// Required parameters describe the inputs needed to create or configure a
+		// component. They must not prevent an uninstall: secret installation
+		// inputs are intentionally not retained and the uninstall action must be
+		// able to remove an existing managed installation without them.
+		if spec.Required && value == "" && !strings.EqualFold(scriptInfo.ActionName, "uninstall") {
 			return fmt.Errorf("component parameter %s is required", spec.Name)
 		}
 		if value == "" {
