@@ -117,7 +117,7 @@ func ArchiveFileOrDir(c *gin.Context) {
 		return
 	}
 	defer manager.Close()
-	measured, err := manager.Measure(input.Path)
+	measured, err := manager.MeasureForArchive(input.Path)
 	if err != nil {
 		handleFileError(c, err, "读取压缩源失败")
 		return

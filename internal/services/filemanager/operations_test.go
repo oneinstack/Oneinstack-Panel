@@ -157,4 +157,36 @@ func TestCopyRejectsAndArchivePreservesSymbolicLinks(t *testing.T) {
 	if header.Typeflag != tar.TypeSymlink || header.Linkname != "../target.txt" {
 		t.Fatalf("archive link header=%+v", header)
 	}
+	if err := os.Symlink("source", filepath.Join(rootPath, "root-link")); err != nil {
+		t.Fatal(err)
+	}
+	archived, err = manager.Archive("/root-link", "/", "root-link.tar.gz")
+	if err != nil {
+		t.Fatalf("archive root symlink: %v", err)
+	}
+	if archived.Entries != 2 || archived.Bytes != 0 {
+		t.Fatalf("unexpected root-link archive result: %+v", archived)
+	}
+	rootLinkArchive, err := os.Open(filepath.Join(rootPath, "root-link.tar.gz"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rootLinkArchive.Close()
+	rootLinkGzip, err := gzip.NewReader(rootLinkArchive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rootLinkGzip.Close()
+	rootLinkTar := tar.NewReader(rootLinkGzip)
+	_, err = rootLinkTar.Next()
+	if err != nil {
+		t.Fatal(err)
+	}
+	header, err = rootLinkTar.Next()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if header.Name != "root-link/link.txt" || header.Typeflag != tar.TypeSymlink || header.Linkname != "../target.txt" {
+		t.Fatalf("archive root-link header=%+v", header)
+	}
 }

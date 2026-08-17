@@ -28,6 +28,67 @@ func (m *Manager) Measure(virtualPath string) (OperationResult, error) {
 	return m.measure(virtualPath, false)
 }
 
+// MeasureForArchive returns the capacity estimate for an archive source. A
+// source symbolic link is resolved only when its target remains in the managed
+// root; links within the resolved tree are preserved without being followed.
+func (m *Manager) MeasureForArchive(virtualPath string) (OperationResult, error) {
+	relative, err := m.Relative(virtualPath)
+	if err != nil {
+		return OperationResult{}, err
+	}
+	if relative == "." {
+		return OperationResult{}, ErrRootOperation
+	}
+	resolved, _, err := m.resolveArchiveSource(relative)
+	if err != nil {
+		return OperationResult{}, err
+	}
+	return m.measure(m.VirtualPath(resolved), true)
+}
+
+func (m *Manager) resolveArchiveSource(relative string) (string, os.FileInfo, error) {
+	seen := make(map[string]struct{})
+	for {
+		if _, ok := seen[relative]; ok {
+			return "", nil, fmt.Errorf("%w: symbolic link cycle", ErrInvalidPath)
+		}
+		seen[relative] = struct{}{}
+		info, err := m.root.Lstat(relative)
+		if err != nil {
+			return "", nil, err
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			return relative, info, nil
+		}
+		parent, err := m.root.Open(pathpkg.Dir(relative))
+		if err != nil {
+			return "", nil, err
+		}
+		linkTarget, linkErr := readlinkAt(parent, pathpkg.Base(relative))
+		closeErr := parent.Close()
+		if linkErr != nil {
+			return "", nil, linkErr
+		}
+		if closeErr != nil {
+			return "", nil, closeErr
+		}
+		if pathpkg.IsAbs(linkTarget) {
+			if m.rootPath != "/" {
+				return "", nil, fmt.Errorf("%w: absolute symbolic link target is outside managed root", ErrInvalidPath)
+			}
+			relative = strings.TrimPrefix(pathpkg.Clean(linkTarget), "/")
+		} else {
+			relative = pathpkg.Clean(pathpkg.Join(pathpkg.Dir(relative), linkTarget))
+		}
+		if relative == "." || !fs.ValidPath(relative) {
+			return "", nil, ErrInvalidPath
+		}
+		if _, err := m.Relative(m.VirtualPath(relative)); err != nil {
+			return "", nil, err
+		}
+	}
+}
+
 // measure calculates the source size without following symbolic links. Archive
 // creation preserves symbolic links as tar entries, while copy operations keep
 // rejecting them.
@@ -47,6 +108,10 @@ func (m *Manager) measure(virtualPath string, allowSymbolicLinks bool) (Operatio
 		return OperationResult{}, fmt.Errorf("%w: symbolic links cannot be copied or archived", ErrUnsupportedType)
 	}
 	result := OperationResult{Path: m.VirtualPath(relative)}
+	if allowSymbolicLinks && rootInfo.Mode()&os.ModeSymlink != 0 {
+		result.Entries = 1
+		return result, nil
+	}
 	err = fs.WalkDir(m.root.FS(), relative, func(_ string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -169,11 +234,15 @@ func (m *Manager) Archive(source, targetDir, archiveName string) (result Operati
 	if err != nil {
 		return OperationResult{}, err
 	}
-	if targetRelative == sourceRelative ||
-		strings.HasPrefix(targetRelative, sourceRelative+"/") {
+	resolvedSourceRelative, _, err := m.resolveArchiveSource(sourceRelative)
+	if err != nil {
+		return OperationResult{}, err
+	}
+	if targetRelative == sourceRelative || strings.HasPrefix(targetRelative, sourceRelative+"/") ||
+		targetRelative == resolvedSourceRelative || strings.HasPrefix(targetRelative, resolvedSourceRelative+"/") {
 		return OperationResult{}, fmt.Errorf("%w: archive cannot be created inside source", ErrInvalidPath)
 	}
-	if _, err := m.measure(source, true); err != nil {
+	if _, err := m.MeasureForArchive(source); err != nil {
 		return OperationResult{}, err
 	}
 
@@ -195,7 +264,7 @@ func (m *Manager) Archive(source, targetDir, archiveName string) (result Operati
 	baseName := pathpkg.Base(sourceRelative)
 	result.Path = m.VirtualPath(targetRelative)
 
-	walkErr := fs.WalkDir(m.root.FS(), sourceRelative, func(current string, entry fs.DirEntry, walkErr error) error {
+	walkErr := fs.WalkDir(m.root.FS(), resolvedSourceRelative, func(current string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -208,8 +277,8 @@ func (m *Manager) Archive(source, targetDir, archiveName string) (result Operati
 			return ErrUnsupportedType
 		}
 		relativeName := "."
-		if current != sourceRelative {
-			relativeName = strings.TrimPrefix(current, sourceRelative+"/")
+		if current != resolvedSourceRelative {
+			relativeName = strings.TrimPrefix(current, resolvedSourceRelative+"/")
 		}
 		archivePath := baseName
 		if relativeName != "." {
