@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"oneinstack/app"
@@ -71,8 +72,42 @@ type WebServerConfigUpdate struct {
 
 type WebServerConfigUpdateResult struct {
 	WebServerConfigDocument
-	BackupPath string `json:"backupPath"`
-	Reloaded   bool   `json:"reloaded"`
+	BackupPath   string `json:"backupPath"`
+	Reloaded     bool   `json:"reloaded"`
+	ServiceState string `json:"serviceState"`
+	ApplyStatus  string `json:"applyStatus"`
+}
+
+const (
+	WebServerServiceStateRunning    = "running"
+	WebServerServiceStateNotRunning = "not_running"
+
+	WebServerConfigApplyStatusSavedNotReloaded   = "saved_not_reloaded"
+	WebServerConfigApplyStatusReloaded           = "reloaded"
+	WebServerConfigApplyStatusReloadFailedRolled = "reload_failed_rolled_back"
+)
+
+// WebServerConfigApplyError preserves the user-visible outcome when a reload
+// fails after the new configuration was written. Callers can distinguish a
+// rolled-back reload failure from validation or file-write failures without
+// inspecting an unsafe command error string.
+type WebServerConfigApplyError struct {
+	Status string
+	Err    error
+}
+
+func (err *WebServerConfigApplyError) Error() string {
+	if err == nil || err.Err == nil {
+		return "web server configuration apply failed"
+	}
+	return err.Err.Error()
+}
+
+func (err *WebServerConfigApplyError) Unwrap() error {
+	if err == nil {
+		return nil
+	}
+	return err.Err
 }
 
 type webServerCandidate struct {
@@ -157,6 +192,9 @@ func DetectWebServer() (WebServerInfo, error) {
 		prefix = detectedPrefix
 		configRoot = detectedConfig
 	}
+	runtimeCandidate := selected
+	runtimeCandidate.Prefix = prefix
+	runtimeCandidate.Config = configRoot
 	mainConfig := filepath.Join(configRoot, "nginx.conf")
 	configurationAvailable := isRegularFile(mainConfig)
 	siteConfigDir := detectSiteConfigDir(configRoot, mainConfig)
@@ -167,7 +205,7 @@ func DetectWebServer() (WebServerInfo, error) {
 		Component:              selected.Component,
 		Name:                   selected.Name,
 		Version:                version,
-		Running:                runningExecutables[canonicalPath(selected.Binary)],
+		Running:                webServerIsRunning(runtimeCandidate, runningExecutables),
 		BinaryPath:             filepath.Clean(selected.Binary),
 		Prefix:                 prefix,
 		ConfigRoot:             configRoot,
@@ -607,6 +645,8 @@ func (manager *WebServerConfigManager) Update(
 		return WebServerConfigUpdateResult{
 			WebServerConfigDocument: current,
 			Reloaded:                false,
+			ServiceState:            webServerServiceState(manager.Server.Running),
+			ApplyStatus:             WebServerConfigApplyStatusSavedNotReloaded,
 		}, nil
 	}
 
@@ -658,10 +698,10 @@ func (manager *WebServerConfigManager) Update(
 					restoreErr,
 				)
 			}
-			return WebServerConfigUpdateResult{}, fmt.Errorf(
-				"reload failed; previous content restored: %w",
-				err,
-			)
+			return WebServerConfigUpdateResult{}, &WebServerConfigApplyError{
+				Status: WebServerConfigApplyStatusReloadFailedRolled,
+				Err:    fmt.Errorf("reload failed; previous content restored: %w", err),
+			}
 		}
 		reloaded = true
 	}
@@ -674,7 +714,23 @@ func (manager *WebServerConfigManager) Update(
 		WebServerConfigDocument: updated,
 		BackupPath:              backupPath,
 		Reloaded:                reloaded,
+		ServiceState:            webServerServiceState(manager.Server.Running),
+		ApplyStatus:             webServerConfigApplyStatus(reloaded),
 	}, nil
+}
+
+func webServerServiceState(running bool) string {
+	if running {
+		return WebServerServiceStateRunning
+	}
+	return WebServerServiceStateNotRunning
+}
+
+func webServerConfigApplyStatus(reloaded bool) string {
+	if reloaded {
+		return WebServerConfigApplyStatusReloaded
+	}
+	return WebServerConfigApplyStatusSavedNotReloaded
 }
 
 func (manager *WebServerConfigManager) validate() error {
@@ -950,6 +1006,51 @@ func runningExecutableSet() map[string]bool {
 		result[canonicalPath(strings.TrimSuffix(executable, " (deleted)"))] = true
 	}
 	return result
+}
+
+// webServerIsRunning uses the same detected binary and configuration layout as
+// the publisher. The process executable scan is fast, while the PID-file
+// fallback keeps OpenResty detection correct when /proc executable links are
+// unavailable to the Panel process.
+func webServerIsRunning(candidate webServerCandidate, runningExecutables map[string]bool) bool {
+	if runningExecutables[canonicalPath(filepath.Clean(candidate.Binary))] {
+		return true
+	}
+	pidPath := filepath.Join(candidate.Prefix, "logs", "nginx.pid")
+	mainConfig := filepath.Join(candidate.Config, "nginx.conf")
+	if data, err := readBoundedFile(mainConfig, maxWebServerConfigBytes); err == nil {
+		if configured, ok := nginxPIDPath(string(data), candidate.Prefix); ok {
+			pidPath = configured
+		}
+	}
+	data, err := readBoundedFile(pidPath, 64)
+	if err != nil {
+		return false
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil || pid <= 0 {
+		return false
+	}
+	err = syscall.Kill(pid, 0)
+	return err == nil || errors.Is(err, syscall.EPERM)
+}
+
+func nginxPIDPath(config, prefix string) (string, bool) {
+	for _, line := range strings.Split(config, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "#") || !strings.HasPrefix(line, "pid ") || !strings.HasSuffix(line, ";") {
+			continue
+		}
+		value := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(line, "pid "), ";"))
+		if value == "" || strings.ContainsAny(value, "\t ") {
+			return "", false
+		}
+		if !filepath.IsAbs(value) {
+			value = filepath.Join(prefix, value)
+		}
+		return filepath.Clean(value), true
+	}
+	return "", false
 }
 
 func inspectWebServerVersion(binary string) string {

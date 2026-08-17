@@ -93,7 +93,14 @@ func UpdateWebServerConfig(c *gin.Context) {
 }
 
 func handleWebServerConfigError(c *gin.Context, err error, message string) {
+	var applyErr *websiteService.WebServerConfigApplyError
 	switch {
+	case errors.As(err, &applyErr) && applyErr.Status == websiteService.WebServerConfigApplyStatusReloadFailedRolled:
+		core.HandleError(c, core.WrapError(
+			err,
+			core.ErrConfigApplyFailed,
+			"Web Server 重载失败，原配置已回滚",
+		))
 	case errors.Is(err, websiteService.ErrWebServerUnavailable):
 		core.HandleError(c, core.WrapError(
 			err,
