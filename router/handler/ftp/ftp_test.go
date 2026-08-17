@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
@@ -494,12 +495,18 @@ func TestFileActionHandlersCopyMoveRenameArchiveAndProperties(t *testing.T) {
 		"targetDir":"/",
 		"archiveName":"renamed.tar.gz"
 	}`)
-	if archiveResponse.Code != http.StatusOK {
+	if archiveResponse.Code != http.StatusAccepted {
 		t.Fatalf("archive status=%d body=%s", archiveResponse.Code, archiveResponse.Body.String())
 	}
-	if _, err := os.Stat(filepath.Join(rootPath, "renamed.tar.gz")); err != nil {
-		t.Fatalf("archive was not created: %v", err)
+	archivePath := filepath.Join(rootPath, "renamed.tar.gz")
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(archivePath); err == nil {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
+	t.Fatalf("archive was not created within the task deadline")
 }
 
 func TestPreviewImageAcceptsVerifiedRasterAndRejectsUnsafeContent(t *testing.T) {

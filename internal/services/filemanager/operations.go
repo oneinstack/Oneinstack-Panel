@@ -21,6 +21,18 @@ type OperationResult struct {
 	Entries int    `json:"entries"`
 }
 
+// ArchiveProgress reports the amount of source data copied into an archive.
+// Bytes are uncompressed source bytes, which makes the percentage stable even
+// though the final gzip file size is not known until the archive is closed.
+type ArchiveProgress struct {
+	ProcessedBytes int64  `json:"processedBytes"`
+	TotalBytes     int64  `json:"totalBytes"`
+	Entries        int    `json:"entries"`
+	CurrentPath    string `json:"currentPath"`
+}
+
+type ArchiveProgressFunc func(ArchiveProgress)
+
 // Measure returns the regular-file bytes and entry count for a file tree.
 // Symbolic links and special files are rejected so copy never follows a link
 // outside the managed root.
@@ -227,6 +239,13 @@ func (m *Manager) Rename(source, newName string) (OperationResult, error) {
 // Archive creates a gzip-compressed tar archive without following symbolic
 // links or including the archive itself.
 func (m *Manager) Archive(source, targetDir, archiveName string) (result OperationResult, err error) {
+	return m.ArchiveWithProgress(source, targetDir, archiveName, nil)
+}
+
+// ArchiveWithProgress creates a gzip-compressed tar archive and reports
+// source-byte progress. The callback is invoked synchronously and must return
+// quickly; callers that persist progress should throttle their writes.
+func (m *Manager) ArchiveWithProgress(source, targetDir, archiveName string, report ArchiveProgressFunc) (result OperationResult, err error) {
 	if !strings.HasSuffix(strings.ToLower(strings.TrimSpace(archiveName)), ".tar.gz") {
 		return OperationResult{}, fmt.Errorf("%w: archive name must end in .tar.gz", ErrInvalidName)
 	}
@@ -242,8 +261,12 @@ func (m *Manager) Archive(source, targetDir, archiveName string) (result Operati
 		targetRelative == resolvedSourceRelative || strings.HasPrefix(targetRelative, resolvedSourceRelative+"/") {
 		return OperationResult{}, fmt.Errorf("%w: archive cannot be created inside source", ErrInvalidPath)
 	}
-	if _, err := m.MeasureForArchive(source); err != nil {
+	measured, err := m.MeasureForArchive(source)
+	if err != nil {
 		return OperationResult{}, err
+	}
+	if report != nil {
+		report(ArchiveProgress{TotalBytes: measured.Bytes})
 	}
 
 	output, err := m.root.OpenFile(targetRelative, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
@@ -315,6 +338,9 @@ func (m *Manager) Archive(source, targetDir, archiveName string) (result Operati
 			return err
 		}
 		result.Entries++
+		if report != nil {
+			report(ArchiveProgress{ProcessedBytes: result.Bytes, TotalBytes: measured.Bytes, Entries: result.Entries, CurrentPath: m.VirtualPath(current)})
+		}
 		if !info.Mode().IsRegular() {
 			return nil
 		}
@@ -322,7 +348,11 @@ func (m *Manager) Archive(source, targetDir, archiveName string) (result Operati
 		if err != nil {
 			return err
 		}
-		written, copyErr := io.Copy(tarWriter, input)
+		written, copyErr := io.Copy(&archiveProgressWriter{writer: tarWriter, onWrite: func(written int) {
+			if report != nil {
+				report(ArchiveProgress{ProcessedBytes: result.Bytes + int64(written), TotalBytes: measured.Bytes, Entries: result.Entries, CurrentPath: m.VirtualPath(current)})
+			}
+		}}, input)
 		closeErr := input.Close()
 		result.Bytes += written
 		if copyErr != nil {
@@ -345,7 +375,23 @@ func (m *Manager) Archive(source, targetDir, archiveName string) (result Operati
 		return OperationResult{}, err
 	}
 	keepArchive = true
+	if report != nil {
+		report(ArchiveProgress{ProcessedBytes: result.Bytes, TotalBytes: measured.Bytes, Entries: result.Entries})
+	}
 	return result, nil
+}
+
+type archiveProgressWriter struct {
+	writer  io.Writer
+	onWrite func(int)
+}
+
+func (w *archiveProgressWriter) Write(data []byte) (int, error) {
+	n, err := w.writer.Write(data)
+	if n > 0 && w.onWrite != nil {
+		w.onWrite(n)
+	}
+	return n, err
 }
 
 func (m *Manager) resolveOperationTarget(source, targetDir, targetName string) (string, string, error) {

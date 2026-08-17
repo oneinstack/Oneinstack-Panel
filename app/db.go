@@ -270,6 +270,9 @@ func createTables() error {
 	if err := db.AutoMigrate(&models.FileFavorite{}); err != nil {
 		return err
 	}
+	if err := db.AutoMigrate(&models.FileArchiveTask{}); err != nil {
+		return err
+	}
 	if err := db.AutoMigrate(&models.BastionServer{}, &models.BastionMetricSample{}); err != nil {
 		return err
 	}

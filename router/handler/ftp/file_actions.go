@@ -3,12 +3,14 @@ package ftp
 import (
 	"fmt"
 	"mime"
+	"net/http"
 	"os"
 	pathpkg "path"
 	"strings"
 	"time"
 
 	"oneinstack/core"
+	"oneinstack/router/middleware"
 
 	"github.com/gin-gonic/gin"
 )
@@ -101,12 +103,14 @@ func RenameFileOrDir(c *gin.Context) {
 	finishFileOperation(c, "success", "重命名为 "+input.NewName)
 }
 
+type archiveTaskInput struct {
+	Path        string `json:"path" binding:"required"`
+	TargetDir   string `json:"targetDir" binding:"required"`
+	ArchiveName string `json:"archiveName" binding:"required"`
+}
+
 func ArchiveFileOrDir(c *gin.Context) {
-	var input struct {
-		Path        string `json:"path" binding:"required"`
-		TargetDir   string `json:"targetDir" binding:"required"`
-		ArchiveName string `json:"archiveName" binding:"required"`
-	}
+	var input archiveTaskInput
 	if err := c.ShouldBindJSON(&input); err != nil {
 		handleBadRequest(c, err, "归档文件或目录参数格式不正确")
 		return
@@ -117,25 +121,31 @@ func ArchiveFileOrDir(c *gin.Context) {
 		return
 	}
 	defer manager.Close()
-	measured, err := manager.MeasureForArchive(input.Path)
-	if err != nil {
+	if _, _, err := manager.Stat(input.Path); err != nil {
 		handleFileError(c, err, "读取压缩源失败")
 		return
 	}
-	settings := currentFileSettings()
-	reservation, _, err := manager.ReserveCapacity(measured.Bytes, settings.capacityPolicy)
+	targetInfo, _, err := manager.Stat(input.TargetDir)
 	if err != nil {
-		handleFileError(c, err, "创建压缩包所需存储容量不足")
+		handleFileError(c, err, "读取压缩目标目录失败")
 		return
 	}
-	defer reservation.Release()
-	result, err := manager.Archive(input.Path, input.TargetDir, input.ArchiveName)
-	if err != nil {
-		handleFileError(c, err, "创建压缩包失败")
+	if !targetInfo.IsDir() {
+		handleFileError(c, fmt.Errorf("archive target is not a directory"), "压缩目标必须是目录")
 		return
 	}
-	core.HandleSuccess(c, result)
-	finishFileOperation(c, "success", fmt.Sprintf("压缩 %d 项，共 %d 字节", result.Entries, result.Bytes))
+	// The protected route always establishes the authenticated user. Keeping a
+	// zero value here also lets trusted in-process callers submit a task.
+	userID, _ := middleware.AuthenticatedUserID(c)
+	task, err := submitArchiveTask(input, userID)
+	if err != nil {
+		handleFileError(c, err, "创建归档任务失败")
+		return
+	}
+	c.JSON(http.StatusAccepted, core.SuccessResponseForContext(c, gin.H{
+		"taskId": task.ID, "status": task.Status, "statusUrl": "/v1/ftp/archive/tasks/" + task.ID,
+	}))
+	finishFileOperation(c, "success", "归档任务已提交")
 }
 
 func GetFileProperties(c *gin.Context) {

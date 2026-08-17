@@ -41,6 +41,9 @@ func SetupRouter() *gin.Engine {
 		if err := containerHandler.StartCreateTaskManager(); err != nil {
 			log.Printf("container task manager unavailable: %v", err)
 		}
+		if err := ftp.StartArchiveTaskManager(); err != nil {
+			log.Printf("file archive task manager unavailable: %v", err)
+		}
 	}
 	logOutput := io.Writer(gin.DefaultWriter)
 	if manager := logservice.RuntimeDefault(); manager != nil {
@@ -258,6 +261,8 @@ func SetupRouter() *gin.Engine {
 		ftpg.POST("/modify", middleware.RequirePermission(accessservice.PermissionFileModify), ftp.ModifyFileOrDirAttributes)
 		ftpg.POST("/save", middleware.RequirePermission(accessservice.PermissionFileEdit), ftp.SaveFile)
 		ftpg.POST("/archive", middleware.RequirePermission(accessservice.PermissionFileArchive), ftp.ArchiveFileOrDir)
+		ftpg.GET("/archive/tasks", middleware.RequirePermission(accessservice.PermissionFileArchive), ftp.ListArchiveTasks)
+		ftpg.GET("/archive/tasks/:id", middleware.RequirePermission(accessservice.PermissionFileArchive), ftp.GetArchiveTask)
 		ftpg.POST("/properties", middleware.RequirePermission(accessservice.PermissionFileRead), ftp.GetFileProperties)
 		ftpg.POST("/favorite", middleware.RequirePermission(accessservice.PermissionFileRead), ftp.CreateFavorite)
 		ftpg.POST("/favorite/cancel", middleware.RequirePermission(accessservice.PermissionFileRead), ftp.CancelFavorite)
