@@ -466,7 +466,7 @@ func executeOperation(ctx context.Context, operation string, payload json.RawMes
 		if err != nil {
 			return nil, err
 		}
-		if err := service.Add(ctx, &value); err != nil {
+		if err := service.AddPrepared(ctx, &value); err != nil {
 			return nil, err
 		}
 		return gin.H{"operation": operation, "resourceId": value.ID, "status": "succeeded"}, nil

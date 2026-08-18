@@ -115,7 +115,7 @@ func (service *Service) ManagedRoot(site *models.Website) (string, error) {
 	return validateManagedPath(service.WebRoot, root)
 }
 
-func (service *Service) prepareCreate(param *models.Website) (*preparedWebsite, error) {
+func (service *Service) prepareCreate(param *models.Website, allowManagedAbsolute bool) (*preparedWebsite, error) {
 	if err := service.validate(); err != nil {
 		return nil, err
 	}
@@ -128,6 +128,7 @@ func (service *Service) prepareCreate(param *models.Website) (*preparedWebsite, 
 		service.LogRoot,
 		service.challengeRoot(),
 		TLSOptions{},
+		allowManagedAbsolute,
 	)
 	if err != nil {
 		return nil, err
@@ -144,7 +145,7 @@ func (service *Service) prepareCreate(param *models.Website) (*preparedWebsite, 
 // state. The returned model is the exact shape that should be reviewed and
 // later passed to Add.
 func (service *Service) PrepareCreate(param *models.Website) (*models.Website, error) {
-	prepared, err := service.prepareCreate(param)
+	prepared, err := service.prepareCreate(param, false)
 	if err != nil {
 		return nil, err
 	}
@@ -249,6 +250,17 @@ func Add(param *models.Website) error {
 }
 
 func (service *Service) Add(ctx context.Context, param *models.Website) error {
+	return service.add(ctx, param, false)
+}
+
+// AddPrepared executes a server-normalized website create payload from an
+// operation preview. Absolute roots are accepted only after the same managed
+// root and no-symlink checks as normal creation.
+func (service *Service) AddPrepared(ctx context.Context, param *models.Website) error {
+	return service.add(ctx, param, true)
+}
+
+func (service *Service) add(ctx context.Context, param *models.Website, allowManagedAbsolute bool) error {
 	if err := service.validate(); err != nil {
 		return err
 	}
@@ -260,7 +272,7 @@ func (service *Service) Add(ctx context.Context, param *models.Website) error {
 	if err := normalizeWebsiteExpiration(param, time.Now()); err != nil {
 		return err
 	}
-	prepared, err := service.prepareCreate(param)
+	prepared, err := service.prepareCreate(param, allowManagedAbsolute)
 	if err != nil {
 		return err
 	}

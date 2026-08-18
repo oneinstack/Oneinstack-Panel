@@ -262,6 +262,7 @@ func prepareWebsiteForCreate(
 	input *models.Website,
 	webRoot, logRoot, challengeRoot string,
 	tlsOptions TLSOptions,
+	allowManagedAbsolute bool,
 ) (*preparedWebsite, error) {
 	if input == nil {
 		return nil, errors.New("website parameters are required")
@@ -269,7 +270,7 @@ func prepareWebsiteForCreate(
 	if strings.EqualFold(strings.TrimSpace(input.Type), "proxy") {
 		return prepareWebsiteWithTLSAndSettings(input, webRoot, logRoot, challengeRoot, tlsOptions, nil)
 	}
-	if err := validateWebsiteRootInput(webRoot, input.RootDir, input.Dir, false); err != nil {
+	if err := validateWebsiteRootInput(webRoot, input.RootDir, input.Dir, allowManagedAbsolute); err != nil {
 		return nil, err
 	}
 	return prepareWebsiteWithTLSAndSettings(input, webRoot, logRoot, challengeRoot, tlsOptions, nil)
