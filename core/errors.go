@@ -212,7 +212,25 @@ func safeErrorDetail(err *AppError) string {
 	if err.PublicDetail && !containsSensitiveErrorDetail(detail) {
 		return detail
 	}
+	// WrapError keeps the underlying error for server-side diagnostics, but
+	// that text is often an implementation detail and cannot be returned as-is.
+	// Preserve a safe, handler-provided message instead of replacing a specific
+	// business reason with the generic detail for the error code.
+	if message := safePublicErrorMessage(err); message != "" {
+		return message
+	}
 	return defaultErrorDetail(err.Code)
+}
+
+func safePublicErrorMessage(err *AppError) string {
+	message := normalizeErrorMessage(strings.TrimSpace(err.Message))
+	if message == "" || message == strings.TrimSpace(err.Detail) || strings.ContainsAny(message, "\r\n") {
+		return ""
+	}
+	if containsSensitiveErrorDetail(message) {
+		return ""
+	}
+	return message
 }
 
 func classifyErrorDetail(detail string) string {
@@ -221,6 +239,16 @@ func classifyErrorDetail(detail string) string {
 	case strings.Contains(lower, "web server configuration validation failed"),
 		strings.Contains(lower, "configuration validation failed"):
 		return formatWebServerConfigValidationDetail(detail)
+	case strings.Contains(lower, "editable file exceeds"),
+		strings.Contains(lower, "file content exceeds online editing limit"):
+		return "文件大小超过在线编辑限制，请缩小文件后重试。"
+	case strings.Contains(lower, "upload exceeds"),
+		strings.Contains(lower, "uploaded file is too large"):
+		return "上传文件超过允许大小，请选择较小的文件后重试。"
+	case strings.Contains(lower, "image preview exceeds"):
+		return "图片超过在线预览大小限制，请选择较小的图片后重试。"
+	case strings.Contains(lower, "download size limit exceeded"):
+		return "远程文件超过允许大小，请选择较小的文件后重试。"
 	case strings.Contains(lower, "record not found"),
 		strings.Contains(lower, "no longer available"):
 		return "目标资源不存在、已被删除或状态已变化，请刷新列表并确认资源标识后重试。"

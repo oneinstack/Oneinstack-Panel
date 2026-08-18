@@ -180,6 +180,7 @@ func GetFileProperties(c *gin.Context) {
 	if !info.IsDir() {
 		mimeType = mime.TypeByExtension(pathpkg.Ext(info.Name()))
 	}
+	canEdit := hasFileEditPermission(c) && !info.IsDir() && !isSymlink && canEditFile(manager, input.Path, currentFileSettings().editMaxBytes)
 	core.HandleSuccess(c, gin.H{
 		"path":        manager.VirtualPath(relative),
 		"name":        info.Name(),
@@ -192,6 +193,7 @@ func GetFileProperties(c *gin.Context) {
 		"size":        info.Size(),
 		"mimeType":    mimeType,
 		"modTime":     info.ModTime().Format(time.RFC3339),
+		"canEdit":     canEdit,
 	})
 }
 

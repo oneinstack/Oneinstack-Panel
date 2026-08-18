@@ -145,14 +145,14 @@ func PreviewImage(c *gin.Context) {
 		return
 	}
 	if !info.Mode().IsRegular() || lstat.Mode()&os.ModeSymlink != 0 {
-		handleFileError(c, filemanager.ErrNotRegular, "仅支持预览普通图片文件")
+		handleFileError(c, filemanager.ErrUnsupportedType, unsupportedFilePreviewEditMessage)
 		return
 	}
 	if info.Size() <= 0 || info.Size() > maxImagePreviewBytes {
 		handleFileError(
 			c,
-			fmt.Errorf("%w: image preview exceeds %d bytes", filemanager.ErrInvalidPath, maxImagePreviewBytes),
-			"图片为空或超过 30 MB 预览上限",
+			filemanager.ErrUnsupportedType,
+			unsupportedFilePreviewEditMessage,
 		)
 		return
 	}
@@ -164,7 +164,7 @@ func PreviewImage(c *gin.Context) {
 	}
 	contentType := http.DetectContentType(header)
 	if _, supported := supportedImagePreviewTypes[contentType]; !supported {
-		handleFileError(c, filemanager.ErrUnsupportedType, "文件内容不是受支持的图片格式")
+		handleFileError(c, filemanager.ErrUnsupportedType, unsupportedFilePreviewEditMessage)
 		return
 	}
 	if _, err := file.Seek(0, io.SeekStart); err != nil {

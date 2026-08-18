@@ -36,6 +36,8 @@ const (
 	maxTreeEntries = 1000
 )
 
+const unsupportedFilePreviewEditMessage = "此文件不支持预览/编辑"
+
 var remoteDownloader = filemanager.NewDownloader()
 
 type FileDetail struct {
@@ -62,6 +64,7 @@ type FileDetail struct {
 	FavoriteID int    `json:"favoriteID"`
 	IsDetail   bool   `json:"isDetail"`
 	Revision   string `json:"revision"`
+	CanEdit    bool   `json:"canEdit"`
 }
 
 type FileNode struct {
@@ -70,6 +73,7 @@ type FileNode struct {
 	Path      string      `json:"path"`
 	IsDir     bool        `json:"isDir"`
 	Extension string      `json:"extension"`
+	CanEdit   bool        `json:"canEdit"`
 	Children  []*FileNode `json:"children,omitempty"`
 }
 
@@ -116,6 +120,8 @@ func ListDirectory(c *gin.Context) {
 	}
 	userID, _ := middleware.AuthenticatedUserID(c)
 	favoriteMap := favoriteMapForPaths(userID, favoritePaths)
+	canEditPermission := hasFileEditPermission(c)
+	settings := currentFileSettings()
 	for _, entry := range entries {
 		info, err := entry.Info()
 		if err != nil {
@@ -135,6 +141,7 @@ func ListDirectory(c *gin.Context) {
 				isDir = targetInfo.IsDir()
 			}
 		}
+		canEdit := canEditPermission && !isDir && !isSymlink && canEditFile(manager, childPath, settings.editMaxBytes)
 		fileInfos = append(fileInfos, gin.H{
 			"path":        childPath,
 			"name":        entry.Name(),
@@ -147,6 +154,7 @@ func ListDirectory(c *gin.Context) {
 			"size":        utils.FormatBytes(info.Size()),
 			"favoriteID":  favoriteMap[childPath],
 			"canDelete":   canDelete,
+			"canEdit":     canEdit,
 		})
 	}
 	core.HandleSuccess(c, gin.H{"files": fileInfos, "path": manager.VirtualPath(relative)})
@@ -549,44 +557,14 @@ func Content(c *gin.Context) {
 	}
 	defer manager.Close()
 
-	file, relative, err := manager.Open(input.Path)
-	if err != nil {
-		handleFileError(c, err, "打开文件失败")
-		return
-	}
-	defer file.Close()
-	info, err := file.Stat()
-	if err != nil {
-		handleFileError(c, err, "读取文件信息失败")
-		return
-	}
-	if !info.Mode().IsRegular() {
-		handleFileError(c, filemanager.ErrNotRegular, "仅支持读取普通文件")
-		return
-	}
 	settings := currentFileSettings()
-	if info.Size() > settings.editMaxBytes {
-		handleFileError(c, fmt.Errorf("%w: editable file exceeds %d bytes", filemanager.ErrInvalidPath, settings.editMaxBytes), "文件过大，无法在线编辑")
-		return
-	}
-
-	data, err := io.ReadAll(io.LimitReader(file, settings.editMaxBytes+1))
+	info, data, relative, err := readEditableFile(manager, input.Path, settings.editMaxBytes)
 	if err != nil {
-		handleFileError(c, err, "读取文件失败")
-		return
-	}
-	if int64(len(data)) > settings.editMaxBytes {
-		handleFileError(c, filemanager.ErrInvalidPath, "文件过大，无法在线编辑")
-		return
-	}
-	if bytes.IndexByte(data, 0) >= 0 {
-		handleFileError(c, filemanager.ErrNotRegular, "二进制文件不支持在线编辑")
+		handleFileError(c, err, editableFileErrorMessage(err, "读取文件失败"))
 		return
 	}
 
 	userName, groupName, uid, gid := fileOwner(info)
-	lstat, lstatErr := manager.LstatRelative(relative)
-	isSymlink := lstatErr == nil && lstat.Mode()&os.ModeSymlink != 0
 	mimeType := mime.TypeByExtension(pathpkg.Ext(info.Name()))
 	if mimeType == "" {
 		mimeType = http.DetectContentType(data)
@@ -603,13 +581,14 @@ func Content(c *gin.Context) {
 		Content:    string(data),
 		Size:       info.Size(),
 		IsDir:      false,
-		IsSymlink:  isSymlink,
+		IsSymlink:  false,
 		IsHidden:   strings.HasPrefix(info.Name(), "."),
 		Mode:       fmt.Sprintf("%04o", info.Mode().Perm()),
 		MimeType:   mimeType,
 		ModTime:    info.ModTime().Format(time.RFC3339Nano),
 		FavoriteID: favoriteIDForPath(c, manager.VirtualPath(relative)),
 		Revision:   contentRevision(data),
+		CanEdit:    hasFileEditPermission(c),
 	})
 	finishFileOperation(c, "success", fmt.Sprintf("读取 %d 字节", info.Size()))
 }
@@ -657,7 +636,7 @@ func GetDirectoryTreeHandler(c *gin.Context) {
 		return
 	}
 
-	children, err := scanTree(manager, manager.VirtualPath(relative), input.ShowHidden, input.DirOnly, containSub, input.MaxDepth, input.MaxPerFolder, 1)
+	children, err := scanTree(manager, manager.VirtualPath(relative), input.ShowHidden, input.DirOnly, containSub, input.MaxDepth, input.MaxPerFolder, 1, hasFileEditPermission(c), currentFileSettings().editMaxBytes)
 	if err != nil {
 		handleFileError(c, err, "读取目录树失败")
 		return
@@ -690,7 +669,7 @@ func SaveFile(c *gin.Context) {
 	startFileOperation(c, "file.save", input.Path)
 	settings := currentFileSettings()
 	if int64(len(input.Content)) > settings.editMaxBytes {
-		handleFileError(c, filemanager.ErrInvalidPath, "文件内容超过在线编辑限制")
+		handleFileError(c, filemanager.ErrUnsupportedType, unsupportedFilePreviewEditMessage)
 		return
 	}
 
@@ -700,31 +679,12 @@ func SaveFile(c *gin.Context) {
 	}
 	defer manager.Close()
 
-	info, _, err := manager.Stat(input.Path)
+	info, currentData, _, err := readEditableFile(manager, input.Path, settings.editMaxBytes)
 	if err != nil {
-		handleFileError(c, err, "读取文件信息失败")
-		return
-	}
-	if !info.Mode().IsRegular() {
-		handleFileError(c, filemanager.ErrNotRegular, "仅支持保存普通文件")
+		handleFileError(c, err, editableFileErrorMessage(err, "读取文件信息失败"))
 		return
 	}
 	if strings.TrimSpace(input.Revision) != "" {
-		current, _, openErr := manager.Open(input.Path)
-		if openErr != nil {
-			handleFileError(c, openErr, "读取文件当前版本失败")
-			return
-		}
-		currentData, readErr := io.ReadAll(io.LimitReader(current, settings.editMaxBytes+1))
-		closeErr := current.Close()
-		if readErr != nil {
-			handleFileError(c, readErr, "读取文件当前版本失败")
-			return
-		}
-		if closeErr != nil {
-			handleFileError(c, closeErr, "关闭文件失败")
-			return
-		}
 		if !strings.EqualFold(contentRevision(currentData), strings.TrimSpace(input.Revision)) {
 			handleFileError(c, filemanager.ErrRevisionConflict, "文件已被其他进程修改，请重新读取")
 			return
@@ -747,6 +707,59 @@ func SaveFile(c *gin.Context) {
 	revision := contentRevision([]byte(input.Content))
 	core.HandleSuccess(c, gin.H{"message": "保存成功", "revision": revision})
 	finishFileOperation(c, "success", fmt.Sprintf("保存 %d 字节", len(input.Content)))
+}
+
+func readEditableFile(manager *filemanager.Manager, virtualPath string, maxBytes int64) (os.FileInfo, []byte, string, error) {
+	relative, err := manager.Relative(virtualPath)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	lstat, err := manager.LstatRelative(relative)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	if lstat.Mode()&os.ModeSymlink != 0 {
+		return nil, nil, "", filemanager.ErrUnsupportedType
+	}
+
+	file, _, err := manager.Open(virtualPath)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	defer file.Close()
+
+	info, err := file.Stat()
+	if err != nil {
+		return nil, nil, "", err
+	}
+	if !info.Mode().IsRegular() || info.Size() > maxBytes {
+		return nil, nil, "", filemanager.ErrUnsupportedType
+	}
+	data, err := io.ReadAll(io.LimitReader(file, maxBytes+1))
+	if err != nil {
+		return nil, nil, "", err
+	}
+	if int64(len(data)) > maxBytes || bytes.IndexByte(data, 0) >= 0 {
+		return nil, nil, "", filemanager.ErrUnsupportedType
+	}
+	return info, data, relative, nil
+}
+
+func canEditFile(manager *filemanager.Manager, virtualPath string, maxBytes int64) bool {
+	_, _, _, err := readEditableFile(manager, virtualPath, maxBytes)
+	return err == nil
+}
+
+func hasFileEditPermission(c *gin.Context) bool {
+	access, ok := middleware.UserAccess(c)
+	return ok && access.HasPermission(accessservice.PermissionFileEdit)
+}
+
+func editableFileErrorMessage(err error, fallback string) string {
+	if errors.Is(err, filemanager.ErrUnsupportedType) {
+		return unsupportedFilePreviewEditMessage
+	}
+	return fallback
 }
 
 func UrlDownloadFile(c *gin.Context) {
@@ -819,6 +832,8 @@ func scanTree(
 	maxDepth int,
 	maxPerFolder int,
 	level int,
+	canEditPermission bool,
+	editMaxBytes int64,
 ) ([]*FileNode, error) {
 	if level > maxDepth {
 		return nil, nil
@@ -855,9 +870,10 @@ func scanTree(
 			Path:      childPath,
 			IsDir:     isDir,
 			Extension: pathpkg.Ext(entry.Name()),
+			CanEdit:   canEditPermission && !isDir && canEditFile(manager, childPath, editMaxBytes),
 		}
 		if isDir && containSub && level < maxDepth {
-			node.Children, err = scanTree(manager, childPath, showHidden, dirOnly, true, maxDepth, maxPerFolder, level+1)
+			node.Children, err = scanTree(manager, childPath, showHidden, dirOnly, true, maxDepth, maxPerFolder, level+1, canEditPermission, editMaxBytes)
 			if err != nil {
 				return nil, err
 			}
