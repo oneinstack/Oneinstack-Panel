@@ -13,6 +13,7 @@ import (
 
 	"oneinstack/app"
 	"oneinstack/core"
+	auditservice "oneinstack/internal/services/audit"
 	"oneinstack/internal/services/storage"
 	websiteService "oneinstack/internal/services/website"
 	"oneinstack/internal/services/websitetask"
@@ -97,6 +98,21 @@ func CreateWebsiteBackup(c *gin.Context) {
 	if err != nil {
 		handleWebsiteTaskError(c, err, "创建网站备份任务失败")
 		return
+	}
+	if audit := auditservice.Default(); audit != nil {
+		_, _ = audit.Append(auditservice.EventInput{
+			EventType: "website",
+			Action:    "website.backup.submit",
+			Method:    http.MethodPost,
+			Route:     "/v1/website/backups",
+			Path:      "/v1/website/backups",
+			Status:    http.StatusAccepted,
+			Outcome:   "success",
+			Sensitive: true,
+			UserID:    userID,
+			RemoteIP:  auditservice.RemoteIP(c.Request),
+			Message:   "网站整站备份任务已提交，任务日志将记录执行结果",
+		})
 	}
 	c.JSON(http.StatusAccepted, core.SuccessResponseForContext(c, task))
 }

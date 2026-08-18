@@ -894,18 +894,39 @@ func validatePHPBackend(value string) error {
 }
 
 func renderRewriteRules(value string) (string, error) {
-	lines := splitSettingLines(value)
+	type rewriteLine struct {
+		value  string
+		number int
+	}
+
+	var lines []rewriteLine
+	seen := make(map[string]struct{})
+	normalizedValue := strings.ReplaceAll(value, "\r\n", "\n")
+	normalizedValue = strings.ReplaceAll(normalizedValue, "\r", "\n")
+	for number, physicalLine := range strings.Split(normalizedValue, "\n") {
+		for _, item := range strings.Split(physicalLine, ",") {
+			item = strings.TrimSpace(item)
+			if item == "" {
+				continue
+			}
+			if _, exists := seen[item]; exists {
+				continue
+			}
+			seen[item] = struct{}{}
+			lines = append(lines, rewriteLine{value: item, number: number + 1})
+		}
+	}
 	if len(lines) > 100 {
 		return "", errors.New("伪静态规则不能超过 100 行")
 	}
 	var result strings.Builder
 	for _, line := range lines {
-		if strings.ContainsAny(line, "{}\x00`") || !strings.HasSuffix(line, ";") ||
-			!strings.HasPrefix(line, "rewrite ") {
-			return "", fmt.Errorf("不支持的伪静态规则 %q，仅允许 rewrite 指令", line)
+		if strings.ContainsAny(line.value, "{}\x00`") || !strings.HasSuffix(line.value, ";") ||
+			!strings.HasPrefix(line.value, "rewrite ") {
+			return "", fmt.Errorf("第 %d 行不支持的伪静态规则 %q，仅允许 rewrite 指令", line.number, line.value)
 		}
 		result.WriteString("        ")
-		result.WriteString(line)
+		result.WriteString(line.value)
 		result.WriteByte('\n')
 	}
 	return strings.TrimSuffix(result.String(), "\n"), nil

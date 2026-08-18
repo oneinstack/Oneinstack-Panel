@@ -55,6 +55,9 @@ func GetWebServerConfig(c *gin.Context) {
 }
 
 func UpdateWebServerConfig(c *gin.Context) {
+	if !rejectDirectMutation(c, "website.webserver.config.update") {
+		return
+	}
 	var request websiteService.WebServerConfigUpdate
 	if err := c.ShouldBindJSON(&request); err != nil {
 		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "配置内容格式错误"))

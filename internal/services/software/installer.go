@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"oneinstack/app"
 	"oneinstack/internal/models"
+	safeservice "oneinstack/internal/services/safe"
 	"oneinstack/internal/services/script"
 	"oneinstack/internal/services/scriptregistry"
 	"oneinstack/router/input"
@@ -110,7 +111,14 @@ func (installer *Installer) Uninstall(params *input.RemoveParams, async bool) (s
 	if err != nil {
 		return "", err
 	}
-	return installer.scriptManager.ExecuteScript(scriptInfo, installParams, async)
+	logName, err := installer.scriptManager.ExecuteScript(scriptInfo, installParams, async)
+	if err != nil || async {
+		return logName, err
+	}
+	if err := cleanupUninstalledBackend(installParams.Key); err != nil {
+		return logName, fmt.Errorf("清理卸载后的防火墙保护记录失败: %w", err)
+	}
+	return logName, nil
 }
 
 // UninstallTask executes a component uninstall under the durable task runner.
@@ -127,13 +135,27 @@ func (installer *Installer) UninstallTask(
 		return "", err
 	}
 	reportPackageResolution(observer, scriptInfo)
-	return installer.scriptManager.ExecuteScriptTask(
+	logName, err := installer.scriptManager.ExecuteScriptTask(
 		ctx,
 		scriptInfo,
 		installParams,
 		logPath,
 		observer,
 	)
+	if err != nil {
+		return logName, err
+	}
+	if err := cleanupUninstalledBackend(installParams.Key); err != nil {
+		return logName, fmt.Errorf("清理卸载后的防火墙保护记录失败: %w", err)
+	}
+	return logName, nil
+}
+
+func cleanupUninstalledBackend(softwareKey string) error {
+	if strings.ToLower(strings.TrimSpace(softwareKey)) != safeservice.BackendFirewalld {
+		return nil
+	}
+	return safeservice.NewDefaultService().CleanupUninstalledBackend(safeservice.BackendFirewalld)
 }
 
 // ServiceActionTask executes a fixed service lifecycle action from the

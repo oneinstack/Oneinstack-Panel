@@ -30,6 +30,9 @@ func List(c *gin.Context) {
 }
 
 func SetStatus(c *gin.Context) {
+	if !rejectDirectMutation(c, "website.toggle") {
+		return
+	}
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil || id <= 0 {
 		core.HandleError(c, core.NewFieldError(core.ErrInvalidParameter, "id 必须是正整数", "id"))
@@ -54,6 +57,9 @@ func SetStatus(c *gin.Context) {
 }
 
 func Add(c *gin.Context) {
+	if !rejectDirectMutation(c, "website.create") {
+		return
+	}
 	input := &models.Website{}
 	if err := c.ShouldBindJSON(&input); err != nil {
 		appErr := core.WrapError(err, core.ErrBadRequest, "网站创建参数格式不正确")
@@ -79,6 +85,9 @@ func Add(c *gin.Context) {
 }
 
 func Update(c *gin.Context) {
+	if !rejectDirectMutation(c, "website.update") {
+		return
+	}
 	input := &models.Website{}
 	if err := c.ShouldBindJSON(&input); err != nil {
 		appErr := core.WrapError(err, core.ErrBadRequest, "网站更新参数格式不正确")

@@ -15,6 +15,7 @@ import (
 
 	"oneinstack/internal/models"
 	approvalservice "oneinstack/internal/services/approval"
+	auditservice "oneinstack/internal/services/audit"
 	"oneinstack/internal/services/databasetask"
 	"oneinstack/internal/services/website"
 
@@ -355,6 +356,7 @@ func (m *Manager) run(item queuedTask) {
 		"status": models.WebsiteTaskStatusRunning, "progress": 1,
 		"message": "网站任务开始执行", "started_at": now, "heartbeat_at": now,
 	}).Error
+	appendWebsiteTaskAudit(&task, "started", "网站任务开始执行")
 	_, _ = fmt.Fprintf(logFile, "[%s] %s task started for website %s\n",
 		now.Format(time.RFC3339), task.Operation, task.WebsiteName)
 	heartbeatDone := make(chan struct{})
@@ -394,10 +396,40 @@ func (m *Manager) run(item queuedTask) {
 		}
 		_, _ = fmt.Fprintf(logFile, "[%s] task failed: %s\n", time.Now().UTC().Format(time.RFC3339), message)
 		_ = m.finish(task.ID, status, code, message)
+		appendWebsiteTaskAudit(&task, string(status), message)
 		return
 	}
 	_, _ = fmt.Fprintf(logFile, "[%s] task completed\n", time.Now().UTC().Format(time.RFC3339))
 	_ = m.finish(task.ID, models.WebsiteTaskStatusSucceeded, "", "网站任务执行成功")
+	appendWebsiteTaskAudit(&task, string(models.WebsiteTaskStatusSucceeded), "网站任务执行成功")
+}
+
+func appendWebsiteTaskAudit(task *models.WebsiteTask, status, message string) {
+	if task == nil {
+		return
+	}
+	manager := auditservice.Default()
+	if manager == nil {
+		return
+	}
+	outcome := "success"
+	statusCode := 202
+	if status != "started" && status != string(models.WebsiteTaskStatusSucceeded) {
+		outcome = "failure"
+		statusCode = 500
+	}
+	_, _ = manager.Append(auditservice.EventInput{
+		EventType: "website",
+		Action:    "website.task." + task.Operation + "." + status,
+		Method:    "WORKER",
+		Route:     "/v1/website/tasks/" + task.ID,
+		Path:      "/v1/website/tasks/" + task.ID,
+		Status:    statusCode,
+		Outcome:   outcome,
+		Sensitive: true,
+		UserID:    task.RequestedBy,
+		Message:   fmt.Sprintf("website=%d task=%s status=%s %s", task.WebsiteID, task.ID, status, strings.TrimSpace(message)),
+	})
 }
 
 func (m *Manager) runDelete(

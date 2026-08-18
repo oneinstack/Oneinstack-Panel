@@ -33,6 +33,9 @@ func GetWebsiteSettings(c *gin.Context) {
 }
 
 func UpdateWebsiteSettings(c *gin.Context) {
+	if !rejectDirectMutation(c, "website.settings.update") {
+		return
+	}
 	id, ok := websiteIDParam(c)
 	if !ok {
 		return
@@ -129,6 +132,9 @@ func GetWebsiteManagedConfig(c *gin.Context) {
 }
 
 func UpdateWebsiteManagedConfig(c *gin.Context) {
+	if !rejectDirectMutation(c, "website.config.update") {
+		return
+	}
 	id, ok := websiteIDParam(c)
 	if !ok {
 		return

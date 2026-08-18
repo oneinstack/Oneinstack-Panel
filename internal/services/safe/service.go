@@ -48,16 +48,39 @@ func NewDefaultService() *Service {
 	return NewService(app.DB(), OSCommandRunner{}, parsePanelPort(app.ONE_CONFIG.System.Port))
 }
 
+// CleanupUninstalledBackend removes panel-owned protection markers for a
+// backend that is no longer installed. The system package is removed by the
+// component lifecycle; these database markers need an explicit cleanup so a
+// later status probe cannot report a backend that no longer exists.
+func (s *Service) CleanupUninstalledBackend(backend string) error {
+	if s.db == nil || backend != BackendFirewalld {
+		return nil
+	}
+	if _, err := s.runner.LookPath("firewall-cmd"); err == nil {
+		return nil
+	}
+	return s.db.Where(
+		"protected = ? AND backend = ?", true, backend,
+	).Delete(&models.IptablesRule{}).Error
+}
+
 func (s *Service) Status(ctx context.Context) (*output.IptablesStatus, error) {
 	state := s.detectBackend(ctx)
+	runtimeBackend := state.Name
+	if !state.Enabled && (state.Name == BackendUFW || state.Name == BackendFirewalld) {
+		runtimeBackend = BackendNone
+	}
 	status := &output.IptablesStatus{
 		Install: state.Installed, Enabled: state.Enabled, Backend: state.Name,
-		RuntimeBackend: state.Name,
+		RuntimeBackend: runtimeBackend,
 		Persistent:     state.Persistent, CanToggle: state.CanToggle,
 		RepairRequired: state.RepairRequired,
 		Warning:        state.Warning, PanelPort: s.panelPort,
 	}
 	if s.db != nil {
+		if err := s.CleanupUninstalledBackend(BackendFirewalld); err != nil {
+			status.Warning = appendWarning(status.Warning, "清理已卸载 firewalld 的面板保护记录失败")
+		}
 		if err := s.db.Model(&models.IptablesRule{}).Count(&status.ManagedRuleCount).Error; err != nil {
 			return nil, err
 		}
@@ -78,8 +101,8 @@ func (s *Service) Status(ctx context.Context) (*output.IptablesStatus, error) {
 				status.Persistent = backendPersistentDefault(status.ManagedBackend)
 				status.Warning = "检测到面板受管防火墙规则，但当前未检测到对应防火墙运行时，请先修复主机防火墙环境"
 			} else if status.ManagedBackend != "" &&
-				state.Name != BackendNone &&
-				status.ManagedBackend != state.Name {
+				runtimeBackend != BackendNone &&
+				status.ManagedBackend != runtimeBackend {
 				status.Warning = appendWarning(
 					status.Warning,
 					"受管规则后端与当前运行时后端不一致，请核对防火墙切换或持久化状态",

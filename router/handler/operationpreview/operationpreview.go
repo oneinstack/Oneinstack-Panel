@@ -8,6 +8,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -38,6 +39,87 @@ type previewRequest struct {
 
 type executeRequest struct {
 	Confirm bool `json:"confirm"`
+}
+
+type websiteSettingsUpdatePayload struct {
+	ID        int64                   `json:"id"`
+	WebsiteID int64                   `json:"websiteId"`
+	Settings  website.WebsiteSettings `json:"settings"`
+}
+
+type websiteConfigUpdatePayload struct {
+	ID        int64  `json:"id"`
+	WebsiteID int64  `json:"websiteId"`
+	Content   string `json:"content"`
+	Revision  string `json:"revision"`
+}
+
+func websitePayloadID(id, websiteID int64) int64 {
+	if id > 0 {
+		return id
+	}
+	return websiteID
+}
+
+func websiteTargetVersion(id int64, revision string) string {
+	return fmt.Sprintf("website|id=%d|revision=%s", id, revision)
+}
+
+func websiteRuntimeDocument(operation string, runtime website.WebsiteRuntimePreview) (previewservice.Document, string) {
+	document := previewservice.Document{
+		Review:    previewservice.Review{Required: true, RiskLevel: "high", Reason: fmt.Sprintf("网站 %s（%s）将修改运行配置或流量路径，执行前需要确认", runtime.Website.Name, runtime.Website.Domain)},
+		Files:     []previewservice.FileChange{{Path: runtime.AfterPath, Action: "update", ChangeSummary: "更新网站受管虚拟主机配置", Diff: boundedConfigDiff(runtime.BeforeContent, runtime.AfterContent)}},
+		Prechecks: []previewservice.Precheck{{Name: "网站配置版本", Status: "passed", Message: "预览基于当前网站和运行配置生成"}, {Name: "Nginx 配置语法", Status: "deferred", Message: "执行阶段将重新校验"}},
+		Actions:   []previewservice.Action{{Type: "command", Name: "校验 Nginx 配置", DisplayCommand: "nginx -t"}},
+		Impact:    previewservice.Impact{WriteFiles: runtime.BeforePath != runtime.AfterPath || runtime.BeforeContent != runtime.AfterContent, ModifyDatabase: operation != "website.config.update", ReloadService: runtime.Reload},
+		Rollback:  previewservice.Rollback{Supported: true, Summary: "执行前创建配置快照；发布或重载失败时恢复原配置"},
+	}
+	if runtime.Reload {
+		document.Actions = append(document.Actions, previewservice.Action{Type: "service", Name: "重新加载 Nginx", DisplayCommand: "nginx -s reload", Service: "nginx"})
+	}
+	if operation == "website.toggle" {
+		document.Files[0].Action = "enable_or_remove"
+		document.Files[0].ChangeSummary = "启用或停用网站虚拟主机配置；网站数据和网站文件保留"
+		document.Impact.NetworkRisk = true
+	}
+	return document, websiteTargetVersion(runtime.Website.ID, runtime.CurrentVersion)
+}
+
+func boundedConfigDiff(before, after string) string {
+	if before == after {
+		return ""
+	}
+	const maxDiffBytes = 128 << 10
+	var builder strings.Builder
+	beforeLines := strings.Split(strings.ReplaceAll(before, "\r\n", "\n"), "\n")
+	afterLines := strings.Split(strings.ReplaceAll(after, "\r\n", "\n"), "\n")
+	builder.WriteString("--- current\n+++ proposed\n")
+	limit := len(beforeLines)
+	if len(afterLines) > limit {
+		limit = len(afterLines)
+	}
+	for index := 0; index < limit; index++ {
+		var oldLine, newLine string
+		if index < len(beforeLines) {
+			oldLine = beforeLines[index]
+		}
+		if index < len(afterLines) {
+			newLine = afterLines[index]
+		}
+		if oldLine == newLine {
+			continue
+		}
+		if index < len(beforeLines) {
+			builder.WriteString("-" + oldLine + "\n")
+		}
+		if index < len(afterLines) {
+			builder.WriteString("+" + newLine + "\n")
+		}
+		if builder.Len() >= maxDiffBytes {
+			return builder.String()[:maxDiffBytes] + "\n... diff truncated"
+		}
+	}
+	return builder.String()
 }
 
 var fail2banPreviewLimiter = middleware.NewRateLimiter(10, time.Minute)
@@ -211,7 +293,26 @@ func Execute(c *gin.Context) {
 }
 
 func validatePreviewTarget(operation, resourceVersion string) error {
-	if operation != "website.update" || !strings.HasPrefix(resourceVersion, "web-server|") {
+	if strings.HasPrefix(resourceVersion, "website|") {
+		parts := strings.Split(resourceVersion, "|")
+		if len(parts) != 3 || !strings.HasPrefix(parts[1], "id=") || !strings.HasPrefix(parts[2], "revision=") {
+			return previewservice.ErrRequestChanged
+		}
+		id, err := strconv.ParseInt(strings.TrimPrefix(parts[1], "id="), 10, 64)
+		if err != nil || id <= 0 {
+			return previewservice.ErrRequestChanged
+		}
+		service, err := website.DefaultService()
+		if err != nil {
+			return previewservice.ErrRequestChanged
+		}
+		current, err := service.RuntimeRevision(id)
+		if err != nil || websiteTargetVersion(id, current) != resourceVersion {
+			return previewservice.ErrRequestChanged
+		}
+		return nil
+	}
+	if (operation != "website.update" && operation != "website.webserver.config.update") || !strings.HasPrefix(resourceVersion, "web-server|") {
 		return nil
 	}
 	parts := strings.Split(resourceVersion, "|")
@@ -287,12 +388,19 @@ func buildDocument(operation string, payload json.RawMessage) (previewservice.Do
 		if err := json.Unmarshal(payload, &value); err != nil {
 			return previewservice.Document{}, "", err
 		}
-		document.Files = []previewservice.FileChange{
-			{Path: value.RootDir, Action: "create_or_use_directory", ChangeSummary: "创建或复用规范化后的网站根目录"},
-			{Path: "受管 Nginx 虚拟主机目录/" + value.Name + ".conf", Action: "create_or_update", ChangeSummary: "写入网站虚拟主机配置"},
+		service, err := website.DefaultService()
+		if err != nil {
+			return previewservice.Document{}, "", err
 		}
-		document.Actions = []previewservice.Action{{Type: "command", Name: "校验 Nginx 配置", DisplayCommand: "nginx -t"}, {Type: "service", Name: "重新加载 Nginx", DisplayCommand: "nginx -s reload", Service: "nginx"}}
-		document.Impact = previewservice.Impact{WriteFiles: true, ModifyDatabase: true, ReloadService: true}
+		runtime, err := service.PreviewCreate(&value)
+		if err != nil {
+			return previewservice.Document{}, "", err
+		}
+		document, _ = websiteRuntimeDocument(operation, runtime)
+		document.Files = append([]previewservice.FileChange{{Path: runtime.Website.RootDir, Action: "create_or_use_directory", ChangeSummary: "创建或复用规范化后的网站根目录"}}, document.Files...)
+		document.Impact.ModifyDatabase = true
+		document.Impact.ReloadService = true
+		return document, "", nil
 	case "website.update":
 		var discriminator struct {
 			Action string `json:"action"`
@@ -333,19 +441,99 @@ func buildDocument(operation string, payload json.RawMessage) (previewservice.Do
 			if err := json.Unmarshal(payload, &value); err != nil {
 				return previewservice.Document{}, "", err
 			}
-			if value.ID <= 0 {
-				return previewservice.Document{}, "", errors.New("website ID is required")
+			runtime, err := website.DefaultService()
+			if err != nil {
+				return previewservice.Document{}, "", err
 			}
-			document.Files = []previewservice.FileChange{{Path: "受管 Nginx 虚拟主机目录/<name>.conf", Action: "create_or_update", ChangeSummary: "写入网站虚拟主机配置"}}
-			document.Actions = []previewservice.Action{{Type: "command", Name: "校验 Nginx 配置", DisplayCommand: "nginx -t"}, {Type: "service", Name: "重新加载 Nginx", DisplayCommand: "nginx -s reload", Service: "nginx"}}
-			document.Impact = previewservice.Impact{WriteFiles: true, ModifyDatabase: true, ReloadService: true}
+			change, err := runtime.PreviewWebsiteUpdate(&value)
+			if err != nil {
+				return previewservice.Document{}, "", err
+			}
+			document, version := websiteRuntimeDocument(operation, change)
+			return document, version, nil
 		default:
 			return previewservice.Document{}, "", errors.New("不支持的网站更新操作")
 		}
-	case "website.toggle":
-		document.Files = []previewservice.FileChange{{Path: "受管 Nginx 虚拟主机目录/<name>.conf", Action: "enable_or_remove", ChangeSummary: "启用或停用网站虚拟主机配置"}}
-		document.Actions = []previewservice.Action{{Type: "service", Name: "重新加载 Nginx", DisplayCommand: "nginx -s reload", Service: "nginx"}}
+	case "website.settings.update":
+		var request websiteSettingsUpdatePayload
+		if err := json.Unmarshal(payload, &request); err != nil {
+			return previewservice.Document{}, "", err
+		}
+		id := websitePayloadID(request.ID, request.WebsiteID)
+		if id <= 0 {
+			return previewservice.Document{}, "", errors.New("website ID is required")
+		}
+		service, err := website.DefaultService()
+		if err != nil {
+			return previewservice.Document{}, "", err
+		}
+		change, err := service.PreviewSettingsUpdate(id, request.Settings)
+		if err != nil {
+			return previewservice.Document{}, "", err
+		}
+		document, version := websiteRuntimeDocument(operation, change)
+		return document, version, nil
+	case "website.config.update":
+		var request websiteConfigUpdatePayload
+		if err := json.Unmarshal(payload, &request); err != nil {
+			return previewservice.Document{}, "", err
+		}
+		id := websitePayloadID(request.ID, request.WebsiteID)
+		if id <= 0 {
+			return previewservice.Document{}, "", errors.New("website ID is required")
+		}
+		service, err := website.DefaultService()
+		if err != nil {
+			return previewservice.Document{}, "", err
+		}
+		change, err := service.PreviewManagedConfig(context.Background(), id, request.Content, request.Revision)
+		if err != nil {
+			return previewservice.Document{}, "", err
+		}
+		document, version := websiteRuntimeDocument(operation, change)
+		return document, version, nil
+	case "website.webserver.config.update":
+		var request website.WebServerConfigUpdate
+		if err := json.Unmarshal(payload, &request); err != nil {
+			return previewservice.Document{}, "", err
+		}
+		manager, err := website.NewDefaultWebServerConfigManager()
+		if err != nil {
+			return previewservice.Document{}, "", err
+		}
+		current, err := manager.Read(request.Path)
+		if err != nil {
+			return previewservice.Document{}, "", err
+		}
+		if !strings.EqualFold(current.Revision, strings.TrimSpace(request.Revision)) {
+			return previewservice.Document{}, "", fmt.Errorf("%w: configuration changed after it was opened; reload it before saving", website.ErrWebServerConfigConflict)
+		}
+		if err := manager.ValidateContent(context.Background(), request.Path, request.Content); err != nil {
+			return previewservice.Document{}, "", fmt.Errorf("%w: %v", website.ErrWebServerConfigValidate, err)
+		}
+		document.Files = []previewservice.FileChange{{Path: current.Path, Action: "update", ChangeSummary: "更新 Web 服务器受管配置", Diff: boundedConfigDiff(current.Content, request.Content)}}
+		document.Actions = []previewservice.Action{{Type: "command", Name: "校验 Nginx 配置", DisplayCommand: "nginx -t"}, {Type: "service", Name: "重新加载 Nginx", DisplayCommand: "nginx -s reload", Service: "nginx"}}
 		document.Impact = previewservice.Impact{WriteFiles: true, ModifyDatabase: true, ReloadService: true}
+		document.Rollback = previewservice.Rollback{Supported: true, Summary: "执行前创建配置快照，校验或重载失败时恢复原配置"}
+		return document, webServerTargetVersion(request.Path, current.Revision, manager.Server), nil
+	case "website.toggle":
+		var request struct {
+			ID      int64 `json:"id"`
+			Enabled bool  `json:"enabled"`
+		}
+		if err := json.Unmarshal(payload, &request); err != nil || request.ID <= 0 {
+			return previewservice.Document{}, "", errors.New("website ID is required")
+		}
+		service, err := website.DefaultService()
+		if err != nil {
+			return previewservice.Document{}, "", err
+		}
+		change, err := service.PreviewToggle(request.ID, request.Enabled)
+		if err != nil {
+			return previewservice.Document{}, "", err
+		}
+		document, version := websiteRuntimeDocument(operation, change)
+		return document, version, nil
 	case "software.install":
 		document.Actions = []previewservice.Action{{Type: "component", Name: "执行受控软件安装动作", DisplayCommand: "由组件安装器按软件 key 和版本执行"}, {Type: "service", Name: "安装后验证服务状态", Service: "由组件探测器确定"}}
 		document.Impact = previewservice.Impact{WriteFiles: true, ModifyDatabase: true, RestartService: true}
@@ -496,10 +684,89 @@ func executeOperation(ctx context.Context, operation string, payload json.RawMes
 		if err != nil {
 			return nil, err
 		}
-		if err := service.Update(ctx, &value); err != nil {
+		before, err := service.Get(value.ID)
+		if err != nil {
 			return nil, err
 		}
-		return gin.H{"operation": operation, "resourceId": value.ID, "status": "succeeded"}, nil
+		beforeConfig, _ := service.ReadManagedConfig(ctx, value.ID)
+		snapshot, err := createWebsiteOperationSnapshot("update", value.ID, before, value, []byte(beforeConfig.Content), "website-before.conf", userID)
+		if err != nil {
+			return nil, err
+		}
+		if err := service.Update(ctx, &value); err != nil {
+			_ = configsnapshot.Default().Mark(snapshot.ID, "failed", err.Error())
+			recordWebsiteOperationAudit(snapshot.ID, "failed", err.Error(), userID, requestIP)
+			return nil, err
+		}
+		_ = configsnapshot.Default().MarkWithAfter(snapshot.ID, value, "succeeded", "")
+		recordWebsiteOperationAudit(snapshot.ID, "succeeded", "网站基础配置已发布", userID, requestIP)
+		return gin.H{"operation": operation, "resourceId": value.ID, "status": "succeeded", "snapshotId": snapshot.ID}, nil
+	case "website.settings.update":
+		var request websiteSettingsUpdatePayload
+		if err := json.Unmarshal(payload, &request); err != nil {
+			return nil, err
+		}
+		id := websitePayloadID(request.ID, request.WebsiteID)
+		service, err := website.DefaultService()
+		if err != nil {
+			return nil, err
+		}
+		before, err := service.GetSettings(id)
+		if err != nil {
+			return nil, err
+		}
+		beforeJSON, err := json.Marshal(before)
+		if err != nil {
+			return nil, err
+		}
+		snapshot, err := createWebsiteOperationSnapshot("settings.update", id, before.Settings, request.Settings, beforeJSON, "website-before.json", userID)
+		if err != nil {
+			return nil, err
+		}
+		document, err := service.UpdateSettings(ctx, id, request.Settings)
+		if err != nil {
+			_ = configsnapshot.Default().Mark(snapshot.ID, "failed", err.Error())
+			recordWebsiteOperationAudit(snapshot.ID, "failed", err.Error(), userID, requestIP)
+			return nil, err
+		}
+		if err := configsnapshot.Default().MarkWithAfter(snapshot.ID, document.Settings, "succeeded", ""); err != nil {
+			return nil, err
+		}
+		recordWebsiteOperationAudit(snapshot.ID, "succeeded", "网站结构化配置已发布", userID, requestIP)
+		return gin.H{"operation": operation, "resourceId": id, "status": "succeeded", "snapshotId": snapshot.ID, "website": document}, nil
+	case "website.config.update":
+		var request websiteConfigUpdatePayload
+		if err := json.Unmarshal(payload, &request); err != nil {
+			return nil, err
+		}
+		id := websitePayloadID(request.ID, request.WebsiteID)
+		service, err := website.DefaultService()
+		if err != nil {
+			return nil, err
+		}
+		before, err := service.ReadManagedConfig(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		snapshot, err := createWebsiteOperationSnapshot("config.update", id, before, request, []byte(before.Content), "website-config-before.conf", userID)
+		if err != nil {
+			return nil, err
+		}
+		result, err := service.UpdateManagedConfig(ctx, id, request.Content, request.Revision)
+		if err != nil {
+			_ = configsnapshot.Default().Mark(snapshot.ID, "failed", err.Error())
+			recordWebsiteOperationAudit(snapshot.ID, "failed", err.Error(), userID, requestIP)
+			return nil, err
+		}
+		_ = configsnapshot.Default().MarkWithAfter(snapshot.ID, result, "succeeded", "")
+		recordWebsiteOperationAudit(snapshot.ID, "succeeded", "网站受管配置已发布", userID, requestIP)
+		return gin.H{"operation": operation, "resourceId": id, "status": "succeeded", "snapshotId": snapshot.ID, "config": result}, nil
+	case "website.webserver.config.update":
+		var request website.WebServerConfigUpdate
+		if err := json.Unmarshal(payload, &request); err != nil {
+			return nil, err
+		}
+		return executeWebServerConfigUpdate(ctx, operation, request, userID, requestIP)
 	case "website.toggle":
 		var value input.WebsiteStatusParam
 		var raw struct {
@@ -514,11 +781,23 @@ func executeOperation(ctx context.Context, operation string, payload json.RawMes
 		if err != nil {
 			return nil, err
 		}
-		site, err := service.SetEnabled(ctx, raw.ID, value.Enabled)
+		before, err := service.Get(raw.ID)
 		if err != nil {
 			return nil, err
 		}
-		return gin.H{"operation": operation, "resourceId": site.ID, "status": "succeeded"}, nil
+		snapshot, err := createWebsiteOperationSnapshot("toggle", raw.ID, before, raw, nil, "", userID)
+		if err != nil {
+			return nil, err
+		}
+		site, err := service.SetEnabled(ctx, raw.ID, value.Enabled)
+		if err != nil {
+			_ = configsnapshot.Default().Mark(snapshot.ID, "failed", err.Error())
+			recordWebsiteOperationAudit(snapshot.ID, "failed", err.Error(), userID, requestIP)
+			return nil, err
+		}
+		_ = configsnapshot.Default().MarkWithAfter(snapshot.ID, site, "succeeded", "")
+		recordWebsiteOperationAudit(snapshot.ID, "succeeded", "网站状态已发布", userID, requestIP)
+		return gin.H{"operation": operation, "resourceId": site.ID, "status": "succeeded", "snapshotId": snapshot.ID}, nil
 	case "software.install":
 		var value input.InstallParams
 		if err := json.Unmarshal(payload, &value); err != nil {
@@ -803,6 +1082,45 @@ func executeWebServerConfigUpdate(
 	}, nil
 }
 
+func createWebsiteOperationSnapshot(operation string, websiteID int64, before, after any, artifact []byte, artifactName string, userID int64) (*models.ConfigurationSnapshot, error) {
+	return configsnapshot.Default().Create(configsnapshot.CreateInput{
+		ResourceType: "website",
+		ResourceID:   fmt.Sprint(websiteID),
+		Operation:    operation,
+		Before:       before,
+		After:        after,
+		RequestedBy:  userID,
+		Artifact:     artifact,
+		ArtifactName: artifactName,
+	})
+}
+
+func recordWebsiteOperationAudit(snapshotID, status, message string, userID int64, requestIP string) {
+	manager := auditservice.Default()
+	if manager == nil {
+		return
+	}
+	outcome := "success"
+	statusCode := http.StatusAccepted
+	if status == "failed" {
+		outcome = "failure"
+		statusCode = http.StatusInternalServerError
+	}
+	_, _ = manager.Append(auditservice.EventInput{
+		EventType: "configuration",
+		Action:    "website.operation.preview_execute",
+		Method:    http.MethodPost,
+		Route:     "/v1/operations/:previewId/execute",
+		Path:      "/v1/operations/execute",
+		Status:    statusCode,
+		Outcome:   outcome,
+		Sensitive: true,
+		UserID:    userID,
+		RemoteIP:  requestIP,
+		Message:   fmt.Sprintf("snapshot=%s status=%s %s", snapshotID, status, strings.TrimSpace(message)),
+	})
+}
+
 func webServerTargetVersion(path, revision string, server website.WebServerInfo) string {
 	return fmt.Sprintf(
 		"web-server|path=%s|binary=%s|prefix=%s|config=%s|main=%s|revision=%s",
@@ -871,9 +1189,14 @@ func writeConsumeError(c *gin.Context, err error) {
 
 func writeExecutionError(c *gin.Context, err error) {
 	code, message := core.ErrConfigError, "执行已确认的操作预览失败"
+	var applyErr *website.WebServerConfigApplyError
 	switch {
+	case errors.Is(err, website.ErrWebServerConfigConflict):
+		code, message = core.ErrConflict, "配置已发生变化，请重新预览后再执行"
 	case errors.Is(err, website.ErrWebServerConfigValidate):
 		code, message = core.ErrConfigValidateFailed, "Web Server 配置校验失败，原配置已恢复"
+	case errors.As(err, &applyErr) && applyErr.Status == website.WebServerConfigApplyStatusReloadFailedRolled:
+		code, message = core.ErrConfigApplyFailed, "Web Server 重载失败，原配置已回滚"
 	case errors.Is(err, fail2banservice.ErrValidation):
 		code, message = core.ErrValidationFailed, "入侵防护参数无效，请检查后重试"
 	case errors.Is(err, fail2banservice.ErrRevisionConflict):
