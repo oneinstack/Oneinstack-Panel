@@ -54,18 +54,20 @@ type Version struct {
 }
 
 type Product struct {
-	Key         string      `json:"key"`
-	Component   string      `json:"component"`
-	Name        string      `json:"name"`
-	Description string      `json:"description,omitempty"`
-	Icon        string      `json:"icon,omitempty"`
-	Type        string      `json:"type,omitempty"`
-	Tags        []string    `json:"tags,omitempty"`
-	Visible     bool        `json:"visible"`
-	Installable bool        `json:"installable"`
-	Order       int         `json:"order,omitempty"`
-	Versions    []Version   `json:"versions"`
-	Parameters  []Parameter `json:"parameters,omitempty"`
+	Key          string      `json:"key"`
+	Component    string      `json:"component"`
+	Name         string      `json:"name"`
+	Description  string      `json:"description,omitempty"`
+	Icon         string      `json:"icon,omitempty"`
+	Type         string      `json:"type,omitempty"`
+	Tags         []string    `json:"tags,omitempty"`
+	ManageScopes []string    `json:"manageScopes,omitempty"`
+	ServiceName  string      `json:"serviceName,omitempty"`
+	Visible      bool        `json:"visible"`
+	Installable  bool        `json:"installable"`
+	Order        int         `json:"order,omitempty"`
+	Versions     []Version   `json:"versions"`
+	Parameters   []Parameter `json:"parameters,omitempty"`
 }
 
 type Document struct {
@@ -98,6 +100,29 @@ type Status struct {
 	LastError               string     `json:"lastError,omitempty"`
 	Stale                   bool       `json:"stale"`
 	Channel                 string     `json:"channel"`
+}
+
+func encodeManageScopes(scopes []string) string {
+	if len(scopes) == 0 {
+		return ""
+	}
+	contents, err := json.Marshal(scopes)
+	if err != nil {
+		return ""
+	}
+	return string(contents)
+}
+
+func decodeManageScopes(contents string) []string {
+	contents = strings.TrimSpace(contents)
+	if contents == "" {
+		return nil
+	}
+	var scopes []string
+	if err := json.Unmarshal([]byte(contents), &scopes); err != nil {
+		return nil
+	}
+	return scopes
 }
 
 type Manager struct {
@@ -343,6 +368,8 @@ func (m *Manager) apply(document Document, packageVersions, publishedPackageVers
 					"describe":               product.Description,
 					"type":                   product.Type,
 					"tags":                   strings.Join(product.Tags, ","),
+					"manage_scopes":          encodeManageScopes(product.ManageScopes),
+					"service_name":           strings.TrimSpace(product.ServiceName),
 					"params":                 string(parameters),
 					"resource":               "center",
 					"catalog_managed":        true,

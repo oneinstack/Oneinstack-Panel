@@ -146,7 +146,7 @@ func (installer *Installer) ServiceActionTask(
 	logPath string,
 	observer script.ExecutionObserver,
 ) (string, error) {
-	definition, err := NormalizeServiceComponent(component)
+	definition, err := ResolveServiceComponent(app.DB(), component)
 	if err != nil {
 		return "", err
 	}

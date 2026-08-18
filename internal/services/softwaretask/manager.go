@@ -150,7 +150,7 @@ func (m *Manager) SubmitServiceAction(
 	action string,
 	requestedBy int64,
 ) (*models.SoftwareTask, error) {
-	key, err := softwareKeyForService(component)
+	key, err := m.softwareKeyForService(component)
 	if err != nil {
 		return nil, err
 	}
@@ -172,7 +172,7 @@ func (m *Manager) SubmitConfiguration(
 	restoreFromID string,
 	requestedBy int64,
 ) (*models.SoftwareTask, error) {
-	key, err := softwareKeyForService(component)
+	key, err := m.softwareKeyForService(component)
 	if err != nil {
 		return nil, err
 	}
@@ -769,8 +769,30 @@ func (m *Manager) validateExclusiveComponentInstall(component string) error {
 	return nil
 }
 
-func softwareKeyForService(value string) (string, error) {
-	switch strings.ToLower(strings.TrimSpace(value)) {
+func (m *Manager) softwareKeyForService(value string) (string, error) {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	var row models.Software
+	if m != nil && m.db != nil {
+		if err := m.db.Where(
+			"installed = ? AND (`key` = ? OR component = ?)",
+			true, normalized, normalized,
+		).Order("install_time DESC, id DESC").First(&row).Error; err == nil {
+			key := strings.ToLower(strings.TrimSpace(row.Key))
+			if key != "" {
+				return key, nil
+			}
+		}
+		if err := m.db.Where(
+			"catalog_managed = ? AND (`key` = ? OR component = ?)",
+			true, normalized, normalized,
+		).Order("catalog_visible DESC, id DESC").First(&row).Error; err == nil {
+			key := strings.ToLower(strings.TrimSpace(row.Key))
+			if key != "" {
+				return key, nil
+			}
+		}
+	}
+	switch normalized {
 	case "nginx", "webserver":
 		return "webserver", nil
 	case "mysql", "db":

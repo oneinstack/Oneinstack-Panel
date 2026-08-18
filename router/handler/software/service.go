@@ -56,7 +56,7 @@ func ListComponentServices(c *gin.Context) {
 }
 
 func GetComponentService(c *gin.Context) {
-	definition, err := softwareService.NormalizeServiceComponent(c.Param("component"))
+	definition, err := softwareService.ResolveServiceComponent(app.DB(), c.Param("component"))
 	if err != nil {
 		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "不支持的组件服务"))
 		return
@@ -76,7 +76,8 @@ func GetComponentService(c *gin.Context) {
 		return
 	}
 	for _, status := range statuses {
-		if status.Component == definition.Component {
+		if status.Component == definition.Component ||
+			(definition.Component == "nginx" && status.SoftwareKey == definition.SoftwareKey) {
 			core.HandleSuccess(c, status)
 			return
 		}
@@ -85,7 +86,7 @@ func GetComponentService(c *gin.Context) {
 }
 
 func RunComponentServiceAction(c *gin.Context) {
-	definition, err := softwareService.NormalizeServiceComponent(c.Param("component"))
+	definition, err := softwareService.ResolveServiceComponent(app.DB(), c.Param("component"))
 	if err != nil {
 		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "不支持的组件服务"))
 		return
@@ -100,12 +101,8 @@ func RunComponentServiceAction(c *gin.Context) {
 		core.HandleError(c, core.NewError(core.ErrBadRequest, "服务动作只能是 start、stop、restart 或 reload"))
 		return
 	}
-	if request.Action == "reload" &&
-		definition.Component != "nginx" && definition.Component != "php" {
-		core.HandleError(c, core.NewError(core.ErrBadRequest, "该组件不支持安全重载，请使用重启"))
-		return
-	}
-	if access, hasAccessContext := middleware.UserAccess(c); hasAccessContext && !access.CanControlServiceComponent(definition.Component) {
+	if access, hasAccessContext := middleware.UserAccess(c); hasAccessContext &&
+		!access.CanControlServiceScopes(definition.ManageScopes, definition.Component) {
 		core.HandleError(c, core.NewError(core.ErrForbidden, "当前角色无权控制该组件服务"))
 		return
 	}
@@ -480,11 +477,11 @@ func componentServiceStatuses(
 	ctx context.Context,
 	database *gorm.DB,
 ) ([]componentServiceStatus, error) {
-	return componentServiceStatusesFor(
-		ctx,
-		database,
-		softwareService.SupportedComponentServices(),
-	)
+	definitions, err := softwareService.InstalledComponentServices(database)
+	if err != nil {
+		return nil, err
+	}
+	return componentServiceStatusesFor(ctx, database, definitions)
 }
 
 func componentServiceStatusesFor(
@@ -494,7 +491,7 @@ func componentServiceStatusesFor(
 ) ([]componentServiceStatus, error) {
 	var installedRows []models.Software
 	if err := database.
-		Where("`key` IN ? AND installed = ?", []string{"webserver", "db", "mysql", "mariadb", "percona", "php", "redis"}, true).
+		Where("installed = ?", true).
 		Order("install_time DESC").
 		Find(&installedRows).Error; err != nil {
 		return nil, err
@@ -523,18 +520,28 @@ func componentServiceStatusesFor(
 	var probes sync.WaitGroup
 	for index, definition := range definitions {
 		now := time.Now().UTC()
+		installed, exists := installedComponentService(definition, installedRows, installedByKey)
+		runtimeDefinition := definition
+		if exists && definition.Component == "nginx" {
+			component := strings.ToLower(strings.TrimSpace(installed.Component))
+			if component == "" {
+				component = strings.ToLower(strings.TrimSpace(installed.Key))
+			}
+			if normalized, normalizeErr := softwareService.ResolveServiceComponent(database, component); normalizeErr == nil {
+				runtimeDefinition = normalized
+			}
+		}
 		status := componentServiceStatus{
-			ComponentServiceDefinition: definition,
+			ComponentServiceDefinition: runtimeDefinition,
 			State:                      "not_installed",
-			AvailableActions:           defaultServiceActions(definition.Component),
-			CanReload:                  definition.Component == "nginx" || definition.Component == "php",
+			AvailableActions:           defaultServiceActions(runtimeDefinition.Component),
+			CanReload:                  runtimeDefinition.Component == "nginx" || runtimeDefinition.Component == "php",
 			CheckedAt:                  now,
 		}
-		if active, exists := activeByComponent[definition.Component]; exists {
+		if active, exists := activeByComponent[runtimeDefinition.Component]; exists {
 			status.Busy = true
 			status.ActiveTaskID = active.ID
 		}
-		installed, exists := installedByKey[definition.SoftwareKey]
 		if !exists {
 			result[index] = status
 			continue
@@ -578,10 +585,33 @@ func componentServiceStatusesFor(
 			status.PackageSource = probe.PackageSource
 			status.State = serviceState(probe.ActiveState)
 			result[index] = status
-		}(index, definition, status)
+		}(index, runtimeDefinition, status)
 	}
 	probes.Wait()
 	return result, nil
+}
+
+func installedComponentService(
+	definition softwareService.ComponentServiceDefinition,
+	rows []models.Software,
+	byKey map[string]models.Software,
+) (models.Software, bool) {
+	for _, row := range rows {
+		key := strings.ToLower(strings.TrimSpace(row.Key))
+		component := strings.ToLower(strings.TrimSpace(row.Component))
+		if key == strings.ToLower(strings.TrimSpace(definition.SoftwareKey)) ||
+			component == strings.ToLower(strings.TrimSpace(definition.Component)) ||
+			(definition.SoftwareKey == "webserver" &&
+				(component == "nginx" || component == "openresty" || component == "tengine" ||
+					component == "apache" || component == "caddy" || key == "webserver" ||
+					key == "openresty" || key == "tengine" || key == "apache" || key == "caddy")) {
+			return row, true
+		}
+	}
+	if installed, exists := byKey[definition.SoftwareKey]; exists {
+		return installed, true
+	}
+	return models.Software{}, false
 }
 
 func defaultServiceActions(component string) []string {

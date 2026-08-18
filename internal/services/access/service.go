@@ -93,6 +93,13 @@ const (
 	RoleContainerOperator = "container_operator"
 )
 
+const (
+	ServiceScopeWebServer = "web_service"
+	ServiceScopeRuntime   = "runtime"
+	ServiceScopeDatabase  = "database"
+	ServiceScopeCache     = "cache"
+)
+
 type RoleSummary struct {
 	Code        string   `json:"code"`
 	Name        string   `json:"name"`
@@ -548,6 +555,14 @@ func (access *UserAccess) HasPermission(code string) bool {
 // control. Broad software operators retain access to every supported service,
 // while website and database administrators only control their own services.
 func (access *UserAccess) CanControlServiceComponent(component string) bool {
+	return access.CanControlServiceScopes(nil, component)
+}
+
+// CanControlServiceScopes applies role scope metadata from the software
+// catalog. Empty scopes keep the legacy component mapping for bundled rows;
+// catalog-managed applications without a declared scope are denied for
+// scoped built-in roles by default.
+func (access *UserAccess) CanControlServiceScopes(scopes []string, component string) bool {
 	if access == nil {
 		return false
 	}
@@ -556,23 +571,40 @@ func (access *UserAccess) CanControlServiceComponent(component string) bool {
 	}
 
 	component = strings.ToLower(strings.TrimSpace(component))
-	if component == "webserver" {
+	if component == "webserver" || component == "openresty" ||
+		component == "tengine" || component == "caddy" || component == "apache" {
 		component = "nginx"
+	}
+	scopeSet := make(map[string]struct{}, len(scopes))
+	for _, value := range scopes {
+		scope := strings.ToLower(strings.TrimSpace(value))
+		if scope != "" {
+			scopeSet[scope] = struct{}{}
+		}
 	}
 	scopedRole := false
 	for _, role := range access.Roles {
 		switch role.Code {
 		case RoleWebsiteAdmin:
 			scopedRole = true
-			if component == "nginx" || component == "php" {
+			if _, exists := scopeSet[ServiceScopeWebServer]; exists {
+				return true
+			}
+			if _, exists := scopeSet[ServiceScopeRuntime]; exists {
 				return true
 			}
 		case RoleDatabaseAdmin:
 			scopedRole = true
-			if component == "mysql" || component == "redis" {
+			if _, exists := scopeSet[ServiceScopeDatabase]; exists {
+				return true
+			}
+			if _, exists := scopeSet[ServiceScopeCache]; exists {
 				return true
 			}
 		}
+	}
+	if len(scopeSet) > 0 {
+		return !scopedRole && access.HasPermission(PermissionServiceWrite)
 	}
 
 	// Preserve existing behavior for custom roles that explicitly receive the

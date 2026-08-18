@@ -9,6 +9,7 @@ import (
 	"oneinstack/router/input"
 	"oneinstack/router/output"
 	"oneinstack/utils"
+	"os"
 	"slices"
 	"strings"
 )
@@ -135,11 +136,17 @@ func checkNginx(sf *models.Software) bool {
 }
 
 func checkPhpMyAdmin(sf *models.Software) bool {
-	output, err := utils.GetProcessList("phpmyadmin")
-	if err != nil {
-		return false
+	for _, path := range []string{
+		"/data/wwwroot/default/phpMyAdmin/index.php",
+		"/data/wwwroot/default/phpmyadmin/index.php",
+		"/usr/share/phpmyadmin/index.php",
+	} {
+		info, err := os.Stat(path)
+		if err == nil && !info.IsDir() {
+			return true
+		}
 	}
-	return len(strings.TrimSpace(string(output))) > 0
+	return false
 }
 
 func checkRedis(sf *models.Software) bool {
@@ -172,6 +179,8 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 				"MAX(CASE WHEN catalog_visible = 1 AND installable = 1 THEN 1 ELSE 0 END) as installable," +
 				"MAX(CASE WHEN catalog_visible = 1 AND recommended = 1 THEN version ELSE '' END) as recommended_version," +
 				"MAX(CASE WHEN catalog_managed = 1 THEN 1 ELSE 0 END) as catalog_managed," +
+				"MAX(manage_scopes) as manage_scopes," +
+				"MAX(service_name) as service_name," +
 				"MAX(params) as params," +
 				"MAX(log) as log," +
 				"MAX(tags) as tags").
@@ -286,6 +295,8 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 			IsUpdate:                item.IsUpdate,
 			Log:                     item.Log,
 			Tags:                    item.Tags,
+			ManageScopes:            decodeManageScopes(item.ManageScopesJSON),
+			ServiceName:             item.ServiceName,
 			Versions:                strings.Split(item.Versions, ","),
 		})
 		var params []*output.SoftParam

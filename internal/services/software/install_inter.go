@@ -66,8 +66,11 @@ func (ps InstallOP) updateSoft() error {
 	case "php":
 	case "java":
 	case "phpmyadmin":
-		s.HttpPort = "8080"
-		s.UrlPath = "http://$IP_ADDRESS:8080/phpmyadmin"
+		// The embedded frontend opens the OneinStack default vhost directly.
+		// Keep the recorded entrypoint in the same case-sensitive path used by
+		// the managed Center package.
+		s.HttpPort = "80"
+		s.UrlPath = "http://$IP_ADDRESS/phpMyAdmin/index.php"
 	default:
 		return fmt.Errorf("未知的类型")
 	}
@@ -1596,13 +1599,13 @@ install_phpmyadmin() {
 
   echo "解压 phpMyAdmin..."
   unzip -qo /tmp/phpmyadmin.zip -d /usr/share/
-  mv /usr/share/phpMyAdmin-${PHP_MYADMIN_VERSION}-all-languages /usr/share/phpmyadmin
+  install -d -m 0755 /data/wwwroot/default
+  mv /usr/share/phpMyAdmin-${PHP_MYADMIN_VERSION}-all-languages /data/wwwroot/default/phpMyAdmin
 
   echo "设置权限..."
-  chown -R root:root /usr/share/phpmyadmin
-  chmod -R 755 /usr/share/phpmyadmin
-  find /usr/share/phpmyadmin -type d -exec chmod 755 {} \;
-  find /usr/share/phpmyadmin -type f -exec chmod 644 {} \;
+  chown -R www:www /data/wwwroot/default/phpMyAdmin
+  find /data/wwwroot/default/phpMyAdmin -type d -exec chmod 755 {} \;
+  find /data/wwwroot/default/phpMyAdmin -type f -exec chmod 644 {} \;
 
   echo "清理临时文件..."
   rm -f /tmp/phpmyadmin.zip
@@ -1610,29 +1613,7 @@ install_phpmyadmin() {
 
 # 配置 Nginx
 configure_nginx() {
-  echo "配置 Nginx..."
-  cat > /etc/nginx/sites-enabled/phpmyadmin.conf <<EOF
-server {
-    listen 8080;
-    server_name localhost; # 使用提供的地址
-
-    location /phpmyadmin {
-        root /usr/share/;
-        index index.php;
-        location ~ ^/phpmyadmin/(.+\.php)$ {
-            fastcgi_pass unix:/run/php/php7.4-fpm.sock;
-            fastcgi_index index.php;
-            include fastcgi_params;
-            fastcgi_param SCRIPT_FILENAME /usr/share/phpmyadmin/$1;
-        }
-
-        location ~* ^/phpmyadmin/(.+\.(jpg|jpeg|gif|css|png|js|ico|html|xml|txt))$ {
-            root /usr/share/;
-        }
-    }
-}
-EOF
-  systemctl restart nginx
+  echo "phpMyAdmin 使用 OneinStack 默认站点 /data/wwwroot/default"
 }
 
 # 主脚本逻辑
@@ -1642,7 +1623,7 @@ configure_nginx
 
 IP_ADDRESS=$(hostname -I | awk '{print $1}')
 echo "phpMyAdmin 已成功安装！您可以通过以下地址访问："
-echo "http://$IP_ADDRESS:8080/phpmyadmin"
+echo "http://$IP_ADDRESS/phpMyAdmin/index.php"
 
 `
 

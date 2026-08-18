@@ -22,6 +22,8 @@ type Software struct {
 	CatalogManaged          bool         `json:"catalogManaged"`
 	IsUpdate                bool         `json:"isUpdate"`
 	Tags                    string       `json:"tags"`
+	ManageScopes            []string     `json:"manageScopes,omitempty"`
+	ServiceName             string       `json:"serviceName,omitempty"`
 	Params                  []*SoftParam `json:"params"`
 	FailureMessage          string       `json:"failureMessage,omitempty"`
 }

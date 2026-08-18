@@ -265,7 +265,8 @@ func requireServiceComponentPermission(c *gin.Context, operation string, payload
 		return core.NewError(core.ErrBadRequest, "服务控制组件参数不正确")
 	}
 	access, ok := middleware.UserAccess(c)
-	if !ok || !access.CanControlServiceComponent(request.Component) {
+	definition, resolveErr := softwareService.ResolveServiceComponent(app.DB(), request.Component)
+	if resolveErr != nil || !ok || !access.CanControlServiceScopes(definition.ManageScopes, definition.Component) {
 		return core.NewError(core.ErrForbidden, "当前角色无权控制该组件服务")
 	}
 	return nil

@@ -131,7 +131,7 @@ func InspectTaskRecovery(
 func recoveryProcessRunning(ctx context.Context, component string) (bool, error) {
 	var processNames []string
 	switch strings.ToLower(strings.TrimSpace(component)) {
-	case "nginx":
+	case "nginx", "openresty", "tengine", "caddy", "apache":
 		processNames = []string{"nginx"}
 	case "mysql":
 		processNames = []string{"mysqld", "mysqld_safe"}

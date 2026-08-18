@@ -29,7 +29,10 @@ func (collector *ComponentHealthCollector) CollectServiceHealth(
 	if collector == nil || collector.database == nil {
 		return nil, errors.New("component health database is not initialized")
 	}
-	definitions := SupportedComponentServices()
+	definitions, err := InstalledComponentServices(collector.database)
+	if err != nil {
+		return nil, fmt.Errorf("list installed component services: %w", err)
+	}
 	keys := make([]string, 0, len(definitions))
 	for _, definition := range definitions {
 		keys = append(keys, definition.SoftwareKey)
