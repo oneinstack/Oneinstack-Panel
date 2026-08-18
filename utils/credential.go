@@ -25,6 +25,7 @@ const (
 	CredentialPurposeNotification     = "monitor.notification-channel"
 	CredentialPurposeBastionPassword  = "bastion.password"
 	CredentialPurposeRegistryPassword = "container.registry.password"
+	CredentialPurposeCertificateDNS   = "certificate.dns"
 )
 
 var (

@@ -21,8 +21,11 @@ const (
 )
 
 const (
-	CertificateTaskOperationIssue = "issue"
-	CertificateTaskOperationRenew = "renew"
+	CertificateTaskOperationIssue      = "issue"
+	CertificateTaskOperationRenew      = "renew"
+	CertificateTaskOperationUpload     = "upload"
+	CertificateTaskOperationSelfSigned = "self_signed"
+	CertificateTaskOperationBind       = "bind"
 )
 
 // Certificate stores deployment metadata. Private key and certificate paths
@@ -30,6 +33,7 @@ const (
 type Certificate struct {
 	ID              string     `json:"id" gorm:"primaryKey;size:36"`
 	WebsiteID       int64      `json:"websiteId" gorm:"not null;uniqueIndex"`
+	ManagedID       string     `json:"managedId,omitempty" gorm:"size:36;index"`
 	Provider        string     `json:"provider" gorm:"size:32;not null"`
 	Email           string     `json:"email" gorm:"size:254;not null"`
 	Domains         string     `json:"domains" gorm:"type:text;not null"`
@@ -51,6 +55,57 @@ type Certificate struct {
 	UpdatedAt       time.Time  `json:"updatedAt"`
 }
 
+// ManagedCertificate is the canonical certificate resource. WebsiteID on the
+// legacy Certificate model remains as a deployment compatibility projection.
+type ManagedCertificate struct {
+	ID              string    `json:"id" gorm:"primaryKey;size:36"`
+	Provider        string    `json:"provider" gorm:"size:32;not null"`
+	Domains         string    `json:"domains" gorm:"type:text;not null"`
+	CertificatePath string    `json:"-" gorm:"size:1024;not null"`
+	PrivateKeyPath  string    `json:"-" gorm:"size:1024;not null"`
+	SerialNumber    string    `json:"serialNumber" gorm:"size:128"`
+	Issuer          string    `json:"issuer" gorm:"size:512"`
+	Algorithm       string    `json:"algorithm" gorm:"size:32;not null"`
+	Status          string    `json:"status" gorm:"size:32;not null;index"`
+	AutoRenew       bool      `json:"autoRenew" gorm:"not null;default:false"`
+	RenewBeforeDays int       `json:"renewBeforeDays" gorm:"not null;default:30"`
+	NotBefore       time.Time `json:"notBefore"`
+	NotAfter        time.Time `json:"notAfter" gorm:"index"`
+	Remark          string    `json:"remark" gorm:"size:512"`
+	CreatedAt       time.Time `json:"createdAt"`
+	UpdatedAt       time.Time `json:"updatedAt"`
+}
+
+func (ManagedCertificate) TableName() string { return "managed_certificate" }
+
+type CertificateBinding struct {
+	ID                   string     `json:"id" gorm:"primaryKey;size:36"`
+	ManagedCertificateID string     `json:"certificateId" gorm:"size:36;not null;uniqueIndex:idx_certificate_binding_target"`
+	WebsiteID            int64      `json:"websiteId" gorm:"not null;uniqueIndex:idx_certificate_binding_target"`
+	Status               string     `json:"status" gorm:"size:32;not null;index"`
+	ForceHTTPS           bool       `json:"forceHttps" gorm:"not null;default:false"`
+	LastError            string     `json:"lastError,omitempty" gorm:"size:1024"`
+	DeployedAt           *time.Time `json:"deployedAt,omitempty"`
+	CreatedAt            time.Time  `json:"createdAt"`
+	UpdatedAt            time.Time  `json:"updatedAt"`
+}
+
+func (CertificateBinding) TableName() string { return "certificate_binding" }
+
+type DNSAccount struct {
+	ID                   string    `json:"id" gorm:"primaryKey;size:36"`
+	Name                 string    `json:"name" gorm:"size:128;not null"`
+	Provider             string    `json:"provider" gorm:"size:32;not null;index"`
+	CredentialOne        string    `json:"-" gorm:"type:text;not null"`
+	CredentialTwo        string    `json:"-" gorm:"type:text"`
+	CredentialConfigured bool      `json:"credentialConfigured" gorm:"not null;default:false"`
+	Enabled              bool      `json:"enabled" gorm:"not null;default:true"`
+	CreatedAt            time.Time `json:"createdAt"`
+	UpdatedAt            time.Time `json:"updatedAt"`
+}
+
+func (DNSAccount) TableName() string { return "certificate_dns_account" }
+
 func (Certificate) TableName() string {
 	return "certificate"
 }
@@ -63,12 +118,18 @@ type CertificateTask struct {
 	WebsiteID       int64      `json:"websiteId" gorm:"not null;index:idx_certificate_task_site_created"`
 	WebsiteName     string     `json:"websiteName" gorm:"size:253;not null"`
 	CertificateID   string     `json:"certificateId,omitempty" gorm:"size:36;index"`
+	ManagedID       string     `json:"managedId,omitempty" gorm:"size:36;index"`
 	Email           string     `json:"email" gorm:"size:254;not null"`
 	Domains         string     `json:"domains" gorm:"type:text;not null"`
 	DirectoryURL    string     `json:"-" gorm:"size:1024;not null"`
 	AutoRenew       bool       `json:"autoRenew" gorm:"not null;default:true"`
 	RenewBeforeDays int        `json:"renewBeforeDays" gorm:"not null;default:30"`
 	ForceHTTPS      bool       `json:"forceHttps" gorm:"column:force_https;not null;default:false"`
+	Algorithm       string     `json:"algorithm,omitempty" gorm:"size:32"`
+	ValidityYears   int        `json:"validityYears,omitempty" gorm:"default:10"`
+	Remark          string     `json:"remark,omitempty" gorm:"size:512"`
+	InputCertPath   string     `json:"-" gorm:"size:1024"`
+	InputKeyPath    string     `json:"-" gorm:"size:1024"`
 	Status          string     `json:"status" gorm:"size:32;not null;index:idx_certificate_task_status_created"`
 	Progress        int        `json:"progress" gorm:"not null;default:0"`
 	Message         string     `json:"message" gorm:"size:512"`

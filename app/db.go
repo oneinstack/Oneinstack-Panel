@@ -173,10 +173,16 @@ func createTables() error {
 	}
 	err = db.AutoMigrate(
 		&models.Certificate{},
+		&models.ManagedCertificate{},
+		&models.CertificateBinding{},
+		&models.DNSAccount{},
 		&models.CertificateTask{},
 		&models.CertificateOperationLock{},
 	)
 	if err != nil {
+		return err
+	}
+	if err := migrateManagedCertificates(); err != nil {
 		return err
 	}
 	err = db.AutoMigrate(&models.Remark{})
@@ -278,6 +284,40 @@ func createTables() error {
 	}
 	if err := accessservice.SeedBuiltin(db); err != nil {
 		return err
+	}
+	return nil
+}
+
+func migrateManagedCertificates() error {
+	var legacy []models.Certificate
+	if err := db.Where("managed_id IS NULL OR managed_id = ''").Find(&legacy).Error; err != nil {
+		return fmt.Errorf("list legacy certificates: %w", err)
+	}
+	for _, certificate := range legacy {
+		managed := models.ManagedCertificate{
+			ID: certificate.ID, Provider: certificate.Provider, Domains: certificate.Domains,
+			CertificatePath: certificate.CertificatePath, PrivateKeyPath: certificate.PrivateKeyPath,
+			SerialNumber: certificate.SerialNumber, Issuer: certificate.Issuer, Algorithm: "unknown",
+			Status: certificate.Status, AutoRenew: certificate.AutoRenew, RenewBeforeDays: certificate.RenewBeforeDays,
+			NotBefore: certificate.NotBefore, NotAfter: certificate.NotAfter, CreatedAt: certificate.CreatedAt, UpdatedAt: certificate.UpdatedAt,
+		}
+		if managed.RenewBeforeDays == 0 {
+			managed.RenewBeforeDays = 30
+		}
+		migrationErr := db.Transaction(func(tx *gorm.DB) error {
+			if err := tx.Where("id = ?", managed.ID).First(&models.ManagedCertificate{}).Error; err != nil {
+				if !errors.Is(err, gorm.ErrRecordNotFound) {
+					return err
+				}
+				if err := tx.Create(&managed).Error; err != nil {
+					return err
+				}
+			}
+			return tx.Model(&models.Certificate{}).Where("id = ?", certificate.ID).Update("managed_id", managed.ID).Error
+		})
+		if migrationErr != nil {
+			return fmt.Errorf("migrate legacy certificate %s: %w", certificate.ID, migrationErr)
+		}
 	}
 	return nil
 }

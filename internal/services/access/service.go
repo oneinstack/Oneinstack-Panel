@@ -34,6 +34,8 @@ const (
 	PermissionWebsiteRead               = "website.read"
 	PermissionWebsiteWrite              = "website.write"
 	PermissionWebsiteApproval           = "website.approval.request"
+	PermissionCertificateRead           = "certificate.read"
+	PermissionCertificateWrite          = "certificate.write"
 	PermissionDatabaseRead              = "database.read"
 	PermissionDatabaseWrite             = "database.write"
 	PermissionDatabaseApproval          = "database.approval.request"
@@ -152,6 +154,8 @@ func builtinPermissions() []models.Permission {
 		{Code: PermissionWebsiteRead, Name: "网站读取", Module: "website"},
 		{Code: PermissionWebsiteWrite, Name: "网站修改", Module: "website"},
 		{Code: PermissionWebsiteApproval, Name: "网站审批申请", Module: "website"},
+		{Code: PermissionCertificateRead, Name: "证书读取", Module: "certificate"},
+		{Code: PermissionCertificateWrite, Name: "证书修改", Module: "certificate"},
 		{Code: PermissionDatabaseRead, Name: "数据库读取", Module: "database"},
 		{Code: PermissionDatabaseWrite, Name: "数据库修改", Module: "database"},
 		{Code: PermissionDatabaseApproval, Name: "数据库审批申请", Module: "database"},
@@ -247,6 +251,8 @@ func builtinRoles() []struct {
 				PermissionWebsiteRead,
 				PermissionWebsiteWrite,
 				PermissionWebsiteApproval,
+				PermissionCertificateRead,
+				PermissionCertificateWrite,
 				PermissionConfigSnapshotRead,
 				PermissionConfigSnapshotWrite,
 				PermissionApprovalRequest,
@@ -304,6 +310,8 @@ func builtinRoles() []struct {
 				PermissionCronWrite,
 				PermissionMonitoringRead,
 				PermissionMonitoringWrite,
+				PermissionCertificateRead,
+				PermissionCertificateWrite,
 				PermissionSystemRead,
 				PermissionSystemWrite,
 				PermissionConfigSnapshotRead,

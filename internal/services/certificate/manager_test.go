@@ -336,6 +336,8 @@ func openCertificateTestDB(t *testing.T) *gorm.DB {
 	if err := db.AutoMigrate(
 		&models.Website{},
 		&models.Certificate{},
+		&models.ManagedCertificate{},
+		&models.CertificateBinding{},
 		&models.CertificateTask{},
 		&models.CertificateOperationLock{},
 	); err != nil {

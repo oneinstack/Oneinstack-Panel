@@ -14,6 +14,7 @@ import (
 	logservice "oneinstack/internal/services/log"
 	auditHandler "oneinstack/router/handler/audit"
 	bastionHandler "oneinstack/router/handler/bastion"
+	certificateHandler "oneinstack/router/handler/certificate"
 	containerHandler "oneinstack/router/handler/container"
 	"oneinstack/router/handler/cron"
 	fail2banHandler "oneinstack/router/handler/fail2ban"
@@ -111,6 +112,28 @@ func SetupRouter() *gin.Engine {
 	protected.POST("/logout", user.LogoutHandler)
 	protected.POST("/operations/preview", operationpreviewHandler.Preview)
 	protected.POST("/operations/:previewId/execute", operationpreviewHandler.Execute)
+	certificateg := protected.Group("/certificates")
+	{
+		certificateg.GET("/algorithms", middleware.RequirePermission(accessservice.PermissionCertificateRead), certificateHandler.ListAlgorithms)
+		certificateg.GET("/dns-providers", middleware.RequirePermission(accessservice.PermissionCertificateRead), certificateHandler.ListDNSProviders)
+		certificateg.GET("/dns-accounts", middleware.RequirePermission(accessservice.PermissionCertificateRead), certificateHandler.ListDNSAccounts)
+		certificateg.POST("/dns-accounts", middleware.RequirePermission(accessservice.PermissionCertificateWrite), certificateHandler.SaveDNSAccount)
+		certificateg.DELETE("/dns-accounts/:id", middleware.RequirePermission(accessservice.PermissionCertificateWrite), certificateHandler.DeleteDNSAccount)
+		certificateg.GET("/tasks", middleware.RequirePermission(accessservice.PermissionCertificateRead), certificateHandler.ListTasks)
+		certificateg.GET("/tasks/:id", middleware.RequirePermission(accessservice.PermissionCertificateRead), certificateHandler.GetTask)
+		certificateg.GET("/tasks/:id/log", middleware.RequirePermission(accessservice.PermissionCertificateRead), certificateHandler.GetTaskLog)
+		certificateg.POST("/tasks/:id/cancel", middleware.RequirePermission(accessservice.PermissionCertificateWrite), certificateHandler.CancelTask)
+		certificateg.GET("", middleware.RequirePermission(accessservice.PermissionCertificateRead), certificateHandler.List)
+		certificateg.POST("/upload", middleware.RequirePermission(accessservice.PermissionCertificateWrite), certificateHandler.Upload)
+		certificateg.POST("/self-signed", middleware.RequirePermission(accessservice.PermissionCertificateWrite), certificateHandler.SelfSigned)
+		certificateg.GET("/:id/certificate", middleware.RequirePermission(accessservice.PermissionCertificateRead), certificateHandler.ReadCertificate)
+		certificateg.GET("/:id/private-key", middleware.RequirePermission(accessservice.PermissionCertificateRead), certificateHandler.ReadPrivateKey)
+		certificateg.GET("/:id/download", middleware.RequirePermission(accessservice.PermissionCertificateRead), certificateHandler.Download)
+		certificateg.GET("/:id", middleware.RequirePermission(accessservice.PermissionCertificateRead), certificateHandler.Get)
+		certificateg.POST("/:id/bindings", middleware.RequirePermission(accessservice.PermissionCertificateWrite), certificateHandler.Bind)
+		certificateg.DELETE("/:id/bindings/:websiteId", middleware.RequirePermission(accessservice.PermissionCertificateWrite), certificateHandler.Unbind)
+		certificateg.DELETE("/:id", middleware.RequirePermission(accessservice.PermissionCertificateWrite), certificateHandler.Delete)
+	}
 	// 配置快照
 	snapshotg := protected.Group("/config-snapshots")
 	{

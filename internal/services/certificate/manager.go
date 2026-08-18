@@ -249,6 +249,72 @@ func (manager *Manager) SubmitRenew(certificateID string, requestedBy int64) (*m
 	})
 }
 
+func (manager *Manager) SubmitManagedUpload(options CreateCertificateOptions, requestedBy int64) (*models.CertificateTask, error) {
+	if err := manager.Start(); err != nil {
+		return nil, err
+	}
+	if len(options.CertificatePEM) == 0 || len(options.PrivateKeyPEM) == 0 {
+		return nil, errors.New("certificate and private key are required")
+	}
+	pending := filepath.Join(manager.certificateRoot, "pending", uuid.NewString())
+	if err := os.MkdirAll(pending, 0700); err != nil {
+		return nil, fmt.Errorf("create certificate task workspace: %w", err)
+	}
+	certPath := filepath.Join(pending, "certificate.pem")
+	keyPath := filepath.Join(pending, "private-key.pem")
+	if err := writeFileAtomic(certPath, options.CertificatePEM, 0600); err != nil {
+		_ = os.RemoveAll(pending)
+		return nil, err
+	}
+	if err := writeFileAtomic(keyPath, options.PrivateKeyPEM, 0600); err != nil {
+		_ = os.RemoveAll(pending)
+		return nil, err
+	}
+	task, err := manager.submit(&models.CertificateTask{
+		Operation: models.CertificateTaskOperationUpload, WebsiteName: "certificate", Domains: strings.Join(options.Domains, ","),
+		AutoRenew: options.AutoRenew, RenewBeforeDays: options.RenewBeforeDays, RequestedBy: requestedBy,
+		InputCertPath: certPath, InputKeyPath: keyPath, Remark: options.Remark,
+	})
+	if err != nil {
+		_ = os.RemoveAll(pending)
+	}
+	return task, err
+}
+
+func (manager *Manager) SubmitManagedSelfSigned(options SelfSignedOptions, requestedBy int64) (*models.CertificateTask, error) {
+	if err := manager.Start(); err != nil {
+		return nil, err
+	}
+	task, err := manager.submit(&models.CertificateTask{
+		Operation: models.CertificateTaskOperationSelfSigned, WebsiteName: "certificate", Domains: strings.Join(options.Domains, ","),
+		AutoRenew: options.AutoRenew, RenewBeforeDays: options.RenewBeforeDays, RequestedBy: requestedBy,
+		Algorithm: options.Algorithm, ValidityYears: options.ValidityYears, Remark: options.Remark,
+	})
+	return task, err
+}
+
+func (manager *Manager) SubmitManagedBind(managedID string, websiteID int64, forceHTTPS bool, requestedBy int64) (*models.CertificateTask, error) {
+	if err := manager.Start(); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(managedID) == "" || websiteID <= 0 {
+		return nil, errors.New("certificate and website are required")
+	}
+	var certificate models.ManagedCertificate
+	if err := manager.db.First(&certificate, "id = ?", strings.TrimSpace(managedID)).Error; err != nil {
+		return nil, err
+	}
+	var website models.Website
+	if err := manager.db.First(&website, "id = ?", websiteID).Error; err != nil {
+		return nil, err
+	}
+	return manager.submit(&models.CertificateTask{
+		Operation: models.CertificateTaskOperationBind, WebsiteID: website.ID, WebsiteName: website.Name,
+		ManagedID: certificate.ID, CertificateID: certificate.ID, Domains: certificate.Domains,
+		ForceHTTPS: forceHTTPS, RequestedBy: requestedBy,
+	})
+}
+
 func (manager *Manager) submit(task *models.CertificateTask) (*models.CertificateTask, error) {
 	if manager.stopping.Load() {
 		return nil, errors.New("certificate task manager is stopping")
@@ -280,9 +346,11 @@ func (manager *Manager) submit(task *models.CertificateTask) (*models.Certificat
 	case manager.queue <- task.ID:
 		return task, nil
 	case <-manager.stopCh:
+		manager.cleanupTaskInput(task)
 		_ = manager.finish(task.ID, models.CertificateTaskStatusInterrupted, "MANAGER_STOPPED", "证书任务服务已停止")
 		return nil, errors.New("certificate task manager is stopping")
 	default:
+		manager.cleanupTaskInput(task)
 		_ = manager.finish(task.ID, models.CertificateTaskStatusFailed, "QUEUE_FULL", "证书任务队列已满")
 		return nil, errors.New("certificate task queue is full")
 	}
@@ -354,6 +422,12 @@ func (manager *Manager) run(taskID string) {
 			"message":  truncate(message, 512),
 		}).Error
 		manager.appendLog(task.ID, message)
+	}
+	if task.Operation == models.CertificateTaskOperationUpload ||
+		task.Operation == models.CertificateTaskOperationSelfSigned ||
+		task.Operation == models.CertificateTaskOperationBind {
+		manager.runManagedTask(ctx, &task, report)
+		return
 	}
 	if err := manager.deployer.EnsureChallenge(ctx, task.WebsiteID); err != nil {
 		manager.failTask(&task, "CHALLENGE_CONFIG_FAILED", fmt.Errorf("publish HTTP-01 route: %w", err))
@@ -451,6 +525,7 @@ func (manager *Manager) run(taskID string) {
 	certificateRecord := &models.Certificate{
 		ID:              certificateID,
 		WebsiteID:       task.WebsiteID,
+		ManagedID:       certificateID,
 		Provider:        "acme",
 		Email:           task.Email,
 		Domains:         task.Domains,
@@ -476,13 +551,28 @@ func (manager *Manager) run(taskID string) {
 		err := tx.First(&existing, "website_id = ?", task.WebsiteID).Error
 		if err == nil {
 			certificateRecord.ID = existing.ID
+			certificateRecord.ManagedID = existing.ManagedID
+			if certificateRecord.ManagedID == "" {
+				certificateRecord.ManagedID = existing.ID
+			}
 			certificateRecord.CreatedAt = existing.CreatedAt
-			return tx.Save(certificateRecord).Error
-		}
-		if !errors.Is(err, gorm.ErrRecordNotFound) {
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		} else if err := tx.Create(certificateRecord).Error; err != nil {
 			return err
 		}
-		return tx.Create(certificateRecord).Error
+		if err := tx.Save(certificateRecord).Error; err != nil {
+			return err
+		}
+		return tx.Save(&models.ManagedCertificate{
+			ID: certificateRecord.ManagedID, Provider: certificateRecord.Provider, Domains: certificateRecord.Domains,
+			CertificatePath: certificateRecord.CertificatePath, PrivateKeyPath: certificateRecord.PrivateKeyPath,
+			SerialNumber: certificateRecord.SerialNumber, Issuer: certificateRecord.Issuer,
+			Algorithm: publicKeyAlgorithm(metadata.PublicKey), Status: certificateRecord.Status,
+			AutoRenew: certificateRecord.AutoRenew, RenewBeforeDays: certificateRecord.RenewBeforeDays,
+			NotBefore: certificateRecord.NotBefore, NotAfter: certificateRecord.NotAfter,
+			CreatedAt: certificateRecord.CreatedAt, UpdatedAt: certificateRecord.UpdatedAt,
+		}).Error
 	})
 	if persistErr != nil {
 		rollbackErr := rollback(context.Background())
@@ -504,6 +594,65 @@ func (manager *Manager) run(taskID string) {
 	}
 	manager.appendLog(task.ID, "证书已部署，Nginx 配置验证和重载成功")
 	_ = manager.finish(task.ID, models.CertificateTaskStatusSucceeded, "", "证书签发和部署成功")
+}
+
+func (manager *Manager) runManagedTask(ctx context.Context, task *models.CertificateTask, report ProgressReporter) {
+	catalog := NewCatalog(manager.db, manager.certificateRoot, manager.deployer)
+	var (
+		record *models.ManagedCertificate
+		err    error
+	)
+	switch task.Operation {
+	case models.CertificateTaskOperationUpload:
+		report(25, "正在校验证书和私钥")
+		certificatePEM, certErr := os.ReadFile(task.InputCertPath)
+		if certErr != nil {
+			err = certErr
+			break
+		}
+		privateKeyPEM, keyErr := os.ReadFile(task.InputKeyPath)
+		if keyErr != nil {
+			err = keyErr
+			break
+		}
+		record, err = catalog.CreateUpload(CreateCertificateOptions{
+			Domains: taskDomains(task.Domains), CertificatePEM: certificatePEM, PrivateKeyPEM: privateKeyPEM,
+			Remark: task.Remark, AutoRenew: task.AutoRenew, RenewBeforeDays: task.RenewBeforeDays,
+		})
+	case models.CertificateTaskOperationSelfSigned:
+		report(30, "正在生成自签证书")
+		record, err = catalog.CreateSelfSigned(SelfSignedOptions{
+			Domains: taskDomains(task.Domains), Algorithm: task.Algorithm, ValidityYears: task.ValidityYears,
+			Remark: task.Remark, AutoRenew: task.AutoRenew, RenewBeforeDays: task.RenewBeforeDays,
+		})
+	case models.CertificateTaskOperationBind:
+		report(30, "正在校验证书域名覆盖范围")
+		_, err = catalog.Bind(ctx, task.ManagedID, task.WebsiteID, task.ForceHTTPS)
+	default:
+		err = errors.New("unsupported managed certificate task")
+	}
+	if task.InputCertPath != "" {
+		_ = os.RemoveAll(filepath.Dir(task.InputCertPath))
+		_ = manager.db.Model(&models.CertificateTask{}).Where("id = ?", task.ID).Updates(map[string]any{"input_cert_path": "", "input_key_path": ""}).Error
+	}
+	if err != nil {
+		manager.failTask(task, "CERTIFICATE_RESOURCE_FAILED", err)
+		return
+	}
+	if record != nil {
+		task.ManagedID = record.ID
+		task.CertificateID = record.ID
+		_ = manager.db.Model(&models.CertificateTask{}).Where("id = ?", task.ID).Updates(map[string]any{"managed_id": record.ID, "certificate_id": record.ID}).Error
+	}
+	manager.appendLog(task.ID, "证书资源操作完成")
+	_ = manager.finish(task.ID, models.CertificateTaskStatusSucceeded, "", "证书资源操作成功")
+}
+
+func taskDomains(value string) []string {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	return strings.Split(value, ",")
 }
 
 func (manager *Manager) failTask(task *models.CertificateTask, code string, err error) {
@@ -662,6 +811,7 @@ func (manager *Manager) Cancel(taskID string) (*models.CertificateTask, error) {
 		return task, nil
 	}
 	if task.Status == models.CertificateTaskStatusQueued {
+		manager.cleanupTaskInput(task)
 		if err := manager.finish(task.ID, models.CertificateTaskStatusCanceled, "TASK_CANCELED", "证书任务已取消"); err != nil {
 			return nil, err
 		}
@@ -681,6 +831,15 @@ func (manager *Manager) Cancel(taskID string) (*models.CertificateTask, error) {
 		}
 	}
 	return manager.GetTask(task.ID)
+}
+
+func (manager *Manager) cleanupTaskInput(task *models.CertificateTask) {
+	if task == nil || task.InputCertPath == "" {
+		return
+	}
+	_ = os.RemoveAll(filepath.Dir(task.InputCertPath))
+	_ = manager.db.Model(&models.CertificateTask{}).Where("id = ?", task.ID).
+		Updates(map[string]any{"input_cert_path": "", "input_key_path": ""}).Error
 }
 
 func (manager *Manager) Disable(websiteID int64) (*models.Certificate, error) {
