@@ -16,7 +16,7 @@ type FileArchiveTask struct {
 	SourcePath     string     `json:"sourcePath" gorm:"size:1024;not null"`
 	TargetDir      string     `json:"targetDir" gorm:"size:1024;not null"`
 	ArchiveName    string     `json:"archiveName" gorm:"size:255;not null"`
-	FileRootPath   string     `json:"-" gorm:"size:1024;not null"`
+	FileRootPath   string     `json:"-" gorm:"size:1024;not null;default:''"`
 	QuotaBytes     int64      `json:"-" gorm:"not null;default:0"`
 	MinFreeBytes   int64      `json:"-" gorm:"not null;default:0"`
 	ResultPath     string     `json:"resultPath,omitempty" gorm:"size:1024"`
