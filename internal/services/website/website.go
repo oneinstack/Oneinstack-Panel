@@ -272,6 +272,13 @@ func (service *Service) add(ctx context.Context, param *models.Website, allowMan
 	if err := normalizeWebsiteExpiration(param, time.Now()); err != nil {
 		return err
 	}
+	if !strings.EqualFold(strings.TrimSpace(param.Type), "proxy") {
+		// prepareCreate validates the normalized managed path before the child
+		// directory is created, so initialize the trusted base for fresh setups.
+		if err := os.MkdirAll(filepath.Clean(service.WebRoot), 0755); err != nil {
+			return fmt.Errorf("create managed website root: %w", err)
+		}
+	}
 	prepared, err := service.prepareCreate(param, allowManagedAbsolute)
 	if err != nil {
 		return err
@@ -923,6 +930,12 @@ func (service *Service) validateTLSFiles(options TLSOptions) error {
 func (service *Service) ensureWebsiteRoot(siteType, root string) (bool, error) {
 	if siteType == "proxy" {
 		return false, nil
+	}
+	// The configured web root may be absent on a fresh installation. Create
+	// only that trusted base before the descriptor-relative child validation;
+	// validateManagedPath still rejects a symlink or non-directory base.
+	if err := os.MkdirAll(filepath.Clean(service.WebRoot), 0755); err != nil {
+		return false, fmt.Errorf("create managed website root: %w", err)
 	}
 	if _, err := validateManagedPath(service.WebRoot, root); err != nil {
 		return false, fmt.Errorf("%w: %v", ErrWebsiteRootInvalid, err)

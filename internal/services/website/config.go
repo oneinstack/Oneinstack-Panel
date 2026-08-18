@@ -573,11 +573,29 @@ func validateWebsiteRootInput(webRoot, rootValue, dirValue string, allowManagedA
 	cleaned := filepath.Clean(value)
 	if filepath.IsAbs(cleaned) {
 		if !allowManagedAbsolute {
-			return fmt.Errorf("%w: website root must be a relative directory below the configured web root", ErrWebsiteRootInvalid)
+			// Keep compatibility with the historical "/site-name" shorthand.
+			// normalizeWebsiteRoot treats this form as a path relative to webRoot;
+			// the preflight validation must apply the same interpretation.
+			value = strings.TrimPrefix(cleaned, string(filepath.Separator))
+			cleaned = filepath.Clean(value)
+			if cleaned == "." || cleaned == ".." || filepath.IsAbs(cleaned) ||
+				strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
+				return fmt.Errorf("%w: website root must be a relative directory below the configured web root", ErrWebsiteRootInvalid)
+			}
+			return nil
 		}
 		base := filepath.Clean(webRoot)
 		relative, err := filepath.Rel(base, cleaned)
-		if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		if err == nil && relative != "." && relative != ".." &&
+			!strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			return nil
+		}
+		// Match normalizeWebsiteRoot's legacy "/site-name" shorthand when
+		// the absolute value is not already inside the configured root.
+		value = strings.TrimPrefix(cleaned, string(filepath.Separator))
+		cleaned = filepath.Clean(value)
+		if cleaned == "." || cleaned == ".." || filepath.IsAbs(cleaned) ||
+			strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
 			return fmt.Errorf("%w: website root must be strictly below the configured web root", ErrWebsiteRootInvalid)
 		}
 		return nil
