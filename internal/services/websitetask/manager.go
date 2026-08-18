@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"oneinstack/internal/models"
+	approvalservice "oneinstack/internal/services/approval"
 	"oneinstack/internal/services/databasetask"
 	"oneinstack/internal/services/website"
 
@@ -23,8 +24,10 @@ import (
 )
 
 const (
-	defaultQueueSize = 32
-	defaultWorkers   = 2
+	defaultQueueSize     = 32
+	defaultWorkers       = 2
+	queuedTaskTimeout    = 15 * time.Minute
+	taskWatchdogInterval = 10 * time.Second
 )
 
 type DatabaseOperator interface {
@@ -139,6 +142,10 @@ func (m *Manager) Start() error {
 		}
 		for i := 0; i < defaultWorkers; i++ {
 			go m.worker()
+		}
+		go m.watchdog()
+		if err := m.enqueuePersistedTasks(); err != nil {
+			m.startErr = err
 		}
 	})
 	return m.startErr
@@ -740,7 +747,34 @@ func (m *Manager) finish(taskID, status, code, message string) error {
 	if status != models.WebsiteTaskStatusSucceeded {
 		updates["error_message"] = message
 	}
-	return m.db.Model(&models.WebsiteTask{}).Where("id = ?", taskID).Updates(updates).Error
+	if err := m.db.Model(&models.WebsiteTask{}).Where("id = ?", taskID).Updates(updates).Error; err != nil {
+		return err
+	}
+	// The task is the source of truth for execution. Approval synchronization
+	// is retried by the watchdog so a temporary approval-table/database error
+	// cannot turn a successful task into an API failure.
+	_ = m.syncApproval(taskID, status, code, message)
+	return nil
+}
+
+func (m *Manager) syncApproval(taskID, taskStatus, code, message string) error {
+	approvalStatus := models.ApprovalStatusCompleted
+	switch taskStatus {
+	case models.WebsiteTaskStatusCanceled:
+		approvalStatus = models.ApprovalStatusCanceled
+	case models.WebsiteTaskStatusFailed, models.WebsiteTaskStatusInterrupted:
+		approvalStatus = models.ApprovalStatusFailed
+	}
+	result := map[string]any{
+		"taskStatus": taskStatus,
+		"message":    strings.TrimSpace(message),
+	}
+	if strings.TrimSpace(code) != "" {
+		result["errorCode"] = strings.TrimSpace(code)
+	}
+	return approvalservice.NewService(m.db).UpdateBoundTaskResult(
+		"website_task", taskID, approvalStatus, result,
+	)
 }
 
 func (m *Manager) acquireLocks(task *models.WebsiteTask) error {
@@ -807,7 +841,10 @@ func (m *Manager) reconcileInterruptedTasks() error {
 	now := time.Now().UTC()
 	return m.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Model(&models.WebsiteTask{}).
-			Where("status IN ?", models.ActiveWebsiteTaskStatuses()).
+			Where("status IN ?", []string{
+				models.WebsiteTaskStatusRunning,
+				models.WebsiteTaskStatusCanceling,
+			}).
 			Updates(map[string]any{
 				"status": models.WebsiteTaskStatusInterrupted, "progress": 100,
 				"message":       "Panel 重启，网站任务已中断",
@@ -825,6 +862,85 @@ func (m *Manager) reconcileInterruptedTasks() error {
 			tx.Model(&models.WebsiteTask{}).Select("id")).
 			Delete(&models.DatabaseOperationLock{}).Error
 	})
+}
+
+func (m *Manager) enqueuePersistedTasks() error {
+	var tasks []models.WebsiteTask
+	if err := m.db.Where("status = ?", models.WebsiteTaskStatusQueued).
+		Order("created_at ASC").Find(&tasks).Error; err != nil {
+		return fmt.Errorf("load queued website tasks: %w", err)
+	}
+	for i := range tasks {
+		select {
+		case m.queue <- queuedTask{taskID: tasks[i].ID}:
+		case <-m.stopCh:
+			return nil
+		}
+	}
+	return nil
+}
+
+func (m *Manager) watchdog() {
+	ticker := time.NewTicker(taskWatchdogInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-m.stopCh:
+			return
+		case now := <-ticker.C:
+			now = now.UTC()
+			m.expireQueuedTasks(now)
+			m.syncTerminalApprovals()
+		}
+	}
+}
+
+func (m *Manager) syncTerminalApprovals() {
+	var approvals []models.ApprovalRequest
+	if err := m.db.Where("bound_task_type = ? AND status = ?", "website_task", models.ApprovalStatusExecuting).
+		Find(&approvals).Error; err != nil {
+		return
+	}
+	for i := range approvals {
+		var task models.WebsiteTask
+		if err := m.db.First(&task, "id = ?", approvals[i].BoundTaskID).Error; err != nil || !models.IsWebsiteTaskTerminal(task.Status) {
+			continue
+		}
+		message := task.Message
+		if strings.TrimSpace(task.ErrorMessage) != "" {
+			message = task.ErrorMessage
+		}
+		_ = m.syncApproval(task.ID, task.Status, task.ErrorCode, message)
+	}
+}
+
+func (m *Manager) expireQueuedTasks(now time.Time) {
+	var tasks []models.WebsiteTask
+	if err := m.db.Where("status = ? AND created_at < ?",
+		models.WebsiteTaskStatusQueued, now.Add(-queuedTaskTimeout)).
+		Order("created_at ASC").Find(&tasks).Error; err != nil {
+		return
+	}
+	for i := range tasks {
+		if err := m.expireQueuedTask(tasks[i].ID, now, "QUEUE_TIMEOUT", "网站任务排队超时，未能交由 worker 执行"); err != nil {
+			continue
+		}
+	}
+}
+
+func (m *Manager) expireQueuedTask(taskID string, now time.Time, code, message string) error {
+	result := m.db.Model(&models.WebsiteTask{}).
+		Where("id = ? AND status = ?", taskID, models.WebsiteTaskStatusQueued).
+		Updates(map[string]any{
+			"status": models.WebsiteTaskStatusFailed, "progress": 100,
+			"message": message, "error_code": code, "error_message": message,
+			"finished_at": now, "heartbeat_at": now,
+		})
+	if result.Error != nil || result.RowsAffected == 0 {
+		return result.Error
+	}
+	_ = m.syncApproval(taskID, models.WebsiteTaskStatusFailed, code, message)
+	return nil
 }
 
 func (m *Manager) artifactPath(websiteID int64, backupID string) (string, error) {
@@ -908,17 +1024,6 @@ func (m *Manager) cancelRequested(taskID string) bool {
 func (m *Manager) Stop(ctx context.Context) error {
 	if !m.stopping.CompareAndSwap(false, true) {
 		return nil
-	}
-	now := time.Now().UTC()
-	if err := m.db.Model(&models.WebsiteTask{}).
-		Where("status = ?", models.WebsiteTaskStatusQueued).
-		Updates(map[string]any{
-			"status": models.WebsiteTaskStatusInterrupted, "progress": 100,
-			"message":    "Panel 停止，排队任务已中断",
-			"error_code": "PANEL_STOPPED", "error_message": "Panel 停止，排队任务已中断",
-			"finished_at": now, "heartbeat_at": now,
-		}).Error; err != nil {
-		return err
 	}
 	m.stopOnce.Do(func() { close(m.stopCh) })
 	m.cancelMu.Lock()

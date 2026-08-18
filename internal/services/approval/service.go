@@ -243,6 +243,28 @@ func (service *Service) UpdateExecutionResult(
 	return service.db.Model(&models.ApprovalRequest{}).Where("id = ?", strings.TrimSpace(id)).Updates(updates).Error
 }
 
+// UpdateBoundTaskResult updates an approval that is already executing through
+// its durable task binding. Task workers use this path when the reviewer HTTP
+// request has already returned, so the approval cannot depend on the request
+// lifecycle for its final state.
+func (service *Service) UpdateBoundTaskResult(
+	boundTaskType, boundTaskID, status string,
+	result interface{},
+) error {
+	updates := map[string]any{"status": strings.TrimSpace(status)}
+	if result != nil {
+		encoded, err := json.Marshal(result)
+		if err != nil {
+			return err
+		}
+		updates["result_payload"] = string(encoded)
+	}
+	return service.db.Model(&models.ApprovalRequest{}).
+		Where("bound_task_type = ? AND bound_task_id = ? AND status = ?",
+			strings.TrimSpace(boundTaskType), strings.TrimSpace(boundTaskID), models.ApprovalStatusExecuting).
+		Updates(updates).Error
+}
+
 func normalizePage(page, pageSize int) (int, int) {
 	if page <= 0 {
 		page = 1
