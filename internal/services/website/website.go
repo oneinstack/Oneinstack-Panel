@@ -115,6 +115,43 @@ func (service *Service) ManagedRoot(site *models.Website) (string, error) {
 	return validateManagedPath(service.WebRoot, root)
 }
 
+func (service *Service) prepareCreate(param *models.Website) (*preparedWebsite, error) {
+	if err := service.validate(); err != nil {
+		return nil, err
+	}
+	if param == nil {
+		return nil, errors.New("website parameters are required")
+	}
+	prepared, err := prepareWebsiteForCreate(
+		param,
+		service.WebRoot,
+		service.LogRoot,
+		service.challengeRoot(),
+		TLSOptions{},
+	)
+	if err != nil {
+		return nil, err
+	}
+	if prepared.model.Type != "proxy" {
+		if _, err := validateManagedPath(service.WebRoot, prepared.model.RootDir); err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrWebsiteRootInvalid, err)
+		}
+	}
+	return prepared, nil
+}
+
+// PrepareCreate validates and normalizes a website without changing system
+// state. The returned model is the exact shape that should be reviewed and
+// later passed to Add.
+func (service *Service) PrepareCreate(param *models.Website) (*models.Website, error) {
+	prepared, err := service.prepareCreate(param)
+	if err != nil {
+		return nil, err
+	}
+	result := prepared.model
+	return &result, nil
+}
+
 // RestoreSnapshot creates or updates a site through the normal validated
 // renderer. Raw archived Nginx text is retained for audit/integrity purposes
 // but is never installed directly.
@@ -223,17 +260,11 @@ func (service *Service) Add(ctx context.Context, param *models.Website) error {
 	if err := normalizeWebsiteExpiration(param, time.Now()); err != nil {
 		return err
 	}
-	prepared, err := prepareWebsiteWithTLS(
-		param,
-		service.WebRoot,
-		service.LogRoot,
-		service.challengeRoot(),
-		TLSOptions{},
-	)
+	prepared, err := service.prepareCreate(param)
 	if err != nil {
 		return err
 	}
-	createdRoot, err := ensureWebsiteRoot(prepared.model.Type, prepared.model.RootDir)
+	createdRoot, err := service.ensureWebsiteRoot(prepared.model.Type, prepared.model.RootDir)
 	if err != nil {
 		return err
 	}
@@ -311,6 +342,9 @@ func (service *Service) Update(ctx context.Context, param *models.Website) error
 	if param == nil || param.ID <= 0 {
 		return errors.New("website ID is required")
 	}
+	if err := validateWebsiteRootInput(service.WebRoot, param.RootDir, param.Dir, true); err != nil {
+		return err
+	}
 	var existing models.Website
 	if err := service.DB.First(&existing, "id = ?", param.ID).Error; err != nil {
 		return err
@@ -376,7 +410,7 @@ func (service *Service) Update(ctx context.Context, param *models.Website) error
 			return err
 		}
 	}
-	createdRoot, err := ensureWebsiteRoot(prepared.model.Type, prepared.model.RootDir)
+	createdRoot, err := service.ensureWebsiteRoot(prepared.model.Type, prepared.model.RootDir)
 	if err != nil {
 		return err
 	}
@@ -874,24 +908,14 @@ func (service *Service) validateTLSFiles(options TLSOptions) error {
 	return nil
 }
 
-func ensureWebsiteRoot(siteType, root string) (bool, error) {
+func (service *Service) ensureWebsiteRoot(siteType, root string) (bool, error) {
 	if siteType == "proxy" {
 		return false, nil
 	}
-	info, err := os.Stat(root)
-	if err == nil {
-		if !info.IsDir() {
-			return false, errors.New("website root exists but is not a directory")
-		}
-		return false, nil
+	if _, err := validateManagedPath(service.WebRoot, root); err != nil {
+		return false, fmt.Errorf("%w: %v", ErrWebsiteRootInvalid, err)
 	}
-	if !errors.Is(err, os.ErrNotExist) {
-		return false, fmt.Errorf("stat website root: %w", err)
-	}
-	if err := os.MkdirAll(root, 0755); err != nil {
-		return false, fmt.Errorf("create website root: %w", err)
-	}
-	return true, nil
+	return ensureManagedDirectory(service.WebRoot, root)
 }
 
 func ensureDefaultWebsitePage(site *models.Website) (string, bool, error) {

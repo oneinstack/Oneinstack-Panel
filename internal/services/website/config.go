@@ -30,6 +30,7 @@ var (
 	ErrWebServerUnavailable    = errors.New("supported web server unavailable")
 	ErrWebServerConfigConflict = errors.New("web server configuration revision conflict")
 	ErrWebServerConfigValidate = errors.New("web server configuration validation failed")
+	ErrWebsiteRootInvalid      = errors.New("website root path is invalid")
 	ErrNginxUnavailable        = ErrWebServerUnavailable
 	domainLabelPattern         = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
 	configNamePattern          = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,252}\.conf$`)
@@ -255,6 +256,23 @@ func prepareWebsiteWithTLS(
 	return prepareWebsiteWithTLSAndSettings(
 		input, webRoot, logRoot, challengeRoot, tlsOptions, nil,
 	)
+}
+
+func prepareWebsiteForCreate(
+	input *models.Website,
+	webRoot, logRoot, challengeRoot string,
+	tlsOptions TLSOptions,
+) (*preparedWebsite, error) {
+	if input == nil {
+		return nil, errors.New("website parameters are required")
+	}
+	if strings.EqualFold(strings.TrimSpace(input.Type), "proxy") {
+		return prepareWebsiteWithTLSAndSettings(input, webRoot, logRoot, challengeRoot, tlsOptions, nil)
+	}
+	if err := validateWebsiteRootInput(webRoot, input.RootDir, input.Dir, false); err != nil {
+		return nil, err
+	}
+	return prepareWebsiteWithTLSAndSettings(input, webRoot, logRoot, challengeRoot, tlsOptions, nil)
 }
 
 func prepareWebsiteWithTLSAndSettings(
@@ -538,6 +556,35 @@ func normalizeWebsiteRoot(webRoot, rootValue, dirValue, defaultDir string) (stri
 		return "", "", errors.New("website root escapes the configured web root")
 	}
 	return root, filepath.ToSlash(relative), nil
+}
+
+func validateWebsiteRootInput(webRoot, rootValue, dirValue string, allowManagedAbsolute bool) error {
+	value := strings.TrimSpace(rootValue)
+	if value == "" {
+		value = strings.TrimSpace(dirValue)
+	}
+	if value == "" {
+		return nil
+	}
+	if strings.ContainsAny(value, "\r\n\t ;{}\"'\\$") {
+		return fmt.Errorf("%w: website root contains unsafe characters", ErrWebsiteRootInvalid)
+	}
+	cleaned := filepath.Clean(value)
+	if filepath.IsAbs(cleaned) {
+		if !allowManagedAbsolute {
+			return fmt.Errorf("%w: website root must be a relative directory below the configured web root", ErrWebsiteRootInvalid)
+		}
+		base := filepath.Clean(webRoot)
+		relative, err := filepath.Rel(base, cleaned)
+		if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("%w: website root must be strictly below the configured web root", ErrWebsiteRootInvalid)
+		}
+		return nil
+	}
+	if cleaned == "." || cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("%w: website root must be a relative directory below the configured web root", ErrWebsiteRootInvalid)
+	}
+	return nil
 }
 
 func normalizeProxy(protocol, sendValue, hostHeader string) (string, string, string, string, string, error) {

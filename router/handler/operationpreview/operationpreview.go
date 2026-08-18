@@ -87,7 +87,20 @@ func Preview(c *gin.Context) {
 			}
 		}
 	}
-	document, resourceVersion, err := buildDocument(operation, request.Payload)
+	payload := request.Payload
+	if operation == "website.create" {
+		err := error(nil)
+		payload, err = normalizeWebsiteCreatePayload(payload)
+		if err != nil {
+			if errors.Is(err, website.ErrWebsiteRootInvalid) {
+				core.HandleError(c, core.NewFieldError(core.ErrInvalidParameter, "网站根目录必须是受管网站根目录下的相对目录，不能越界或包含符号链接", "root_dir"))
+			} else {
+				core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "网站创建参数无效"))
+			}
+			return
+		}
+	}
+	document, resourceVersion, err := buildDocument(operation, payload)
 	if err != nil {
 		if errors.Is(err, safeservice.ErrValidation) {
 			message := safeservice.ValidationMessage(err)
@@ -107,7 +120,7 @@ func Preview(c *gin.Context) {
 		return
 	}
 	service := previewservice.New(app.DB())
-	created, err := service.Create(operation, userID, request.Payload, document, resourceVersion)
+	created, err := service.Create(operation, userID, payload, document, resourceVersion)
 	if err != nil {
 		core.HandleError(c, core.WrapError(err, core.ErrInternalError, "保存操作预览失败"))
 		return
@@ -269,7 +282,14 @@ func buildDocument(operation string, payload json.RawMessage) (previewservice.Do
 	}
 	switch operation {
 	case "website.create":
-		document.Files = []previewservice.FileChange{{Path: "受管 Nginx 虚拟主机目录/<name>.conf", Action: "create_or_update", ChangeSummary: "写入网站虚拟主机配置"}}
+		var value models.Website
+		if err := json.Unmarshal(payload, &value); err != nil {
+			return previewservice.Document{}, "", err
+		}
+		document.Files = []previewservice.FileChange{
+			{Path: value.RootDir, Action: "create_or_use_directory", ChangeSummary: "创建或复用规范化后的网站根目录"},
+			{Path: "受管 Nginx 虚拟主机目录/" + value.Name + ".conf", Action: "create_or_update", ChangeSummary: "写入网站虚拟主机配置"},
+		}
 		document.Actions = []previewservice.Action{{Type: "command", Name: "校验 Nginx 配置", DisplayCommand: "nginx -t"}, {Type: "service", Name: "重新加载 Nginx", DisplayCommand: "nginx -s reload", Service: "nginx"}}
 		document.Impact = previewservice.Impact{WriteFiles: true, ModifyDatabase: true, ReloadService: true}
 	case "website.update":
@@ -410,6 +430,29 @@ func buildDocument(operation string, payload json.RawMessage) (previewservice.Do
 		document.Rollback = previewservice.Rollback{Supported: true, Summary: "可通过对应的解封或重新封禁任务恢复"}
 	}
 	return document, "", nil
+}
+
+func normalizeWebsiteCreatePayload(payload json.RawMessage) (json.RawMessage, error) {
+	var value models.Website
+	if err := json.Unmarshal(payload, &value); err != nil {
+		return nil, err
+	}
+	service, err := website.DefaultService()
+	if err != nil {
+		return nil, err
+	}
+	normalized, err := service.PrepareCreate(&value)
+	if err != nil {
+		if errors.Is(err, website.ErrWebsiteRootInvalid) {
+			return nil, err
+		}
+		return nil, fmt.Errorf("validate website create payload: %w", err)
+	}
+	result, err := json.Marshal(normalized)
+	if err != nil {
+		return nil, fmt.Errorf("normalize website create payload: %w", err)
+	}
+	return result, nil
 }
 
 func executeOperation(ctx context.Context, operation string, payload json.RawMessage, userID int64, requestIP string) (gin.H, error) {

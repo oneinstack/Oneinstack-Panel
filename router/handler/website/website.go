@@ -62,6 +62,10 @@ func Add(c *gin.Context) {
 	}
 	err := website.Add(input)
 	if err != nil {
+		if errors.Is(err, website.ErrWebsiteRootInvalid) {
+			core.HandleError(c, core.NewFieldError(core.ErrInvalidParameter, "网站根目录必须是受管网站根目录下的相对目录，不能越界或包含符号链接", "root_dir"))
+			return
+		}
 		message := "网站配置发布失败"
 		if errors.Is(err, website.ErrNginxUnavailable) {
 			message = "未检测到可用 Nginx，请先安装并确保服务可执行文件可被面板访问"
