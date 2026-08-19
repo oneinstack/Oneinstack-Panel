@@ -2,6 +2,8 @@ package website
 
 import (
 	"encoding/json"
+	"errors"
+	"net/http"
 	"strconv"
 	"strings"
 
@@ -125,6 +127,14 @@ func GetWebsiteManagedConfig(c *gin.Context) {
 	}
 	document, err := service.ReadManagedConfig(c.Request.Context(), id)
 	if err != nil {
+		if errors.Is(err, websiteService.ErrWebsiteDisabled) {
+			core.HandleErrorWithStatus(c, http.StatusConflict, core.NewErrorWithDetail(
+				core.ErrResourceStateInvalid,
+				"网站已停用，无法读取运行配置",
+				"网站已停用，当前没有运行配置文件",
+			))
+			return
+		}
 		core.HandleError(c, core.WrapError(err, core.ErrConfigError, "读取网站配置失败"))
 		return
 	}

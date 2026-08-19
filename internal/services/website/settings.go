@@ -73,6 +73,10 @@ type WebsiteSettingsDocument struct {
 	Settings WebsiteSettings `json:"settings"`
 }
 
+// ErrWebsiteDisabled indicates that a disabled website has no runtime
+// configuration to read or edit.
+var ErrWebsiteDisabled = errors.New("website is disabled")
+
 type WebsiteLogDocument struct {
 	Type    string `json:"type"`
 	Path    string `json:"path"`
@@ -519,7 +523,7 @@ func (service *Service) ReadManagedConfig(
 		return WebServerConfigDocument{}, err
 	}
 	if !site.Enabled {
-		return WebServerConfigDocument{}, errors.New("网站已停用，当前没有运行配置文件")
+		return WebServerConfigDocument{}, fmt.Errorf("%w: 当前没有运行配置文件", ErrWebsiteDisabled)
 	}
 	if err := service.restoreManagedConfig(ctx, site); err != nil {
 		return WebServerConfigDocument{}, fmt.Errorf("恢复缺失的网站配置: %w", err)

@@ -595,6 +595,8 @@ var englishErrorTexts = map[string]string{
 	"从回收站恢复文件或目录失败":             "Failed to restore the file or directory from the trash",
 	"网站配置发布失败":                  "Failed to publish the website configuration",
 	"网站配置更新失败":                  "Failed to update the website configuration",
+	"网站已停用，无法读取运行配置":            "The website is disabled, so its runtime configuration cannot be read",
+	"网站已停用，当前没有运行配置文件":          "The website is disabled and has no runtime configuration file",
 	"未检测到可用 Nginx，请先安装并确保服务可执行文件可被面板访问": "No usable Nginx installation was detected. Install Nginx and make sure its executable is accessible to the Panel process",
 	"数据库参数无效": "The database parameters are invalid",
 	"未检测到可用 MySQL 实例，请先安装或修复 MySQL": "No usable MySQL instance was detected. Install or repair MySQL first",
