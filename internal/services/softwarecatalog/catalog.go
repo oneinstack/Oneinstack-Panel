@@ -417,7 +417,10 @@ func (m *Manager) apply(document Document, packageVersions, publishedPackageVers
 					}
 					latestPackageVersion := packageVersions[packageVersionKey(product.Component, recommendedVersion, m.config.Channel)]
 					installedPackageVersion := strings.TrimSpace(installed.InstalledPackageVersion)
-					softwareUpdate := installedVersion != recommendedVersion
+					// A catalog recommendation is an upgrade only when it is newer
+					// than the version already installed on the host.  A stale
+					// recommendation must never turn into a downgrade prompt.
+					softwareUpdate := scriptregistry.ComparePackageVersions(recommendedVersion, installedVersion) > 0
 					packageUpdate := installedPackageVersion != "" && latestPackageVersion != "" &&
 						scriptregistry.ComparePackageVersions(latestPackageVersion, installedPackageVersion) > 0
 					if softwareUpdate || packageUpdate {
@@ -769,7 +772,7 @@ func (m *Manager) refreshPackageVersions(ctx context.Context) error {
 					recommended.LatestPackageVersion,
 					installed.InstalledPackageVersion,
 				) > 0
-			if installedVersion != recommended.Version || packageUpdate {
+			if scriptregistry.ComparePackageVersions(recommended.Version, installedVersion) > 0 || packageUpdate {
 				if err := tx.Model(&models.Software{}).
 					Where("`key` = ?", installed.Key).
 					Update("is_update", true).Error; err != nil {

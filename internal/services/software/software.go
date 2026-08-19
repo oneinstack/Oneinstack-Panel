@@ -299,6 +299,20 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 			ServiceName:             item.ServiceName,
 			Versions:                strings.Split(item.Versions, ","),
 		})
+		// Do not expose a stale Center recommendation as an upgrade target.
+		// The catalog may temporarily recommend an older version than the
+		// version already installed on the host.
+		if groupedResults[i].Installed &&
+			strings.TrimSpace(groupedResults[i].InstallVersion) != "" &&
+			strings.TrimSpace(groupedResults[i].RecommendedVersion) != "" &&
+			scriptregistry.ComparePackageVersions(
+				groupedResults[i].RecommendedVersion,
+				groupedResults[i].InstallVersion,
+			) <= 0 {
+			groupedResults[i].RecommendedVersion = ""
+			groupedResults[i].IsUpdate = false
+			groupedResults[i].UpdateReason = ""
+		}
 		var params []*output.SoftParam
 		_ = json.Unmarshal([]byte(item.Params), &params)
 		groupedResults[i].Params = params
