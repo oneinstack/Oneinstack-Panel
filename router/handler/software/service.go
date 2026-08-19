@@ -32,6 +32,7 @@ type componentServiceStatus struct {
 	SubState         string    `json:"subState,omitempty"`
 	UnitFileState    string    `json:"unitFileState,omitempty"`
 	CanReload        bool      `json:"canReload"`
+	CanConfigure     bool      `json:"canConfigure"`
 	AvailableActions []string  `json:"availableActions"`
 	PackageSource    string    `json:"packageSource,omitempty"`
 	Busy             bool      `json:"busy"`
@@ -440,19 +441,20 @@ func configurationRestorePreview(
 func installedConfigurationTarget(
 	c *gin.Context,
 ) (softwareService.ComponentServiceDefinition, string, bool) {
-	definition, err := softwareService.NormalizeServiceComponent(c.Param("component"))
-	if err != nil {
-		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "不支持的组件服务"))
-		return softwareService.ComponentServiceDefinition{}, "", false
-	}
 	database := app.DB()
 	if database == nil {
 		core.HandleError(c, core.NewError(core.ErrInternalError, "数据库服务不可用"))
 		return softwareService.ComponentServiceDefinition{}, "", false
 	}
+	definition, err := softwareService.ResolveServiceComponent(database, c.Param("component"))
+	if err != nil {
+		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "不支持的组件服务"))
+		return softwareService.ComponentServiceDefinition{}, "", false
+	}
 	var installed models.Software
 	if err := database.
-		Where("`key` = ? AND installed = ?", definition.SoftwareKey, true).
+		Where("installed = ?", true).
+		Where("(`key` = ? OR `component` = ?)", definition.SoftwareKey, definition.Component).
 		Order("install_time DESC").
 		First(&installed).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -468,6 +470,10 @@ func installedConfigurationTarget(
 	}
 	if version == "" {
 		core.HandleError(c, core.NewError(core.ErrBadRequest, "组件安装版本缺失"))
+		return softwareService.ComponentServiceDefinition{}, "", false
+	}
+	if !softwareService.SupportsManagedConfiguration(definition.Component) {
+		core.HandleError(c, core.NewError(core.ErrBadRequest, "该组件当前不支持托管配置"))
 		return softwareService.ComponentServiceDefinition{}, "", false
 	}
 	return definition, version, true
@@ -534,6 +540,7 @@ func componentServiceStatusesFor(
 		status := componentServiceStatus{
 			ComponentServiceDefinition: runtimeDefinition,
 			State:                      "not_installed",
+			CanConfigure:               softwareService.SupportsManagedConfiguration(runtimeDefinition.Component),
 			AvailableActions:           defaultServiceActions(runtimeDefinition.Component),
 			CanReload:                  runtimeDefinition.Component == "nginx" || runtimeDefinition.Component == "php",
 			CheckedAt:                  now,

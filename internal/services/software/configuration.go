@@ -71,6 +71,13 @@ type configurationDefinition struct {
 	Environment map[string]string
 }
 
+// SupportsManagedConfiguration reports whether the component has a complete
+// managed-configuration definition and can be exposed to the service UI.
+func SupportsManagedConfiguration(component string) bool {
+	_, err := componentConfigurationDefinition(component)
+	return err == nil
+}
+
 func integerField(key, label, unit, description string, min, max int) ConfigurationField {
 	minimum, maximum := min, max
 	return ConfigurationField{

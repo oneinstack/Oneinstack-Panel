@@ -813,6 +813,7 @@ var englishErrorTexts = map[string]string{
 	"系统保护规则不可修改":                                "System-protected rules cannot be modified",
 	"组件安装版本缺失":                                  "The component installation version is missing",
 	"组件尚未安装":                                    "The component is not installed",
+	"该组件当前不支持托管配置":                              "This component does not currently support managed configuration",
 	"终端会话启动失败":                                  "Failed to start the terminal session",
 	"终端并发会话已达到上限":                               "The terminal concurrent-session limit has been reached",
 	"终端来源会话已过期或撤销，请重新打开终端":                      "The terminal source session has expired or was revoked. Reopen the terminal",
