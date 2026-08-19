@@ -317,7 +317,10 @@ func (manager *WebServerConfigManager) ValidateContent(ctx context.Context, rela
 	if strings.ContainsRune(content, 0) {
 		return errors.New("configuration contains a NUL byte")
 	}
-	target, _, err := resolveManagedConfigPath(manager.Server.ConfigRoot, relativePath)
+	// A create preview validates a candidate file before it exists. Resolve the
+	// path lexically and inspect existing components for symlinks, while leaving
+	// creation of the missing directory/file to the execution publisher.
+	target, _, err := resolveManagedConfigPathForPreview(manager.Server.ConfigRoot, relativePath)
 	if err != nil {
 		return err
 	}
@@ -1109,6 +1112,14 @@ func detectSiteConfigDir(configRoot, mainConfig string) string {
 }
 
 func resolveManagedConfigPath(root, relativePath string) (string, string, error) {
+	return resolveManagedConfigPathWithOptions(root, relativePath, false)
+}
+
+func resolveManagedConfigPathForPreview(root, relativePath string) (string, string, error) {
+	return resolveManagedConfigPathWithOptions(root, relativePath, true)
+}
+
+func resolveManagedConfigPathWithOptions(root, relativePath string, allowMissing bool) (string, string, error) {
 	root = filepath.Clean(root)
 	if !filepath.IsAbs(root) || root == string(filepath.Separator) {
 		return "", "", errors.New("configuration root is invalid")
@@ -1131,6 +1142,9 @@ func resolveManagedConfigPath(root, relativePath string) (string, string, error)
 		current = filepath.Join(current, part)
 		info, err := os.Lstat(current)
 		if err != nil {
+			if allowMissing && errors.Is(err, os.ErrNotExist) {
+				break
+			}
 			return "", "", fmt.Errorf("inspect configuration path: %w", err)
 		}
 		if info.Mode()&os.ModeSymlink != 0 {

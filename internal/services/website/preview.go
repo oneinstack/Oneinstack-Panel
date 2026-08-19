@@ -34,7 +34,7 @@ func (service *Service) PreviewCreate(param *models.Website) (WebsiteRuntimePrev
 	// The operation preview receives the already normalized payload produced by
 	// PrepareCreate; allow the same managed absolute path during this second
 	// render while retaining the no-symlink managed-root validation.
-	prepared, err := service.prepareCreate(param, true)
+	prepared, err := service.prepareCreate(param, true, true)
 	if err != nil {
 		return WebsiteRuntimePreview{}, err
 	}

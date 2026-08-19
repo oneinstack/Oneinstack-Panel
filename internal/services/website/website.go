@@ -75,8 +75,15 @@ func (service *Service) Get(id int64) (*models.Website, error) {
 	if err := service.DB.First(&site, "id = ?", id).Error; err != nil {
 		return nil, err
 	}
-	if _, err := service.ManagedRoot(&site); err != nil {
-		return nil, err
+	// Reading an existing website must remain possible when its content root
+	// was removed outside Panel. Mutation paths perform the actual filesystem
+	// checks/creation as needed; keep the managed-path and symlink boundaries
+	// while allowing a missing configured root here so operation previews and
+	// repair-oriented reads stay consistent with the lifecycle executor.
+	if !strings.EqualFold(strings.TrimSpace(site.Type), "proxy") {
+		if _, err := validateManagedPathWithOptions(service.WebRoot, site.RootDir, true); err != nil {
+			return nil, err
+		}
 	}
 	return &site, nil
 }
@@ -115,7 +122,7 @@ func (service *Service) ManagedRoot(site *models.Website) (string, error) {
 	return validateManagedPath(service.WebRoot, root)
 }
 
-func (service *Service) prepareCreate(param *models.Website, allowManagedAbsolute bool) (*preparedWebsite, error) {
+func (service *Service) prepareCreate(param *models.Website, allowManagedAbsolute, allowMissingManagedRoot bool) (*preparedWebsite, error) {
 	if err := service.validate(); err != nil {
 		return nil, err
 	}
@@ -134,7 +141,7 @@ func (service *Service) prepareCreate(param *models.Website, allowManagedAbsolut
 		return nil, err
 	}
 	if prepared.model.Type != "proxy" {
-		if _, err := validateManagedPath(service.WebRoot, prepared.model.RootDir); err != nil {
+		if _, err := validateManagedPathWithOptions(service.WebRoot, prepared.model.RootDir, allowMissingManagedRoot); err != nil {
 			return nil, fmt.Errorf("%w: %v", ErrWebsiteRootInvalid, err)
 		}
 	}
@@ -145,7 +152,7 @@ func (service *Service) prepareCreate(param *models.Website, allowManagedAbsolut
 // state. The returned model is the exact shape that should be reviewed and
 // later passed to Add.
 func (service *Service) PrepareCreate(param *models.Website) (*models.Website, error) {
-	prepared, err := service.prepareCreate(param, false)
+	prepared, err := service.prepareCreate(param, false, true)
 	if err != nil {
 		return nil, err
 	}
@@ -279,7 +286,7 @@ func (service *Service) add(ctx context.Context, param *models.Website, allowMan
 			return fmt.Errorf("create managed website root: %w", err)
 		}
 	}
-	prepared, err := service.prepareCreate(param, allowManagedAbsolute)
+	prepared, err := service.prepareCreate(param, allowManagedAbsolute, false)
 	if err != nil {
 		return err
 	}
@@ -643,6 +650,10 @@ func (service *Service) DeleteWithOptions(ctx context.Context, id int64, deleteF
 }
 
 func validateManagedPath(baseValue, targetValue string) (string, error) {
+	return validateManagedPathWithOptions(baseValue, targetValue, false)
+}
+
+func validateManagedPathWithOptions(baseValue, targetValue string, allowMissingBase bool) (string, error) {
 	base, err := normalizedBasePath(baseValue, "managed root")
 	if err != nil {
 		return "", err
@@ -658,6 +669,12 @@ func validateManagedPath(baseValue, targetValue string) (string, error) {
 	}
 	baseInfo, err := os.Lstat(base)
 	if err != nil {
+		if allowMissingBase && errors.Is(err, os.ErrNotExist) {
+			if err := validateExistingManagedAncestor(base); err != nil {
+				return "", err
+			}
+			return target, nil
+		}
 		return "", fmt.Errorf("inspect managed root: %w", err)
 	}
 	if !baseInfo.IsDir() || baseInfo.Mode()&os.ModeSymlink != 0 {
@@ -682,6 +699,34 @@ func validateManagedPath(baseValue, targetValue string) (string, error) {
 		}
 	}
 	return target, nil
+}
+
+// validateExistingManagedAncestor checks the nearest existing ancestor when a
+// preview is opened before the configured managed root has been created. It
+// keeps the no-symlink boundary for all existing path components without
+// mutating the filesystem.
+func validateExistingManagedAncestor(path string) error {
+	current := filepath.Clean(path)
+	for {
+		info, err := os.Lstat(current)
+		if err == nil {
+			if info.Mode()&os.ModeSymlink != 0 {
+				return errors.New("managed root contains a symbolic link")
+			}
+			if !info.IsDir() {
+				return errors.New("managed root ancestor must be a directory")
+			}
+			return nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("inspect managed root ancestor: %w", err)
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return nil
+		}
+		current = parent
+	}
 }
 
 func (service *Service) validate() error {
