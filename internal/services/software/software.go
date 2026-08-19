@@ -169,7 +169,7 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 				"MAX(name) as name," +
 				"MAX(icon) as icon," +
 				"MAX(type) as type," +
-				"MAX(status) as status," +
+				"COALESCE(MAX(CASE WHEN installed = 1 THEN status END), MAX(status), 0) as status," +
 				"MAX(resource) as resource," +
 				"MAX(is_update) as is_update," +
 				"MAX(CASE WHEN installed = 1 THEN install_version ELSE '' END) as install_version," +
@@ -302,10 +302,12 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 		var params []*output.SoftParam
 		_ = json.Unmarshal([]byte(item.Params), &params)
 		groupedResults[i].Params = params
-		if failedTask, exists := failedTaskByKey[item.Key]; exists {
-			groupedResults[i].FailureMessage = strings.TrimSpace(failedTask.ErrorMessage)
-			if groupedResults[i].FailureMessage == "" {
-				groupedResults[i].FailureMessage = strings.TrimSpace(failedTask.Message)
+		if groupedResults[i].Status == models.Soft_Status_Err {
+			if failedTask, exists := failedTaskByKey[item.Key]; exists {
+				groupedResults[i].FailureMessage = strings.TrimSpace(failedTask.ErrorMessage)
+				if groupedResults[i].FailureMessage == "" {
+					groupedResults[i].FailureMessage = strings.TrimSpace(failedTask.Message)
+				}
 			}
 		}
 	}
