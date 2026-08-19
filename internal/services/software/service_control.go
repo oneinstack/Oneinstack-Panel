@@ -23,7 +23,7 @@ const maxServiceProbeBytes = 64 * 1024
 var (
 	serviceStatePattern   = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
 	serviceNamePattern    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.@-]{0,127}$`)
-	runtimeVersionPattern = regexp.MustCompile(`^[0-9]+(?:\.[0-9]+){1,2}(?:[-+][0-9A-Za-z.-]+)?$`)
+	runtimeVersionPattern = regexp.MustCompile(`^[0-9]+(?:\.[0-9]+){1,3}(?:[-+][0-9A-Za-z.-]+)?$`)
 )
 
 type ComponentServiceDefinition struct {
