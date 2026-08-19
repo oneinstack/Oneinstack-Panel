@@ -39,7 +39,7 @@ emit_progress() {
   [[ "${fd}" =~ ^[0-9]+$ ]] || return 0
   message="${message//\\/\\\\}"; message="${message//\"/\\\"}"; message="${message//$'\n'/ }"
   printf '{"type":"progress","percent":%s,"code":"%s","message":"%s"}\n' \
-    "${percent}" "${code}" "${message}" >&"${fd}" 2>/dev/null || true
+    "${percent}" "${code}" "${message}" 1>&"${fd}" 2>/dev/null || true
 }
 require_root() { [[ "$(id -u)" -eq 0 ]] || die "This action must run as root."; }
 validate_identifier() { [[ "$1" =~ ^[a-z_][a-z0-9_-]{0,30}$ ]] || die "Invalid account identifier: $1"; }
