@@ -30,6 +30,7 @@ import (
 	"oneinstack/router/middleware"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 type previewRequest struct {
@@ -53,6 +54,8 @@ type websiteConfigUpdatePayload struct {
 	Content   string `json:"content"`
 	Revision  string `json:"revision"`
 }
+
+var errUnsupportedWebsiteOperation = errors.New("unsupported website operation")
 
 func websitePayloadID(id, websiteID int64) int64 {
 	if id > 0 {
@@ -174,28 +177,24 @@ func Preview(c *gin.Context) {
 		err := error(nil)
 		payload, err = normalizeWebsiteCreatePayload(payload)
 		if err != nil {
-			if errors.Is(err, website.ErrWebsiteRootInvalid) {
-				core.HandleError(c, core.NewFieldError(core.ErrInvalidParameter, "网站根目录必须是受管网站根目录下的相对目录，不能越界或包含符号链接", "root_dir"))
-			} else {
-				core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "网站创建参数无效"))
+			if handleWebsitePreviewError(c, operation, err) {
+				return
 			}
+			core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "网站创建参数无效"))
 			return
 		}
 	}
 	document, resourceVersion, err := buildDocument(operation, payload)
 	if err != nil {
+		if handleWebsitePreviewError(c, operation, err) {
+			return
+		}
 		if errors.Is(err, safeservice.ErrValidation) {
 			message := safeservice.ValidationMessage(err)
 			if message == "" {
 				message = "防火墙参数无效"
 			}
 			core.HandleError(c, core.NewError(core.ErrBadRequest, message))
-		} else if errors.Is(err, website.ErrWebServerConfigValidate) {
-			core.HandleError(c, core.WrapError(
-				err,
-				core.ErrConfigValidateFailed,
-				"Web Server 配置语法校验失败，请根据诊断信息修正后重新预览",
-			))
 		} else {
 			core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "生成操作预览失败"))
 		}
@@ -209,6 +208,79 @@ func Preview(c *gin.Context) {
 	}
 	localizeDocument(c.GetString("locale"), created)
 	core.HandleSuccess(c, created)
+}
+
+func isWebsiteOperation(operation string) bool {
+	switch operation {
+	case "website.create", "website.update", "website.settings.update",
+		"website.config.update", "website.webserver.config.update", "website.toggle":
+		return true
+	default:
+		return false
+	}
+}
+
+func isJSONDecodeError(err error) bool {
+	var syntaxErr *json.SyntaxError
+	var typeErr *json.UnmarshalTypeError
+	return errors.As(err, &syntaxErr) || errors.As(err, &typeErr)
+}
+
+func handleWebsitePreviewError(c *gin.Context, operation string, err error) bool {
+	if !isWebsiteOperation(operation) {
+		return false
+	}
+	switch {
+	case isJSONDecodeError(err):
+		core.HandleError(c, core.NewError(core.ErrInvalidParameter, "网站操作参数格式错误"))
+	case errors.Is(err, website.ErrWebsiteRootInvalid):
+		core.HandleError(c, core.NewFieldError(
+			core.ErrInvalidParameter,
+			"网站根目录必须是受管网站根目录下的相对目录，不能越界或包含符号链接",
+			"root_dir",
+		))
+	case errors.Is(err, website.ErrWebsiteIDRequired):
+		core.HandleError(c, core.NewError(core.ErrInvalidParameter, "网站操作缺少 websiteId 或 id"))
+	case errors.Is(err, website.ErrWebsiteSettingsValidate):
+		detail := strings.TrimSpace(strings.TrimPrefix(
+			err.Error(), website.ErrWebsiteSettingsValidate.Error()+":",
+		))
+		if detail == "" {
+			detail = "请检查网站设置字段后重试。"
+		}
+		core.HandleError(c, core.NewErrorWithDetail(
+			core.ErrInvalidParameter,
+			"网站设置格式错误",
+			detail,
+		))
+	case errors.Is(err, website.ErrWebsiteParameterInvalid):
+		detail := strings.TrimSpace(strings.TrimPrefix(
+			err.Error(), website.ErrWebsiteParameterInvalid.Error()+":",
+		))
+		if detail == "" {
+			detail = "请检查网站名称、域名、类型和相关参数后重试。"
+		}
+		core.HandleError(c, core.NewErrorWithDetail(core.ErrInvalidParameter, "网站参数无效", detail))
+	case errors.Is(err, website.ErrWebServerConfigValidate):
+		core.HandleError(c, core.WrapError(
+			err,
+			core.ErrConfigValidateFailed,
+			"Web Server 配置语法校验失败，请根据诊断信息修正后重新预览",
+		))
+	case errors.Is(err, website.ErrWebServerConfigConflict):
+		core.HandleError(c, core.NewError(core.ErrConflict, "配置已发生变化，请重新预览后再执行"))
+	case errors.Is(err, website.ErrWebsiteConflict):
+		core.HandleError(c, core.NewError(core.ErrConflict, "网站已存在，请检查网站名称或域名"))
+	case errors.Is(err, gorm.ErrRecordNotFound):
+		core.HandleError(c, core.NewError(core.ErrWebsiteNotFound, "网站不存在或已被删除，请刷新后重试"))
+	case errors.Is(err, website.ErrWebServerUnavailable):
+		core.HandleError(c, core.NewError(core.ErrConfigError, "未检测到可管理的 Nginx 或 OpenResty"))
+	case errors.Is(err, errUnsupportedWebsiteOperation):
+		core.HandleError(c, core.NewError(core.ErrBadRequest, "不支持的网站更新操作"))
+	default:
+		return false
+	}
+	return true
 }
 
 func fail2banPreviewTarget(payload json.RawMessage) (string, bool) {
@@ -452,7 +524,7 @@ func buildDocument(operation string, payload json.RawMessage) (previewservice.Do
 			document, version := websiteRuntimeDocument(operation, change)
 			return document, version, nil
 		default:
-			return previewservice.Document{}, "", errors.New("不支持的网站更新操作")
+			return previewservice.Document{}, "", errUnsupportedWebsiteOperation
 		}
 	case "website.settings.update":
 		var request websiteSettingsUpdatePayload
@@ -461,7 +533,7 @@ func buildDocument(operation string, payload json.RawMessage) (previewservice.Do
 		}
 		id := websitePayloadID(request.ID, request.WebsiteID)
 		if id <= 0 {
-			return previewservice.Document{}, "", errors.New("website ID is required")
+			return previewservice.Document{}, "", website.ErrWebsiteIDRequired
 		}
 		service, err := website.DefaultService()
 		if err != nil {
@@ -480,7 +552,7 @@ func buildDocument(operation string, payload json.RawMessage) (previewservice.Do
 		}
 		id := websitePayloadID(request.ID, request.WebsiteID)
 		if id <= 0 {
-			return previewservice.Document{}, "", errors.New("website ID is required")
+			return previewservice.Document{}, "", website.ErrWebsiteIDRequired
 		}
 		service, err := website.DefaultService()
 		if err != nil {
@@ -521,8 +593,11 @@ func buildDocument(operation string, payload json.RawMessage) (previewservice.Do
 			ID      int64 `json:"id"`
 			Enabled bool  `json:"enabled"`
 		}
-		if err := json.Unmarshal(payload, &request); err != nil || request.ID <= 0 {
-			return previewservice.Document{}, "", errors.New("website ID is required")
+		if err := json.Unmarshal(payload, &request); err != nil {
+			return previewservice.Document{}, "", err
+		}
+		if request.ID <= 0 {
+			return previewservice.Document{}, "", website.ErrWebsiteIDRequired
 		}
 		service, err := website.DefaultService()
 		if err != nil {
@@ -674,7 +749,7 @@ func executeOperation(ctx context.Context, operation string, payload json.RawMes
 			return executeWebServerConfigUpdate(ctx, operation, request, userID, requestIP)
 		}
 		if strings.TrimSpace(discriminator.Action) != "" {
-			return nil, errors.New("不支持的网站更新操作")
+			return nil, errUnsupportedWebsiteOperation
 		}
 		var value models.Website
 		if err := json.Unmarshal(payload, &value); err != nil {
@@ -1189,12 +1264,41 @@ func writeConsumeError(c *gin.Context, err error) {
 
 func writeExecutionError(c *gin.Context, err error) {
 	code, message := core.ErrConfigError, "执行已确认的操作预览失败"
+	detail := err.Error()
 	var applyErr *website.WebServerConfigApplyError
 	switch {
 	case errors.Is(err, website.ErrWebServerConfigConflict):
 		code, message = core.ErrConflict, "配置已发生变化，请重新预览后再执行"
+		detail = ""
 	case errors.Is(err, website.ErrWebServerConfigValidate):
 		code, message = core.ErrConfigValidateFailed, "Web Server 配置校验失败，原配置已恢复"
+	case errors.Is(err, website.ErrWebsiteSettingsValidate):
+		code, message = core.ErrInvalidParameter, "网站设置格式错误"
+		detail = ""
+	case errors.Is(err, website.ErrWebsiteRootInvalid):
+		code, message = core.ErrInvalidParameter, "网站根目录无效，请填写受管网站根目录下的相对目录"
+		detail = ""
+	case errors.Is(err, website.ErrWebsiteParameterInvalid):
+		code, message = core.ErrInvalidParameter, "网站参数无效"
+		detail = ""
+	case errors.Is(err, website.ErrWebsiteIDRequired):
+		code, message = core.ErrInvalidParameter, "网站操作缺少 websiteId 或 id"
+		detail = ""
+	case errors.Is(err, website.ErrWebsiteConflict):
+		code, message = core.ErrConflict, "网站已存在，请检查网站名称或域名"
+		detail = ""
+	case errors.Is(err, website.ErrWebsiteExpired):
+		code, message = core.ErrResourceStateInvalid, "网站已到期，请先修改到期时间后再启用"
+		detail = ""
+	case errors.Is(err, gorm.ErrRecordNotFound):
+		code, message = core.ErrWebsiteNotFound, "网站不存在或已被删除，请刷新后重试"
+		detail = ""
+	case errors.Is(err, website.ErrWebServerUnavailable):
+		code, message = core.ErrConfigError, "未检测到可管理的 Nginx 或 OpenResty"
+		detail = ""
+	case errors.Is(err, errUnsupportedWebsiteOperation):
+		code, message = core.ErrBadRequest, "不支持的网站更新操作"
+		detail = ""
 	case errors.As(err, &applyErr) && applyErr.Status == website.WebServerConfigApplyStatusReloadFailedRolled:
 		code, message = core.ErrConfigApplyFailed, "Web Server 重载失败，原配置已回滚"
 	case errors.Is(err, fail2banservice.ErrValidation):
@@ -1206,5 +1310,9 @@ func writeExecutionError(c *gin.Context, err error) {
 	case errors.Is(err, fail2banservice.ErrUnavailable):
 		code, message = core.ErrServiceUnavailable, "Fail2ban 未安装、未验证或服务不可用"
 	}
-	core.HandleError(c, core.NewErrorWithDetail(code, message, err.Error()))
+	if detail == "" {
+		core.HandleError(c, core.NewError(code, message))
+		return
+	}
+	core.HandleError(c, core.NewErrorWithDetail(code, message, detail))
 }

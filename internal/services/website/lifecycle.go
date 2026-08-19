@@ -39,7 +39,7 @@ func (service *Service) SetEnabled(ctx context.Context, id int64, enabled bool) 
 		return nil, err
 	}
 	if id <= 0 {
-		return nil, errors.New("website ID is required")
+		return nil, ErrWebsiteIDRequired
 	}
 	var site models.Website
 	if err := service.DB.First(&site, "id = ?", id).Error; err != nil {
@@ -50,7 +50,7 @@ func (service *Service) SetEnabled(ctx context.Context, id int64, enabled bool) 
 	}
 	now := time.Now()
 	if enabled && site.ExpiresAt != nil && !site.ExpiresAt.After(now) {
-		return nil, errors.New("网站已到期，请先修改到期时间后再启用")
+		return nil, fmt.Errorf("%w: 网站已到期，请先修改到期时间后再启用", ErrWebsiteExpired)
 	}
 
 	configName := strings.TrimSpace(site.Name) + ".conf"
@@ -76,7 +76,7 @@ func (service *Service) SetEnabled(ctx context.Context, id int64, enabled bool) 
 			settings,
 		)
 		if err != nil {
-			return nil, err
+			return nil, wrapWebsiteParameterError(err)
 		}
 		content := prepared.config
 		changes[configName] = &content

@@ -117,12 +117,21 @@ func (s *Service) Status(ctx context.Context) (*output.IptablesStatus, error) {
 			true, "tcp", "allow", fmt.Sprint(s.panelPort), state.Name,
 		).First(&protectedRule)
 		if result.Error == nil {
-			status.PanelPortProtected = s.ruleExists(ctx, &protectedRule, state)
+			// A stored UFW/firewalld rule is only effective while its backend is
+			// enabled. Keep the stored-rule signal separate from the runtime
+			// protection signal so an inactive firewall cannot report a protected
+			// panel port.
+			status.PanelPortProtected = state.Enabled && s.ruleExists(ctx, &protectedRule, state)
 		} else if !errors.Is(result.Error, gorm.ErrRecordNotFound) {
 			return nil, result.Error
 		}
-		if !status.PanelPortProtected && status.ManagedPanelRule && state.Name == BackendNone {
-			status.Warning = appendWarning(status.Warning, "面板端口保护规则记录仍在，但当前无法确认系统规则已生效")
+		if !status.PanelPortProtected && status.ManagedPanelRule {
+			switch {
+			case state.Name == BackendNone:
+				status.Warning = appendWarning(status.Warning, "面板端口保护规则记录仍在，但当前无法确认系统规则已生效")
+			case !state.Enabled:
+				status.Warning = appendWarning(status.Warning, "面板端口保护规则已记录，但当前防火墙未运行，规则尚未生效")
+			}
 		}
 	}
 	blocked, err := s.pingBlocked(ctx, state)

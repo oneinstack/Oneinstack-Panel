@@ -301,6 +301,12 @@ func filterConflictingManualConfig(manual, rendered []string) []string {
 			continue
 		}
 		if key, ok := managedDirectiveKey(manual[index]); ok {
+			if key == "rewrite" {
+				// Structured settings own the complete rewrite set. An empty
+				// rendered value must therefore remove stale rewrite lines too.
+				index++
+				continue
+			}
 			if _, conflict := renderedDirectives[key]; conflict {
 				index++
 				continue
@@ -357,7 +363,7 @@ func managedDirectiveKey(line string) (string, bool) {
 		return "", false
 	}
 	switch fields[0] {
-	case "root", "index", "autoindex", "access_log", "error_log", "limit_rate", "limit_rate_after", "try_files", "fastcgi_pass", "fastcgi_index", "include", "fastcgi_param":
+	case "root", "index", "autoindex", "access_log", "error_log", "limit_rate", "limit_rate_after", "try_files", "rewrite", "fastcgi_pass", "fastcgi_index", "include", "fastcgi_param":
 		return fields[0], true
 	case "add_header":
 		if len(fields) > 1 {

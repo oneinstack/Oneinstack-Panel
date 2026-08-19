@@ -30,11 +30,24 @@ var (
 	ErrWebServerUnavailable    = errors.New("supported web server unavailable")
 	ErrWebServerConfigConflict = errors.New("web server configuration revision conflict")
 	ErrWebServerConfigValidate = errors.New("web server configuration validation failed")
+	ErrWebsiteConflict         = errors.New("website conflict")
+	ErrWebsiteExpired          = errors.New("website expired")
+	ErrWebsiteIDRequired       = errors.New("website ID is required")
+	ErrWebsiteParameterInvalid = errors.New("website parameter invalid")
+	ErrWebsiteSettingsValidate = errors.New("website settings validation failed")
 	ErrWebsiteRootInvalid      = errors.New("website root path is invalid")
 	ErrNginxUnavailable        = ErrWebServerUnavailable
 	domainLabelPattern         = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
 	configNamePattern          = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,252}\.conf$`)
 )
+
+func wrapWebsiteParameterError(err error) error {
+	if err == nil || errors.Is(err, ErrWebsiteRootInvalid) ||
+		errors.Is(err, ErrWebsiteSettingsValidate) || errors.Is(err, ErrWebsiteParameterInvalid) {
+		return err
+	}
+	return fmt.Errorf("%w: %v", ErrWebsiteParameterInvalid, err)
+}
 
 func resolveNginxBinary() (string, error) {
 	server, err := DetectWebServer()
@@ -363,7 +376,7 @@ func prepareWebsiteWithTLSAndSettings(
 
 	runtimeSettings, err := renderWebsiteSettings(input, rootDir, settings)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %v", ErrWebsiteSettingsValidate, err)
 	}
 	if runtimeSettings.RootDir != "" {
 		rootDir = runtimeSettings.RootDir

@@ -45,7 +45,7 @@ func (service *Service) PreviewCreate(param *models.Website) (WebsiteRuntimePrev
 		return WebsiteRuntimePreview{}, err
 	}
 	if duplicate > 0 {
-		return WebsiteRuntimePreview{}, fmt.Errorf("网站 %s 已存在", prepared.model.Name)
+		return WebsiteRuntimePreview{}, fmt.Errorf("%w: 网站 %s 已存在", ErrWebsiteConflict, prepared.model.Name)
 	}
 	path, err := service.ConfigFile(&prepared.model)
 	if err != nil {
@@ -102,7 +102,7 @@ func (service *Service) PreviewWebsiteUpdate(param *models.Website) (WebsiteRunt
 		return WebsiteRuntimePreview{}, err
 	}
 	if param == nil || param.ID <= 0 {
-		return WebsiteRuntimePreview{}, errors.New("website ID is required")
+		return WebsiteRuntimePreview{}, ErrWebsiteIDRequired
 	}
 	if err := validateWebsiteRootInput(service.WebRoot, param.RootDir, param.Dir, true); err != nil {
 		return WebsiteRuntimePreview{}, err
@@ -125,7 +125,7 @@ func (service *Service) PreviewWebsiteUpdate(param *models.Website) (WebsiteRunt
 	}
 	prepared, err := prepareWebsiteWithTLSAndSettings(param, service.WebRoot, service.LogRoot, service.challengeRoot(), TLSOptions{}, settings)
 	if err != nil {
-		return WebsiteRuntimePreview{}, err
+		return WebsiteRuntimePreview{}, wrapWebsiteParameterError(err)
 	}
 	prepared.model.ID = existing.ID
 	prepared.model.CreateTime = existing.CreateTime
@@ -141,7 +141,7 @@ func (service *Service) PreviewWebsiteUpdate(param *models.Website) (WebsiteRunt
 	if tlsOptions.Enabled {
 		prepared, err = prepareWebsiteWithTLSAndSettings(param, service.WebRoot, service.LogRoot, service.challengeRoot(), tlsOptions, settings)
 		if err != nil {
-			return WebsiteRuntimePreview{}, err
+			return WebsiteRuntimePreview{}, wrapWebsiteParameterError(err)
 		}
 		prepared.model.ID = existing.ID
 		prepared.model.CreateTime = existing.CreateTime
@@ -155,7 +155,7 @@ func (service *Service) PreviewWebsiteUpdate(param *models.Website) (WebsiteRunt
 		return WebsiteRuntimePreview{}, err
 	}
 	if duplicate > 0 {
-		return WebsiteRuntimePreview{}, fmt.Errorf("网站 %s 已存在", prepared.model.Name)
+		return WebsiteRuntimePreview{}, fmt.Errorf("%w: 网站 %s 已存在", ErrWebsiteConflict, prepared.model.Name)
 	}
 	oldPath, err := service.ConfigFile(&existing)
 	if err != nil {
@@ -279,7 +279,7 @@ func (service *Service) PreviewManagedConfig(ctx context.Context, id int64, cont
 		return WebsiteRuntimePreview{}, fmt.Errorf("%w: configuration changed after it was opened", ErrWebServerConfigConflict)
 	}
 	if err := manager.ValidateContent(ctx, relative, content); err != nil {
-		return WebsiteRuntimePreview{}, err
+		return WebsiteRuntimePreview{}, fmt.Errorf("%w: %v", ErrWebServerConfigValidate, err)
 	}
 	version, err := service.RuntimeRevision(id)
 	if err != nil {
@@ -325,7 +325,7 @@ func (service *Service) PreviewToggle(id int64, enabled bool) (WebsiteRuntimePre
 		}
 		prepared, prepareErr := prepareWebsiteWithTLSAndSettings(site, service.WebRoot, service.LogRoot, service.challengeRoot(), tlsOptions, record)
 		if prepareErr != nil {
-			return WebsiteRuntimePreview{}, prepareErr
+			return WebsiteRuntimePreview{}, wrapWebsiteParameterError(prepareErr)
 		}
 		after = prepared.config
 		if err := service.validateRuntimeCandidate(path, after); err != nil {
@@ -352,7 +352,10 @@ func (service *Service) validateRuntimeCandidate(path, content string) error {
 	if err != nil || relative == "." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
 		return errors.New("网站候选配置不属于当前 Web 服务器配置目录")
 	}
-	return manager.ValidateContent(context.Background(), filepath.ToSlash(relative), content)
+	if err := manager.ValidateContent(context.Background(), filepath.ToSlash(relative), content); err != nil {
+		return fmt.Errorf("%w: %v", ErrWebServerConfigValidate, err)
+	}
+	return nil
 }
 
 func nowForWebsitePreview() (t time.Time) {

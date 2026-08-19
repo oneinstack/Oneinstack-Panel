@@ -69,7 +69,7 @@ func (service *Service) Get(id int64) (*models.Website, error) {
 		return nil, err
 	}
 	if id <= 0 {
-		return nil, errors.New("website ID is required")
+		return nil, ErrWebsiteIDRequired
 	}
 	var site models.Website
 	if err := service.DB.First(&site, "id = ?", id).Error; err != nil {
@@ -138,7 +138,7 @@ func (service *Service) prepareCreate(param *models.Website, allowManagedAbsolut
 		allowManagedAbsolute,
 	)
 	if err != nil {
-		return nil, err
+		return nil, wrapWebsiteParameterError(err)
 	}
 	if prepared.model.Type != "proxy" {
 		if _, err := validateManagedPathWithOptions(service.WebRoot, prepared.model.RootDir, allowMissingManagedRoot); err != nil {
@@ -321,7 +321,7 @@ func (service *Service) add(ctx context.Context, param *models.Website, allowMan
 			return err
 		}
 		if existing > 0 {
-			return fmt.Errorf("网站 %s 已存在", prepared.model.Name)
+			return fmt.Errorf("%w: 网站 %s 已存在", ErrWebsiteConflict, prepared.model.Name)
 		}
 		if err := tx.Create(&prepared.model).Error; err != nil {
 			return err
@@ -366,7 +366,7 @@ func (service *Service) Update(ctx context.Context, param *models.Website) error
 		return err
 	}
 	if param == nil || param.ID <= 0 {
-		return errors.New("website ID is required")
+		return ErrWebsiteIDRequired
 	}
 	if err := validateWebsiteRootInput(service.WebRoot, param.RootDir, param.Dir, true); err != nil {
 		return err
@@ -403,7 +403,7 @@ func (service *Service) Update(ctx context.Context, param *models.Website) error
 		settings,
 	)
 	if err != nil {
-		return err
+		return wrapWebsiteParameterError(err)
 	}
 	prepared.model.ID = existing.ID
 	prepared.model.CreateTime = existing.CreateTime
@@ -426,7 +426,7 @@ func (service *Service) Update(ctx context.Context, param *models.Website) error
 			settings,
 		)
 		if err != nil {
-			return err
+			return wrapWebsiteParameterError(err)
 		}
 		prepared.model.ID = existing.ID
 		prepared.model.CreateTime = existing.CreateTime
@@ -457,7 +457,7 @@ func (service *Service) Update(ctx context.Context, param *models.Website) error
 			return err
 		}
 		if duplicate > 0 {
-			return fmt.Errorf("网站 %s 已存在", prepared.model.Name)
+			return fmt.Errorf("%w: 网站 %s 已存在", ErrWebsiteConflict, prepared.model.Name)
 		}
 		if err := tx.Save(&prepared.model).Error; err != nil {
 			return err
@@ -516,7 +516,7 @@ func (service *Service) DeleteWithOptions(ctx context.Context, id int64, deleteF
 		return err
 	}
 	if id <= 0 {
-		return errors.New("website ID is required")
+		return ErrWebsiteIDRequired
 	}
 	var existing models.Website
 	if err := service.DB.First(&existing, "id = ?", id).Error; err != nil {
