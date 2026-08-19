@@ -47,6 +47,9 @@ func StartArchiveTaskManager() error {
 }
 
 func submitArchiveTask(input archiveTaskInput, requestedBy int64, rootPath string, capacityPolicy filemanager.CapacityPolicy) (*models.FileArchiveTask, error) {
+	if strings.TrimSpace(rootPath) == "" {
+		return nil, fmt.Errorf("%w: file root is empty", filemanager.ErrInvalidPath)
+	}
 	if err := StartArchiveTaskManager(); err != nil {
 		return nil, err
 	}
