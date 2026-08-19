@@ -326,6 +326,47 @@ backup_existing() {
   log "现有安装已备份到 ${backup_dir}"
 }
 
+preflight_existing_database() {
+  [[ "$force" == true ]] || return 0
+  [[ -f "${install_dir}/myadmin.db" ]] || return 0
+
+  local preflight_dir
+  local service_was_active=false
+  preflight_dir="$(mktemp -d "${install_dir}/.migration-preflight.XXXXXX")"
+  chmod 0700 "$preflight_dir"
+
+  if [[ -z "$root_prefix" ]] && systemctl is-active --quiet one.service; then
+    service_was_active=true
+    systemctl stop one.service || {
+      rm -rf -- "$preflight_dir"
+      die "停止现有 Panel 服务失败，已取消数据库迁移预检"
+    }
+  fi
+
+  if [[ -f "${install_dir}/config.yaml" ]]; then
+    cp -p -- "${install_dir}/config.yaml" "${preflight_dir}/config.yaml"
+  fi
+  cp -p -- "${install_dir}/myadmin.db" "${preflight_dir}/myadmin.db"
+  for sidecar in myadmin.db-wal myadmin.db-shm; do
+    if [[ -f "${install_dir}/${sidecar}" ]]; then
+      cp -p -- "${install_dir}/${sidecar}" "${preflight_dir}/${sidecar}"
+    fi
+  done
+
+  if ! ONEINSTACK_BASE_PATH="$preflight_dir" \
+    ONEINSTACK_CONFIG_PATH="${preflight_dir}/config.yaml" \
+    "$binary_source" update preflight >/dev/null; then
+    rm -rf -- "$preflight_dir"
+    if [[ "$service_was_active" == true ]]; then
+      systemctl start one.service || die "迁移预检失败，且旧 Panel 服务恢复启动失败"
+    fi
+    die "数据库迁移预检失败，未替换现有 Panel 文件"
+  fi
+
+  rm -rf -- "$preflight_dir"
+  log "现有数据库迁移预检通过"
+}
+
 write_service_file() {
   local temporary_service="${service_file}.new.$$"
   local temporary_update_service="${update_service_file}.new.$$"
@@ -352,6 +393,10 @@ ExecStartPre=${install_dir_runtime}/one backup recover --unless-restore-active
 ExecStart=${install_dir_runtime}/one server start
 Restart=on-failure
 RestartSec=5s
+# Database migration failures are configuration/data errors. Do not let
+# systemd retry them until StartLimit is exhausted; repair or roll back via
+# the controlled update/backup flow, then start the service again.
+RestartPreventExitStatus=78
 TimeoutStopSec=15s
 KillSignal=SIGTERM
 UMask=0027
@@ -566,6 +611,7 @@ run_install() {
   fi
 
   if [[ "$force" == true ]]; then
+    preflight_existing_database
     backup_existing
   fi
   install_files

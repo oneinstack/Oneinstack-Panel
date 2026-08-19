@@ -84,6 +84,9 @@ func main() {
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Println(err)
+		if errors.Is(err, app.ErrDatabaseMigration) {
+			os.Exit(78)
+		}
 		os.Exit(1)
 	}
 }

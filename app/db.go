@@ -76,7 +76,10 @@ func InitDB(dbPath string) error {
 	// 检查是否存在用户，如果不存在提示创建管理员
 	err = createTables()
 	if err != nil {
-		return fmt.Errorf("migrate database: %w", err)
+		if errors.Is(err, ErrDatabaseMigration) {
+			return fmt.Errorf("migrate database: %w", err)
+		}
+		return fmt.Errorf("%w: migrate database: %v", ErrDatabaseMigration, err)
 	}
 
 	return nil
@@ -276,7 +279,7 @@ func createTables() error {
 	if err := db.AutoMigrate(&models.FileFavorite{}); err != nil {
 		return err
 	}
-	if err := db.AutoMigrate(&models.FileArchiveTask{}); err != nil {
+	if err := migrateFileArchiveTasks(); err != nil {
 		return err
 	}
 	if err := db.AutoMigrate(&models.BastionServer{}, &models.BastionMetricSample{}); err != nil {
