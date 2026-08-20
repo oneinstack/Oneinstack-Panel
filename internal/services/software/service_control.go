@@ -21,9 +21,10 @@ import (
 const maxServiceProbeBytes = 64 * 1024
 
 var (
-	serviceStatePattern   = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
-	serviceNamePattern    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.@-]{0,127}$`)
-	runtimeVersionPattern = regexp.MustCompile(`^[0-9]+(?:\.[0-9]+){1,3}(?:[-+][0-9A-Za-z.-]+)?$`)
+	serviceStatePattern    = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
+	serviceNamePattern     = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.@-]{0,127}$`)
+	runtimeVersionPattern  = regexp.MustCompile(`^[0-9A-Za-z][0-9A-Za-z._:+-]{0,63}$`)
+	softwareVersionPattern = regexp.MustCompile(`^[0-9]+(?:\.[0-9]+){1,3}(?:[-+][0-9A-Za-z.-]+)?$`)
 )
 
 type ComponentServiceDefinition struct {
@@ -290,6 +291,9 @@ func (installer *Installer) inspectService(
 	if err != nil {
 		return ComponentServiceProbe{}, err
 	}
+	if probe.RuntimeVersion == "" && softwareVersionPattern.MatchString(strings.TrimSpace(version)) {
+		probe.RuntimeVersion = strings.TrimSpace(version)
+	}
 	probe.PackageSource = componentPackage.Source
 	probe.AvailableActions = availableServiceActions(componentPackage)
 	probe.CanReload = probe.CanReload && componentPackage.Manifest.Actions.Reload != ""
@@ -321,6 +325,26 @@ func parseComponentServiceProbe(
 ) (ComponentServiceProbe, error) {
 	if len(output) == 0 || len(output) > maxServiceProbeBytes {
 		return ComponentServiceProbe{}, fmt.Errorf("component status output size is invalid")
+	}
+	if legacyState := strings.TrimSpace(string(output)); legacyState == "running" || legacyState == "stopped" {
+		if legacyState == "running" {
+			return ComponentServiceProbe{
+				Component:     definition.Component,
+				ServiceName:   definition.ServiceName,
+				LoadState:     "loaded",
+				ActiveState:   "active",
+				SubState:      "running",
+				UnitFileState: "unknown",
+			}, nil
+		}
+		return ComponentServiceProbe{
+			Component:     definition.Component,
+			ServiceName:   definition.ServiceName,
+			LoadState:     "loaded",
+			ActiveState:   "inactive",
+			SubState:      "dead",
+			UnitFileState: "unknown",
+		}, nil
 	}
 	fields := make(map[string]string, 8)
 	scanner := bufio.NewScanner(bytes.NewReader(output))

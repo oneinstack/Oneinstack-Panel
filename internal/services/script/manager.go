@@ -356,7 +356,7 @@ func (sm *ScriptManager) ExecuteProbe(
 		scriptInfo.timeout(actionName),
 		bounded,
 		nil,
-		lifecycleLogContext{output: bounded},
+		lifecycleLogContext{output: bounded, stderr: io.Discard},
 	); err != nil {
 		return nil, fmt.Errorf("%s action failed: %w", actionName, err)
 	}
@@ -645,6 +645,7 @@ type lifecycleLogContext struct {
 	phase           string
 	step            string
 	output          io.Writer
+	stderr          io.Writer
 }
 
 func (sm *ScriptManager) runActionContext(
@@ -674,6 +675,9 @@ func (sm *ScriptManager) runActionContext(
 	cmd.Dir = workingDir
 	cmd.Stdout = output
 	cmd.Stderr = output
+	if logContext.stderr != nil {
+		cmd.Stderr = logContext.stderr
+	}
 	cmd.Env = os.Environ()
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {

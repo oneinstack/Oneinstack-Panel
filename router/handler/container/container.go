@@ -572,7 +572,25 @@ func BatchAction(c *gin.Context) {
 			recordAction(c, "container.batch."+strings.ToLower(request.Action), http.StatusInternalServerError, err)
 		} else {
 			item["success"] = true
-			recordAction(c, "container.batch."+strings.ToLower(request.Action), http.StatusOK, nil)
+			if state, failed, err := observeContainerActionState(ctx, c, id, request.Action); err != nil {
+				item["success"] = false
+				item["error"] = containerBatchError(c, err)
+				item["errorCode"] = core.ErrInternalError
+				recordAction(c, "container.batch."+strings.ToLower(request.Action), http.StatusInternalServerError, err)
+			} else if state != nil {
+				for key, value := range state {
+					item[key] = value
+				}
+				if failed {
+					item["success"] = false
+					item["error"] = state["stateMessage"]
+					item["errorCode"] = core.ErrOperationFailed
+					recordAction(c, "container.batch."+strings.ToLower(request.Action), http.StatusConflict, errors.New(state["stateMessage"].(string)))
+				}
+			}
+			if item["success"] == true {
+				recordAction(c, "container.batch."+strings.ToLower(request.Action), http.StatusOK, nil)
+			}
 		}
 		items = append(items, item)
 	}
@@ -600,8 +618,54 @@ func Action(c *gin.Context) {
 		operationError(c, err)
 		return
 	}
-	recordAction(c, "container."+strings.ToLower(request.Action), http.StatusOK, nil)
-	core.HandleSuccess(c, gin.H{"id": c.Param("id"), "action": request.Action})
+	state, failed, err := observeContainerActionState(ctx, c, c.Param("id"), request.Action)
+	if err != nil {
+		recordAction(c, "container."+strings.ToLower(request.Action), http.StatusInternalServerError, err)
+		operationError(c, err)
+		return
+	}
+	if failed {
+		recordAction(c, "container."+strings.ToLower(request.Action), http.StatusConflict, errors.New(state["stateMessage"].(string)))
+	} else {
+		recordAction(c, "container."+strings.ToLower(request.Action), http.StatusOK, nil)
+	}
+	result := gin.H{"id": c.Param("id"), "action": request.Action}
+	for key, value := range state {
+		result[key] = value
+	}
+	core.HandleSuccess(c, result)
+}
+
+func observeContainerActionState(ctx context.Context, c *gin.Context, id, action string) (gin.H, bool, error) {
+	action = strings.ToLower(strings.TrimSpace(action))
+	if action != "start" && action != "restart" {
+		return nil, false, nil
+	}
+	observed, err := service.ObserveContainerAction(ctx, id)
+	if err != nil {
+		return nil, false, err
+	}
+	failed := !observed.Running && (observed.Status == "exited" || observed.Status == "dead" || observed.Status == "created")
+	result := gin.H{
+		"status":        observed.Status,
+		"running":       observed.Running,
+		"paused":        observed.Paused,
+		"exitCode":      observed.ExitCode,
+		"stateObserved": true,
+		"stateFailed":   failed,
+	}
+	if failed {
+		result["stateCode"] = "CONTAINER_STARTUP_EXITED"
+		result["stateMessage"] = containerStartupFailureMessage(c)
+	}
+	return result, failed, nil
+}
+
+func containerStartupFailureMessage(c *gin.Context) string {
+	if i18n.Canonical(c.GetString("locale")) == i18n.LocaleEnUS {
+		return "The container exited after startup; check the container logs and startup configuration."
+	}
+	return "容器启动后进程已退出，请检查容器日志和启动配置。"
 }
 
 func Logs(c *gin.Context) {

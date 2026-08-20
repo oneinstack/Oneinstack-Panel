@@ -36,6 +36,15 @@ var (
 	ErrDockerCommandTimeout   = errors.New("docker command timed out")
 )
 
+const (
+	// Docker start 返回成功只代表启动请求已提交，容器主进程仍可能在随后
+	// 很短时间内因为入口配置错误退出。保留一个短暂的稳定观察窗口，避免
+	// 面板在进程刚拉起时就把中间状态当作最终状态。
+	containerActionPollInterval    = 500 * time.Millisecond
+	containerActionObserveTimeout  = 30 * time.Second
+	containerActionStableRunWindow = 3 * time.Second
+)
+
 // Service is a deliberately small, fixed-command Docker adapter. It never
 // accepts a shell command from an HTTP request; every operation is selected
 // from the methods below and arguments are validated before execution.
@@ -59,6 +68,13 @@ type ActionRequest struct {
 	Action  string `json:"action" binding:"required"`
 	Confirm bool   `json:"confirm"`
 	Force   bool   `json:"force"`
+}
+
+type ContainerActionState struct {
+	Status   string
+	Running  bool
+	Paused   bool
+	ExitCode int
 }
 
 type ImagePullRequest struct {
@@ -490,6 +506,73 @@ func (s *Service) ContainerAction(ctx context.Context, id, action string, force,
 	}
 	_, err = s.run(ctx, args...)
 	return err
+}
+
+// ObserveContainerAction waits for the real Docker state after start/restart.
+// The action command itself can finish before the container's main process has
+// finished initializing, so observing only the command exit status can leave
+// callers displaying a stale running state.
+func (s *Service) ObserveContainerAction(ctx context.Context, id string) (ContainerActionState, error) {
+	id, err := validateReference(id)
+	if err != nil {
+		return ContainerActionState{}, err
+	}
+
+	observeCtx, cancel := context.WithTimeout(ctx, containerActionObserveTimeout)
+	defer cancel()
+	ticker := time.NewTicker(containerActionPollInterval)
+	defer ticker.Stop()
+
+	var last ContainerActionState
+	var runningSince time.Time
+	for {
+		state, inspectErr := s.inspectContainerState(observeCtx, id)
+		if inspectErr == nil {
+			last = state
+			now := time.Now()
+			if state.Running {
+				if runningSince.IsZero() {
+					runningSince = now
+				}
+				if now.Sub(runningSince) >= containerActionStableRunWindow {
+					return state, nil
+				}
+			} else {
+				runningSince = time.Time{}
+				if state.Status == "exited" || state.Status == "dead" {
+					return state, nil
+				}
+			}
+		}
+
+		select {
+		case <-ctx.Done():
+			return ContainerActionState{}, ctx.Err()
+		case <-observeCtx.Done():
+			if last.Status == "" {
+				return ContainerActionState{}, fmt.Errorf("容器启动状态探测失败: %w", observeCtx.Err())
+			}
+			return last, nil
+		case <-ticker.C:
+		}
+	}
+}
+
+func (s *Service) inspectContainerState(ctx context.Context, id string) (ContainerActionState, error) {
+	out, err := s.run(ctx, "inspect", "--format", "{{json .State}}", id)
+	if err != nil {
+		return ContainerActionState{}, err
+	}
+	var state struct {
+		Status   string `json:"Status"`
+		Running  bool   `json:"Running"`
+		Paused   bool   `json:"Paused"`
+		ExitCode int    `json:"ExitCode"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &state); err != nil {
+		return ContainerActionState{}, fmt.Errorf("容器状态响应无效: %w", err)
+	}
+	return ContainerActionState{Status: strings.ToLower(strings.TrimSpace(state.Status)), Running: state.Running, Paused: state.Paused, ExitCode: state.ExitCode}, nil
 }
 
 func (s *Service) Logs(ctx context.Context, id string, options LogOptions) (string, error) {
