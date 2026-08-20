@@ -34,6 +34,7 @@ case "${software_version}" in
 esac
 
 die() { echo "ERROR: $*" >&2; exit 1; }
+require_command() { command -v "$1" >/dev/null 2>&1 || die "Required command is missing: $1"; }
 emit_progress() {
   local percent="$1" code="$2" message="$3" fd="${ONEINSTACK_PROGRESS_FD:-}"
   [[ "${fd}" =~ ^[0-9]+$ ]] || return 0
