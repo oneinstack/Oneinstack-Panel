@@ -225,7 +225,9 @@ func UpdatePanelNetwork(c *gin.Context) {
 		core.HandleError(c, core.WrapError(err, core.ErrInternalError, "保存面板访问配置失败"))
 		return
 	}
-	if err := configsnapshot.Default().Mark(snapshot.ID, "succeeded", ""); err != nil {
+	if err := configsnapshot.Default().MarkWithAfter(snapshot.ID, settings, "succeeded", ""); err != nil {
+		_ = configsnapshot.Default().Mark(snapshot.ID, "failed", err.Error())
+		configsnapshotHandler.RecordAudit(c, snapshot, "failed", "保存面板访问配置快照最终状态失败")
 		core.HandleError(c, core.WrapError(err, core.ErrInternalError, "更新面板访问配置快照状态失败"))
 		return
 	}

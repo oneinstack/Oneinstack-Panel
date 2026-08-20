@@ -9,11 +9,13 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"oneinstack/app"
 	"oneinstack/internal/models"
+	websiteService "oneinstack/internal/services/website"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -63,10 +65,24 @@ type Document struct {
 }
 
 type Page struct {
-	Items    []models.ConfigurationSnapshot `json:"items"`
-	Total    int64                          `json:"total"`
-	Page     int                            `json:"page"`
-	PageSize int                            `json:"pageSize"`
+	Items    []ListItem `json:"items"`
+	Total    int64      `json:"total"`
+	Page     int        `json:"page"`
+	PageSize int        `json:"pageSize"`
+}
+
+type ListItem struct {
+	models.ConfigurationSnapshot
+	ResourceName        string `json:"resourceName,omitempty"`
+	ResourceDisplayName string `json:"resourceDisplayName"`
+	ConfigPath          string `json:"configPath,omitempty"`
+	ResourceMissing     bool   `json:"resourceMissing,omitempty"`
+	OperationLabel      string `json:"operationLabel"`
+	StatusLabel         string `json:"statusLabel"`
+	Version             string `json:"version"`
+	Description         string `json:"description"`
+	SizeBytes           int64  `json:"sizeBytes"`
+	ArtifactSHA256      string `json:"artifactSha256"`
 }
 
 func New(database *gorm.DB) *Service { return &Service{db: database} }
@@ -93,6 +109,15 @@ func (s *Service) Create(input CreateInput) (*models.ConfigurationSnapshot, erro
 	diff, err := buildDiff(before, after)
 	if err != nil {
 		return nil, err
+	}
+	if strings.TrimSpace(input.BeforeRevision) == "" {
+		input.BeforeRevision = revision(before)
+	}
+	if strings.TrimSpace(input.AfterRevision) == "" {
+		input.AfterRevision = revision(after)
+	}
+	if strings.TrimSpace(input.Version) == "" {
+		input.Version = revisionLabel(input.AfterRevision)
 	}
 	now := time.Now().UTC()
 	snapshot := &models.ConfigurationSnapshot{
@@ -179,7 +204,7 @@ func (s *Service) Get(id string, userID int64) (Document, error) {
 	return decodeDocument(row)
 }
 
-func (s *Service) List(resourceType, resourceID, status string, page, pageSize int, userID int64) (Page, error) {
+func (s *Service) List(resourceType, resourceID, status, locale string, page, pageSize int, userID int64) (Page, error) {
 	if page < 1 {
 		page = 1
 	}
@@ -210,7 +235,74 @@ func (s *Service) List(resourceType, resourceID, status string, page, pageSize i
 	if err := q.Order("created_at DESC").Limit(pageSize).Offset((page - 1) * pageSize).Find(&rows).Error; err != nil {
 		return Page{}, err
 	}
-	return Page{Items: rows, Total: total, Page: page, PageSize: pageSize}, nil
+	items := make([]ListItem, 0, len(rows))
+	var sites map[string]models.Website
+	websiteIDs := make([]int64, 0)
+	for _, row := range rows {
+		if row.ResourceType == models.ConfigurationSnapshotResourceWebsite {
+			if id, err := strconv.ParseInt(row.ResourceID, 10, 64); err == nil && id > 0 {
+				websiteIDs = append(websiteIDs, id)
+			}
+		}
+	}
+	if len(websiteIDs) > 0 {
+		sites = make(map[string]models.Website, len(websiteIDs))
+		var records []models.Website
+		if err := s.db.Where("id IN ?", websiteIDs).Find(&records).Error; err != nil {
+			return Page{}, err
+		}
+		for _, site := range records {
+			sites[strconv.FormatInt(site.ID, 10)] = site
+		}
+	}
+	var webService *websiteService.Service
+	if len(sites) > 0 {
+		webService, _ = websiteService.DefaultService()
+	}
+	for _, row := range rows {
+		item := ListItem{
+			ConfigurationSnapshot: row,
+			OperationLabel:        operationLabel(locale, row.Operation),
+			StatusLabel:           statusLabel(locale, row.Status),
+			Version:               row.Version,
+			Description:           row.Description,
+			SizeBytes:             row.SizeBytes,
+			ArtifactSHA256:        row.ArtifactSHA256,
+		}
+		if item.BeforeRevision == "" {
+			item.BeforeRevision = revision([]byte(row.BeforeJSON))
+		}
+		if item.AfterRevision == "" {
+			item.AfterRevision = revision([]byte(row.AfterJSON))
+		}
+		if strings.TrimSpace(item.Version) == "" {
+			item.Version = revisionLabel(item.AfterRevision)
+		}
+		item.ResourceDisplayName = resourceFallback(row.ResourceType, row.ResourceID)
+		if row.ResourceType == models.ConfigurationSnapshotResourceWebsite {
+			if site, ok := sites[row.ResourceID]; ok {
+				item.ResourceName = firstNonEmpty(site.Domain, site.Name)
+				item.ResourceDisplayName = firstNonEmpty(site.Name, site.Domain, "网站 #"+row.ResourceID)
+				if strings.TrimSpace(item.Description) == "" {
+					item.Description = strings.TrimSpace(site.Remark)
+				}
+				if webService != nil {
+					item.ConfigPath, _ = webService.ConfigFile(&site)
+				}
+			} else {
+				item.ResourceMissing = true
+			}
+		} else if row.ResourceType == models.ConfigurationSnapshotResourceNginx {
+			item.ConfigPath = row.ResourceID
+			item.ResourceName = row.ResourceID
+			item.ResourceDisplayName = row.ResourceID
+		}
+		if strings.TrimSpace(item.Description) == "" {
+			item.Description = item.ResourceDisplayName
+		}
+		items = append(items, item)
+	}
+	return Page{Items: items, Total: total, Page: page, PageSize: pageSize}, nil
 }
 
 func (s *Service) Delete(id string, userID int64) error {
@@ -232,6 +324,84 @@ func (s *Service) Delete(id string, userID int64) error {
 		_ = os.Remove(row.ArtifactPath)
 	}
 	return s.db.Delete(&row).Error
+}
+
+func revision(value []byte) string {
+	digest := sha256.Sum256(value)
+	return "sha256:" + hex.EncodeToString(digest[:])
+}
+
+func revisionLabel(value string) string {
+	value = strings.TrimSpace(value)
+	if strings.HasPrefix(value, "sha256:") {
+		value = strings.TrimPrefix(value, "sha256:")
+	}
+	if len(value) > 12 {
+		value = value[:12]
+	}
+	if value == "" {
+		return ""
+	}
+	return "rev-" + value
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func resourceFallback(resourceType, resourceID string) string {
+	labels := map[string]string{
+		models.ConfigurationSnapshotResourceWebsite:     "网站",
+		models.ConfigurationSnapshotResourceNginx:       "Nginx 配置",
+		models.ConfigurationSnapshotResourceFirewall:    "防火墙",
+		models.ConfigurationSnapshotResourcePanelAccess: "面板访问配置",
+	}
+	label := firstNonEmpty(labels[resourceType], resourceType)
+	return label + " #" + strings.TrimSpace(resourceID)
+}
+
+func operationLabel(locale, operation string) string {
+	labels := map[string][2]string{
+		"create":          {"创建配置快照", "Create configuration snapshot"},
+		"update":          {"更新配置", "Update configuration"},
+		"settings.update": {"更新网站设置", "Update website settings"},
+		"config.update":   {"更新网站配置", "Update website configuration"},
+		"restore":         {"回滚配置", "Restore configuration"},
+		"delete":          {"删除配置", "Delete configuration"},
+		"toggle":          {"切换网站状态", "Toggle website status"},
+	}
+	value, ok := labels[strings.TrimSpace(operation)]
+	if !ok {
+		value = [2]string{"配置变更", "Configuration change"}
+	}
+	if strings.EqualFold(strings.TrimSpace(locale), "en-us") || strings.EqualFold(strings.TrimSpace(locale), "en") {
+		return value[1]
+	}
+	return value[0]
+}
+
+func statusLabel(locale, status string) string {
+	labels := map[string][2]string{
+		models.ConfigurationSnapshotStatusPending:        {"等待执行", "Pending"},
+		models.ConfigurationSnapshotStatusApplying:       {"执行中", "Applying"},
+		models.ConfigurationSnapshotStatusSucceeded:      {"成功", "Succeeded"},
+		models.ConfigurationSnapshotStatusFailed:         {"失败", "Failed"},
+		models.ConfigurationSnapshotStatusRolledBack:     {"已回滚", "Rolled back"},
+		models.ConfigurationSnapshotStatusRollbackFailed: {"回滚失败", "Rollback failed"},
+	}
+	value, ok := labels[strings.TrimSpace(status)]
+	if !ok {
+		value = [2]string{"未知", "Unknown"}
+	}
+	if strings.EqualFold(strings.TrimSpace(locale), "en-us") || strings.EqualFold(strings.TrimSpace(locale), "en") {
+		return value[1]
+	}
+	return value[0]
 }
 
 func Equal(a, b any) bool {

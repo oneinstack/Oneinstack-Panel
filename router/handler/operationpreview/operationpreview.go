@@ -773,7 +773,10 @@ func executeOperation(ctx context.Context, operation string, payload json.RawMes
 			recordWebsiteOperationAudit(snapshot.ID, "failed", err.Error(), userID, requestIP)
 			return nil, err
 		}
-		_ = configsnapshot.Default().MarkWithAfter(snapshot.ID, value, "succeeded", "")
+		if err := configsnapshot.Default().MarkWithAfter(snapshot.ID, value, "succeeded", ""); err != nil {
+			_ = configsnapshot.Default().Mark(snapshot.ID, "failed", err.Error())
+			return nil, err
+		}
 		recordWebsiteOperationAudit(snapshot.ID, "succeeded", "网站基础配置已发布", userID, requestIP)
 		return gin.H{"operation": operation, "resourceId": value.ID, "status": "succeeded", "snapshotId": snapshot.ID}, nil
 	case "website.settings.update":
@@ -833,7 +836,10 @@ func executeOperation(ctx context.Context, operation string, payload json.RawMes
 			recordWebsiteOperationAudit(snapshot.ID, "failed", err.Error(), userID, requestIP)
 			return nil, err
 		}
-		_ = configsnapshot.Default().MarkWithAfter(snapshot.ID, result, "succeeded", "")
+		if err := configsnapshot.Default().MarkWithAfter(snapshot.ID, result, "succeeded", ""); err != nil {
+			_ = configsnapshot.Default().Mark(snapshot.ID, "failed", err.Error())
+			return nil, err
+		}
 		recordWebsiteOperationAudit(snapshot.ID, "succeeded", "网站受管配置已发布", userID, requestIP)
 		return gin.H{"operation": operation, "resourceId": id, "status": "succeeded", "snapshotId": snapshot.ID, "config": result}, nil
 	case "website.webserver.config.update":
@@ -870,7 +876,10 @@ func executeOperation(ctx context.Context, operation string, payload json.RawMes
 			recordWebsiteOperationAudit(snapshot.ID, "failed", err.Error(), userID, requestIP)
 			return nil, err
 		}
-		_ = configsnapshot.Default().MarkWithAfter(snapshot.ID, site, "succeeded", "")
+		if err := configsnapshot.Default().MarkWithAfter(snapshot.ID, site, "succeeded", ""); err != nil {
+			_ = configsnapshot.Default().Mark(snapshot.ID, "failed", err.Error())
+			return nil, err
+		}
 		recordWebsiteOperationAudit(snapshot.ID, "succeeded", "网站状态已发布", userID, requestIP)
 		return gin.H{"operation": operation, "resourceId": site.ID, "status": "succeeded", "snapshotId": snapshot.ID}, nil
 	case "software.install":
@@ -1147,7 +1156,10 @@ func executeWebServerConfigUpdate(
 		recordWebServerConfigAudit(snapshot.ID, request.Path, "failed", err.Error(), userID, requestIP)
 		return nil, err
 	}
-	_ = snapshotService.MarkWithAfter(snapshot.ID, result, "succeeded", "")
+	if err := snapshotService.MarkWithAfter(snapshot.ID, result, "succeeded", ""); err != nil {
+		_ = snapshotService.Mark(snapshot.ID, "failed", err.Error())
+		return nil, err
+	}
 	recordWebServerConfigAudit(snapshot.ID, request.Path, "succeeded", "Nginx 受管配置已发布", userID, requestIP)
 	return gin.H{
 		"operation":  operation,

@@ -31,7 +31,7 @@ func List(c *gin.Context) {
 		core.HandleError(c, core.NewFieldError(core.ErrInvalidParameter, "pageSize 必须是 1 到 100 之间的整数", "pageSize"))
 		return
 	}
-	result, err := configsnapshot.Default().List(c.Query("resourceType"), c.Query("resourceId"), c.Query("status"), page, pageSize, userID)
+	result, err := configsnapshot.Default().List(c.Query("resourceType"), c.Query("resourceId"), c.Query("status"), middleware.RequestLocale(c), page, pageSize, userID)
 	if err != nil {
 		core.HandleError(c, core.WrapError(err, core.ErrInternalError, "读取配置快照失败"))
 		return

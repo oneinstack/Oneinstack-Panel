@@ -79,7 +79,9 @@ func UpdateWebsiteSettings(c *gin.Context) {
 		core.HandleError(c, core.WrapError(err, core.ErrConfigError, "发布网站设置失败"))
 		return
 	}
-	if err := configsnapshot.Default().Mark(snapshot.ID, "succeeded", ""); err != nil {
+	if err := configsnapshot.Default().MarkWithAfter(snapshot.ID, document.Settings, "succeeded", ""); err != nil {
+		_ = configsnapshot.Default().Mark(snapshot.ID, "failed", err.Error())
+		configsnapshotHandler.RecordAudit(c, snapshot, "failed", "保存网站配置快照最终状态失败")
 		core.HandleError(c, core.WrapError(err, core.ErrInternalError, "更新网站配置快照状态失败"))
 		return
 	}

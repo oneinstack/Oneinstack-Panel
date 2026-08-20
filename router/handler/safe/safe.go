@@ -62,9 +62,9 @@ func AddFirewallRule(c *gin.Context) {
 		handleServiceError(c, err)
 		return
 	}
-	after, _ := service.ExportRules("")
-	_ = configsnapshot.Default().MarkWithAfter(snapshot.ID, after, "succeeded", "")
-	configsnapshotHandler.RecordAudit(c, snapshot, "succeeded", "防火墙规则已新增")
+	if !completeFirewallSnapshot(c, service, snapshot, "防火墙规则已新增") {
+		return
+	}
 	core.HandleSuccess(c, param)
 }
 
@@ -86,9 +86,9 @@ func UpdateFirewallRule(c *gin.Context) {
 		handleServiceError(c, err)
 		return
 	}
-	after, _ := service.ExportRules("")
-	_ = configsnapshot.Default().MarkWithAfter(snapshot.ID, after, "succeeded", "")
-	configsnapshotHandler.RecordAudit(c, snapshot, "succeeded", "防火墙规则已更新")
+	if !completeFirewallSnapshot(c, service, snapshot, "防火墙规则已更新") {
+		return
+	}
 	core.HandleSuccess(c, param)
 }
 
@@ -112,9 +112,9 @@ func DeleteFirewallRule(c *gin.Context) {
 		handleServiceError(c, err)
 		return
 	}
-	after, _ := service.ExportRules("")
-	_ = configsnapshot.Default().MarkWithAfter(snapshot.ID, after, "succeeded", "")
-	configsnapshotHandler.RecordAudit(c, snapshot, "succeeded", "防火墙规则已删除")
+	if !completeFirewallSnapshot(c, service, snapshot, "防火墙规则已删除") {
+		return
+	}
 	core.HandleSuccess(c, nil)
 }
 
@@ -136,9 +136,9 @@ func SetFirewallRuleState(c *gin.Context) {
 		handleServiceError(c, err)
 		return
 	}
-	after, _ := service.ExportRules("")
-	_ = configsnapshot.Default().MarkWithAfter(snapshot.ID, after, "succeeded", "")
-	configsnapshotHandler.RecordAudit(c, snapshot, "succeeded", "防火墙规则状态已更新")
+	if !completeFirewallSnapshot(c, service, snapshot, "防火墙规则状态已更新") {
+		return
+	}
 	core.HandleSuccess(c, nil)
 }
 
@@ -161,9 +161,9 @@ func BatchFirewallRules(c *gin.Context) {
 		handleServiceError(c, err)
 		return
 	}
-	after, _ := service.ExportRules("")
-	_ = configsnapshot.Default().MarkWithAfter(snapshot.ID, after, "succeeded", "")
-	configsnapshotHandler.RecordAudit(c, snapshot, "succeeded", "防火墙规则批量操作已完成")
+	if !completeFirewallSnapshot(c, service, snapshot, "防火墙规则批量操作已完成") {
+		return
+	}
 	core.HandleSuccess(c, gin.H{"completed": completed})
 }
 
@@ -470,4 +470,22 @@ func beginFirewallSnapshot(c *gin.Context, service *safeservice.Service, operati
 		ResourceType: "firewall", ResourceID: "host", Operation: operation,
 		Before: before, After: before, RequestedBy: userID,
 	})
+}
+
+func completeFirewallSnapshot(c *gin.Context, service *safeservice.Service, snapshot *models.ConfigurationSnapshot, message string) bool {
+	after, err := service.ExportRules("")
+	if err != nil {
+		_ = configsnapshot.Default().Mark(snapshot.ID, "failed", err.Error())
+		configsnapshotHandler.RecordAudit(c, snapshot, "failed", "读取执行后的防火墙规则失败")
+		core.HandleError(c, core.WrapError(err, core.ErrInternalError, "读取执行后的防火墙规则失败"))
+		return false
+	}
+	if err := configsnapshot.Default().MarkWithAfter(snapshot.ID, after, "succeeded", ""); err != nil {
+		_ = configsnapshot.Default().Mark(snapshot.ID, "failed", err.Error())
+		configsnapshotHandler.RecordAudit(c, snapshot, "failed", "保存防火墙快照最终状态失败")
+		core.HandleError(c, core.WrapError(err, core.ErrInternalError, "保存防火墙快照最终状态失败"))
+		return false
+	}
+	configsnapshotHandler.RecordAudit(c, snapshot, "succeeded", message)
+	return true
 }
