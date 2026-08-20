@@ -9,6 +9,7 @@ import (
 	"log"
 	"oneinstack/app"
 	"oneinstack/internal/buildinfo"
+	approvalservice "oneinstack/internal/services/approval"
 	"oneinstack/internal/services/audit"
 	bastionservice "oneinstack/internal/services/bastion"
 	"oneinstack/internal/services/certificate"
@@ -470,6 +471,18 @@ func startServer() error {
 			}
 		}()
 	}
+	approvalExpiryManager, err := approvalservice.NewExpiryManager(app.DB(), time.Minute)
+	if err != nil {
+		return fmt.Errorf("initialize approval expiry manager: %w", err)
+	}
+	approvalExpiryManager.Start()
+	defer func() {
+		stopContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if stopErr := approvalExpiryManager.Stop(stopContext); stopErr != nil {
+			log.Printf("stop approval expiry manager: %v", stopErr)
+		}
+	}()
 
 	certificateManager, err := websiteHandler.DefaultCertificateManager()
 	if err != nil {

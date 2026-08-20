@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"strconv"
+	"strings"
+	"time"
 
 	"oneinstack/app"
 	"oneinstack/core"
@@ -22,16 +24,15 @@ import (
 func List(c *gin.Context) {
 	userID, _ := middleware.AuthenticatedUserID(c)
 	access, _ := middleware.UserAccess(c)
-	result, err := approvalservice.NewService(app.DB()).List(approvalservice.ListOptions{
-		Page:       positiveQueryInt(c, "page", 1),
-		PageSize:   positiveQueryInt(c, "pageSize", 20),
-		Status:     c.Query("status"),
-		Module:     c.Query("module"),
-		Mine:       c.Query("mine") == "true",
-		Keyword:    c.Query("keyword"),
-		UserID:     userID,
-		IncludeAll: access != nil && (access.IsSuperAdmin || access.HasPermission(accessservice.PermissionApprovalRead)),
-	})
+	options, err := parseListOptions(c)
+	if err != nil {
+		core.HandleError(c, core.NewErrorWithDetail(core.ErrInvalidParameter, "审批列表筛选条件无效", err.Error()))
+		return
+	}
+	options.UserID = userID
+	options.IncludeAll = access != nil && (access.IsSuperAdmin || access.HasPermission(accessservice.PermissionApprovalRead))
+	options.Locale = middleware.RequestLocale(c)
+	result, err := approvalservice.NewService(app.DB()).List(options)
 	if err != nil {
 		core.HandleError(c, core.WrapError(err, core.ErrInternalError, "读取审批单失败"))
 		return
@@ -49,23 +50,38 @@ func Get(c *gin.Context) {
 		core.HandleError(c, core.NewError(core.ErrForbidden, "无权查看该审批单"))
 		return
 	}
+	reviewedAt := request.ApprovedAt
+	if reviewedAt == nil {
+		reviewedAt = request.RejectedAt
+	}
+	effectiveStatus := approvalservice.EffectiveStatus(request, time.Now().UTC())
 	response := gin.H{
 		"id":              request.ID,
 		"module":          request.Module,
+		"moduleName":      approvalservice.LocalizedApprovalModuleName(middleware.RequestLocale(c), request.Module, request.Action),
 		"action":          request.Action,
+		"actionName":      approvalservice.LocalizedActionName(middleware.RequestLocale(c), request.Action),
 		"resourceId":      request.ResourceID,
-		"resourceName":    request.ResourceName,
+		"resourceName":    approvalservice.LocalizedApprovalResourceName(middleware.RequestLocale(c), request),
 		"riskLevel":       request.RiskLevel,
-		"status":          request.Status,
+		"riskLevelName":   approvalservice.LocalizedRiskLevelName(middleware.RequestLocale(c), request.RiskLevel),
+		"status":          effectiveStatus,
+		"statusName":      approvalservice.LocalizedStatusName(middleware.RequestLocale(c), effectiveStatus),
 		"reason":          request.Reason,
 		"requestedBy":     request.RequestedBy,
 		"requestedByName": request.RequestedByName,
 		"approvedBy":      request.ApprovedBy,
 		"approvedByName":  request.ApprovedByName,
+		"approvedAt":      request.ApprovedAt,
+		"rejectedBy":      request.RejectedBy,
+		"rejectedByName":  request.RejectedByName,
+		"rejectedAt":      request.RejectedAt,
 		"reviewComment":   request.ReviewComment,
 		"boundTaskType":   request.BoundTaskType,
 		"boundTaskId":     request.BoundTaskID,
 		"createdAt":       request.CreatedAt,
+		"appliedAt":       request.CreatedAt,
+		"reviewedAt":      reviewedAt,
 		"updatedAt":       request.UpdatedAt,
 		"expiresAt":       request.ExpiresAt,
 	}
@@ -223,10 +239,74 @@ func executeApprovedRequest(c *gin.Context, request *models.ApprovalRequest) err
 	}
 }
 
-func positiveQueryInt(c *gin.Context, name string, fallback int) int {
-	value, err := strconv.Atoi(c.DefaultQuery(name, strconv.Itoa(fallback)))
-	if err != nil || value <= 0 {
-		return fallback
+func parseListOptions(c *gin.Context) (approvalservice.ListOptions, error) {
+	options := approvalservice.ListOptions{
+		Page:     1,
+		PageSize: 20,
+		Status:   strings.ToLower(strings.TrimSpace(c.Query("status"))),
+		Module:   strings.ToLower(strings.TrimSpace(c.Query("module"))),
+		Action:   strings.TrimSpace(c.Query("action")),
+		Keyword:  strings.TrimSpace(c.Query("keyword")),
 	}
-	return value
+	if value := strings.TrimSpace(c.Query("page")); value != "" {
+		page, err := strconv.Atoi(value)
+		if err != nil || page < 1 {
+			return options, errors.New("page 必须是正整数")
+		}
+		options.Page = page
+	}
+	if value := strings.TrimSpace(c.Query("pageSize")); value != "" {
+		pageSize, err := strconv.Atoi(value)
+		if err != nil || pageSize < 1 || pageSize > 100 {
+			return options, errors.New("pageSize 必须在 1 到 100 之间")
+		}
+		options.PageSize = pageSize
+	}
+	if value := strings.TrimSpace(c.Query("mine")); value != "" {
+		mine, err := strconv.ParseBool(value)
+		if err != nil {
+			return options, errors.New("mine 必须是 true 或 false")
+		}
+		options.Mine = mine
+	}
+	if len(options.Keyword) > 100 {
+		return options, errors.New("keyword 最长为 100 个字符")
+	}
+	if options.Status != "" && !approvalStatusValues[options.Status] {
+		return options, errors.New("status 不是支持的审批状态")
+	}
+	if options.Module != "" && !approvalModuleValues[options.Module] {
+		return options, errors.New("module 不是支持的审批模块")
+	}
+	if options.Action != "" && len(options.Action) > 96 {
+		return options, errors.New("action 最长为 96 个字符")
+	}
+	for name, target := range map[string]**time.Time{
+		"createdFrom": &options.CreatedFrom,
+		"createdTo":   &options.CreatedTo,
+	} {
+		value := strings.TrimSpace(c.Query(name))
+		if value == "" {
+			continue
+		}
+		parsed, err := time.Parse(time.RFC3339, value)
+		if err != nil {
+			return options, errors.New(name + " 必须是 RFC3339 时间")
+		}
+		*target = &parsed
+	}
+	if options.CreatedFrom != nil && options.CreatedTo != nil && options.CreatedTo.Before(*options.CreatedFrom) {
+		return options, errors.New("createdTo 不能早于 createdFrom")
+	}
+	return options, nil
+}
+
+var approvalStatusValues = map[string]bool{
+	models.ApprovalStatusPending: true, models.ApprovalStatusApproved: true, models.ApprovalStatusRejected: true,
+	models.ApprovalStatusExpired: true, models.ApprovalStatusExecuting: true, models.ApprovalStatusCompleted: true,
+	models.ApprovalStatusFailed: true, models.ApprovalStatusCanceled: true,
+}
+
+var approvalModuleValues = map[string]bool{
+	"website": true, "database": true, "certificate": true,
 }

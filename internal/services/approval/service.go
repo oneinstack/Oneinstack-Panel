@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"oneinstack/internal/i18n"
 	"oneinstack/internal/models"
 
 	"github.com/google/uuid"
@@ -38,21 +39,40 @@ type CreateInput struct {
 }
 
 type ListOptions struct {
-	Page       int
-	PageSize   int
-	Status     string
-	Module     string
-	Mine       bool
-	Keyword    string
-	UserID     int64
-	IncludeAll bool
+	Page        int
+	PageSize    int
+	Status      string
+	Module      string
+	Action      string
+	Mine        bool
+	Keyword     string
+	CreatedFrom *time.Time
+	CreatedTo   *time.Time
+	UserID      int64
+	IncludeAll  bool
+	Locale      string
 }
 
 type ListResult struct {
-	Items    []models.ApprovalRequest `json:"items"`
-	Total    int64                    `json:"total"`
-	Page     int                      `json:"page"`
-	PageSize int                      `json:"pageSize"`
+	Items    []ApprovalListItem `json:"items"`
+	Total    int64              `json:"total"`
+	Page     int                `json:"page"`
+	PageSize int                `json:"pageSize"`
+}
+
+type ApprovalListItem struct {
+	ID            string     `json:"id"`
+	ResourceName  string     `json:"resourceName"`
+	ActionName    string     `json:"actionName"`
+	ModuleName    string     `json:"moduleName"`
+	RiskLevelName string     `json:"riskLevelName"`
+	Status        string     `json:"status"`
+	StatusName    string     `json:"statusName"`
+	ApplicantName string     `json:"applicantName"`
+	AppliedAt     time.Time  `json:"appliedAt"`
+	ReviewedAt    *time.Time `json:"reviewedAt"`
+	UpdatedAt     time.Time  `json:"updatedAt"`
+	ExpiresAt     time.Time  `json:"expiresAt"`
 }
 
 func NewService(db *gorm.DB) *Service {
@@ -137,14 +157,49 @@ func (service *Service) Get(id string) (*models.ApprovalRequest, error) {
 func (service *Service) List(options ListOptions) (*ListResult, error) {
 	page, pageSize := normalizePage(options.Page, options.PageSize)
 	query := service.db.Model(&models.ApprovalRequest{})
+	now := time.Now().UTC()
 	if value := strings.TrimSpace(options.Status); value != "" {
-		query = query.Where("status = ?", value)
+		switch value {
+		case models.ApprovalStatusPending:
+			query = query.Where("status = ? AND expires_at > ?", value, now)
+		case models.ApprovalStatusExpired:
+			query = query.Where("(status = ? OR (status = ? AND expires_at <= ?))", value, models.ApprovalStatusPending, now)
+		default:
+			query = query.Where("status = ?", value)
+		}
 	}
 	if value := strings.TrimSpace(options.Module); value != "" {
-		query = query.Where("module = ?", value)
+		if value == "certificate" {
+			query = query.Where("(module = ? OR (module = ? AND action LIKE ?))", value, "website", "certificate.%")
+		} else {
+			query = query.Where("module = ?", value)
+		}
+	}
+	if value := strings.TrimSpace(options.Action); value != "" {
+		query = query.Where("action = ?", value)
 	}
 	if value := strings.TrimSpace(options.Keyword); value != "" {
-		query = query.Where("resource_name LIKE ? OR action LIKE ? OR requested_by_name LIKE ?", "%"+value+"%", "%"+value+"%", "%"+value+"%")
+		pattern := "%" + value + "%"
+		conditions := []string{
+			"resource_name LIKE ?", "action LIKE ?", "module LIKE ?", "requested_by_name LIKE ?",
+			"id LIKE ?", "resource_id LIKE ?", "bound_task_id LIKE ?",
+		}
+		args := []interface{}{pattern, pattern, pattern, pattern, pattern, pattern, pattern}
+		if actions := matchingApprovalActions(options.Locale, value); len(actions) > 0 {
+			conditions = append(conditions, "action IN ?")
+			args = append(args, actions)
+		}
+		if modules := matchingApprovalModules(options.Locale, value); len(modules) > 0 {
+			conditions = append(conditions, "module IN ?")
+			args = append(args, modules)
+		}
+		query = query.Where(strings.Join(conditions, " OR "), args...)
+	}
+	if options.CreatedFrom != nil {
+		query = query.Where("created_at >= ?", options.CreatedFrom.UTC())
+	}
+	if options.CreatedTo != nil {
+		query = query.Where("created_at <= ?", options.CreatedTo.UTC())
 	}
 	if !options.IncludeAll || options.Mine {
 		query = query.Where("requested_by = ?", options.UserID)
@@ -153,11 +208,182 @@ func (service *Service) List(options ListOptions) (*ListResult, error) {
 	if err := query.Count(&total).Error; err != nil {
 		return nil, err
 	}
-	var items []models.ApprovalRequest
-	if err := query.Order("created_at DESC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&items).Error; err != nil {
+	var requests []models.ApprovalRequest
+	if err := query.Order("created_at DESC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&requests).Error; err != nil {
 		return nil, err
 	}
+	items := make([]ApprovalListItem, 0, len(requests))
+	for i := range requests {
+		items = append(items, buildApprovalListItem(&requests[i], options.Locale, now))
+	}
 	return &ListResult{Items: items, Total: total, Page: page, PageSize: pageSize}, nil
+}
+
+func buildApprovalListItem(request *models.ApprovalRequest, locale string, now time.Time) ApprovalListItem {
+	var reviewedAt *time.Time
+	if request.ApprovedAt != nil {
+		reviewedAt = request.ApprovedAt
+	} else if request.RejectedAt != nil {
+		reviewedAt = request.RejectedAt
+	}
+	return ApprovalListItem{
+		ID:            request.ID,
+		ResourceName:  LocalizedApprovalResourceName(locale, request),
+		ActionName:    LocalizedActionName(locale, request.Action),
+		ModuleName:    LocalizedApprovalModuleName(locale, request.Module, request.Action),
+		RiskLevelName: LocalizedRiskLevelName(locale, request.RiskLevel),
+		Status:        EffectiveStatus(request, now),
+		StatusName:    LocalizedStatusName(locale, EffectiveStatus(request, now)),
+		ApplicantName: request.RequestedByName,
+		AppliedAt:     request.CreatedAt,
+		ReviewedAt:    reviewedAt,
+		UpdatedAt:     request.UpdatedAt,
+		ExpiresAt:     request.ExpiresAt,
+	}
+}
+
+func EffectiveStatus(request *models.ApprovalRequest, now time.Time) string {
+	if request == nil {
+		return ""
+	}
+	if request.Status == models.ApprovalStatusPending &&
+		!request.ExpiresAt.IsZero() && !request.ExpiresAt.After(now.UTC()) {
+		return models.ApprovalStatusExpired
+	}
+	return request.Status
+}
+
+func ApprovalResourceName(request *models.ApprovalRequest) string {
+	return LocalizedApprovalResourceName(i18n.LocaleZhCN, request)
+}
+
+func LocalizedApprovalResourceName(locale string, request *models.ApprovalRequest) string {
+	if value := strings.TrimSpace(request.ResourceName); value != "" {
+		return value
+	}
+	if strings.TrimSpace(request.ResourceID) == "" {
+		return localizedFallbackName(locale, "资源")
+	}
+	prefix := "资源"
+	switch {
+	case request.Module == "database":
+		prefix = "数据库"
+	case strings.HasPrefix(request.Action, "certificate."):
+		prefix = "网站"
+	}
+	if i18n.Canonical(locale) == i18n.LocaleEnUS {
+		prefix = map[string]string{"资源": "Resource", "数据库": "Database", "网站": "Website"}[prefix]
+	}
+	return prefix + " #" + strings.TrimSpace(request.ResourceID)
+}
+
+func LocalizedActionName(locale, action string) string {
+	return localizedApprovalName(locale, action, approvalActionNames)
+}
+
+func LocalizedModuleName(locale, module string) string {
+	return localizedApprovalName(locale, module, approvalModuleNames)
+}
+
+func LocalizedApprovalModuleName(locale, module, action string) string {
+	if strings.HasPrefix(strings.TrimSpace(action), "certificate.") {
+		return localizedApprovalName(locale, "certificate", approvalModuleNames)
+	}
+	return LocalizedModuleName(locale, module)
+}
+
+func LocalizedRiskLevelName(locale, riskLevel string) string {
+	return localizedApprovalName(locale, riskLevel, approvalRiskNames)
+}
+
+func LocalizedStatusName(locale, status string) string {
+	return localizedApprovalName(locale, status, approvalStatusNames)
+}
+
+var approvalActionNames = map[string]string{
+	"website.delete":             "删除网站",
+	"website.restore":            "恢复网站",
+	"certificate.issue":          "签发证书",
+	"certificate.renew":          "续期证书",
+	"certificate.disable":        "禁用证书",
+	"database.restore":           "恢复数据库",
+	"database.credential.reveal": "查看数据库凭据",
+	"database.connection.delete": "删除数据库连接",
+}
+
+var approvalModuleNames = map[string]string{
+	"website": "网站", "database": "数据库", "certificate": "证书",
+}
+
+var approvalRiskNames = map[string]string{
+	"low": "低风险", "medium": "中风险", "high": "高风险",
+}
+
+var approvalStatusNames = map[string]string{
+	models.ApprovalStatusPending:   "待审批",
+	models.ApprovalStatusApproved:  "已通过",
+	models.ApprovalStatusRejected:  "已拒绝",
+	models.ApprovalStatusExpired:   "已过期",
+	models.ApprovalStatusExecuting: "执行中",
+	models.ApprovalStatusCompleted: "已完成",
+	models.ApprovalStatusFailed:    "执行失败",
+	models.ApprovalStatusCanceled:  "已取消",
+}
+
+func matchingApprovalActions(locale, keyword string) []string {
+	return matchingApprovalNames(locale, keyword, approvalActionNames)
+}
+
+func matchingApprovalModules(locale, keyword string) []string {
+	return matchingApprovalNames(locale, keyword, approvalModuleNames)
+}
+
+func matchingApprovalNames(locale, keyword string, names map[string]string) []string {
+	keyword = strings.ToLower(strings.TrimSpace(keyword))
+	if keyword == "" {
+		return nil
+	}
+	matched := make([]string, 0)
+	for code, name := range names {
+		if strings.Contains(strings.ToLower(name), keyword) || strings.Contains(strings.ToLower(localizedEnglishName(name)), keyword) {
+			matched = append(matched, code)
+		}
+	}
+	return matched
+}
+
+func localizedApprovalName(locale, value string, names map[string]string) string {
+	value = strings.TrimSpace(value)
+	name, ok := names[value]
+	if !ok {
+		return "其他"
+	}
+	if i18n.Canonical(locale) == i18n.LocaleEnUS {
+		if translated := localizedEnglishName(name); translated != "" {
+			return translated
+		}
+	}
+	return name
+}
+
+func localizedEnglishName(name string) string {
+	return map[string]string{
+		"删除网站": "Delete website", "恢复网站": "Restore website", "签发证书": "Issue certificate",
+		"续期证书": "Renew certificate", "禁用证书": "Disable certificate", "恢复数据库": "Restore database",
+		"查看数据库凭据": "View database credentials", "删除数据库连接": "Delete database connection",
+		"网站": "Website", "数据库": "Database", "证书": "Certificate",
+		"低风险": "Low", "中风险": "Medium", "高风险": "High",
+		"待审批": "Pending", "已通过": "Approved", "已拒绝": "Rejected", "已过期": "Expired",
+		"执行中": "Executing", "已完成": "Completed", "执行失败": "Failed", "已取消": "Canceled",
+		"其他": "Other",
+	}[name]
+}
+
+func localizedFallbackName(locale, name string) string {
+	if i18n.Canonical(locale) == i18n.LocaleEnUS {
+		return localizedEnglishName(name)
+	}
+	return name
 }
 
 func (service *Service) Approve(id string, approverID int64, approverName, comment string) (*models.ApprovalRequest, error) {
@@ -167,6 +393,9 @@ func (service *Service) Approve(id string, approverID int64, approverName, comme
 	}
 	if request.RequestedBy == approverID {
 		return nil, ErrRequesterCannotReview
+	}
+	if request.Status == models.ApprovalStatusExpired {
+		return nil, ErrApprovalExpired
 	}
 	if request.Status != models.ApprovalStatusPending {
 		return nil, ErrApprovalNotPending
@@ -199,6 +428,9 @@ func (service *Service) Reject(id string, approverID int64, approverName, commen
 	}
 	if request.RequestedBy == approverID {
 		return nil, ErrRequesterCannotReview
+	}
+	if request.Status == models.ApprovalStatusExpired {
+		return nil, ErrApprovalExpired
 	}
 	if request.Status != models.ApprovalStatusPending {
 		return nil, ErrApprovalNotPending
