@@ -16,6 +16,7 @@ import (
 	"strings"
 
 	"github.com/spf13/viper"
+	"gopkg.in/yaml.v3"
 )
 
 const legacyInsecureJWTSecret = "a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456"
@@ -47,6 +48,7 @@ updateCenter:
 system:
     port: "8089"
     bindAddress: "0.0.0.0"
+    cliLanguage: "en-US"
     httpsEnabled: false
     httpsPort: "8443"
     httpsCertificateFile: ""
@@ -117,13 +119,7 @@ bastion:
 // LoadConfig reads the application configuration without panicking. When no
 // path is provided it uses the application data directory.
 func LoadConfig(path ...string) (*viper.Viper, error) {
-	configPath := filepath.Join(GetBasePath(), "config.yaml")
-	if configuredPath := strings.TrimSpace(os.Getenv("ONEINSTACK_CONFIG_PATH")); configuredPath != "" {
-		configPath = configuredPath
-	}
-	if len(path) > 0 && strings.TrimSpace(path[0]) != "" {
-		configPath = path[0]
-	}
+	configPath := configFilePath(path...)
 
 	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
 		return nil, fmt.Errorf("create config directory: %w", err)
@@ -144,6 +140,7 @@ func LoadConfig(path ...string) (*viper.Viper, error) {
 	v.AutomaticEnv()
 	v.SetDefault("system.port", "8089")
 	v.SetDefault("system.bindAddress", "0.0.0.0")
+	v.SetDefault("system.cliLanguage", "en-US")
 	v.SetDefault("system.httpsEnabled", false)
 	v.SetDefault("system.httpsPort", "8443")
 	v.SetDefault("system.httpsCertificateFile", "")
@@ -223,6 +220,7 @@ func LoadConfig(path ...string) (*viper.Viper, error) {
 	for key, environmentName := range map[string]string{
 		"system.port":                             "ONEINSTACK_SYSTEM_PORT",
 		"system.bindAddress":                      "ONEINSTACK_SYSTEM_BIND_ADDRESS",
+		"system.cliLanguage":                      "ONEINSTACK_LANG",
 		"system.httpsEnabled":                     "ONEINSTACK_SYSTEM_HTTPS_ENABLED",
 		"system.httpsPort":                        "ONEINSTACK_SYSTEM_HTTPS_PORT",
 		"system.httpsCertificateFile":             "ONEINSTACK_SYSTEM_HTTPS_CERTIFICATE_FILE",
@@ -339,6 +337,149 @@ func LoadConfig(path ...string) (*viper.Viper, error) {
 
 	ONE_VIP = v
 	return v, nil
+}
+
+func configFilePath(path ...string) string {
+	configPath := filepath.Join(GetBasePath(), "config.yaml")
+	if configuredPath := strings.TrimSpace(os.Getenv("ONEINSTACK_CONFIG_PATH")); configuredPath != "" {
+		configPath = configuredPath
+	}
+	if len(path) > 0 && strings.TrimSpace(path[0]) != "" {
+		configPath = path[0]
+	}
+	return configPath
+}
+
+// ReadCLILanguage reads only the persisted terminal language. It does not
+// initialize the application, database, or generated secrets, so `one lang`
+// remains usable when the rest of the panel is not initialized yet.
+func ReadCLILanguage(path ...string) (string, error) {
+	configPath := configFilePath(path...)
+	contents, err := os.ReadFile(configPath)
+	if os.IsNotExist(err) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read config file: %w", err)
+	}
+
+	var document yaml.Node
+	if err := yaml.Unmarshal(contents, &document); err != nil {
+		return "", fmt.Errorf("decode config file: %w", err)
+	}
+	system := yamlMappingValue(&document, "system")
+	if system == nil {
+		return "", nil
+	}
+	language := yamlMappingValue(system, "cliLanguage")
+	if language == nil {
+		return "", nil
+	}
+	return strings.TrimSpace(language.Value), nil
+}
+
+// PersistCLILanguage updates system.cliLanguage while preserving the rest of
+// config.yaml. The write is atomic and keeps the existing file permissions.
+func PersistCLILanguage(locale string, path ...string) error {
+	configPath := configFilePath(path...)
+	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
+		return fmt.Errorf("create config directory: %w", err)
+	}
+
+	contents, readErr := os.ReadFile(configPath)
+	if readErr != nil && !os.IsNotExist(readErr) {
+		return fmt.Errorf("read config file: %w", readErr)
+	}
+	var document yaml.Node
+	if len(contents) == 0 {
+		document = yaml.Node{Kind: yaml.DocumentNode, Content: []*yaml.Node{{Kind: yaml.MappingNode}}}
+	} else if err := yaml.Unmarshal(contents, &document); err != nil {
+		return fmt.Errorf("decode config file: %w", err)
+	}
+	if len(document.Content) == 0 || document.Content[0].Kind == 0 {
+		document = yaml.Node{Kind: yaml.DocumentNode, Content: []*yaml.Node{{Kind: yaml.MappingNode}}}
+	}
+	root := document.Content[0]
+	if root.Kind != yaml.MappingNode {
+		return fmt.Errorf("config file root must be a YAML mapping")
+	}
+	system := yamlMappingValue(root, "system")
+	if system == nil {
+		key := &yaml.Node{Kind: yaml.ScalarNode, Value: "system"}
+		system = &yaml.Node{Kind: yaml.MappingNode}
+		root.Content = append(root.Content, key, system)
+	}
+	if system.Kind != yaml.MappingNode {
+		return fmt.Errorf("config file system must be a YAML mapping")
+	}
+	language := yamlMappingValue(system, "cliLanguage")
+	if language == nil {
+		system.Content = append(system.Content,
+			&yaml.Node{Kind: yaml.ScalarNode, Value: "cliLanguage"},
+			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: locale},
+		)
+	} else {
+		language.Kind = yaml.ScalarNode
+		language.Tag = "!!str"
+		language.Value = locale
+	}
+
+	encoded, err := yaml.Marshal(&document)
+	if err != nil {
+		return fmt.Errorf("encode config file: %w", err)
+	}
+	mode := os.FileMode(0600)
+	if info, statErr := os.Stat(configPath); statErr == nil {
+		mode = info.Mode().Perm()
+		if mode == 0 {
+			mode = 0600
+		}
+	} else if !os.IsNotExist(statErr) {
+		return fmt.Errorf("stat config file: %w", statErr)
+	}
+	temporary, err := os.CreateTemp(filepath.Dir(configPath), ".config.yaml.lang-*")
+	if err != nil {
+		return fmt.Errorf("create temporary config file: %w", err)
+	}
+	temporaryName := temporary.Name()
+	defer os.Remove(temporaryName)
+	if err := temporary.Chmod(mode); err != nil {
+		temporary.Close()
+		return fmt.Errorf("secure temporary config file: %w", err)
+	}
+	if _, err := temporary.Write(encoded); err != nil {
+		temporary.Close()
+		return fmt.Errorf("write config file: %w", err)
+	}
+	if err := temporary.Sync(); err != nil {
+		temporary.Close()
+		return fmt.Errorf("sync config file: %w", err)
+	}
+	if err := temporary.Close(); err != nil {
+		return fmt.Errorf("close config file: %w", err)
+	}
+	if err := os.Rename(temporaryName, configPath); err != nil {
+		return fmt.Errorf("replace config file: %w", err)
+	}
+	return nil
+}
+
+func yamlMappingValue(mapping *yaml.Node, key string) *yaml.Node {
+	if mapping != nil && mapping.Kind == yaml.DocumentNode {
+		if len(mapping.Content) == 0 {
+			return nil
+		}
+		mapping = mapping.Content[0]
+	}
+	if mapping == nil || mapping.Kind != yaml.MappingNode {
+		return nil
+	}
+	for index := 0; index+1 < len(mapping.Content); index += 2 {
+		if mapping.Content[index].Value == key {
+			return mapping.Content[index+1]
+		}
+	}
+	return nil
 }
 
 func validateUpdateCenterConfig() error {

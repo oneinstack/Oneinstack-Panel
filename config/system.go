@@ -3,6 +3,7 @@ package config
 type System struct {
 	Port                          string   `mapstructure:"port" json:"port" yaml:"port"`
 	BindAddress                   string   `mapstructure:"bindAddress" json:"bindAddress" yaml:"bindAddress"`
+	CLILanguage                   string   `mapstructure:"cliLanguage" json:"-" yaml:"cliLanguage"`
 	HTTPSEnabled                  bool     `mapstructure:"httpsEnabled" json:"httpsEnabled" yaml:"httpsEnabled"`
 	HTTPSPort                     string   `mapstructure:"httpsPort" json:"httpsPort" yaml:"httpsPort"`
 	HTTPSCertificateFile          string   `mapstructure:"httpsCertificateFile" json:"httpsCertificateFile" yaml:"httpsCertificateFile"`

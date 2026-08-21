@@ -1,6 +1,9 @@
 package app
 
 import (
+	cryptorand "crypto/rand"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"oneinstack/internal/crypto"
@@ -23,6 +26,18 @@ var bundledCatalogVersions = map[string][]string{
 	"webserver": {"1.28.2"},
 	"php":       {"8.1", "8.2", "8.3"},
 	"firewalld": {"1.0.0"},
+}
+
+var ErrInitialAdminExists = errors.New("administrator user already exists")
+
+const bootstrapCredentialsFileName = ".bootstrap-credentials"
+
+// BootstrapCredentials is intentionally short-lived. The file containing it
+// is created with mode 0600 and is removed by one default after the first
+// non-peek read.
+type BootstrapCredentials struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
 }
 
 func ensureOneDir() error {
@@ -777,6 +792,194 @@ func InitUser(userName string, password string) error {
 	return setupAdminUser(userName, password)
 }
 
+// InitializeAdminAuto creates the first administrator with cryptographically
+// random credentials and stores the plaintext only in the protected bootstrap
+// file until one default consumes it.
+func InitializeAdminAuto() (*BootstrapCredentials, error) {
+	hasUsers, err := HasUsers()
+	if err != nil {
+		return nil, err
+	}
+	if hasUsers {
+		return nil, ErrInitialAdminExists
+	}
+
+	credentials, err := generateBootstrapCredentials()
+	if err != nil {
+		return nil, err
+	}
+	bootstrapPath := BootstrapCredentialsPath()
+	if _, err := os.Stat(bootstrapPath); err == nil {
+		return nil, errors.New("bootstrap credentials already exist; run one default before initializing again")
+	} else if !os.IsNotExist(err) {
+		return nil, fmt.Errorf("stat bootstrap credentials: %w", err)
+	}
+	if err := writeBootstrapCredentials(bootstrapPath, credentials); err != nil {
+		return nil, err
+	}
+
+	hashed, err := crypto.HashPassword(credentials.Password)
+	if err != nil {
+		_ = os.Remove(bootstrapPath)
+		return nil, err
+	}
+	user := &models.User{
+		Username:           credentials.Username,
+		Password:           hashed,
+		IsAdmin:            true,
+		MustChangePassword: true,
+		SecurityVersion:    1,
+	}
+	if err := DB().Create(user).Error; err != nil {
+		_ = os.Remove(bootstrapPath)
+		return nil, err
+	}
+	return credentials, nil
+}
+
+func generateBootstrapCredentials() (*BootstrapCredentials, error) {
+	random := make([]byte, 6)
+	if _, err := cryptorand.Read(random); err != nil {
+		return nil, fmt.Errorf("generate administrator username: %w", err)
+	}
+	password, err := utils.GenerateSecurePassword(24)
+	if err != nil {
+		return nil, err
+	}
+	for attempt := 0; attempt < 16; attempt++ {
+		if utils.ValidatePassword(password) == nil {
+			return &BootstrapCredentials{
+				Username: "oneadmin-" + hex.EncodeToString(random),
+				Password: password,
+			}, nil
+		}
+		password, err = utils.GenerateSecurePassword(24)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return nil, errors.New("generate administrator password did not satisfy the password policy")
+}
+
+func BootstrapCredentialsPath() string {
+	return filepath.Join(GetBasePath(), bootstrapCredentialsFileName)
+}
+
+func writeBootstrapCredentials(path string, credentials *BootstrapCredentials) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0750); err != nil {
+		return fmt.Errorf("create bootstrap credential directory: %w", err)
+	}
+	encoded, err := json.Marshal(credentials)
+	if err != nil {
+		return fmt.Errorf("encode bootstrap credentials: %w", err)
+	}
+	temporary, err := os.CreateTemp(filepath.Dir(path), ".bootstrap-credentials.*")
+	if err != nil {
+		return fmt.Errorf("create bootstrap credential file: %w", err)
+	}
+	temporaryName := temporary.Name()
+	defer os.Remove(temporaryName)
+	if err := temporary.Chmod(0600); err != nil {
+		temporary.Close()
+		return fmt.Errorf("secure bootstrap credential file: %w", err)
+	}
+	if _, err := temporary.Write(append(encoded, '\n')); err != nil {
+		temporary.Close()
+		return fmt.Errorf("write bootstrap credentials: %w", err)
+	}
+	if err := temporary.Sync(); err != nil {
+		temporary.Close()
+		return fmt.Errorf("sync bootstrap credentials: %w", err)
+	}
+	if err := temporary.Close(); err != nil {
+		return fmt.Errorf("close bootstrap credentials: %w", err)
+	}
+	// Link instead of rename so a concurrent initializer cannot replace an
+	// already committed credential file. The first completed link wins.
+	if err := os.Link(temporaryName, path); err != nil {
+		return fmt.Errorf("persist bootstrap credentials: %w", err)
+	}
+	return nil
+}
+
+// LoadBootstrapCredentials returns whether a bootstrap file existed. When
+// consume is true, an atomic rename claims the file before reading it so two
+// concurrent one default invocations cannot both reveal the password.
+func LoadBootstrapCredentials(consume bool) (*BootstrapCredentials, bool, error) {
+	path := BootstrapCredentialsPath()
+	readPath := path
+	if consume {
+		readPath = fmt.Sprintf("%s.consuming-%d", path, os.Getpid())
+		if err := os.Rename(path, readPath); err != nil {
+			if os.IsNotExist(err) {
+				return nil, false, nil
+			}
+			return nil, false, fmt.Errorf("claim bootstrap credentials: %w", err)
+		}
+		defer os.Remove(readPath)
+	}
+	encoded, err := os.ReadFile(readPath)
+	if err != nil {
+		return nil, false, fmt.Errorf("read bootstrap credentials: %w", err)
+	}
+	var credentials BootstrapCredentials
+	if err := json.Unmarshal(encoded, &credentials); err != nil {
+		return nil, false, fmt.Errorf("decode bootstrap credentials: %w", err)
+	}
+	if strings.TrimSpace(credentials.Username) == "" || credentials.Password == "" {
+		return nil, false, errors.New("bootstrap credentials are incomplete")
+	}
+	return &credentials, true, nil
+}
+
+func PrimaryAdminUsername() (string, error) {
+	var user models.User
+	if err := DB().Where("is_admin = ?", true).Order("id ASC").First(&user).Error; err != nil {
+		return "", err
+	}
+	return user.Username, nil
+}
+
+// ResetUserPassword is the privileged CLI reset path. It does not require the
+// old password, but it still applies the shared strength policy, advances the
+// security version, and revokes every active session for the user.
+func ResetUserPassword(username, newPassword string) error {
+	username = strings.TrimSpace(username)
+	if username == "" {
+		return errors.New("username is required")
+	}
+	if err := utils.ValidatePassword(newPassword); err != nil {
+		return err
+	}
+	hashed, err := crypto.HashPassword(newPassword)
+	if err != nil {
+		return err
+	}
+	return DB().Transaction(func(tx *gorm.DB) error {
+		var user models.User
+		if err := tx.Where("username = ?", username).First(&user).Error; err != nil {
+			return err
+		}
+		nextVersion := user.EffectiveSecurityVersion() + 1
+		if err := tx.Model(&models.User{}).Where("id = ?", user.ID).Updates(map[string]any{
+			"password":             hashed,
+			"must_change_password": false,
+			"security_version":     nextVersion,
+		}).Error; err != nil {
+			return err
+		}
+		return tx.Model(&models.UserSession{}).
+			Where("user_id = ? AND revoked_at IS NULL", user.ID).
+			Updates(map[string]any{
+				"revoked_at": nowUTC(), "revocation_reason": "password_changed",
+			}).Error
+	})
+}
+
+func nowUTC() time.Time {
+	return time.Now().UTC()
+}
+
 // HasUsers reports whether initial administrator setup has already completed.
 func HasUsers() (bool, error) {
 	var count int64 = 0
@@ -809,7 +1012,6 @@ func setupAdminUser(userName string, password string) error {
 	if tx.Error != nil {
 		return tx.Error
 	}
-	fmt.Printf("管理员用户创建成功。\n用户名: %s\n", userName)
 	return nil
 }
 

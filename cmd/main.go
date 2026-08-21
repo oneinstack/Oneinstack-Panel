@@ -9,6 +9,7 @@ import (
 	"log"
 	"oneinstack/app"
 	"oneinstack/internal/buildinfo"
+	"oneinstack/internal/i18n"
 	approvalservice "oneinstack/internal/services/approval"
 	"oneinstack/internal/services/audit"
 	bastionservice "oneinstack/internal/services/bastion"
@@ -48,11 +49,16 @@ import (
 var userName string
 var password string
 var passwordFile string
+var initAuto bool
+var resetPasswordFile string
+var activeCLILanguage = i18n.LocaleEnUS
 
 func main() {
 	//初始化服务
 	resetPwdCmd.Flags().StringP("user", "u", "", "username")
 	resetPwdCmd.Flags().StringP("password", "p", "", "new password")
+	resetPwdCmd.Flags().StringVar(&resetPasswordFile, "password-file", "", "Read the new password from a protected file")
+	resetPwdCmd.Flags().MarkHidden("password")
 
 	resetUserCmd.Flags().StringP("user", "u", "", "new username")
 
@@ -60,14 +66,16 @@ func main() {
 	configureUpdateCommands()
 	configureNetworkCommands()
 	configureBackupCommands()
+	rootCmd.PersistentFlags().String("lang", "", "Override the CLI output language")
 
 	// 绑定 --user 和 --password 参数到 init 命令
 	initCmd.Flags().StringVarP(&userName, "user", "u", "", "Specify the username")
 	initCmd.Flags().StringVarP(&password, "password", "p", "", "Specify the password (deprecated; use --password-file)")
 	initCmd.Flags().StringVar(&passwordFile, "password-file", "", "Read the password from a file")
+	initCmd.Flags().BoolVar(&initAuto, "auto", false, "Generate the initial administrator credentials automatically")
 
-	// 用户名必填；密码必须通过互斥的 --password 或 --password-file 提供。
-	initCmd.MarkFlagRequired("user")
+	// Manual initialization requires a username and one password source. Auto
+	// initialization generates both values inside the application.
 
 	// 将命令添加到根命令
 	rootCmd.AddCommand(install)
@@ -82,9 +90,16 @@ func main() {
 	rootCmd.AddCommand(panelEntryCmd)
 	rootCmd.AddCommand(networkCmd)
 	rootCmd.AddCommand(backupCmd)
+	rootCmd.AddCommand(langCmd)
+	rootCmd.AddCommand(defaultCmd)
+	rootCmd.AddCommand(uninstallCmd)
+	defaultCmd.Flags().BoolVar(&defaultPeek, "peek", false, "Internal installer preview; do not consume bootstrap credentials")
+	defaultCmd.Flags().MarkHidden("peek")
+	uninstallCmd.Flags().BoolVar(&uninstallPurge, "purge", false, "Permanently remove Panel data")
+	uninstallCmd.Flags().BoolVar(&uninstallConfirmed, "yes", false, "Confirm permanent removal")
 
 	if err := rootCmd.Execute(); err != nil {
-		fmt.Println(err)
+		fmt.Println(i18n.LocalizeText(activeCLILanguage, err.Error()))
 		if errors.Is(err, app.ErrDatabaseMigration) {
 			os.Exit(78)
 		}
@@ -93,9 +108,20 @@ func main() {
 }
 
 var rootCmd = &cobra.Command{
-	Use:   "one",
-	Short: "oneinstack",
+	Use:           "one",
+	Short:         "oneinstack",
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return printCLIMenu()
+	},
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		if err := configureCLILanguage(cmd); err != nil {
+			return err
+		}
+		if cmd == cmd.Root() || cmd == langCmd || cmd == uninstallCmd {
+			return nil
+		}
 		if cmd == versionCmd || isUpdateCommand(cmd) || isNetworkTransactionCommand(cmd) ||
 			isPanelBackupCommand(cmd) {
 			return nil
@@ -113,19 +139,36 @@ var rootCmd = &cobra.Command{
 	},
 }
 
+func configureCLILanguage(cmd *cobra.Command) error {
+	flagValue, err := cmd.Root().PersistentFlags().GetString("lang")
+	if err != nil {
+		return fmt.Errorf("read --lang: %w", err)
+	}
+	persisted, err := app.ReadCLILanguage()
+	if err != nil {
+		return err
+	}
+	locale, err := i18n.ResolveCLILanguage(flagValue, os.Getenv("ONEINSTACK_LANG"), persisted)
+	if err != nil {
+		return err
+	}
+	activeCLILanguage = locale
+	return nil
+}
+
 // versionCmd 显示版本信息
 var versionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Show version information",
 	Run: func(cmd *cobra.Command, args []string) {
 		info := buildinfo.Current()
-		fmt.Printf("Oneinstack Panel\n")
-		fmt.Printf("Version: %s\n", info.Version)
-		fmt.Printf("Build Time: %s\n", info.BuildTime)
-		fmt.Printf("Commit Hash: %s\n", info.CommitHash)
-		fmt.Printf("Web Version: %s\n", info.WebVersion)
-		fmt.Printf("Go Version: %s\n", info.GoVersion)
-		fmt.Printf("Platform: %s/%s\n", info.OS, info.Arch)
+		fmt.Printf("%s\n", i18n.CLIMessage(activeCLILanguage, i18n.CLIProductName))
+		fmt.Printf("%s: %s\n", i18n.CLIMessage(activeCLILanguage, i18n.CLIVersion), info.Version)
+		fmt.Printf("%s: %s\n", i18n.CLIMessage(activeCLILanguage, i18n.CLIBuildTime), info.BuildTime)
+		fmt.Printf("%s: %s\n", i18n.CLIMessage(activeCLILanguage, i18n.CLICommitHash), info.CommitHash)
+		fmt.Printf("%s: %s\n", i18n.CLIMessage(activeCLILanguage, i18n.CLIWebVersion), info.WebVersion)
+		fmt.Printf("%s: %s\n", i18n.CLIMessage(activeCLILanguage, i18n.CLIGoVersion), info.GoVersion)
+		fmt.Printf("%s: %s/%s\n", i18n.CLIMessage(activeCLILanguage, i18n.CLIPlatform), info.OS, info.Arch)
 	},
 }
 
@@ -147,13 +190,41 @@ func formatPanelEntryOutput(settings *systemservice.PanelNetworkSettings) string
 		return ""
 	}
 	if settings.PanelEntryEnabled {
-		return fmt.Sprintf("安全入口已开启，请使用以下地址访问面板：\n%s\n", settings.PanelAccessURL)
+		return fmt.Sprintf("%s\n%s\n", i18n.CLIMessage(activeCLILanguage, i18n.CLIEntryEnabled), settings.PanelAccessURL)
 	}
-	output := fmt.Sprintf("安全入口未开启，当前面板访问地址：\n%s\n", settings.HTTPAccessURL)
+	output := fmt.Sprintf("%s\n%s\n", i18n.CLIMessage(activeCLILanguage, i18n.CLIEntryDisabled), settings.HTTPAccessURL)
 	if settings.HTTPSEnabled {
-		output += fmt.Sprintf("HTTPS 地址：\n%s\n", settings.HTTPSAccessURL)
+		output += fmt.Sprintf("%s\n%s\n", i18n.CLIMessage(activeCLILanguage, i18n.CLIHTTPSAddress), settings.HTTPSAccessURL)
 	}
 	return output
+}
+
+var langCmd = &cobra.Command{
+	Use:   "lang [zh-CN|en-US]",
+	Short: i18n.CLIMessage(i18n.LocaleEnUS, i18n.CLIHelpLanguage),
+	Args: func(cmd *cobra.Command, args []string) error {
+		if len(args) > 1 {
+			return fmt.Errorf("lang accepts zero or one language argument")
+		}
+		return nil
+	},
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if len(args) == 0 {
+			fmt.Printf(i18n.CLIMessage(activeCLILanguage, i18n.CLIShowLanguage)+"\n", activeCLILanguage)
+			return nil
+		}
+
+		locale, err := i18n.ParseCLILanguage(args[0])
+		if err != nil {
+			return fmt.Errorf(i18n.CLIMessage(activeCLILanguage, i18n.CLIInvalidLanguage), args[0], i18n.LocaleEnUS, i18n.LocaleZhCN)
+		}
+		if err := app.PersistCLILanguage(locale); err != nil {
+			return err
+		}
+		activeCLILanguage = locale
+		fmt.Printf(i18n.CLIMessage(activeCLILanguage, i18n.CLISetLanguage)+"\n", locale)
+		return nil
+	},
 }
 
 // 定义 initCmd 指令
@@ -167,7 +238,22 @@ var initCmd = &cobra.Command{
 			return err
 		}
 		if hasUsers {
-			fmt.Println("管理员用户已经存在，跳过初始化。")
+			fmt.Println(i18n.CLIMessage(activeCLILanguage, i18n.CLIUserExists))
+			return nil
+		}
+		if initAuto {
+			credentials, err := app.InitializeAdminAuto()
+			if errors.Is(err, app.ErrInitialAdminExists) {
+				fmt.Println(i18n.CLIMessage(activeCLILanguage, i18n.CLIUserExists))
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			fmt.Printf("%s\n%s: %s\n%s: %s\n",
+				i18n.CLIMessage(activeCLILanguage, i18n.CLIInitialAdminCreated),
+				i18n.CLIMessage(activeCLILanguage, i18n.CLIUsername), credentials.Username,
+				i18n.CLIMessage(activeCLILanguage, i18n.CLIPassword), credentials.Password)
 			return nil
 		}
 
@@ -175,7 +261,13 @@ var initCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		return app.InitUser(userName, resolvedPassword)
+		if err := app.InitUser(userName, resolvedPassword); err != nil {
+			return err
+		}
+		fmt.Printf("%s\n%s: %s\n",
+			i18n.CLIMessage(activeCLILanguage, i18n.CLIInitialAdminCreated),
+			i18n.CLIMessage(activeCLILanguage, i18n.CLIUsername), userName)
+		return nil
 	},
 }
 
@@ -693,18 +785,8 @@ func removePID() {
 var resetPwdCmd = &cobra.Command{
 	Use:     "resetpwd",
 	Short:   "Reset user password",
-	Example: "go run main.go resetpwd --user=admin --password=newpassword",
-	Run: func(cmd *cobra.Command, args []string) {
-		userName, _ := cmd.Flags().GetString("user")
-		password, _ := cmd.Flags().GetString("password")
-		if userName == "" || password == "" {
-			fmt.Println("Please provide both username and password")
-			return
-		}
-		// 重置密码
-		fmt.Printf("Resetting password for user: %s\n", userName)
-		// TODO: 实现密码重置功能
-	},
+	Example: "one resetpwd --user=admin",
+	RunE:    runResetPassword,
 }
 
 // 定义 resetUserCmd 指令
