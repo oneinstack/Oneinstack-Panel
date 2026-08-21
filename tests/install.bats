@@ -105,7 +105,7 @@ install_staged() {
 }
 
 @test "unsafe install directories are rejected" {
-  run install_staged --install-dir /usr/local
+  run install_staged --lang zh-CN --install-dir /usr/local
   [ "$status" -ne 0 ]
   [[ "$output" == *"过宽"* ]]
 }

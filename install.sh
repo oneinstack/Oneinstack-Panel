@@ -892,8 +892,10 @@ run_install() {
 		-e "$service_file" || -e "$update_service_file" ||
 		-e "$network_recovery_service_file" || -e "$panel_restore_service_file" ]]; then
 		reinstalling=true
-		force=true
 	fi
+  if [[ "$reinstalling" == true && "$force" == false ]]; then
+    die "面板已经安装；如需更新，请显式使用 --force"
+  fi
   if [[ "$replace_config" == true && "$force" == false && -e "${install_dir}/config.yaml" ]]; then
     die "替换现有配置必须同时使用 --force"
   fi
