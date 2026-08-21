@@ -23,6 +23,7 @@ install_staged() {
     --root "${TEST_ROOT}" \
     --binary "${FAKE_BINARY}" \
     --config "${CONFIG_SOURCE}" \
+    --yes \
     "$@"
 }
 
