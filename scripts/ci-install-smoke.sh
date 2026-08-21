@@ -47,7 +47,7 @@ package_root="$(find "$extract_dir" -mindepth 1 -maxdepth 1 -type d -print -quit
   exit 1
 }
 
-"${package_root}/install.sh" --root "$stage_root"
+"${package_root}/install.sh" --root "$stage_root" --yes
 installed_binary="${stage_root}/usr/local/one/one"
 [[ -x "$installed_binary" ]]
 
