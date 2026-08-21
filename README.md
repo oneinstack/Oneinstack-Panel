@@ -45,21 +45,36 @@ Unverified Linux distributions can be explicitly installed with
 `--allow-unsupported`; verified distributions are recommended for production.
 
 Download the matching release archive and its `.sha256` file, verify it, and
-extract it. Create the administrator password file without exposing the
+extract it in an isolated temporary directory. Do not run `tar -xzf` again
+from an already extracted release directory, or the archive's top-level
+directory will be nested repeatedly. The temporary directory is removed after
+installation. Create the administrator password file without exposing the
 password in shell history:
 
 ```bash
-sha256sum -c one-linux-amd64-v0.3.0-build.11.tar.gz.sha256
-tar -xzf one-linux-amd64-v0.3.0-build.11.tar.gz
-cd one-linux-amd64-v0.3.0-build.11
-read -r -s -p "Initial administrator password: " PANEL_PASSWORD
-printf '\n'
-sudo install -m 0600 /dev/null /run/one-admin-password
-printf '%s\n' "$PANEL_PASSWORD" | sudo tee /run/one-admin-password >/dev/null
-unset PANEL_PASSWORD
-sudo ./install.sh --admin-user admin \
-  --admin-password-file /run/one-admin-password
-sudo rm -f /run/one-admin-password
+VERSION="v0.3.0-build.11"
+PACKAGE="one-linux-amd64-${VERSION}.tar.gz"
+BASE_URL="https://mirrors.oneinstack.com/oneinstack"
+(
+  work_dir="$(mktemp -d "${TMPDIR:-/tmp}/oneinstack-install.XXXXXX")"
+  trap 'rm -rf -- "$work_dir"' EXIT
+  cd "$work_dir"
+
+  wget -c "${BASE_URL}/${PACKAGE}"
+  wget -c "${BASE_URL}/${PACKAGE}.sha256"
+  sha256sum -c "${PACKAGE}.sha256"
+  tar -xzf "${PACKAGE}"
+  cd "${PACKAGE%.tar.gz}"
+
+  read -r -s -p "Initial administrator password: " PANEL_PASSWORD
+  printf '\n'
+  sudo install -m 0600 /dev/null /run/one-admin-password
+  printf '%s\n' "$PANEL_PASSWORD" | sudo tee /run/one-admin-password >/dev/null
+  unset PANEL_PASSWORD
+  sudo ./install.sh --admin-user admin \
+    --admin-password-file /run/one-admin-password
+  sudo rm -f /run/one-admin-password
+)
 ```
 
 After installation, visit: `http://your-server-ip:8089`

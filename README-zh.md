@@ -42,20 +42,32 @@
 
 未验证的 Linux 发行版可显式使用 `--allow-unsupported`，但生产环境建议使用已验证发行版。
 
-下载匹配架构的发布包及对应 `.sha256` 文件，验证并解压。初始管理员密码通过权限受控的文件传入，不写入 Shell 历史：
+下载匹配架构的发布包及对应 `.sha256` 文件，验证并解压。请在独立的临时目录中执行，避免在已经解压的发布目录内再次执行 `tar -xzf` 造成目录嵌套。安装完成后临时目录会自动清理。初始管理员密码通过权限受控的文件传入，不写入 Shell 历史：
 
 ```bash
-sha256sum -c one-linux-amd64-v0.3.0-build.11.tar.gz.sha256
-tar -xzf one-linux-amd64-v0.3.0-build.11.tar.gz
-cd one-linux-amd64-v0.3.0-build.11
-read -r -s -p "请输入初始管理员密码: " PANEL_PASSWORD
-printf '\n'
-sudo install -m 0600 /dev/null /run/one-admin-password
-printf '%s\n' "$PANEL_PASSWORD" | sudo tee /run/one-admin-password >/dev/null
-unset PANEL_PASSWORD
-sudo ./install.sh --admin-user admin \
-  --admin-password-file /run/one-admin-password
-sudo rm -f /run/one-admin-password
+VERSION="v0.3.0-build.11"
+PACKAGE="one-linux-amd64-${VERSION}.tar.gz"
+BASE_URL="https://mirrors.oneinstack.com/oneinstack"
+(
+  work_dir="$(mktemp -d "${TMPDIR:-/tmp}/oneinstack-install.XXXXXX")"
+  trap 'rm -rf -- "$work_dir"' EXIT
+  cd "$work_dir"
+
+  wget -c "${BASE_URL}/${PACKAGE}"
+  wget -c "${BASE_URL}/${PACKAGE}.sha256"
+  sha256sum -c "${PACKAGE}.sha256"
+  tar -xzf "${PACKAGE}"
+  cd "${PACKAGE%.tar.gz}"
+
+  read -r -s -p "请输入初始管理员密码: " PANEL_PASSWORD
+  printf '\n'
+  sudo install -m 0600 /dev/null /run/one-admin-password
+  printf '%s\n' "$PANEL_PASSWORD" | sudo tee /run/one-admin-password >/dev/null
+  unset PANEL_PASSWORD
+  sudo ./install.sh --admin-user admin \
+    --admin-password-file /run/one-admin-password
+  sudo rm -f /run/one-admin-password
+)
 ```
 
 安装完成后访问：`http://服务器IP:8089`
