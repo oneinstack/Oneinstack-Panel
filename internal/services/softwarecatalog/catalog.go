@@ -20,19 +20,23 @@ import (
 
 	"oneinstack/config"
 	"oneinstack/internal/models"
+	"oneinstack/internal/panelidentity"
 	"oneinstack/internal/services/scriptregistry"
 
 	"gorm.io/gorm"
 )
 
 const (
-	signatureDomain = "oneinstack-software-catalog-v1\n"
-	maxCatalogBytes = 8 << 20
+	signatureDomain       = "oneinstack-software-catalog-v1\n"
+	maxCatalogBytes       = 8 << 20
+	panelInstanceIDHeader = "X-Oneinstack-Panel-Instance-ID"
 )
 
 var (
 	identifier      = regexp.MustCompile(`^[a-z][a-z0-9-]{1,63}$`)
 	softwareVersion = regexp.MustCompile(`^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$`)
+	serviceName     = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.@-]{0,127}$`)
+	runtimeGroup    = regexp.MustCompile(`^[a-z][a-z0-9-]{1,63}$`)
 )
 
 type Parameter struct {
@@ -63,6 +67,7 @@ type Product struct {
 	Tags         []string    `json:"tags,omitempty"`
 	ManageScopes []string    `json:"manageScopes,omitempty"`
 	ServiceName  string      `json:"serviceName,omitempty"`
+	RuntimeGroup string      `json:"runtimeGroup,omitempty"`
 	Visible      bool        `json:"visible"`
 	Installable  bool        `json:"installable"`
 	Order        int         `json:"order,omitempty"`
@@ -126,14 +131,19 @@ func decodeManageScopes(contents string) []string {
 }
 
 type Manager struct {
-	config  config.ScriptCenter
-	db      *gorm.DB
-	client  *http.Client
-	baseURL *url.URL
-	now     func() time.Time
+	config     config.ScriptCenter
+	instanceID string
+	db         *gorm.DB
+	client     *http.Client
+	baseURL    *url.URL
+	now        func() time.Time
 }
 
 func New(centerConfig config.ScriptCenter, db *gorm.DB) (*Manager, error) {
+	return NewWithInstanceID(centerConfig, db, "")
+}
+
+func NewWithInstanceID(centerConfig config.ScriptCenter, db *gorm.DB, instanceID string) (*Manager, error) {
 	if db == nil {
 		return nil, errors.New("software catalog database is required")
 	}
@@ -149,8 +159,9 @@ func New(centerConfig config.ScriptCenter, db *gorm.DB) (*Manager, error) {
 		}
 	}
 	return &Manager{
-		config: centerConfig,
-		db:     db,
+		config:     centerConfig,
+		instanceID: strings.TrimSpace(instanceID),
+		db:         db,
 		client: &http.Client{
 			Timeout: time.Duration(centerConfig.RequestTimeoutSeconds) * time.Second,
 			CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
@@ -178,6 +189,12 @@ func (m *Manager) Sync(ctx context.Context) (Status, error) {
 	}
 	if state.Revision != "" && state.Channel == m.config.Channel {
 		request.Header.Set("If-None-Match", `"`+state.Revision+`"`)
+	}
+	if m.instanceID != "" {
+		request.Header.Set(panelInstanceIDHeader, m.instanceID)
+	}
+	if networkInfo := panelidentity.HeaderValue(); networkInfo != "" {
+		request.Header.Set(panelidentity.NetworkInfoHeader, networkInfo)
 	}
 	forcedRefresh := false
 	for {
@@ -370,6 +387,7 @@ func (m *Manager) apply(document Document, packageVersions, publishedPackageVers
 					"tags":                   strings.Join(product.Tags, ","),
 					"manage_scopes":          encodeManageScopes(product.ManageScopes),
 					"service_name":           strings.TrimSpace(product.ServiceName),
+					"runtime_group":          strings.TrimSpace(product.RuntimeGroup),
 					"params":                 string(parameters),
 					"resource":               "center",
 					"catalog_managed":        true,
@@ -839,6 +857,15 @@ func validateProduct(product Product) error {
 		len(product.Versions) < 1 || len(product.Versions) > 64 ||
 		len(product.Parameters) > 32 {
 		return fmt.Errorf("software product %s contains invalid metadata", product.Key)
+	}
+	if product.ServiceName != "" && !serviceName.MatchString(product.ServiceName) {
+		return fmt.Errorf("software product %s contains an invalid service name", product.Key)
+	}
+	if product.RuntimeGroup != "" && !runtimeGroup.MatchString(product.RuntimeGroup) {
+		return fmt.Errorf("software product %s contains an invalid runtime group", product.Key)
+	}
+	if product.RuntimeGroup != "" && product.ServiceName == "" {
+		return fmt.Errorf("software product %s runtime group requires a service name", product.Key)
 	}
 	versions := make(map[string]struct{}, len(product.Versions))
 	recommendedByChannel := make(map[string]int)

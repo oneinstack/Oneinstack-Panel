@@ -15,6 +15,8 @@ import (
 	"strings"
 	"time"
 
+	"oneinstack/internal/panelidentity"
+
 	"golang.org/x/mod/semver"
 )
 
@@ -222,6 +224,9 @@ func ResolveManifest(
 	}
 	request.Header.Set("Accept", "application/json")
 	request.Header.Set("Content-Type", "application/json")
+	if networkInfo := panelidentity.HeaderValue(); networkInfo != "" {
+		request.Header.Set(panelidentity.NetworkInfoHeader, networkInfo)
+	}
 	response, err := client.Do(request)
 	if err != nil {
 		return Manifest{}, false, fmt.Errorf("resolve panel update from Center: %w", err)

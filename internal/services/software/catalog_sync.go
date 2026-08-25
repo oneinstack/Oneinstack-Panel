@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"oneinstack/app"
+	"oneinstack/internal/services/panelupdate"
 	catalogService "oneinstack/internal/services/softwarecatalog"
 
 	"gorm.io/gorm"
@@ -27,7 +28,15 @@ func defaultCatalogManager() (*catalogService.Manager, error) {
 		return nil, fmt.Errorf("database is not initialized")
 	}
 	if catalogManager == nil || catalogManagerDB != db {
-		manager, err := catalogService.New(app.ONE_CONFIG.ScriptCenter, db)
+		instanceID := ""
+		if app.ONE_CONFIG.ScriptCenter.Enabled {
+			loadedID, err := panelupdate.LoadOrCreateInstanceID(app.GetBasePath())
+			if err != nil {
+				return nil, fmt.Errorf("load panel instance ID: %w", err)
+			}
+			instanceID = loadedID
+		}
+		manager, err := catalogService.NewWithInstanceID(app.ONE_CONFIG.ScriptCenter, db, instanceID)
 		if err != nil {
 			return nil, err
 		}

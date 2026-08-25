@@ -13,9 +13,11 @@ import (
 )
 
 var (
-	componentIDPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{1,63}$`)
-	versionPattern     = regexp.MustCompile(`^v?[0-9]+(?:\.[0-9]+){1,2}(?:[-+][0-9A-Za-z.-]+)?$`)
-	parameterPattern   = regexp.MustCompile(`^[A-Z][A-Z0-9_]{1,63}$`)
+	componentIDPattern  = regexp.MustCompile(`^[a-z][a-z0-9-]{1,63}$`)
+	versionPattern      = regexp.MustCompile(`^v?[0-9]+(?:\.[0-9]+){1,2}(?:[-+][0-9A-Za-z.-]+)?$`)
+	parameterPattern    = regexp.MustCompile(`^[A-Z][A-Z0-9_]{1,63}$`)
+	runtimeGroupPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{1,63}$`)
+	serviceNamePattern  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.@-]{0,127}$`)
 )
 
 type Manifest struct {
@@ -24,6 +26,8 @@ type Manifest struct {
 	Compatibility Compatibility `json:"compatibility" yaml:"compatibility"`
 	Dependencies  Dependencies  `json:"dependencies,omitempty" yaml:"dependencies,omitempty"`
 	Conflicts     []string      `json:"conflicts,omitempty" yaml:"conflicts,omitempty"`
+	RuntimeGroup  string        `json:"runtimeGroup,omitempty" yaml:"runtimeGroup,omitempty"`
+	ServiceName   string        `json:"serviceName,omitempty" yaml:"serviceName,omitempty"`
 	Actions       Actions       `json:"actions" yaml:"actions"`
 	Parameters    []Parameter   `json:"parameters,omitempty" yaml:"parameters,omitempty"`
 	Timeouts      Timeouts      `json:"timeouts" yaml:"timeouts"`
@@ -205,6 +209,18 @@ func (m Manifest) validate() error {
 	if (serviceActionCount != 0 && serviceActionCount != len(serviceActions)) ||
 		(m.Actions.Reload != "" && serviceActionCount != len(serviceActions)) {
 		return fmt.Errorf("service actions status, start, stop, and restart must be declared together")
+	}
+	if m.RuntimeGroup != "" && !runtimeGroupPattern.MatchString(m.RuntimeGroup) {
+		return fmt.Errorf("invalid runtime group %q", m.RuntimeGroup)
+	}
+	if m.ServiceName != "" && !serviceNamePattern.MatchString(m.ServiceName) {
+		return fmt.Errorf("invalid service name %q", m.ServiceName)
+	}
+	if m.ServiceName != "" && serviceActionCount == 0 {
+		return fmt.Errorf("service name requires service actions")
+	}
+	if m.RuntimeGroup != "" && m.ServiceName == "" {
+		return fmt.Errorf("runtime group requires a service name")
 	}
 	if (m.Actions.ConfigGet == "") != (m.Actions.ConfigApply == "") {
 		return fmt.Errorf("configGet and configApply actions must be declared together")
