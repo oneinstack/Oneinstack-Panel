@@ -20,12 +20,23 @@ var (
 	ErrLibraryNotFound              = errors.New("database library not found")
 	ErrLibraryCredentialUnavailable = errors.New("database library has no managed MySQL account")
 	ErrLibraryCredentialCorrupt     = errors.New("database library credential cannot be decrypted")
+	ErrConnectionTestFailed         = errors.New("database connection test failed")
 )
 
 func Add(param *input.AddParam) error {
+	return AddContext(context.Background(), param)
+}
+
+// AddContext keeps remote connection creation bounded by the caller's
+// request context. The HTTP handler supplies a deadline so a failed or
+// unreachable database cannot leave the add dialog waiting indefinitely.
+func AddContext(ctx context.Context, param *input.AddParam) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	normalizeConnectionParam(param)
 	s := &models.Storage{}
-	tx := app.DB().Where("addr = ? and port = ? and type = ?", param.Addr, param.Port, param.Type).First(s)
+	tx := app.DB().WithContext(ctx).Where("addr = ? and port = ? and type = ?", param.Addr, param.Port, param.Type).First(s)
 	if tx.Error != nil && !errors.Is(tx.Error, gorm.ErrRecordNotFound) {
 		return tx.Error
 	}
@@ -40,8 +51,8 @@ func Add(param *input.AddParam) error {
 		Remark:   param.Remark,
 		Type:     param.Type,
 	}
-	if err := testStorageConnection(m); err != nil {
-		return fmt.Errorf("database connection test failed: %w", err)
+	if err := testStorageConnectionContext(ctx, m); err != nil {
+		return err
 	}
 	encrypted, err := utils.EncryptCredential(
 		m.Password,
@@ -51,7 +62,7 @@ func Add(param *input.AddParam) error {
 		return err
 	}
 	m.Password = encrypted
-	tx = app.DB().Create(m)
+	tx = app.DB().WithContext(ctx).Create(m)
 	return tx.Error
 }
 
@@ -257,7 +268,7 @@ func Update(param *input.AddParam) error {
 	s.Remark = param.Remark
 	s.Type = param.Type
 	if err := testStorageConnection(s); err != nil {
-		return fmt.Errorf("database connection test failed: %w", err)
+		return err
 	}
 	encrypted, err := utils.EncryptCredential(
 		s.Password,
@@ -338,6 +349,13 @@ func DeleteLibrary(param *input.DeleteLibraryParam) error {
 }
 
 func TestConnection(param *input.AddParam) error {
+	return TestConnectionContext(context.Background(), param)
+}
+
+func TestConnectionContext(ctx context.Context, param *input.AddParam) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	normalizeConnectionParam(param)
 	candidate := &models.Storage{
 		Addr: param.Addr, Port: param.Port, Root: param.Root,
@@ -350,7 +368,7 @@ func TestConnection(param *input.AddParam) error {
 		}
 		candidate.Password = existing.Password
 	}
-	return testStorageConnection(candidate)
+	return testStorageConnectionContext(ctx, candidate)
 }
 
 // EnsureManagedLocalMySQLConnection records the root credential generated for
@@ -589,16 +607,31 @@ func UpdateLibraryCredential(id int64, password string) (*output.DatabaseCredent
 }
 
 func testStorageConnection(storage *models.Storage) error {
+	return testStorageConnectionContext(context.Background(), storage)
+}
+
+func testStorageConnectionContext(ctx context.Context, storage *models.Storage) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	lib := ""
 	if storage.Type == "mysql" {
 		lib = "information_schema"
 	}
 	op, err := newStorageOP(storage, lib)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: %w", ErrConnectionTestFailed, err)
 	}
-	if err := op.Connect(); err != nil {
-		return err
+	var connectErr error
+	if contextual, ok := op.(interface {
+		ConnectContext(context.Context) error
+	}); ok {
+		connectErr = contextual.ConnectContext(ctx)
+	} else {
+		connectErr = op.Connect()
+	}
+	if connectErr != nil {
+		return fmt.Errorf("%w: %w", ErrConnectionTestFailed, connectErr)
 	}
 	return op.Close()
 }

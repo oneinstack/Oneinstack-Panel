@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"math"
@@ -58,6 +59,13 @@ func NewMysqlOP(p *models.Storage, lib string) *MysqlOP {
 }
 
 func (s *MysqlOP) Connect() error {
+	return s.ConnectContext(context.Background())
+}
+
+func (s *MysqlOP) ConnectContext(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	driverConfig := mysqlDriver.Config{
 		User:                 s.Root,
 		Passwd:               s.Password,
@@ -75,7 +83,8 @@ func (s *MysqlOP) Connect() error {
 	}
 	dsn := driverConfig.FormatDSN()
 	db, err := gorm.Open(gormmysql.Open(dsn), &gorm.Config{
-		Logger: logger.Default.LogMode(logger.Silent),
+		Logger:               logger.Default.LogMode(logger.Silent),
+		DisableAutomaticPing: true,
 	})
 	if err != nil {
 		return err
@@ -84,7 +93,9 @@ func (s *MysqlOP) Connect() error {
 	if err != nil {
 		return err
 	}
-	if err := sqlDB.Ping(); err != nil {
+	pingContext, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err := sqlDB.PingContext(pingContext); err != nil {
 		_ = sqlDB.Close()
 		return err
 	}

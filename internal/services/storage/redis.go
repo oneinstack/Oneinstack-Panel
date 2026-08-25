@@ -35,6 +35,13 @@ func NewRedisOP(p *models.Storage) *RedisOP {
 }
 
 func (s *RedisOP) Connect() error {
+	return s.ConnectContext(context.Background())
+}
+
+func (s *RedisOP) ConnectContext(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	rdb := redis.NewClient(&redis.Options{
 		Addr:         fmt.Sprintf("%v:%v", s.Addr, s.Port),
 		Username:     s.Root,
@@ -44,9 +51,9 @@ func (s *RedisOP) Connect() error {
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 10 * time.Second,
 	})
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	pingContext, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	_, err := rdb.Ping(ctx).Result()
+	_, err := rdb.Ping(pingContext).Result()
 	if err != nil {
 		_ = rdb.Close()
 		return err

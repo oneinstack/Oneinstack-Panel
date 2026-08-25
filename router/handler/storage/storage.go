@@ -1,7 +1,9 @@
 package storage
 
 import (
+	"context"
 	"errors"
+	"net"
 	"net/http"
 	"oneinstack/app"
 	"oneinstack/core"
@@ -12,12 +14,15 @@ import (
 	"oneinstack/router/middleware"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
 
 const ApprovalActionDatabaseCredentialReveal = "database.credential.reveal"
 const ApprovalActionDatabaseConnectionDelete = "database.connection.delete"
+
+const storageOperationTimeout = 10 * time.Second
 
 type RevealCredentialApprovalPayload struct {
 	LibraryID int64  `json:"libraryId"`
@@ -44,10 +49,11 @@ func ADDStorage(c *gin.Context) {
 		core.HandleError(c, appErr)
 		return
 	}
-	err = storage.Add(&req)
+	operationContext, cancel := context.WithTimeout(c.Request.Context(), storageOperationTimeout)
+	defer cancel()
+	err = storage.AddContext(operationContext, &req)
 	if err != nil {
-		appErr := core.WrapError(err, core.ErrInternalError, "新增数据库连接失败")
-		core.HandleError(c, appErr)
+		handleStorageOperationError(c, err, core.ErrInternalError, "新增数据库连接失败")
 		return
 	}
 	core.HandleSuccess(c, "成功")
@@ -105,8 +111,7 @@ func UpdateStorage(c *gin.Context) {
 	}
 	err = storage.Update(&req)
 	if err != nil {
-		appErr := core.WrapError(err, core.ErrInternalError, "更新数据库连接失败")
-		core.HandleError(c, appErr)
+		handleStorageOperationError(c, err, core.ErrInternalError, "更新数据库连接失败")
 		return
 	}
 	core.HandleSuccess(c, "成功")
@@ -171,11 +176,80 @@ func TestStorageConnection(c *gin.Context) {
 		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "数据库连接参数无效"))
 		return
 	}
-	if err := storage.TestConnection(&req); err != nil {
-		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "数据库连接测试失败"))
+	operationContext, cancel := context.WithTimeout(c.Request.Context(), storageOperationTimeout)
+	defer cancel()
+	if err := storage.TestConnectionContext(operationContext, &req); err != nil {
+		handleStorageOperationError(c, err, core.ErrBadRequest, "数据库连接测试失败")
 		return
 	}
 	core.HandleSuccess(c, "连接成功")
+}
+
+func handleStorageOperationError(c *gin.Context, err error, code core.ErrorCode, message string) {
+	if errors.Is(err, storage.ErrConnectionTestFailed) || errors.Is(err, context.DeadlineExceeded) {
+		core.HandleError(c, storageConnectionError(err))
+		return
+	}
+	core.HandleError(c, core.WrapError(err, code, message))
+}
+
+func storageConnectionError(err error) *core.AppError {
+	lower := strings.ToLower(err.Error())
+	var networkErr net.Error
+
+	var appErr *core.AppError
+	switch {
+	case errors.Is(err, context.DeadlineExceeded),
+		(errors.As(err, &networkErr) && networkErr.Timeout()),
+		strings.Contains(lower, "timed out"),
+		strings.Contains(lower, "timeout"):
+		appErr = core.NewErrorWithDetail(
+			core.ErrTaskTimeout,
+			"数据库连接超时",
+			"目标数据库在 5 秒内未响应，请检查地址、端口、防火墙和数据库服务状态后重试。",
+		)
+		appErr.Field = "addr"
+	case strings.Contains(lower, "connection refused"):
+		appErr = core.NewErrorWithDetail(
+			core.ErrServiceUnavailable,
+			"数据库连接被拒绝",
+			"目标数据库拒绝连接，请确认服务已启动、监听地址和端口配置正确。",
+		)
+		appErr.Field = "addr"
+	case strings.Contains(lower, "no such host"),
+		strings.Contains(lower, "server misbehaving"):
+		appErr = core.NewErrorWithDetail(
+			core.ErrBadRequest,
+			"数据库地址解析失败",
+			"无法解析目标数据库地址，请检查地址和 DNS 配置后重试。",
+		)
+		appErr.Field = "addr"
+	case strings.Contains(lower, "network is unreachable"),
+		strings.Contains(lower, "no route to host"):
+		appErr = core.NewErrorWithDetail(
+			core.ErrServiceUnavailable,
+			"数据库网络不可达",
+			"面板服务器当前无法访问目标数据库网络，请检查路由、安全组和防火墙配置。",
+		)
+		appErr.Field = "addr"
+	case strings.Contains(lower, "access denied"),
+		strings.Contains(lower, "authentication failed"),
+		strings.Contains(lower, "invalid username"),
+		strings.Contains(lower, "invalid password"):
+		appErr = core.NewErrorWithDetail(
+			core.ErrBadRequest,
+			"数据库认证失败",
+			"目标数据库已响应，但用户名或密码未通过认证，请核对登录凭据。",
+		)
+	default:
+		appErr = core.NewErrorWithDetail(
+			core.ErrServiceUnavailable,
+			"数据库连接失败",
+			"无法连接到目标数据库，请检查地址、端口、登录凭据和网络访问策略后重试。",
+		)
+		appErr.Field = "addr"
+	}
+	return appErr
 }
 
 func DeleteLibrary(c *gin.Context) {
