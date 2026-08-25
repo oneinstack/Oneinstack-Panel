@@ -838,7 +838,7 @@ func InitializeAdminAuto() (*BootstrapCredentials, error) {
 }
 
 func generateBootstrapCredentials() (*BootstrapCredentials, error) {
-	random := make([]byte, 6)
+	random := make([]byte, 3)
 	if _, err := cryptorand.Read(random); err != nil {
 		return nil, fmt.Errorf("generate administrator username: %w", err)
 	}
@@ -849,7 +849,7 @@ func generateBootstrapCredentials() (*BootstrapCredentials, error) {
 	for attempt := 0; attempt < 16; attempt++ {
 		if utils.ValidatePassword(password) == nil {
 			return &BootstrapCredentials{
-				Username: "oneadmin-" + hex.EncodeToString(random),
+				Username: "one-" + hex.EncodeToString(random),
 				Password: password,
 			}, nil
 		}
