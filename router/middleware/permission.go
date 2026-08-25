@@ -482,6 +482,9 @@ func isReadOnlyPost(path string) bool {
 
 // isSensitiveOperation 判断是否为敏感操作
 func isSensitiveOperation(method, path string) bool {
+	if method != http.MethodGet && (path == "/v1/access/users" || strings.HasPrefix(path, "/v1/access/users/")) {
+		return true
+	}
 	if method == http.MethodPost && (path == "/v1/operations/preview" || strings.HasPrefix(path, "/v1/operations/") && strings.HasSuffix(path, "/execute")) {
 		return true
 	}

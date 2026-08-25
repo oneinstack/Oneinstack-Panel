@@ -1,6 +1,7 @@
 package access
 
 import (
+	"errors"
 	"strconv"
 	"strings"
 
@@ -77,6 +78,36 @@ func CreateUser(c *gin.Context) {
 		return
 	}
 	core.HandleSuccess(c, gin.H{"id": user.ID})
+}
+
+func DeleteUser(c *gin.Context) {
+	userID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || userID <= 0 {
+		core.HandleError(c, core.NewFieldError(core.ErrInvalidParameter, "id 必须是正整数", "id"))
+		return
+	}
+	currentUserID, ok := middleware.AuthenticatedUserID(c)
+	if !ok {
+		core.HandleError(c, core.NewError(core.ErrUnauthorized, "登录状态无效"))
+		return
+	}
+	confirmed := strings.EqualFold(strings.TrimSpace(c.Query("confirm")), "true")
+	if err := accessservice.NewService(app.DB()).DeleteUser(userID, currentUserID, confirmed); err != nil {
+		switch {
+		case errors.Is(err, accessservice.ErrDeleteUserNotConfirmed):
+			core.HandleError(c, core.NewError(core.ErrOperationNotConfirmed, "删除用户需要显式确认"))
+		case errors.Is(err, accessservice.ErrUserNotFound):
+			core.HandleError(c, core.NewError(core.ErrUserNotFound, "用户不存在或已被删除"))
+		case errors.Is(err, accessservice.ErrDeleteCurrentUser):
+			core.HandleError(c, core.NewError(core.ErrForbidden, "不能删除当前登录账号"))
+		case errors.Is(err, accessservice.ErrDeleteLastSuperAdmin):
+			core.HandleError(c, core.NewError(core.ErrConflict, "不能删除最后一个超级管理员"))
+		default:
+			core.HandleError(c, core.WrapError(err, core.ErrInternalError, "删除用户失败"))
+		}
+		return
+	}
+	core.HandleSuccess(c, nil)
 }
 
 func AssignRoles(c *gin.Context) {

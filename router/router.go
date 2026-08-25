@@ -180,6 +180,7 @@ func SetupRouter() *gin.Engine {
 		accessg.GET("/users", authzHandler.ListUsers)
 		accessg.GET("/roles", authzHandler.ListRoles)
 		accessg.POST("/users", authzHandler.CreateUser)
+		accessg.DELETE("/users/:id", authzHandler.DeleteUser)
 		accessg.PUT("/users/:id/roles", authzHandler.AssignRoles)
 		accessg.POST("/users/:id/reset-password", authzHandler.ResetUserPassword)
 	}

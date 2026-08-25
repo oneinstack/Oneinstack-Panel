@@ -138,6 +138,13 @@ type Service struct {
 	db *gorm.DB
 }
 
+var (
+	ErrUserNotFound           = errors.New("user not found")
+	ErrDeleteUserNotConfirmed = errors.New("deleting a user requires explicit confirmation")
+	ErrDeleteCurrentUser      = errors.New("cannot delete the current user")
+	ErrDeleteLastSuperAdmin   = errors.New("cannot delete the last super administrator")
+)
+
 func NewService(db *gorm.DB) *Service {
 	return &Service{db: db}
 }
@@ -722,6 +729,67 @@ func (service *Service) CreateUser(username, password string, isAdmin bool, role
 		return nil, err
 	}
 	return user, nil
+}
+
+func (service *Service) DeleteUser(userID, currentUserID int64, confirmed bool) error {
+	if service.db == nil {
+		return errors.New("database is not initialized")
+	}
+	if !confirmed {
+		return ErrDeleteUserNotConfirmed
+	}
+	if userID <= 0 {
+		return ErrUserNotFound
+	}
+	if userID == currentUserID {
+		return ErrDeleteCurrentUser
+	}
+
+	return service.db.Transaction(func(tx *gorm.DB) error {
+		var user models.User
+		if err := tx.First(&user, userID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrUserNotFound
+			}
+			return err
+		}
+		if user.ID == currentUserID {
+			return ErrDeleteCurrentUser
+		}
+		if user.IsAdmin {
+			var adminCount int64
+			if err := tx.Model(&models.User{}).Where("is_admin = ?", true).Count(&adminCount).Error; err != nil {
+				return err
+			}
+			if adminCount <= 1 {
+				return ErrDeleteLastSuperAdmin
+			}
+		}
+
+		if err := tx.Where("user_id = ?", user.ID).Delete(&models.UserRole{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Unscoped().Where("user_id = ?", user.ID).Delete(&models.UserSession{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("user_id = ?", user.ID).Delete(&models.UserMFA{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("user_id = ?", user.ID).Delete(&models.OperationPreview{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("user_id = ?", user.ID).Delete(&models.FileFavorite{}).Error; err != nil {
+			return err
+		}
+		result := tx.Where("id = ?", user.ID).Delete(&models.User{})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return ErrUserNotFound
+		}
+		return nil
+	})
 }
 
 func (service *Service) AssignRoles(userID int64, roleCodes []string) error {
