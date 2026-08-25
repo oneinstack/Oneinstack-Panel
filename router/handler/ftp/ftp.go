@@ -196,11 +196,70 @@ func CreateFileOrDir(c *gin.Context) {
 		err = fmt.Errorf("%w: type must be file or dir", filemanager.ErrInvalidPath)
 	}
 	if err != nil {
-		handleFileError(c, err, "创建文件或目录失败")
+		handleFileError(c, err, createFailureMessage(input.Type, err))
+		return
+	}
+	if err := verifyCreatedPath(manager, relative, input.Type); err != nil {
+		handleFileError(c, err, createFailureMessage(input.Type, err))
 		return
 	}
 	core.HandleSuccess(c, "创建成功")
 	finishFileOperation(c, "success", "创建"+map[bool]string{true: "目录", false: "文件"}[input.Type == "dir"])
+}
+
+func verifyCreatedPath(manager *filemanager.Manager, relative, fileType string) error {
+	info, err := manager.LstatRelative(relative)
+	if err != nil {
+		return fmt.Errorf("verify created path: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%w: created path is a symbolic link", filemanager.ErrInvalidPath)
+	}
+
+	switch fileType {
+	case "file":
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("%w: created path is not a regular file", filemanager.ErrInvalidPath)
+		}
+	case "dir":
+		if !info.IsDir() {
+			return fmt.Errorf("%w: created path is not a directory", filemanager.ErrInvalidPath)
+		}
+	default:
+		return fmt.Errorf("%w: type must be file or dir", filemanager.ErrInvalidPath)
+	}
+	return nil
+}
+
+func createFailureMessage(fileType string, err error) string {
+	noun := "文件"
+	if fileType == "dir" {
+		noun = "目录"
+	}
+
+	switch {
+	case errors.Is(err, fs.ErrExist):
+		return "创建" + noun + "失败：目标已存在"
+	case errors.Is(err, fs.ErrNotExist):
+		return "创建" + noun + "失败：父目录不存在"
+	case errors.Is(err, syscall.ENOTDIR):
+		return "创建" + noun + "失败：父路径不是目录"
+	case errors.Is(err, fs.ErrPermission), errors.Is(err, syscall.EROFS):
+		return "创建" + noun + "失败：没有写入权限或文件系统为只读"
+	case errors.Is(err, filemanager.ErrInvalidName):
+		return "创建" + noun + "失败：名称无效"
+	case errors.Is(err, filemanager.ErrReservedPath):
+		return "创建" + noun + "失败：目标路径受保护"
+	case errors.Is(err, filemanager.ErrInvalidPath):
+		return "创建" + noun + "失败：路径无效"
+	case errors.Is(err, filemanager.ErrQuotaExceeded),
+		errors.Is(err, filemanager.ErrInsufficientSpace),
+		errors.Is(err, syscall.ENOSPC),
+		errors.Is(err, syscall.EDQUOT):
+		return "创建" + noun + "失败：存储空间不足"
+	default:
+		return "创建" + noun + "失败"
+	}
 }
 
 func UploadFile(c *gin.Context) {
