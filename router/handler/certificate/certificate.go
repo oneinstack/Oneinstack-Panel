@@ -69,7 +69,7 @@ func Upload(c *gin.Context) {
 	}
 	manager, err := websiteHandler.DefaultCertificateManager()
 	if err != nil {
-		core.HandleError(c, core.NewError(core.ErrInternalError, "证书任务服务不可用"))
+		core.HandleError(c, core.NewErrorWithDetail(core.ErrTaskServiceUnavailable, "证书任务服务不可用", certificateService.SafeCertificateErrorDetail(err)))
 		return
 	}
 	userID, _ := middleware.AuthenticatedUserID(c)
@@ -92,7 +92,7 @@ func SelfSigned(c *gin.Context) {
 	}
 	manager, err := websiteHandler.DefaultCertificateManager()
 	if err != nil {
-		core.HandleError(c, core.NewError(core.ErrInternalError, "证书任务服务不可用"))
+		core.HandleError(c, core.NewErrorWithDetail(core.ErrTaskServiceUnavailable, "证书任务服务不可用", certificateService.SafeCertificateErrorDetail(err)))
 		return
 	}
 	userID, _ := middleware.AuthenticatedUserID(c)
@@ -123,7 +123,7 @@ func Bind(c *gin.Context) {
 	}
 	manager, err := websiteHandler.DefaultCertificateManager()
 	if err != nil {
-		core.HandleError(c, core.NewError(core.ErrInternalError, "证书任务服务不可用"))
+		core.HandleError(c, core.NewErrorWithDetail(core.ErrTaskServiceUnavailable, "证书任务服务不可用", certificateService.SafeCertificateErrorDetail(err)))
 		return
 	}
 	userID, _ := middleware.AuthenticatedUserID(c)
@@ -286,7 +286,7 @@ func certificateCatalog(c *gin.Context) (*certificateService.Catalog, bool) {
 	}
 	deployer, err := websiteService.NewCertificateDeployer()
 	if err != nil {
-		core.HandleError(c, core.NewError(core.ErrInternalError, "证书部署服务不可用"))
+		core.HandleError(c, core.NewErrorWithDetail(core.ErrTaskServiceUnavailable, "证书部署服务不可用", certificateService.SafeCertificateErrorDetail(err)))
 		return nil, false
 	}
 	return certificateService.NewCatalog(app.DB(), app.ONE_CONFIG.System.CertificatePath, deployer), true
@@ -295,22 +295,31 @@ func certificateCatalog(c *gin.Context) (*certificateService.Catalog, bool) {
 func taskManager(c *gin.Context) (*certificateService.Manager, bool) {
 	manager, err := websiteHandler.DefaultCertificateManager()
 	if err != nil {
-		core.HandleError(c, core.NewError(core.ErrInternalError, "证书任务服务不可用"))
+		core.HandleError(c, core.NewErrorWithDetail(core.ErrTaskServiceUnavailable, "证书任务服务不可用", certificateService.SafeCertificateErrorDetail(err)))
 		return nil, false
 	}
 	return manager, true
 }
 
 func catalogError(c *gin.Context, err error, message string) {
+	var validationErr *certificateService.RequestValidationError
+	if errors.As(err, &validationErr) {
+		core.HandleError(c, core.NewFieldError(core.ErrInvalidParameter, validationErr.Message, validationErr.Field))
+		return
+	}
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		core.HandleError(c, core.NewError(core.ErrNotFound, message))
+		return
+	}
+	if strings.Contains(strings.ToLower(err.Error()), "already has an active certificate task") {
+		core.HandleError(c, core.NewErrorWithDetail(core.ErrConflict, "当前已有证书任务正在执行，请等待任务完成后重试", certificateService.SafeCertificateErrorDetail(err)))
 		return
 	}
 	if strings.Contains(strings.ToLower(err.Error()), "required") || strings.Contains(strings.ToLower(err.Error()), "invalid") || strings.Contains(strings.ToLower(err.Error()), "unsupported") || strings.Contains(strings.ToLower(err.Error()), "cover") || strings.Contains(strings.ToLower(err.Error()), "match") {
 		core.HandleError(c, core.NewError(core.ErrBadRequest, err.Error()))
 		return
 	}
-	core.HandleError(c, core.NewError(core.ErrInternalError, message))
+	core.HandleError(c, core.NewErrorWithDetail(core.ErrInternalError, message, certificateService.SafeCertificateErrorDetail(err)))
 }
 
 func positive(value string, fallback int) int {

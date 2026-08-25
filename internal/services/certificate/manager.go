@@ -285,6 +285,10 @@ func (manager *Manager) SubmitManagedSelfSigned(options SelfSignedOptions, reque
 	if err := manager.Start(); err != nil {
 		return nil, err
 	}
+	options, err := normalizeSelfSignedOptions(options)
+	if err != nil {
+		return nil, err
+	}
 	task, err := manager.submit(&models.CertificateTask{
 		Operation: models.CertificateTaskOperationSelfSigned, WebsiteName: "certificate", Domains: strings.Join(options.Domains, ","),
 		AutoRenew: options.AutoRenew, RenewBeforeDays: options.RenewBeforeDays, RequestedBy: requestedBy,
@@ -671,6 +675,8 @@ func (manager *Manager) failTask(task *models.CertificateTask, code string, err 
 	} else if errors.Is(err, context.DeadlineExceeded) {
 		code = "ACME_TIMEOUT"
 		message = "证书签发超时"
+	} else if task.Operation == models.CertificateTaskOperationSelfSigned {
+		message = SafeCertificateErrorDetail(err)
 	}
 	manager.appendLog(task.ID, "任务失败："+message)
 	_ = manager.finish(task.ID, status, code, message)
@@ -680,6 +686,48 @@ func (manager *Manager) failTask(task *models.CertificateTask, code string, err 
 			"last_error":    message,
 			"next_renew_at": retryAt,
 		}).Error
+	}
+}
+
+// SafeCertificateErrorDetail turns expected certificate environment failures
+// into actionable text without exposing absolute paths or raw lower-level
+// errors through task APIs.
+func SafeCertificateErrorDetail(err error) string {
+	if err == nil {
+		return "证书操作失败，请查看任务日志。"
+	}
+	lower := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(lower, "permission denied"), strings.Contains(lower, "operation not permitted"):
+		return "证书文件或存储目录不可写，请检查面板运行用户的目录权限后重试。"
+	case strings.Contains(lower, "no such file or directory"):
+		return "证书存储目录或依赖文件不存在，请检查证书目录配置和磁盘状态后重试。"
+	case strings.Contains(lower, "database is locked"), strings.Contains(lower, "resource busy"):
+		return "证书资源正被其他操作占用，请等待当前任务完成后重试。"
+	case strings.Contains(lower, "certificate directory is invalid"):
+		return "证书存储目录配置无效，请检查目录是否为绝对路径并且可用。"
+	case strings.Contains(lower, "certificate database is not initialized"):
+		return "证书数据库尚未初始化，请检查面板启动状态和数据库配置。"
+	case strings.Contains(lower, "certificate issuer is not configured"):
+		return "证书签发器未配置，请检查证书任务服务配置后重试。"
+	case strings.Contains(lower, "certificate deployer is not configured"):
+		return "证书部署器未配置，请检查证书任务服务配置后重试。"
+	case strings.Contains(lower, "acme directory url is required"):
+		return "ACME 目录地址未配置，证书任务服务无法启动，请检查 ACME 配置后重试。"
+	case strings.Contains(lower, "acme issue timeout must be between"):
+		return "ACME 任务超时配置无效，请将超时时间设置为 1 到 120 分钟。"
+	case strings.Contains(lower, "acme challenge directory is invalid"):
+		return "ACME 挑战目录配置无效，请检查目录是否为可用的绝对路径。"
+	case strings.Contains(lower, "certificate task queue is full"):
+		return "证书任务队列已满，请等待已有任务完成后重试。"
+	case strings.Contains(lower, "certificate task manager is stopping"):
+		return "证书任务服务正在停止，请稍后重试。"
+	case strings.Contains(lower, "already has an active certificate task"):
+		return "当前已有证书任务正在执行，请等待任务完成后重试。"
+	case strings.Contains(lower, "does not cover domain"):
+		return "现有证书不包含目标域名，请重新上传覆盖该域名的证书。"
+	default:
+		return "证书资源创建失败，请查看证书任务详情或任务日志获取具体原因。"
 	}
 }
 

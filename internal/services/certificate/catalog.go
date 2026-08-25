@@ -68,6 +68,21 @@ type SelfSignedOptions struct {
 	RenewBeforeDays int
 }
 
+// RequestValidationError identifies a certificate request field that can be
+// corrected by the caller. These errors must be returned before a task is
+// queued so the UI can restore the submit button and show the reason.
+type RequestValidationError struct {
+	Field   string
+	Message string
+}
+
+func (err *RequestValidationError) Error() string {
+	if err == nil {
+		return "certificate request is invalid"
+	}
+	return err.Message
+}
+
 type BindingResult struct {
 	Certificate models.ManagedCertificate `json:"certificate"`
 	Binding     models.CertificateBinding `json:"binding"`
@@ -144,22 +159,14 @@ func (catalog *Catalog) CreateUpload(options CreateCertificateOptions) (*models.
 }
 
 func (catalog *Catalog) CreateSelfSigned(options SelfSignedOptions) (*models.ManagedCertificate, error) {
-	if err := catalog.ensureRoot(); err != nil {
-		return nil, err
-	}
-	domains, err := normalizeManagedDomains(options.Domains)
+	options, err := normalizeSelfSignedOptions(options)
 	if err != nil {
 		return nil, err
 	}
-	if !IsSupportedKeyAlgorithm(options.Algorithm) {
-		return nil, fmt.Errorf("unsupported certificate key algorithm %q", options.Algorithm)
+	if err := catalog.ensureRoot(); err != nil {
+		return nil, err
 	}
-	if options.ValidityYears == 0 {
-		options.ValidityYears = 10
-	}
-	if options.ValidityYears < 1 || options.ValidityYears > 30 {
-		return nil, errors.New("self-signed certificate validity must be between 1 and 30 years")
-	}
+	domains := options.Domains
 	privateKey, publicKey, algorithm, err := generatePrivateKey(options.Algorithm)
 	if err != nil {
 		return nil, err
@@ -526,6 +533,51 @@ func normalizeManagedDomains(values []string) ([]string, error) {
 		return nil, errors.New("certificate requires between 1 and 100 domains")
 	}
 	return result, nil
+}
+
+func normalizeSelfSignedOptions(options SelfSignedOptions) (SelfSignedOptions, error) {
+	domains, err := normalizeManagedDomains(options.Domains)
+	if err != nil {
+		hasDomain := false
+		for _, value := range options.Domains {
+			if strings.TrimSpace(value) != "" {
+				hasDomain = true
+				break
+			}
+		}
+		message := "自签证书至少需要填写一个域名"
+		if !hasDomain {
+			message = "自签证书域名不能为空，请至少填写一个有效域名"
+		} else if len(options.Domains) > 100 {
+			message = "自签证书域名不能超过 100 个"
+		} else {
+			message = "自签证书域名格式不正确，请检查域名是否包含空格或格式不完整"
+		}
+		return SelfSignedOptions{}, &RequestValidationError{Field: "domains", Message: message}
+	}
+	options.Domains = domains
+
+	options.Algorithm = strings.ToLower(strings.TrimSpace(options.Algorithm))
+	if options.Algorithm == "" {
+		return SelfSignedOptions{}, &RequestValidationError{Field: "algorithm", Message: "请选择自签证书密钥算法"}
+	}
+	if !IsSupportedKeyAlgorithm(options.Algorithm) {
+		return SelfSignedOptions{}, &RequestValidationError{Field: "algorithm", Message: "不支持当前自签证书密钥算法，请从算法列表中选择"}
+	}
+
+	if options.ValidityYears == 0 {
+		options.ValidityYears = 10
+	}
+	if options.ValidityYears < 1 || options.ValidityYears > 30 {
+		return SelfSignedOptions{}, &RequestValidationError{Field: "validityYears", Message: "自签证书有效期必须是 1 到 30 年之间的整数"}
+	}
+	if options.RenewBeforeDays == 0 {
+		options.RenewBeforeDays = 30
+	}
+	if options.RenewBeforeDays < 1 || options.RenewBeforeDays > 90 {
+		return SelfSignedOptions{}, &RequestValidationError{Field: "renewBeforeDays", Message: "续期提前天数必须是 1 到 90 之间的整数"}
+	}
+	return options, nil
 }
 
 func validateCertificateMaterial(certificatePEM, privateKeyPEM []byte, domains []string) (*x509.Certificate, string, error) {
