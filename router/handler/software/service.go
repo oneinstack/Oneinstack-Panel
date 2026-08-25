@@ -547,15 +547,6 @@ func componentServiceStatusesFor(
 		now := time.Now().UTC()
 		installed, exists := installedComponentService(definition, installedRows, installedByKey)
 		runtimeDefinition := definition
-		if exists && definition.Component == "nginx" {
-			component := strings.ToLower(strings.TrimSpace(installed.Component))
-			if component == "" {
-				component = strings.ToLower(strings.TrimSpace(installed.Key))
-			}
-			if normalized, normalizeErr := softwareService.ResolveServiceComponent(database, component); normalizeErr == nil {
-				runtimeDefinition = normalized
-			}
-		}
 		status := componentServiceStatus{
 			ComponentServiceDefinition: runtimeDefinition,
 			State:                      "not_installed",
@@ -623,7 +614,7 @@ func componentServiceStatusesFor(
 		}
 		owners := softwareService.ActiveRuntimeGroupOwners(ctx, group, "")
 		if len(owners) > 0 {
-			activeOwners[group] = owners[0].Component
+			activeOwners[group] = softwareService.RuntimeGroupOwnerComponent(ctx, owners[0])
 		}
 	}
 	for _, status := range result {
@@ -635,7 +626,20 @@ func componentServiceStatusesFor(
 		}
 	}
 	for index := range result {
-		if owner := activeOwners[result[index].RuntimeGroup]; owner != "" && owner != result[index].Component {
+		owner := activeOwners[result[index].RuntimeGroup]
+		if owner == result[index].Component && result[index].Installed {
+			// A legacy nginx.service may be active while the new unique unit is
+			// still inactive. Expose the logical component as running so the
+			// service card and the runtime-group guard use the same truth source.
+			result[index].State = "running"
+			result[index].LoadState = "loaded"
+			result[index].ActiveState = "active"
+			result[index].SubState = "running"
+			result[index].ProbeErrorCode = ""
+			result[index].ProbeError = ""
+			continue
+		}
+		if owner != "" && owner != result[index].Component {
 			result[index].ActiveOwner = owner
 		}
 	}
@@ -650,15 +654,23 @@ func installedComponentService(
 	for _, row := range rows {
 		key := strings.ToLower(strings.TrimSpace(row.Key))
 		component := strings.ToLower(strings.TrimSpace(row.Component))
+		canonicalComponent := component
+		if normalized, err := softwareService.NormalizeServiceComponent(component); err == nil {
+			canonicalComponent = normalized.Component
+		}
 		if key == strings.ToLower(strings.TrimSpace(definition.SoftwareKey)) &&
-			(definition.Component != "nginx" || component == "nginx" || component == "") ||
-			component == strings.ToLower(strings.TrimSpace(definition.Component)) {
+			(definition.Component != "nginx" || canonicalComponent == "nginx" || component == "") ||
+			canonicalComponent == strings.ToLower(strings.TrimSpace(definition.Component)) {
 			return row, true
 		}
 	}
 	if installed, exists := byKey[definition.SoftwareKey]; exists {
 		component := strings.ToLower(strings.TrimSpace(installed.Component))
-		if definition.Component != "nginx" || component == "nginx" || component == "" {
+		canonicalComponent := component
+		if normalized, err := softwareService.NormalizeServiceComponent(component); err == nil {
+			canonicalComponent = normalized.Component
+		}
+		if definition.Component != "nginx" || canonicalComponent == "nginx" || component == "" {
 			return installed, true
 		}
 	}

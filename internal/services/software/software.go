@@ -169,7 +169,7 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 				"MAX(name) as name," +
 				"MAX(icon) as icon," +
 				"MAX(type) as type," +
-				"COALESCE(MAX(CASE WHEN installed = 1 THEN status END), MAX(status), 0) as status," +
+				"COALESCE(MAX(CASE WHEN installed = 1 THEN status END), 0) as status," +
 				"MAX(resource) as resource," +
 				"MAX(is_update) as is_update," +
 				"MAX(CASE WHEN installed = 1 THEN install_version ELSE '' END) as install_version," +

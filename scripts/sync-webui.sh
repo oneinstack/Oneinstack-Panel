@@ -14,7 +14,7 @@ if ! unzip -tq "${archive_path}" >/dev/null; then
     echo "frontend archive is invalid: ${archive_path}" >&2
     exit 1
 fi
-if ! unzip -l "${archive_path}" index.html | grep -q 'index.html'; then
+if ! unzip -l "${archive_path}" index.html | grep 'index.html' >/dev/null; then
     echo "frontend archive does not contain index.html: ${archive_path}" >&2
     exit 1
 fi

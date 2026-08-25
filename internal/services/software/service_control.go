@@ -88,9 +88,8 @@ func ResolveServiceComponent(database *gorm.DB, value string) (ComponentServiceD
 	query := database.Where("installed = ?", true)
 	if normalized == "nginx" || normalized == "webserver" {
 		query = query.Where(
-			"(`key` IN ? OR component IN ?)",
-			[]string{"webserver", "nginx", "openresty", "tengine", "apache", "caddy"},
-			[]string{"nginx", "openresty", "tengine", "apache", "caddy"},
+			"(`key` = ? OR component = ?)",
+			"webserver", "nginx",
 		)
 	} else {
 		query = query.Where("(`key` = ? OR component = ?)", normalized, normalized)
@@ -100,9 +99,8 @@ func ResolveServiceComponent(database *gorm.DB, value string) (ComponentServiceD
 		query = database.Where("catalog_managed = ?", true)
 		if normalized == "nginx" || normalized == "webserver" {
 			query = query.Where(
-				"(`key` IN ? OR component IN ?)",
-				[]string{"webserver", "nginx", "openresty", "tengine", "apache", "caddy"},
-				[]string{"nginx", "openresty", "tengine", "apache", "caddy"},
+				"(`key` = ? OR component = ?)",
+				"webserver", "nginx",
 			)
 		} else {
 			query = query.Where("(`key` = ? OR component = ?)", normalized, normalized)
@@ -166,8 +164,15 @@ func serviceDefinitionFromRow(
 		if strings.TrimSpace(row.Key) != "" {
 			definition.SoftwareKey = strings.ToLower(strings.TrimSpace(row.Key))
 		}
-		if strings.TrimSpace(row.Component) != "" {
-			definition.Component = strings.ToLower(strings.TrimSpace(row.Component))
+		if component := strings.ToLower(strings.TrimSpace(row.Component)); component != "" {
+			if normalizedComponent, normalizeErr := NormalizeServiceComponent(component); normalizeErr == nil {
+				// Catalog rows may store the software key (for example
+				// webserver) in component. Keep the canonical component so
+				// installing Apache cannot overwrite the Nginx status entry.
+				definition.Component = normalizedComponent.Component
+			} else {
+				definition.Component = component
+			}
 		}
 		if strings.TrimSpace(row.Name) != "" {
 			definition.DisplayName = strings.TrimSpace(row.Name)
@@ -227,6 +232,38 @@ func IsServiceAction(value string) bool {
 type RuntimeGroupOwner struct {
 	Component   string `json:"component"`
 	ServiceName string `json:"serviceName"`
+}
+
+// RuntimeGroupOwnerComponent returns the logical component represented by a
+// runtime-group owner. The legacy nginx.service unit is kept as an explicit
+// unmanaged owner for lifecycle safety, but its status should still be
+// associated with the Web engine that owns its ExecStart binary.
+func RuntimeGroupOwnerComponent(ctx context.Context, owner RuntimeGroupOwner) string {
+	if owner.Component != "legacy-web" {
+		return owner.Component
+	}
+	execStart, err := exec.CommandContext(
+		ctx,
+		"systemctl",
+		"show",
+		owner.ServiceName+".service",
+		"--property=ExecStart",
+		"--value",
+	).Output()
+	if err != nil {
+		return owner.Component
+	}
+	command := strings.ToLower(string(execStart))
+	switch {
+	case strings.Contains(command, "/openresty/"):
+		return "openresty"
+	case strings.Contains(command, "/tengine/"):
+		return "tengine"
+	case strings.Contains(command, "nginx"):
+		return "nginx"
+	default:
+		return owner.Component
+	}
 }
 
 // ActiveRuntimeGroupOwners checks the actual systemd units for a runtime
