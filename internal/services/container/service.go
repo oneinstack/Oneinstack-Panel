@@ -55,13 +55,37 @@ type Service struct {
 func New() *Service { return &Service{binary: "docker"} }
 
 type RuntimeStatus struct {
-	Available      bool   `json:"available"`
-	Installed      bool   `json:"installed"`
-	Running        bool   `json:"running"`
-	DockerVersion  string `json:"dockerVersion,omitempty"`
-	ComposeVersion string `json:"composeVersion,omitempty"`
-	ServerVersion  string `json:"serverVersion,omitempty"`
-	Message        string `json:"message,omitempty"`
+	Available      bool         `json:"available"`
+	Installed      bool         `json:"installed"`
+	Running        bool         `json:"running"`
+	DockerVersion  string       `json:"dockerVersion,omitempty"`
+	ComposeVersion string       `json:"composeVersion,omitempty"`
+	ServerVersion  string       `json:"serverVersion,omitempty"`
+	Message        string       `json:"message,omitempty"`
+	Capabilities   Capabilities `json:"capabilities"`
+}
+
+// FeatureAvailability describes whether a module operation can be offered by
+// the current Panel process. It deliberately separates Docker dependencies
+// from permission checks, which are enforced by the route middleware.
+type FeatureAvailability struct {
+	Available            bool   `json:"available"`
+	RequiresDockerCLI    bool   `json:"requiresDockerCli"`
+	RequiresDockerDaemon bool   `json:"requiresDockerDaemon"`
+	DisabledReasonCode   string `json:"disabledReasonCode,omitempty"`
+	DisabledReason       string `json:"disabledReason,omitempty"`
+}
+
+type Capabilities struct {
+	Runtime         FeatureAvailability `json:"runtime"`
+	ContainerManage FeatureAvailability `json:"containerManage"`
+	ImageManage     FeatureAvailability `json:"imageManage"`
+	NetworkManage   FeatureAvailability `json:"networkManage"`
+	VolumeManage    FeatureAvailability `json:"volumeManage"`
+	ComposeManage   FeatureAvailability `json:"composeManage"`
+	RegistryManage  FeatureAvailability `json:"registryManage"`
+	RegistryTest    FeatureAvailability `json:"registryTest"`
+	DockerConfig    FeatureAvailability `json:"dockerConfig"`
 }
 
 type ActionRequest struct {
@@ -186,7 +210,7 @@ func (s *Service) Runtime(ctx context.Context) RuntimeStatus {
 	status := RuntimeStatus{}
 	if _, err := exec.LookPath(s.binary); err != nil {
 		status.Message = "Docker 未安装或不在 PATH 中"
-		return status
+		return withCapabilities(status)
 	}
 	status.Installed = true
 	status.Available = true
@@ -200,11 +224,50 @@ func (s *Service) Runtime(ctx context.Context) RuntimeStatus {
 		status.Available = false
 		status.Running = false
 		status.Message = cleanError(err)
-		return status
+		return withCapabilities(status)
 	}
 	status.Running = true
 	if out, err := s.run(ctx, "compose", "version", "--short"); err == nil {
 		status.ComposeVersion = strings.TrimSpace(out)
+	}
+	return withCapabilities(status)
+}
+
+func (s *Service) Capabilities(ctx context.Context) Capabilities {
+	return s.Runtime(ctx).Capabilities
+}
+
+func withCapabilities(status RuntimeStatus) RuntimeStatus {
+	runtime := FeatureAvailability{
+		Available:            status.Available,
+		RequiresDockerCLI:    true,
+		RequiresDockerDaemon: true,
+	}
+	if !status.Available {
+		if !status.Installed {
+			runtime.DisabledReasonCode = "docker_cli_unavailable"
+			runtime.DisabledReason = "未找到 Docker CLI（docker），请安装 Docker CLI/Engine，并确认 docker 已加入面板进程的 PATH。"
+		} else {
+			runtime.DisabledReasonCode = "docker_daemon_unavailable"
+			runtime.DisabledReason = "Docker CLI 已安装，但无法连接 Docker 守护进程；请确认 Docker 服务已启动，并检查面板运行用户是否有访问 Docker socket 的权限。"
+		}
+	}
+	compose := runtime
+	if status.Available && strings.TrimSpace(status.ComposeVersion) == "" {
+		compose.Available = false
+		compose.DisabledReasonCode = "docker_compose_unavailable"
+		compose.DisabledReason = "Docker Compose 插件不可用，请安装与当前 Docker CLI 兼容的 Compose 插件后重试。"
+	}
+	status.Capabilities = Capabilities{
+		Runtime:         runtime,
+		ContainerManage: runtime,
+		ImageManage:     runtime,
+		NetworkManage:   runtime,
+		VolumeManage:    runtime,
+		ComposeManage:   compose,
+		RegistryManage:  FeatureAvailability{Available: true},
+		RegistryTest:    FeatureAvailability{Available: true},
+		DockerConfig:    FeatureAvailability{Available: true},
 	}
 	return status
 }

@@ -1064,7 +1064,13 @@ func Registries(c *gin.Context) {
 		operationError(c, err)
 		return
 	}
-	core.HandleSuccess(c, gin.H{"items": items, "total": total, "page": page, "pageSize": pageSize})
+	core.HandleSuccess(c, gin.H{
+		"items":        items,
+		"total":        total,
+		"page":         page,
+		"pageSize":     pageSize,
+		"capabilities": service.Capabilities(ctx),
+	})
 }
 
 func CreateRegistry(c *gin.Context) {
