@@ -231,8 +231,12 @@ func (m *Manager) execute(parent context.Context, id string) {
 func (m *Manager) fail(task *models.Fail2banTask, code string, cause error) {
 	finished := time.Now().UTC()
 	message := taskFailureMessage(cause)
+	displayMessage := "安全任务执行失败"
+	if message != "" {
+		displayMessage = message
+	}
 	_ = m.update(task, map[string]any{
-		"status": models.Fail2banTaskFailed, "phase": "failed", "message": "安全任务执行失败",
+		"status": models.Fail2banTaskFailed, "phase": "failed", "message": displayMessage,
 		"error_code": code, "error_message": message, "finished_at": &finished,
 	}, "failed", "error", message)
 }

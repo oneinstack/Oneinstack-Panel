@@ -259,8 +259,15 @@ func (s *Service) ApplyPolicyChange(ctx context.Context, request PolicyChangeReq
 		return nil, err
 	}
 	status, err := s.Status(ctx)
-	if err != nil || !status.Installed || !status.ServiceActive {
-		return nil, ErrUnavailable
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
+	}
+	if status == nil || !status.Installed || !status.ServiceActive {
+		reason := "Fail2ban 未安装、未验证或服务不可用"
+		if status != nil && strings.TrimSpace(status.Warning) != "" {
+			reason = strings.TrimSpace(status.Warning)
+		}
+		return nil, fmt.Errorf("%w: %s", ErrUnavailable, reason)
 	}
 	path := managedPolicyPath(policy.ID)
 	old, oldErr := os.ReadFile(path)
