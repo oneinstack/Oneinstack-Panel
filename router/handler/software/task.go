@@ -74,6 +74,17 @@ func getTaskManager() (*softwaretask.Manager, error) {
 					return err
 				}
 				if softwareService.IsServiceAction(request.Operation) {
+					if request.SwitchRequested {
+						_, err := installer.SwitchServiceActionTask(
+							ctx,
+							request.Key,
+							request.Version,
+							request.Operation,
+							logPath,
+							reporter,
+						)
+						return err
+					}
 					_, err := installer.ServiceActionTask(
 						ctx,
 						request.Key,

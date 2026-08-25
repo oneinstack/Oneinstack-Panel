@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
@@ -32,6 +33,7 @@ type ComponentServiceDefinition struct {
 	SoftwareKey  string   `json:"softwareKey"`
 	DisplayName  string   `json:"displayName"`
 	ServiceName  string   `json:"serviceName"`
+	RuntimeGroup string   `json:"runtimeGroup,omitempty"`
 	ManageScopes []string `json:"manageScopes,omitempty"`
 }
 
@@ -50,7 +52,11 @@ type ComponentServiceProbe struct {
 
 func SupportedComponentServices() []ComponentServiceDefinition {
 	return []ComponentServiceDefinition{
-		{Component: "nginx", SoftwareKey: "webserver", DisplayName: "Nginx", ServiceName: "nginx", ManageScopes: []string{"web_service"}},
+		{Component: "nginx", SoftwareKey: "webserver", DisplayName: "Nginx", ServiceName: "oneinstack-nginx", RuntimeGroup: "web-server", ManageScopes: []string{"web_service"}},
+		{Component: "openresty", SoftwareKey: "openresty", DisplayName: "OpenResty", ServiceName: "oneinstack-openresty", RuntimeGroup: "web-server", ManageScopes: []string{"web_service"}},
+		{Component: "tengine", SoftwareKey: "tengine", DisplayName: "Tengine", ServiceName: "oneinstack-tengine", RuntimeGroup: "web-server", ManageScopes: []string{"web_service"}},
+		{Component: "caddy", SoftwareKey: "caddy", DisplayName: "Caddy", ServiceName: "oneinstack-caddy", RuntimeGroup: "web-server", ManageScopes: []string{"web_service"}},
+		{Component: "apache", SoftwareKey: "apache", DisplayName: "Apache HTTP Server", ServiceName: "oneinstack-httpd", RuntimeGroup: "web-server", ManageScopes: []string{"web_service"}},
 		{Component: "mysql", SoftwareKey: "db", DisplayName: "MySQL", ServiceName: "mysql", ManageScopes: []string{"database"}},
 		{Component: "php", SoftwareKey: "php", DisplayName: "PHP-FPM", ServiceName: "php-fpm", ManageScopes: []string{"runtime"}},
 		{Component: "redis", SoftwareKey: "redis", DisplayName: "Redis", ServiceName: "redis-server", ManageScopes: []string{"cache"}},
@@ -65,14 +71,6 @@ func NormalizeServiceComponent(value string) (ComponentServiceDefinition, error)
 			normalized == definition.ServiceName {
 			return definition, nil
 		}
-	}
-	if normalized == "openresty" {
-		return ComponentServiceDefinition{
-			Component:   "openresty",
-			SoftwareKey: "webserver",
-			DisplayName: "OpenResty",
-			ServiceName: "nginx",
-		}, nil
 	}
 	return ComponentServiceDefinition{}, fmt.Errorf("unsupported component service: %s", value)
 }
@@ -177,6 +175,9 @@ func serviceDefinitionFromRow(
 		if strings.TrimSpace(row.ServiceName) != "" {
 			definition.ServiceName = strings.TrimSpace(row.ServiceName)
 		}
+		if strings.TrimSpace(row.RuntimeGroup) != "" {
+			definition.RuntimeGroup = strings.TrimSpace(row.RuntimeGroup)
+		}
 		definition.ManageScopes = decodeManageScopes(row.ManageScopesJSON)
 		if len(definition.ManageScopes) == 0 {
 			definition.ManageScopes = legacy.ManageScopes
@@ -201,7 +202,8 @@ func serviceDefinitionFromRow(
 	}
 	return ComponentServiceDefinition{
 		Component: component, SoftwareKey: softwareKey, DisplayName: displayName,
-		ServiceName: serviceName, ManageScopes: decodeManageScopes(row.ManageScopesJSON),
+		ServiceName: serviceName, RuntimeGroup: strings.TrimSpace(row.RuntimeGroup),
+		ManageScopes: decodeManageScopes(row.ManageScopesJSON),
 	}, nil
 }
 
@@ -220,6 +222,37 @@ func IsServiceAction(value string) bool {
 	default:
 		return false
 	}
+}
+
+type RuntimeGroupOwner struct {
+	Component   string `json:"component"`
+	ServiceName string `json:"serviceName"`
+}
+
+// ActiveRuntimeGroupOwners checks the actual systemd units for a runtime
+// group, including the legacy nginx unit kept for safe migration detection.
+func ActiveRuntimeGroupOwners(ctx context.Context, runtimeGroup, excludeComponent string) []RuntimeGroupOwner {
+	if strings.TrimSpace(runtimeGroup) == "" {
+		return nil
+	}
+	owners := []RuntimeGroupOwner{
+		{Component: "nginx", ServiceName: "oneinstack-nginx"},
+		{Component: "openresty", ServiceName: "oneinstack-openresty"},
+		{Component: "tengine", ServiceName: "oneinstack-tengine"},
+		{Component: "caddy", ServiceName: "oneinstack-caddy"},
+		{Component: "apache", ServiceName: "oneinstack-httpd"},
+		{Component: "legacy-web", ServiceName: "nginx"},
+	}
+	result := make([]RuntimeGroupOwner, 0, len(owners))
+	for _, owner := range owners {
+		if owner.Component == excludeComponent {
+			continue
+		}
+		if err := exec.CommandContext(ctx, "systemctl", "is-active", "--quiet", owner.ServiceName+".service").Run(); err == nil {
+			result = append(result, owner)
+		}
+	}
+	return result
 }
 
 func (installer *Installer) InspectService(
@@ -421,9 +454,9 @@ func serviceProbeIdentityMatches(
 	// service=redis. Newer packages use the canonical redis-server identity.
 	// Accept only this known legacy identity and normalize the API response to
 	// definition.ServiceName in parseComponentServiceProbe.
-	return definition.Component == "redis" &&
-		definition.ServiceName == "redis-server" &&
-		serviceName == "redis"
+	return (definition.Component == "redis" &&
+		definition.ServiceName == "redis-server" && serviceName == "redis") ||
+		(definition.Component == "nginx" && serviceName == "nginx")
 }
 
 func ClassifyServiceProbeError(err error) (string, string) {

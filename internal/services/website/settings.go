@@ -193,7 +193,11 @@ func (service *Service) UpdateSettings(
 				content = mergeWebsiteSettingsConfig(previous.config, prepared.config, string(current))
 			}
 		}
-		published, publishErr := service.Publisher.Publish(ctx, map[string]*string{
+		publisher, publisherErr := service.publisherForSite(site)
+		if publisherErr != nil {
+			return publisherErr
+		}
+		published, publishErr := publisher.Publish(ctx, map[string]*string{
 			prepared.configName: &content,
 		})
 		if publishErr != nil {
@@ -513,7 +517,7 @@ func (service *Service) ReadManagedConfig(
 	if err != nil {
 		return WebServerConfigDocument{}, err
 	}
-	manager, err := service.managedConfigManager()
+	manager, err := service.managedConfigManagerForSite(site)
 	if err != nil {
 		return WebServerConfigDocument{}, err
 	}
@@ -545,19 +549,6 @@ func (service *Service) RestoreMissingManagedConfigs(ctx context.Context) (int, 
 	if err := service.validate(); err != nil {
 		return 0, err
 	}
-	binary := filepath.Clean(strings.TrimSpace(service.Publisher.NginxBinary))
-	if filepath.IsAbs(binary) {
-		info, err := os.Stat(binary)
-		if errors.Is(err, os.ErrNotExist) {
-			return 0, nil
-		}
-		if err != nil {
-			return 0, fmt.Errorf("检查 Web 服务器程序: %w", err)
-		}
-		if !info.Mode().IsRegular() || info.Mode().Perm()&0111 == 0 {
-			return 0, errors.New("Web 服务器程序不可执行")
-		}
-	}
 	var sites []models.Website
 	if err := service.DB.
 		Where("enabled = ?", true).
@@ -565,7 +556,11 @@ func (service *Service) RestoreMissingManagedConfigs(ctx context.Context) (int, 
 		Find(&sites).Error; err != nil {
 		return 0, fmt.Errorf("读取启用的网站列表: %w", err)
 	}
-	changes := make(map[string]*string)
+	type restoreBatch struct {
+		publisher *Publisher
+		changes   map[string]*string
+	}
+	batches := make(map[string]*restoreBatch)
 	for i := range sites {
 		site := &sites[i]
 		configPath, err := service.ConfigFile(site)
@@ -603,15 +598,43 @@ func (service *Service) RestoreMissingManagedConfigs(ctx context.Context) (int, 
 			return 0, fmt.Errorf("重新生成网站 %s 的配置: %w", site.Name, err)
 		}
 		content := prepared.config
-		changes[prepared.configName] = &content
+		publisher, publisherErr := service.publisherForSite(site)
+		if publisherErr != nil {
+			return 0, fmt.Errorf("选择网站 %s 的 Web 引擎: %w", site.Name, publisherErr)
+		}
+		if filepath.IsAbs(publisher.NginxBinary) {
+			info, statErr := os.Stat(publisher.NginxBinary)
+			if errors.Is(statErr, os.ErrNotExist) {
+				return 0, fmt.Errorf("网站 %s 的 Web 引擎程序不存在", site.Name)
+			}
+			if statErr != nil {
+				return 0, fmt.Errorf("检查网站 %s 的 Web 引擎程序: %w", site.Name, statErr)
+			}
+			if !info.Mode().IsRegular() || info.Mode().Perm()&0111 == 0 {
+				return 0, fmt.Errorf("网站 %s 的 Web 引擎程序不可执行", site.Name)
+			}
+		}
+		batch := batches[publisher.ConfigDir]
+		if batch == nil {
+			batch = &restoreBatch{publisher: publisher, changes: make(map[string]*string)}
+			batches[publisher.ConfigDir] = batch
+		}
+		batch.changes[prepared.configName] = &content
 	}
-	if len(changes) == 0 {
+	count := 0
+	for _, batch := range batches {
+		if len(batch.changes) == 0 {
+			continue
+		}
+		if _, err := batch.publisher.Publish(ctx, batch.changes); err != nil {
+			return 0, fmt.Errorf("发布恢复的网站配置: %w", err)
+		}
+		count += len(batch.changes)
+	}
+	if count == 0 {
 		return 0, nil
 	}
-	if _, err := service.Publisher.Publish(ctx, changes); err != nil {
-		return 0, fmt.Errorf("发布恢复的网站配置: %w", err)
-	}
-	return len(changes), nil
+	return count, nil
 }
 
 func (service *Service) UpdateManagedConfig(
@@ -626,7 +649,7 @@ func (service *Service) UpdateManagedConfig(
 	if !site.Enabled {
 		return WebServerConfigUpdateResult{}, errors.New("网站已停用，请先启用网站再编辑运行配置")
 	}
-	manager, err := service.managedConfigManager()
+	manager, err := service.managedConfigManagerForSite(site)
 	if err != nil {
 		return WebServerConfigUpdateResult{}, err
 	}
@@ -644,6 +667,41 @@ func (service *Service) managedConfigManager() (*WebServerConfigManager, error) 
 		return service.ConfigManager, nil
 	}
 	return NewDefaultWebServerConfigManager()
+}
+
+func (service *Service) managedConfigManagerForSite(site *models.Website) (*WebServerConfigManager, error) {
+	manager, err := service.managedConfigManager()
+	if err != nil {
+		return nil, err
+	}
+	publisher, err := service.publisherForSite(site)
+	if err != nil {
+		return nil, err
+	}
+	copy := *manager
+	if strings.TrimSpace(service.VhostRoot) != "" {
+		copy.Server.ConfigRoot = publisher.ConfigDir
+		copy.Server.SiteConfigDir = publisher.ConfigDir
+	}
+	if strings.TrimSpace(publisher.Engine) != "" {
+		copy.Server.Component = publisher.Engine
+	}
+	if strings.TrimSpace(publisher.ServiceName) != "" {
+		copy.Server.ServiceName = publisher.ServiceName
+	}
+	// Keep injected/test managers that use a command name such as "nginx".
+	// Production publishers provide an absolute engine-specific binary path;
+	// only those paths should replace the manager's validated executable.
+	if filepath.IsAbs(strings.TrimSpace(publisher.NginxBinary)) {
+		copy.Server.BinaryPath = publisher.NginxBinary
+	}
+	if strings.TrimSpace(publisher.MainConfigPath) != "" {
+		copy.Server.MainConfigPath = publisher.MainConfigPath
+	}
+	if strings.TrimSpace(service.VhostRoot) != "" || strings.TrimSpace(publisher.ServiceName) != "" {
+		copy.Server.Running = publisher.serviceActive(context.Background())
+	}
+	return &copy, nil
 }
 
 func (service *Service) managedConfigRelativePath(
@@ -702,7 +760,11 @@ func (service *Service) restoreManagedConfig(ctx context.Context, site *models.W
 		return err
 	}
 	content := prepared.config
-	_, err = service.Publisher.Publish(ctx, map[string]*string{
+	publisher, publisherErr := service.publisherForSite(site)
+	if publisherErr != nil {
+		return publisherErr
+	}
+	_, err = publisher.Publish(ctx, map[string]*string{
 		prepared.configName: &content,
 	})
 	return err

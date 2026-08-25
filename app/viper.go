@@ -175,6 +175,7 @@ func LoadConfig(path ...string) (*viper.Viper, error) {
 	v.SetDefault("system.cronExecutionRetentionDays", 30)
 	v.SetDefault("system.cronExecutionCleanupSchedule", "25 5 * * *")
 	v.SetDefault("system.certificatePath", filepath.Join(GetBasePath(), "certificates"))
+	v.SetDefault("system.webVhostRoot", filepath.Join(GetBasePath(), "vhost"))
 	v.SetDefault("system.acmeChallengePath", filepath.Join(GetBasePath(), "acme-webroot"))
 	v.SetDefault("system.acmeDirectoryUrl", "https://acme-v02.api.letsencrypt.org/directory")
 	v.SetDefault("system.acmeRenewSchedule", "15 3 * * *")
@@ -257,6 +258,7 @@ func LoadConfig(path ...string) (*viper.Viper, error) {
 		"system.cronExecutionRetentionDays":       "ONEINSTACK_SYSTEM_CRON_EXECUTION_RETENTION_DAYS",
 		"system.cronExecutionCleanupSchedule":     "ONEINSTACK_SYSTEM_CRON_EXECUTION_CLEANUP_SCHEDULE",
 		"system.certificatePath":                  "ONEINSTACK_SYSTEM_CERTIFICATE_PATH",
+		"system.webVhostRoot":                     "ONEINSTACK_SYSTEM_WEB_VHOST_ROOT",
 		"system.acmeChallengePath":                "ONEINSTACK_SYSTEM_ACME_CHALLENGE_PATH",
 		"system.acmeDirectoryUrl":                 "ONEINSTACK_SYSTEM_ACME_DIRECTORY_URL",
 		"system.acmeRenewSchedule":                "ONEINSTACK_SYSTEM_ACME_RENEW_SCHEDULE",
@@ -738,6 +740,7 @@ func validateSystemConfig() error {
 	}
 	for label, configuredPath := range map[string]string{
 		"system.certificatePath":   system.CertificatePath,
+		"system.webVhostRoot":      system.WebVhostRoot,
 		"system.acmeChallengePath": system.ACMEChallengePath,
 	} {
 		cleaned := filepath.Clean(strings.TrimSpace(configuredPath))

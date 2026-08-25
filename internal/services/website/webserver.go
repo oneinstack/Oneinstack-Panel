@@ -31,7 +31,7 @@ const (
 )
 
 var (
-	webServerVersionPattern = regexp.MustCompile(`(?i)(?:nginx|openresty)/([0-9][0-9A-Za-z.+_-]*)`)
+	webServerVersionPattern = regexp.MustCompile(`(?i)(?:nginx|openresty|tengine)/([0-9][0-9A-Za-z.+_-]*)|Apache/([0-9][0-9A-Za-z.+_-]*)|v?([0-9]+\.[0-9]+(?:\.[0-9]+)*)`)
 	webServerConfigMu       sync.Mutex
 )
 
@@ -46,6 +46,7 @@ type WebServerInfo struct {
 	ConfigRoot             string `json:"configRoot,omitempty"`
 	MainConfigPath         string `json:"mainConfigPath,omitempty"`
 	SiteConfigDir          string `json:"siteConfigDir,omitempty"`
+	ServiceName            string `json:"serviceName,omitempty"`
 	ConfigurationAvailable bool   `json:"configurationAvailable"`
 }
 
@@ -113,6 +114,7 @@ func (err *WebServerConfigApplyError) Unwrap() error {
 type webServerCandidate struct {
 	Component string
 	Name      string
+	Service   string
 	Binary    string
 	Prefix    string
 	Config    string
@@ -161,7 +163,7 @@ func DetectWebServer() (WebServerInfo, error) {
 	}
 	if len(ranked) == 0 {
 		return WebServerInfo{}, fmt.Errorf(
-			"%w: no supported Nginx or OpenResty executable was found",
+			"%w: no supported Web server executable was found",
 			ErrWebServerUnavailable,
 		)
 	}
@@ -195,7 +197,13 @@ func DetectWebServer() (WebServerInfo, error) {
 	runtimeCandidate := selected
 	runtimeCandidate.Prefix = prefix
 	runtimeCandidate.Config = configRoot
-	mainConfig := filepath.Join(configRoot, "nginx.conf")
+	mainConfigName := "nginx.conf"
+	if selected.Component == "apache" {
+		mainConfigName = "httpd.conf"
+	} else if selected.Component == "caddy" {
+		mainConfigName = "Caddyfile"
+	}
+	mainConfig := filepath.Join(configRoot, mainConfigName)
 	configurationAvailable := isRegularFile(mainConfig)
 	siteConfigDir := detectSiteConfigDir(configRoot, mainConfig)
 	version := inspectWebServerVersion(selected.Binary)
@@ -211,6 +219,7 @@ func DetectWebServer() (WebServerInfo, error) {
 		ConfigRoot:             configRoot,
 		MainConfigPath:         mainConfig,
 		SiteConfigDir:          siteConfigDir,
+		ServiceName:            selected.Service,
 		ConfigurationAvailable: configurationAvailable,
 	}, nil
 }
@@ -270,7 +279,8 @@ func (manager *WebServerConfigManager) List() ([]WebServerConfigFile, error) {
 			return nil
 		}
 		if entry.Type()&os.ModeSymlink != 0 ||
-			!strings.EqualFold(filepath.Ext(entry.Name()), ".conf") {
+			(!strings.EqualFold(filepath.Ext(entry.Name()), ".conf") &&
+				!samePath(path, manager.Server.MainConfigPath)) {
 			return nil
 		}
 		if len(files) >= maxWebServerConfigFiles {
@@ -323,6 +333,31 @@ func (manager *WebServerConfigManager) ValidateContent(ctx context.Context, rela
 	target, _, err := resolveManagedConfigPathForPreview(manager.Server.ConfigRoot, relativePath)
 	if err != nil {
 		return err
+	}
+	if manager.Server.Component == "apache" || manager.Server.Component == "caddy" {
+		preview, err := os.CreateTemp(app.GetBasePath(), ".oneinstack-web-server-preview-*")
+		if err != nil {
+			return fmt.Errorf("create temporary %s configuration: %w", manager.Server.Component, err)
+		}
+		previewPath := preview.Name()
+		defer os.Remove(previewPath)
+		if err := preview.Chmod(0640); err != nil {
+			_ = preview.Close()
+			return fmt.Errorf("secure temporary %s configuration: %w", manager.Server.Component, err)
+		}
+		if _, err := preview.WriteString(content); err != nil {
+			_ = preview.Close()
+			return fmt.Errorf("write temporary %s configuration: %w", manager.Server.Component, err)
+		}
+		if err := preview.Close(); err != nil {
+			return fmt.Errorf("close temporary %s configuration: %w", manager.Server.Component, err)
+		}
+		timeoutCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		defer cancel()
+		if manager.Server.Component == "apache" {
+			return manager.runCommand(timeoutCtx, manager.Server.BinaryPath, "-t", "-f", previewPath)
+		}
+		return manager.runCommand(timeoutCtx, manager.Server.BinaryPath, "validate", "--config", previewPath, "--adapter", "caddyfile")
 	}
 
 	directory, err := os.MkdirTemp(app.GetBasePath(), ".oneinstack-web-server-preview-")
@@ -826,6 +861,12 @@ func (manager *WebServerConfigManager) backup(relativePath, source string) (stri
 func (manager *WebServerConfigManager) testConfiguration(ctx context.Context) error {
 	timeoutCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
+	switch manager.Server.Component {
+	case "apache":
+		return manager.runCommand(timeoutCtx, manager.Server.BinaryPath, "-t", "-f", manager.Server.MainConfigPath)
+	case "caddy":
+		return manager.runCommand(timeoutCtx, manager.Server.BinaryPath, "validate", "--config", manager.Server.MainConfigPath, "--adapter", "caddyfile")
+	}
 	return manager.run(
 		timeoutCtx,
 		"-t",
@@ -839,11 +880,21 @@ func (manager *WebServerConfigManager) testConfiguration(ctx context.Context) er
 func (manager *WebServerConfigManager) reload(ctx context.Context) error {
 	timeoutCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
+	if manager.Server.Component == "apache" || manager.Server.Component == "caddy" {
+		if strings.TrimSpace(manager.Server.ServiceName) == "" {
+			return errors.New("Web server service name is not configured")
+		}
+		return manager.runCommand(timeoutCtx, "systemctl", "reload", manager.Server.ServiceName+".service")
+	}
 	return manager.run(timeoutCtx, "-s", "reload")
 }
 
 func (manager *WebServerConfigManager) run(ctx context.Context, args ...string) error {
-	output, err := manager.Runner.Run(ctx, manager.Server.BinaryPath, args...)
+	return manager.runCommand(ctx, manager.Server.BinaryPath, args...)
+}
+
+func (manager *WebServerConfigManager) runCommand(ctx context.Context, command string, args ...string) error {
+	output, err := manager.Runner.Run(ctx, command, args...)
 	if err == nil {
 		return nil
 	}
@@ -869,7 +920,7 @@ func webServerCandidates() []webServerCandidate {
 	var candidates []webServerCandidate
 	if binary := strings.TrimSpace(os.Getenv("ONEINSTACK_WEB_SERVER_BIN")); binary != "" {
 		component := strings.ToLower(strings.TrimSpace(os.Getenv("ONEINSTACK_WEB_SERVER")))
-		if component != "openresty" {
+		if component != "openresty" && component != "tengine" && component != "apache" && component != "caddy" {
 			component = "nginx"
 		}
 		prefix := strings.TrimSpace(os.Getenv("ONEINSTACK_WEB_SERVER_PREFIX"))
@@ -883,10 +934,17 @@ func webServerCandidates() []webServerCandidate {
 		name := "Nginx"
 		if component == "openresty" {
 			name = "OpenResty"
+		} else if component == "tengine" {
+			name = "Tengine"
+		} else if component == "apache" {
+			name = "Apache HTTP Server"
+		} else if component == "caddy" {
+			name = "Caddy"
 		}
 		candidates = append(candidates, webServerCandidate{
 			Component: component,
 			Name:      name,
+			Service:   webServiceName(component),
 			Binary:    binary,
 			Prefix:    prefix,
 			Config:    configRoot,
@@ -898,6 +956,7 @@ func webServerCandidates() []webServerCandidate {
 		candidates = append(candidates, webServerCandidate{
 			Component: "nginx",
 			Name:      "Nginx",
+			Service:   webServiceName("nginx"),
 			Binary:    binary,
 			Prefix:    prefix,
 			Config:    filepath.Join(prefix, "conf"),
@@ -908,6 +967,7 @@ func webServerCandidates() []webServerCandidate {
 		webServerCandidate{
 			Component: "nginx",
 			Name:      "Nginx",
+			Service:   webServiceName("nginx"),
 			Binary:    defaultNginxBinary,
 			Prefix:    "/usr/local/nginx",
 			Config:    "/usr/local/nginx/conf",
@@ -916,14 +976,19 @@ func webServerCandidates() []webServerCandidate {
 		webServerCandidate{
 			Component: "openresty",
 			Name:      "OpenResty",
+			Service:   webServiceName("openresty"),
 			Binary:    "/usr/local/openresty/nginx/sbin/nginx",
 			Prefix:    "/usr/local/openresty/nginx",
 			Config:    "/usr/local/openresty/nginx/conf",
 			Priority:  40,
 		},
+		webServerCandidate{Component: "tengine", Name: "Tengine", Service: webServiceName("tengine"), Binary: "/usr/local/tengine/sbin/nginx", Prefix: "/usr/local/tengine", Config: "/usr/local/tengine/conf", Priority: 40},
+		webServerCandidate{Component: "apache", Name: "Apache HTTP Server", Service: webServiceName("apache"), Binary: "/usr/local/apache/bin/httpd", Prefix: "/usr/local/apache", Config: "/usr/local/apache/conf", Priority: 40},
+		webServerCandidate{Component: "caddy", Name: "Caddy", Service: webServiceName("caddy"), Binary: "/usr/local/caddy/bin/caddy", Prefix: "/usr/local/caddy", Config: "/usr/local/caddy/conf", Priority: 40},
 		webServerCandidate{
 			Component: "nginx",
 			Name:      "Nginx",
+			Service:   webServiceName("nginx"),
 			Binary:    "/usr/sbin/nginx",
 			// Ubuntu/Debian packages keep the runtime prefix under
 			// /usr/share/nginx while the main configuration lives in
@@ -936,16 +1001,18 @@ func webServerCandidates() []webServerCandidate {
 		webServerCandidate{
 			Component: "nginx",
 			Name:      "Nginx",
+			Service:   webServiceName("nginx"),
 			Binary:    "/usr/local/sbin/nginx",
 			Prefix:    "/usr/local",
 			Config:    "/usr/local/etc/nginx",
 			Priority:  10,
 		},
 	)
-	for _, executable := range []string{"openresty", "nginx"} {
+	for _, executable := range []string{"openresty", "nginx", "tengine", "httpd", "caddy"} {
 		if path, err := exec.LookPath(executable); err == nil {
 			component := "nginx"
 			name := "Nginx"
+			service := webServiceName(component)
 			prefix := "/etc/nginx"
 			config := "/etc/nginx"
 			if executable == "openresty" || strings.Contains(strings.ToLower(path), "openresty") {
@@ -953,6 +1020,16 @@ func webServerCandidates() []webServerCandidate {
 				name = "OpenResty"
 				prefix = "/usr/local/openresty/nginx"
 				config = filepath.Join(prefix, "conf")
+				service = webServiceName(component)
+			} else if executable == "tengine" || strings.Contains(strings.ToLower(path), "tengine") {
+				component, name, service = "tengine", "Tengine", webServiceName("tengine")
+				prefix, config = "/usr/local/tengine", "/usr/local/tengine/conf"
+			} else if executable == "httpd" || strings.Contains(strings.ToLower(path), "apache") {
+				component, name, service = "apache", "Apache HTTP Server", webServiceName("apache")
+				prefix, config = "/usr/local/apache", "/usr/local/apache/conf"
+			} else if executable == "caddy" || strings.Contains(strings.ToLower(path), "caddy") {
+				component, name, service = "caddy", "Caddy", webServiceName("caddy")
+				prefix, config = "/usr/local/caddy", "/usr/local/caddy/conf"
 			} else if path == "/usr/sbin/nginx" {
 				// Ubuntu/Debian package layout: binary in /usr/sbin,
 				// runtime prefix in /usr/share/nginx, config in /etc/nginx.
@@ -962,6 +1039,7 @@ func webServerCandidates() []webServerCandidate {
 			candidates = append(candidates, webServerCandidate{
 				Component: component,
 				Name:      name,
+				Service:   service,
 				Binary:    path,
 				Prefix:    prefix,
 				Config:    config,
@@ -979,7 +1057,7 @@ func installedWebServerComponents() map[string]bool {
 	var rows []models.Software
 	if err := app.DB().
 		Select("component").
-		Where("installed = ? AND component IN ?", true, []string{"nginx", "openresty"}).
+		Where("installed = ? AND component IN ?", true, []string{"nginx", "openresty", "tengine", "apache", "caddy"}).
 		Find(&rows).Error; err != nil {
 		return result
 	}
@@ -1064,10 +1142,37 @@ func inspectWebServerVersion(binary string) string {
 		return ""
 	}
 	match := webServerVersionPattern.FindStringSubmatch(string(output))
-	if len(match) == 2 {
-		return match[1]
+	for index := 1; index < len(match); index++ {
+		if strings.TrimSpace(match[index]) != "" {
+			return match[index]
+		}
 	}
 	return ""
+}
+
+func webServiceName(component string) string {
+	switch strings.ToLower(strings.TrimSpace(component)) {
+	case "nginx":
+		return "oneinstack-nginx"
+	case "openresty":
+		return "oneinstack-openresty"
+	case "tengine":
+		return "oneinstack-tengine"
+	case "caddy":
+		return "oneinstack-caddy"
+	case "apache":
+		return "oneinstack-httpd"
+	default:
+		return ""
+	}
+}
+
+func managedVhostDir(component string) string {
+	root := strings.TrimSpace(app.ONE_CONFIG.System.WebVhostRoot)
+	if root == "" {
+		root = filepath.Join(app.GetBasePath(), "vhost")
+	}
+	return filepath.Join(filepath.Clean(root), strings.ToLower(strings.TrimSpace(component)))
 }
 
 func inspectWebServerLayout(binary string) (string, string, bool) {
@@ -1128,7 +1233,8 @@ func resolveManagedConfigPathWithOptions(root, relativePath string, allowMissing
 	cleaned := filepath.Clean(relativePath)
 	if cleaned == "." || filepath.IsAbs(cleaned) ||
 		cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) ||
-		!strings.EqualFold(filepath.Ext(cleaned), ".conf") {
+		(!strings.EqualFold(filepath.Ext(cleaned), ".conf") &&
+			!strings.EqualFold(filepath.Base(cleaned), "Caddyfile")) {
 		return "", "", errors.New("configuration path is invalid")
 	}
 	target := filepath.Join(root, cleaned)

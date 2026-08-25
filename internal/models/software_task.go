@@ -38,6 +38,7 @@ type SoftwareTask struct {
 	ID               string     `json:"id" gorm:"primaryKey;size:36"`
 	Operation        string     `json:"operation" gorm:"size:16;not null"`
 	Component        string     `json:"component" gorm:"size:64;not null;index:idx_software_task_component_created"`
+	SwitchRequested  bool       `json:"switchRequested,omitempty" gorm:"not null;default:false"`
 	SoftwareKey      string     `json:"softwareKey" gorm:"size:64;not null"`
 	RequestedVersion string     `json:"requestedVersion" gorm:"size:64;not null"`
 	ResolvedVersion  string     `json:"resolvedVersion,omitempty" gorm:"size:64"`
@@ -93,6 +94,17 @@ type ComponentOperationLock struct {
 	TaskID      string    `json:"-" gorm:"size:36;not null;uniqueIndex"`
 	AcquiredAt  time.Time `json:"-"`
 	HeartbeatAt time.Time `json:"-"`
+}
+
+type RuntimeGroupOperationLock struct {
+	RuntimeGroup string    `json:"-" gorm:"primaryKey;size:64"`
+	TaskID       string    `json:"-" gorm:"size:36;not null;uniqueIndex"`
+	AcquiredAt   time.Time `json:"-"`
+	HeartbeatAt  time.Time `json:"-"`
+}
+
+func (RuntimeGroupOperationLock) TableName() string {
+	return "runtime_group_operation_lock"
 }
 
 func (ComponentOperationLock) TableName() string {

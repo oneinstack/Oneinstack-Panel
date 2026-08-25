@@ -133,6 +133,7 @@ func (cm *ConfigManager) setDefaults() {
 	cm.viper.SetDefault("system.panelEntryPath", "")
 	cm.viper.SetDefault("system.defaultPath", "/")
 	cm.viper.SetDefault("system.webPath", "/data/wwwroot/")
+	cm.viper.SetDefault("system.webVhostRoot", "/usr/local/one/vhost")
 	cm.viper.SetDefault("system.logPath", "/data/wwwlogs/")
 	cm.viper.SetDefault("system.dataPath", "/data/db/")
 	cm.viper.SetDefault("system.fileUploadMaxBytes", int64(100<<20))

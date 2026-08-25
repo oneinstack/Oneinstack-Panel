@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -35,6 +36,7 @@ type InstallRequest struct {
 	PreviousConfiguration map[string]string
 	Configuration         map[string]string
 	RestoreFromID         string
+	SwitchRequested       bool
 }
 
 type Executor func(
@@ -50,6 +52,11 @@ type RecoveryInspection struct {
 }
 
 type RecoveryInspector func(context.Context, *models.SoftwareTask) RecoveryInspection
+
+type RuntimeGroupOwner struct {
+	Component   string
+	ServiceName string
+}
 
 type queuedTask struct {
 	taskID  string
@@ -112,6 +119,14 @@ func (m *Manager) Start() error {
 			m.startErr = fmt.Errorf("create software task log directory: %w", err)
 			return
 		}
+		// Keep the runtime lock usable for standalone managers as well as the
+		// application-wide migration path. This also makes Panel restart
+		// recovery safe when the manager is initialized before the main DB
+		// migration completes.
+		if err := m.db.AutoMigrate(&models.RuntimeGroupOperationLock{}); err != nil {
+			m.startErr = fmt.Errorf("migrate runtime group task locks: %w", err)
+			return
+		}
 		if err := m.reconcileInterruptedTasks(); err != nil {
 			m.startErr = err
 			return
@@ -150,6 +165,15 @@ func (m *Manager) SubmitServiceAction(
 	action string,
 	requestedBy int64,
 ) (*models.SoftwareTask, error) {
+	return m.SubmitServiceActionWithSwitch(component, action, false, requestedBy)
+}
+
+func (m *Manager) SubmitServiceActionWithSwitch(
+	component string,
+	action string,
+	switchRequested bool,
+	requestedBy int64,
+) (*models.SoftwareTask, error) {
 	key, err := m.softwareKeyForService(component)
 	if err != nil {
 		return nil, err
@@ -159,8 +183,9 @@ func (m *Manager) SubmitServiceAction(
 		return nil, fmt.Errorf("unsupported service action: %s", action)
 	}
 	return m.submit(InstallRequest{
-		Operation: action,
-		Key:       key,
+		Operation:       action,
+		Key:             key,
+		SwitchRequested: switchRequested,
 	}, requestedBy)
 }
 
@@ -236,11 +261,25 @@ func (m *Manager) submit(request InstallRequest, requestedBy int64) (*models.Sof
 	if err != nil {
 		return nil, err
 	}
+	runtimeGroup := m.runtimeGroupForComponent(component)
+	if request.SwitchRequested && runtimeGroup == "" {
+		return nil, errors.New("SWITCH_UNSUPPORTED: component does not belong to a runtime group")
+	}
+	if request.SwitchRequested && request.Operation != "start" && request.Operation != "restart" {
+		return nil, errors.New("SWITCH_UNSUPPORTED: switch is only valid for start or restart")
+	}
+	if isRuntimeOperation(request.Operation) && runtimeGroup != "" &&
+		(request.Operation == "start" || request.Operation == "restart") && !request.SwitchRequested {
+		owners := activeRuntimeGroupOwners(context.Background(), runtimeGroup, component)
+		if len(owners) > 0 {
+			return nil, fmt.Errorf("RUNTIME_GROUP_BUSY: %s is already active", owners[0].ServiceName)
+		}
+	}
 	if request.Operation == "install" {
 		if err := m.validateCatalogInstall(request.Key, request.Version); err != nil {
 			return nil, err
 		}
-		if err := m.validateExclusiveComponentInstall(component); err != nil {
+		if err := m.validateExclusiveDatabaseInstall(component); err != nil {
 			return nil, err
 		}
 	}
@@ -300,6 +339,7 @@ func (m *Manager) submit(request InstallRequest, requestedBy int64) (*models.Sof
 	safeParameterValues := map[string]any{
 		"port":     request.Port,
 		"username": request.Username,
+		"switch":   request.SwitchRequested,
 	}
 	if request.Operation == "configure" {
 		safeParameterValues["revision"] = request.Revision
@@ -319,6 +359,7 @@ func (m *Manager) submit(request InstallRequest, requestedBy int64) (*models.Sof
 		ID:               taskID,
 		Operation:        operation,
 		Component:        component,
+		SwitchRequested:  request.SwitchRequested,
 		SoftwareKey:      request.Key,
 		RequestedVersion: request.Version,
 		Status:           models.SoftwareTaskStatusQueued,
@@ -450,6 +491,21 @@ func (m *Manager) run(item queuedTask) {
 		return
 	}
 	defer m.releaseComponentLock(task.Component, task.ID)
+	if runtimeGroup := m.runtimeGroupForComponent(task.Component); runtimeGroup != "" {
+		if err := m.acquireRuntimeGroupLock(&task, runtimeGroup); err != nil {
+			reporter := newReporter(m, task.ID)
+			_ = reporter.finish(models.SoftwareTaskStatusFailed, "RUNTIME_GROUP_BUSY", err.Error())
+			return
+		}
+		defer m.releaseRuntimeGroupLock(runtimeGroup, task.ID)
+		if (task.Operation == "start" || task.Operation == "restart") && !task.SwitchRequested {
+			if owners := activeRuntimeGroupOwners(context.Background(), runtimeGroup, task.Component); len(owners) > 0 {
+				reporter := newReporter(m, task.ID)
+				_ = reporter.finish(models.SoftwareTaskStatusFailed, "RUNTIME_GROUP_BUSY", fmt.Sprintf("%s is already active", owners[0].ServiceName))
+				return
+			}
+		}
+	}
 
 	heartbeatDone := make(chan struct{})
 	go func() {
@@ -549,6 +605,25 @@ func (m *Manager) releaseComponentLock(component, taskID string) {
 		Delete(&models.ComponentOperationLock{}).Error
 }
 
+func (m *Manager) acquireRuntimeGroupLock(task *models.SoftwareTask, runtimeGroup string) error {
+	now := time.Now()
+	lock := &models.RuntimeGroupOperationLock{
+		RuntimeGroup: runtimeGroup,
+		TaskID:       task.ID,
+		AcquiredAt:   now,
+		HeartbeatAt:  now,
+	}
+	if err := m.db.Create(lock).Error; err != nil {
+		return fmt.Errorf("runtime group %s already has an operation in progress", runtimeGroup)
+	}
+	return nil
+}
+
+func (m *Manager) releaseRuntimeGroupLock(runtimeGroup, taskID string) {
+	_ = m.db.Where("runtime_group = ? AND task_id = ?", runtimeGroup, taskID).
+		Delete(&models.RuntimeGroupOperationLock{}).Error
+}
+
 func (m *Manager) isCancelRequested(taskID string) bool {
 	var task models.SoftwareTask
 	if err := m.db.Select("cancel_requested").First(&task, "id = ?", taskID).Error; err != nil {
@@ -628,6 +703,10 @@ func (m *Manager) reconcileInterruptedTasks() error {
 			Delete(&models.ComponentOperationLock{}).Error; err != nil {
 			return fmt.Errorf("clear stale component task locks: %w", err)
 		}
+		if err := tx.Session(&gorm.Session{AllowGlobalUpdate: true}).
+			Delete(&models.RuntimeGroupOperationLock{}).Error; err != nil {
+			return fmt.Errorf("clear stale runtime group task locks: %w", err)
+		}
 		return nil
 	})
 }
@@ -685,6 +764,8 @@ func (m *Manager) softwareKeyForUninstall(value string) (string, error) {
 	switch normalized {
 	case "nginx", "webserver":
 		return "webserver", nil
+	case "openresty", "tengine", "apache", "caddy":
+		return normalized, nil
 	case "mysql", "db":
 		return "db", nil
 	case "redis":
@@ -728,45 +809,80 @@ func (m *Manager) validateCatalogInstall(key, version string) error {
 	return nil
 }
 
-func (m *Manager) validateExclusiveComponentInstall(component string) error {
+func (m *Manager) validateExclusiveDatabaseInstall(component string) error {
 	component = strings.ToLower(strings.TrimSpace(component))
-	groups := [][]string{
-		{"nginx", "tengine", "openresty", "caddy", "apache"},
-		{"mysql", "mariadb", "percona"},
-	}
-	for _, group := range groups {
-		matched := false
-		for _, candidate := range group {
-			if component == candidate {
-				matched = true
-				break
-			}
+	group := []string{"mysql", "mariadb", "percona"}
+	matched := false
+	for _, candidate := range group {
+		if component == candidate {
+			matched = true
+			break
 		}
-		if !matched {
+	}
+	if !matched {
+		return nil
+	}
+
+	var installed models.Software
+	err := m.db.
+		Where("installed = ? AND component IN ? AND component <> ?", true, group, component).
+		Order("id DESC").
+		First(&installed).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("check mutually exclusive database software: %w", err)
+	}
+	conflict := strings.TrimSpace(installed.Name)
+	if conflict == "" {
+		conflict = strings.TrimSpace(installed.Component)
+	}
+	return fmt.Errorf(
+		"cannot install %s while %s is installed; uninstall the conflicting component first",
+		component,
+		conflict,
+	)
+}
+
+func (m *Manager) runtimeGroupForComponent(component string) string {
+	component = strings.ToLower(strings.TrimSpace(component))
+	var row models.Software
+	if m != nil && m.db != nil && m.db.Where("component = ?", component).
+		Order("installed DESC, catalog_managed DESC, id DESC").First(&row).Error == nil {
+		if group := strings.TrimSpace(row.RuntimeGroup); group != "" {
+			return group
+		}
+	}
+	if component == "nginx" || component == "openresty" || component == "tengine" || component == "caddy" || component == "apache" {
+		return "web-server"
+	}
+	return ""
+}
+
+func activeRuntimeGroupOwners(ctx context.Context, runtimeGroup, excludeComponent string) []RuntimeGroupOwner {
+	if strings.TrimSpace(runtimeGroup) == "" {
+		return nil
+	}
+	units := []RuntimeGroupOwner{
+		{Component: "nginx", ServiceName: "oneinstack-nginx"},
+		{Component: "openresty", ServiceName: "oneinstack-openresty"},
+		{Component: "tengine", ServiceName: "oneinstack-tengine"},
+		{Component: "caddy", ServiceName: "oneinstack-caddy"},
+		{Component: "apache", ServiceName: "oneinstack-httpd"},
+		{Component: "legacy-web", ServiceName: "nginx"},
+	}
+	result := make([]RuntimeGroupOwner, 0, len(units))
+	for _, owner := range units {
+		if owner.Component == excludeComponent {
 			continue
 		}
-		var installed models.Software
-		err := m.db.
-			Where("installed = ? AND component IN ? AND component <> ?", true, group, component).
-			Order("id DESC").
-			First(&installed).Error
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil
+		command := exec.CommandContext(ctx, "systemctl", "is-active", "--quiet", owner.ServiceName+".service")
+		if err := command.Run(); err == nil {
+			result = append(result, owner)
 		}
-		if err != nil {
-			return fmt.Errorf("check mutually exclusive software: %w", err)
-		}
-		conflict := strings.TrimSpace(installed.Name)
-		if conflict == "" {
-			conflict = strings.TrimSpace(installed.Component)
-		}
-		return fmt.Errorf(
-			"cannot install %s while %s is installed; uninstall the conflicting component first",
-			component,
-			conflict,
-		)
 	}
-	return nil
+	return result
 }
 
 func (m *Manager) softwareKeyForService(value string) (string, error) {

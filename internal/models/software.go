@@ -32,6 +32,7 @@ type Software struct {
 	Tags                    string    `json:"tags"`
 	ManageScopesJSON        string    `json:"-" gorm:"column:manage_scopes;type:text"`
 	ServiceName             string    `json:"serviceName,omitempty" gorm:"size:128"`
+	RuntimeGroup            string    `json:"runtimeGroup,omitempty" gorm:"size:64;index"`
 	Version                 string    `json:"version"`
 	Params                  string    `json:"params"`
 	Log                     string    `json:"log"`

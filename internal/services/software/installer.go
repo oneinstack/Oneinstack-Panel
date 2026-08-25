@@ -202,6 +202,76 @@ func (installer *Installer) ServiceActionTask(
 	return installer.scriptManager.ExecuteScriptTask(ctx, scriptInfo, params, logPath, observer)
 }
 
+// SwitchServiceActionTask stops the active owner of a runtime group, starts
+// the requested component, and restores the previous owners when the target
+// action fails. Legacy or unmanaged units are never stopped automatically.
+func (installer *Installer) SwitchServiceActionTask(
+	ctx context.Context,
+	component string,
+	version string,
+	action string,
+	logPath string,
+	observer script.ExecutionObserver,
+) (string, error) {
+	definition, err := ResolveServiceComponent(app.DB(), component)
+	if err != nil {
+		return "", err
+	}
+	if definition.RuntimeGroup == "" || (action != "start" && action != "restart") {
+		return installer.ServiceActionTask(ctx, component, version, action, logPath, observer)
+	}
+	owners := ActiveRuntimeGroupOwners(ctx, definition.RuntimeGroup, definition.Component)
+	if len(owners) == 0 {
+		return installer.ServiceActionTask(ctx, component, version, action, logPath, observer)
+	}
+
+	type stoppedOwner struct {
+		component string
+		version   string
+	}
+	stopped := make([]stoppedOwner, 0, len(owners))
+	restore := func() error {
+		var restoreErr error
+		for index := len(stopped) - 1; index >= 0; index-- {
+			owner := stopped[index]
+			if _, err := installer.ServiceActionTask(ctx, owner.component, owner.version, "start", logPath, observer); err != nil && restoreErr == nil {
+				restoreErr = err
+			}
+		}
+		return restoreErr
+	}
+	for _, owner := range owners {
+		if owner.Component == "legacy-web" {
+			return "", fmt.Errorf("runtime group owner %s is unmanaged; migrate nginx.service before switching", owner.ServiceName)
+		}
+		var row models.Software
+		if err := app.DB().Where("installed = ? AND component = ?", true, owner.Component).
+			Order("install_time DESC, id DESC").First(&row).Error; err != nil {
+			return "", fmt.Errorf("runtime group owner %s is not managed by Panel: %w", owner.ServiceName, err)
+		}
+		ownerVersion := strings.TrimSpace(row.InstallVersion)
+		if ownerVersion == "" {
+			ownerVersion = strings.TrimSpace(row.Version)
+		}
+		if ownerVersion == "" {
+			return "", fmt.Errorf("runtime group owner %s has no installed version", owner.Component)
+		}
+		if _, err := installer.ServiceActionTask(ctx, owner.Component, ownerVersion, "stop", logPath, observer); err != nil {
+			_ = restore()
+			return "", fmt.Errorf("stop runtime group owner %s: %w", owner.Component, err)
+		}
+		stopped = append(stopped, stoppedOwner{component: owner.Component, version: ownerVersion})
+	}
+	if _, err := installer.ServiceActionTask(ctx, component, version, action, logPath, observer); err != nil {
+		restoreErr := restore()
+		if restoreErr != nil {
+			return "", fmt.Errorf("start %s failed: %w; restore previous runtime owner failed: %v", component, err, restoreErr)
+		}
+		return "", fmt.Errorf("start %s failed; previous runtime owner restored: %w", component, err)
+	}
+	return "", nil
+}
+
 func (installer *Installer) getUninstallScript(
 	ctx context.Context,
 	params *input.RemoveParams,

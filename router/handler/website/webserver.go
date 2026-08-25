@@ -78,7 +78,11 @@ func UpdateWebServerConfig(c *gin.Context) {
 		handleWebServerConfigError(c, err, "读取当前 Web 服务器配置失败")
 		return
 	}
-	snapshot, err := configsnapshot.Default().Create(configsnapshot.CreateInput{ResourceType: "nginx", ResourceID: request.Path, Operation: "update", Before: before, After: request, RequestedBy: userID, Artifact: []byte(before.Content), ArtifactName: "nginx-before.conf"})
+	resourceType := manager.Server.Component
+	if strings.TrimSpace(resourceType) == "" {
+		resourceType = "web-server"
+	}
+	snapshot, err := configsnapshot.Default().Create(configsnapshot.CreateInput{ResourceType: resourceType, ResourceID: request.Path, Operation: "update", Before: before, After: request, RequestedBy: userID, Artifact: []byte(before.Content), ArtifactName: resourceType + "-before.conf"})
 	if err != nil {
 		handleWebServerConfigError(c, err, "创建 Web 服务器配置快照失败")
 		return
@@ -96,7 +100,7 @@ func UpdateWebServerConfig(c *gin.Context) {
 		handleWebServerConfigError(c, err, "更新 Web 服务器配置快照状态失败")
 		return
 	}
-	configsnapshotHandler.RecordAudit(c, snapshot, "succeeded", "Nginx 受管配置已发布")
+	configsnapshotHandler.RecordAudit(c, snapshot, "succeeded", manager.Server.Name+" 受管配置已发布")
 	c.JSON(http.StatusOK, core.SuccessResponseForContext(c, result))
 }
 
@@ -113,7 +117,7 @@ func handleWebServerConfigError(c *gin.Context, err error, message string) {
 		core.HandleError(c, core.WrapError(
 			err,
 			core.ErrConfigError,
-			"未检测到可管理的 Nginx 或 OpenResty",
+			"未检测到可管理的 Web 引擎",
 		))
 	case errors.Is(err, websiteService.ErrWebServerConfigConflict):
 		core.HandleError(c, core.WrapError(

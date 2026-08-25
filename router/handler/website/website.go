@@ -74,7 +74,7 @@ func Add(c *gin.Context) {
 		}
 		message := "网站配置发布失败"
 		if errors.Is(err, website.ErrNginxUnavailable) {
-			message = "未检测到可用 Nginx，请先安装并确保服务可执行文件可被面板访问"
+			message = "未检测到可用 Web 引擎，请先安装并确保服务可执行文件可被面板访问"
 		}
 		appErr := core.WrapError(err, core.ErrConfigError, message)
 		core.HandleError(c, appErr)
@@ -98,7 +98,7 @@ func Update(c *gin.Context) {
 	if err != nil {
 		message := "网站配置更新失败"
 		if errors.Is(err, website.ErrNginxUnavailable) {
-			message = "未检测到可用 Nginx，请先安装并确保服务可执行文件可被面板访问"
+			message = "未检测到可用 Web 引擎，请先安装并确保服务可执行文件可被面板访问"
 		}
 		appErr := core.WrapError(err, core.ErrConfigError, message)
 		core.HandleError(c, appErr)

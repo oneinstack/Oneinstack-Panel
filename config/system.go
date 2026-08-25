@@ -14,6 +14,7 @@ type System struct {
 	Remote                        string   `mapstructure:"remote" json:"remote" yaml:"remote"`
 	DefaultPath                   string   `mapstructure:"defaultPath" json:"defaultPath" yaml:"defaultPath"`
 	WebPath                       string   `mapstructure:"webPath" json:"webPath" yaml:"webPath"`
+	WebVhostRoot                  string   `mapstructure:"webVhostRoot" json:"webVhostRoot" yaml:"webVhostRoot"`
 	LogPath                       string   `mapstructure:"logPath" json:"logPath" yaml:"logPath"`
 	DataPath                      string   `mapstructure:"dataPath" json:"dataPath" yaml:"dataPath"`
 	JWTSecret                     string   `mapstructure:"jwtSecret" json:"jwtSecret" yaml:"jwtSecret"`

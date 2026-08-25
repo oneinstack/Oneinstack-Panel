@@ -28,6 +28,7 @@ type Service struct {
 	LogRoot         string
 	ChallengeRoot   string
 	CertificateRoot string
+	VhostRoot       string
 	Publisher       *Publisher
 	ConfigManager   *WebServerConfigManager
 	Firewall        *safeservice.Service
@@ -41,20 +42,204 @@ func defaultService() (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
+	vhostRoot := strings.TrimSpace(app.ONE_CONFIG.System.WebVhostRoot)
+	if vhostRoot == "" {
+		vhostRoot = filepath.Join(app.GetBasePath(), "vhost")
+	}
+	if err := ensureManagedVhostLayout(app.DB(), server, vhostRoot); err != nil {
+		return nil, fmt.Errorf("prepare Web server vhost layout: %w", err)
+	}
 	return &Service{
 		DB:              app.DB(),
 		WebRoot:         app.ONE_CONFIG.System.WebPath,
 		LogRoot:         app.ONE_CONFIG.System.LogPath,
 		ChallengeRoot:   app.ONE_CONFIG.System.ACMEChallengePath,
 		CertificateRoot: app.ONE_CONFIG.System.CertificatePath,
+		VhostRoot:       vhostRoot,
 		Publisher: &Publisher{
-			ConfigDir:   server.SiteConfigDir,
-			NginxBinary: server.BinaryPath,
-			Runner:      OSCommandRunner{},
+			ConfigDir:      filepath.Join(vhostRoot, server.Component),
+			NginxBinary:    server.BinaryPath,
+			Engine:         server.Component,
+			ServiceName:    server.ServiceName,
+			MainConfigPath: server.MainConfigPath,
+			Runner:         OSCommandRunner{},
 		},
 		ConfigManager: newWebServerConfigManager(server),
 		Firewall:      safeservice.NewDefaultService(),
 	}, nil
+}
+
+const managedVhostMigrationMarker = ".oneinstack-vhost-migrated"
+
+func ensureManagedVhostLayout(database *gorm.DB, server WebServerInfo, vhostRoot string) error {
+	root, err := normalizedBasePath(vhostRoot, "Web server vhost root")
+	if err != nil {
+		return err
+	}
+	engine, err := normalizeWebsiteEngine(server.Component)
+	if err != nil {
+		return err
+	}
+	engineRoot := filepath.Join(root, engine)
+	if err := os.MkdirAll(engineRoot, 0750); err != nil {
+		return err
+	}
+	mainPath := filepath.Clean(server.MainConfigPath)
+	var originalMain []byte
+	mainExisted := isRegularFile(mainPath)
+	if mainExisted {
+		originalMain, err = os.ReadFile(mainPath)
+		if err != nil {
+			return err
+		}
+	}
+	includeChanged, err := ensureEngineVhostInclude(server, engineRoot)
+	if err != nil {
+		return err
+	}
+	restoreMain := func(cause error) error {
+		if !includeChanged || !mainExisted {
+			return cause
+		}
+		if restoreErr := atomicWriteConfig(filepath.Dir(mainPath), mainPath, originalMain); restoreErr != nil {
+			return fmt.Errorf("%w; restore Web server main configuration failed: %v", cause, restoreErr)
+		}
+		return cause
+	}
+	marker := filepath.Join(root, managedVhostMigrationMarker)
+	if _, err := os.Stat(marker); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return restoreMain(err)
+	}
+	if err := migrateManagedVhostFiles(database, server, engineRoot); err != nil {
+		return restoreMain(err)
+	}
+	if err := os.WriteFile(marker, []byte("version=1\n"), 0640); err != nil {
+		return restoreMain(err)
+	}
+	return nil
+}
+
+func ensureEngineVhostInclude(server WebServerInfo, engineRoot string) (bool, error) {
+	mainPath := filepath.Clean(server.MainConfigPath)
+	if !isRegularFile(mainPath) {
+		return false, nil
+	}
+	content, err := os.ReadFile(mainPath)
+	if err != nil {
+		return false, err
+	}
+	includePath := filepath.ToSlash(engineRoot) + "/*.conf"
+	if strings.Contains(string(content), includePath) {
+		return false, nil
+	}
+	updated := string(content)
+	switch server.Component {
+	case "nginx", "openresty", "tengine":
+		include := "\n    include " + includePath + ";\n"
+		if index := strings.Index(updated, "http {"); index >= 0 {
+			position := index + len("http {")
+			updated = updated[:position] + include + updated[position:]
+		} else {
+			return false, errors.New("Nginx main configuration has no http block for managed vhosts")
+		}
+	case "apache":
+		updated += "\nIncludeOptional " + includePath + "\n"
+	case "caddy":
+		updated += "\nimport " + includePath + "\n"
+	default:
+		return false, fmt.Errorf("unsupported Web server engine %q", server.Component)
+	}
+	if err := atomicWriteConfig(filepath.Dir(mainPath), mainPath, []byte(updated)); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func migrateManagedVhostFiles(database *gorm.DB, server WebServerInfo, engineRoot string) error {
+	if database == nil || strings.TrimSpace(server.SiteConfigDir) == "" {
+		return nil
+	}
+	var sites []models.Website
+	if err := database.Select("name, engine").Find(&sites).Error; err != nil {
+		return err
+	}
+	vhostRoot := filepath.Dir(engineRoot)
+	type movedFile struct {
+		source string
+		target string
+	}
+	moved := make([]movedFile, 0)
+	createdTargets := make([]string, 0)
+	rollback := func(cause error) error {
+		var rollbackErr error
+		for index := len(createdTargets) - 1; index >= 0; index-- {
+			if err := os.Remove(createdTargets[index]); err != nil && !errors.Is(err, os.ErrNotExist) {
+				rollbackErr = errors.Join(rollbackErr, err)
+			}
+		}
+		for index := len(moved) - 1; index >= 0; index-- {
+			if err := os.Rename(moved[index].target, moved[index].source); err != nil {
+				rollbackErr = errors.Join(rollbackErr, err)
+			}
+		}
+		if rollbackErr != nil {
+			return fmt.Errorf("%w; restore migrated Web server configuration failed: %v", cause, rollbackErr)
+		}
+		return cause
+	}
+	for index := range sites {
+		name := strings.TrimSpace(sites[index].Name)
+		if !configNamePattern.MatchString(name + ".conf") {
+			continue
+		}
+		engine, engineErr := normalizeWebsiteEngine(sites[index].Engine)
+		if engineErr != nil {
+			engine, engineErr = normalizeWebsiteEngine(server.Component)
+			if engineErr != nil {
+				return rollback(engineErr)
+			}
+		}
+		legacy := filepath.Join(filepath.Clean(server.SiteConfigDir), name+".conf")
+		info, err := os.Lstat(legacy)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return rollback(err)
+		}
+		if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+			continue
+		}
+		targetRoot := filepath.Join(vhostRoot, engine)
+		if err := os.MkdirAll(targetRoot, 0750); err != nil {
+			return rollback(err)
+		}
+		target := filepath.Join(targetRoot, name+".conf")
+		if _, err := os.Stat(target); err == nil {
+			continue
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return rollback(err)
+		}
+		data, err := os.ReadFile(legacy)
+		if err != nil {
+			return rollback(err)
+		}
+		if err := atomicWriteConfig(targetRoot, target, data); err != nil {
+			return rollback(err)
+		}
+		createdTargets = append(createdTargets, target)
+		legacyRoot := filepath.Join(vhostRoot, ".legacy", engine)
+		if err := os.MkdirAll(legacyRoot, 0700); err != nil {
+			return rollback(err)
+		}
+		if err := os.Rename(legacy, filepath.Join(legacyRoot, name+".conf")); err != nil {
+			return rollback(err)
+		}
+		moved = append(moved, movedFile{source: legacy, target: filepath.Join(legacyRoot, name+".conf")})
+	}
+	return nil
 }
 
 // DefaultService returns the configured website service for background task
@@ -97,13 +282,84 @@ func (service *Service) ConfigFile(site *models.Website) (string, error) {
 	}
 	name := strings.TrimSpace(site.Name) + ".conf"
 	if !configNamePattern.MatchString(name) {
-		return "", errors.New("stored website has an unsafe Nginx config name")
+		return "", errors.New("stored website has an unsafe Web server config name")
 	}
-	configRoot, err := normalizedBasePath(service.Publisher.ConfigDir, "Nginx config root")
+	configRoot, err := service.websiteConfigRoot(site)
 	if err != nil {
 		return "", err
 	}
 	return filepath.Join(configRoot, name), nil
+}
+
+func (service *Service) websiteConfigRoot(site *models.Website) (string, error) {
+	if service == nil || service.Publisher == nil {
+		return "", errors.New("Web server publisher is not configured")
+	}
+	if strings.TrimSpace(service.VhostRoot) == "" {
+		return normalizedBasePath(service.Publisher.ConfigDir, "Web server config root")
+	}
+	engine, err := normalizeWebsiteEngine(site.Engine)
+	if err != nil {
+		return "", err
+	}
+	root, err := normalizedBasePath(service.VhostRoot, "Web server vhost root")
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(root, engine), nil
+}
+
+func (service *Service) publisherForSite(site *models.Website) (*Publisher, error) {
+	if service == nil || service.Publisher == nil {
+		return nil, errors.New("Web server publisher is not configured")
+	}
+	engine, err := normalizeWebsiteEngine(site.Engine)
+	if err != nil {
+		return nil, err
+	}
+	publisher := *service.Publisher
+	publisher.Engine = engine
+	configRoot, err := service.websiteConfigRoot(site)
+	if err != nil {
+		return nil, err
+	}
+	publisher.ConfigDir = configRoot
+	currentEngine, _ := normalizeWebsiteEngine(service.Publisher.Engine)
+	if currentEngine != engine {
+		publisher.NginxBinary = webEngineBinary(engine)
+		publisher.ServiceName = webServiceName(engine)
+		publisher.MainConfigPath = webEngineMainConfig(engine)
+	}
+	return &publisher, nil
+}
+
+func webEngineBinary(engine string) string {
+	switch engine {
+	case "openresty":
+		return "/usr/local/openresty/nginx/sbin/nginx"
+	case "tengine":
+		return "/usr/local/tengine/sbin/nginx"
+	case "apache":
+		return "/usr/local/apache/bin/httpd"
+	case "caddy":
+		return "/usr/local/caddy/bin/caddy"
+	default:
+		return "/usr/local/nginx/sbin/nginx"
+	}
+}
+
+func webEngineMainConfig(engine string) string {
+	root := filepath.Dir(webEngineBinary(engine))
+	switch engine {
+	case "openresty":
+		return filepath.Join(root, "../conf/nginx.conf")
+	case "apache":
+		return filepath.Join(root, "../conf/httpd.conf")
+	case "caddy":
+		return filepath.Join(root, "../conf/Caddyfile")
+	default:
+		return filepath.Join(root, "../conf/nginx.conf")
+	}
 }
 
 // ManagedRoot verifies that a stored website root is strictly below WebRoot
@@ -128,6 +384,9 @@ func (service *Service) prepareCreate(param *models.Website, allowManagedAbsolut
 	}
 	if param == nil {
 		return nil, errors.New("website parameters are required")
+	}
+	if strings.TrimSpace(param.Engine) == "" && service.Publisher != nil {
+		param.Engine = service.Publisher.Engine
 	}
 	prepared, err := prepareWebsiteForCreate(
 		param,
@@ -290,6 +549,10 @@ func (service *Service) add(ctx context.Context, param *models.Website, allowMan
 	if err != nil {
 		return err
 	}
+	publisher, err := service.publisherForSite(&prepared.model)
+	if err != nil {
+		return err
+	}
 	createdRoot, err := service.ensureWebsiteRoot(prepared.model.Type, prepared.model.RootDir)
 	if err != nil {
 		return err
@@ -327,7 +590,7 @@ func (service *Service) add(ctx context.Context, param *models.Website, allowMan
 			return err
 		}
 		content := prepared.config
-		published, err := service.Publisher.Publish(ctx, map[string]*string{
+		published, err := publisher.Publish(ctx, map[string]*string{
 			prepared.configName: &content,
 		})
 		if err != nil {
@@ -374,6 +637,12 @@ func (service *Service) Update(ctx context.Context, param *models.Website) error
 	var existing models.Website
 	if err := service.DB.First(&existing, "id = ?", param.ID).Error; err != nil {
 		return err
+	}
+	if strings.TrimSpace(param.Engine) == "" {
+		param.Engine = existing.Engine
+		if strings.TrimSpace(param.Engine) == "" && service.Publisher != nil {
+			param.Engine = service.Publisher.Engine
+		}
 	}
 	_, settings, err := service.loadSettings(existing.ID)
 	if err != nil {
@@ -447,8 +716,27 @@ func (service *Service) Update(ctx context.Context, param *models.Website) error
 		}
 		return errors.New("stored website has an unsafe Nginx config name")
 	}
+	oldPublisher, err := service.publisherForSite(&existing)
+	if err != nil {
+		return err
+	}
+	newPublisher, err := service.publisherForSite(&prepared.model)
+	if err != nil {
+		return err
+	}
+	oldEngine, _ := normalizeWebsiteEngine(existing.Engine)
+	newEngine, _ := normalizeWebsiteEngine(prepared.model.Engine)
+	if oldEngine != newEngine {
+		oldConfigPath := filepath.Join(oldPublisher.ConfigDir, oldName)
+		if current, readErr := os.ReadFile(oldConfigPath); readErr == nil &&
+			strings.TrimSpace(string(current)) != strings.TrimSpace(previous.config) {
+			return errors.New("UNSUPPORTED_ENGINE_DIRECTIVE: existing custom Web server directives must be migrated explicitly before changing engines")
+		} else if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+			return readErr
+		}
+	}
 
-	var publication *Publication
+	publications := make([]*Publication, 0, 2)
 	transactionErr := service.DB.Transaction(func(tx *gorm.DB) error {
 		var duplicate int64
 		if err := tx.Model(&models.Website{}).
@@ -462,29 +750,46 @@ func (service *Service) Update(ctx context.Context, param *models.Website) error
 		if err := tx.Save(&prepared.model).Error; err != nil {
 			return err
 		}
-		changes := map[string]*string{prepared.configName: nil}
+		if filepath.Clean(oldPublisher.ConfigDir) == filepath.Clean(newPublisher.ConfigDir) {
+			changes := map[string]*string{prepared.configName: nil}
+			if prepared.model.Enabled {
+				content := prepared.config
+				merged, mergeErr := service.preserveCustomWebsiteConfig(&existing, previous.config, content)
+				if mergeErr != nil {
+					return mergeErr
+				}
+				content = merged
+				changes[prepared.configName] = &content
+			}
+			if oldName != prepared.configName {
+				changes[oldName] = nil
+			}
+			published, publishErr := newPublisher.Publish(ctx, changes)
+			if publishErr != nil {
+				return publishErr
+			}
+			publications = append(publications, published)
+			return nil
+		}
+
+		oldPublished, publishErr := oldPublisher.Publish(ctx, map[string]*string{oldName: nil})
+		if publishErr != nil {
+			return publishErr
+		}
+		publications = append(publications, oldPublished)
 		if prepared.model.Enabled {
 			content := prepared.config
-			merged, mergeErr := service.preserveCustomWebsiteConfig(&existing, previous.config, content)
-			if mergeErr != nil {
-				return mergeErr
+			newPublished, publishErr := newPublisher.Publish(ctx, map[string]*string{prepared.configName: &content})
+			if publishErr != nil {
+				return publishErr
 			}
-			content = merged
-			changes[prepared.configName] = &content
+			publications = append(publications, newPublished)
 		}
-		if oldName != prepared.configName {
-			changes[oldName] = nil
-		}
-		published, err := service.Publisher.Publish(ctx, changes)
-		if err != nil {
-			return err
-		}
-		publication = published
 		return nil
 	})
 	if transactionErr != nil {
-		if publication != nil {
-			transactionErr = errors.Join(transactionErr, publication.Rollback(context.Background()))
+		for index := len(publications) - 1; index >= 0; index-- {
+			transactionErr = errors.Join(transactionErr, publications[index].Rollback(context.Background()))
 		}
 		if createdRoot {
 			_ = os.Remove(prepared.model.RootDir)
@@ -626,7 +931,11 @@ func (service *Service) DeleteWithOptions(ctx context.Context, id int64, deleteF
 		if err := tx.Delete(&models.WebsiteTrafficCursor{}, "website_id = ?", id).Error; err != nil {
 			return err
 		}
-		published, err := service.Publisher.Publish(ctx, map[string]*string{
+		publisher, publisherErr := service.publisherForSite(&existing)
+		if publisherErr != nil {
+			return publisherErr
+		}
+		published, err := publisher.Publish(ctx, map[string]*string{
 			configName: nil,
 		})
 		if err != nil {
@@ -734,7 +1043,7 @@ func (service *Service) validate() error {
 		return errors.New("website database is not configured")
 	}
 	if service.Publisher == nil || service.Publisher.Runner == nil {
-		return errors.New("website Nginx publisher is not configured")
+		return errors.New("website Web server publisher is not configured")
 	}
 	if _, err := normalizedBasePath(service.WebRoot, "website root"); err != nil {
 		return err
@@ -923,7 +1232,11 @@ func (deployer *CertificateDeployer) publish(
 	if err != nil {
 		return nil, err
 	}
-	return deployer.service.Publisher.Publish(ctx, map[string]*string{
+	publisher, publisherErr := deployer.service.publisherForSite(&site)
+	if publisherErr != nil {
+		return nil, publisherErr
+	}
+	return publisher.Publish(ctx, map[string]*string{
 		prepared.configName: &content,
 	})
 }

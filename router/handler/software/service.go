@@ -37,6 +37,8 @@ type componentServiceStatus struct {
 	PackageSource    string    `json:"packageSource,omitempty"`
 	Busy             bool      `json:"busy"`
 	ActiveTaskID     string    `json:"activeTaskId,omitempty"`
+	ActiveOwner      string    `json:"activeOwner,omitempty"`
+	SwitchAvailable  bool      `json:"switchAvailable"`
 	ProbeErrorCode   string    `json:"probeErrorCode,omitempty"`
 	ProbeError       string    `json:"probeError,omitempty"`
 	CheckedAt        time.Time `json:"checkedAt"`
@@ -117,8 +119,25 @@ func RunComponentServiceAction(c *gin.Context) {
 		core.HandleError(c, core.WrapError(err, core.ErrInternalError, "软件任务服务不可用"))
 		return
 	}
-	task, err := manager.SubmitServiceAction(definition.Component, request.Action, userID)
+	task, err := manager.SubmitServiceActionWithSwitch(definition.Component, request.Action, request.Switch, userID)
 	if err != nil {
+		message := err.Error()
+		if strings.HasPrefix(message, "RUNTIME_GROUP_BUSY:") {
+			core.HandleErrorWithStatus(c, http.StatusConflict, core.NewErrorWithDetail(
+				core.ErrConflict,
+				"RUNTIME_GROUP_BUSY",
+				strings.TrimSpace(strings.TrimPrefix(message, "RUNTIME_GROUP_BUSY:")),
+			))
+			return
+		}
+		if strings.HasPrefix(message, "SWITCH_UNSUPPORTED:") {
+			core.HandleError(c, core.NewErrorWithDetail(
+				core.ErrBadRequest,
+				"SWITCH_UNSUPPORTED",
+				strings.TrimSpace(strings.TrimPrefix(message, "SWITCH_UNSUPPORTED:")),
+			))
+			return
+		}
 		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "创建服务控制任务失败"))
 		return
 	}
@@ -542,7 +561,8 @@ func componentServiceStatusesFor(
 			State:                      "not_installed",
 			CanConfigure:               softwareService.SupportsManagedConfiguration(runtimeDefinition.Component),
 			AvailableActions:           defaultServiceActions(runtimeDefinition.Component),
-			CanReload:                  runtimeDefinition.Component == "nginx" || runtimeDefinition.Component == "php",
+			CanReload:                  runtimeDefinition.Component == "nginx" || runtimeDefinition.Component == "openresty" || runtimeDefinition.Component == "tengine" || runtimeDefinition.Component == "caddy" || runtimeDefinition.Component == "apache" || runtimeDefinition.Component == "php",
+			SwitchAvailable:            runtimeDefinition.RuntimeGroup != "",
 			CheckedAt:                  now,
 		}
 		if active, exists := activeByComponent[runtimeDefinition.Component]; exists {
@@ -595,6 +615,30 @@ func componentServiceStatusesFor(
 		}(index, runtimeDefinition, status)
 	}
 	probes.Wait()
+	activeOwners := make(map[string]string)
+	for _, definition := range definitions {
+		group := strings.TrimSpace(definition.RuntimeGroup)
+		if group == "" {
+			continue
+		}
+		owners := softwareService.ActiveRuntimeGroupOwners(ctx, group, "")
+		if len(owners) > 0 {
+			activeOwners[group] = owners[0].Component
+		}
+	}
+	for _, status := range result {
+		if status.RuntimeGroup == "" || status.ActiveState != "active" {
+			continue
+		}
+		if activeOwners[status.RuntimeGroup] == "" {
+			activeOwners[status.RuntimeGroup] = status.Component
+		}
+	}
+	for index := range result {
+		if owner := activeOwners[result[index].RuntimeGroup]; owner != "" && owner != result[index].Component {
+			result[index].ActiveOwner = owner
+		}
+	}
 	return result, nil
 }
 
@@ -606,24 +650,25 @@ func installedComponentService(
 	for _, row := range rows {
 		key := strings.ToLower(strings.TrimSpace(row.Key))
 		component := strings.ToLower(strings.TrimSpace(row.Component))
-		if key == strings.ToLower(strings.TrimSpace(definition.SoftwareKey)) ||
-			component == strings.ToLower(strings.TrimSpace(definition.Component)) ||
-			(definition.SoftwareKey == "webserver" &&
-				(component == "nginx" || component == "openresty" || component == "tengine" ||
-					component == "apache" || component == "caddy" || key == "webserver" ||
-					key == "openresty" || key == "tengine" || key == "apache" || key == "caddy")) {
+		if key == strings.ToLower(strings.TrimSpace(definition.SoftwareKey)) &&
+			(definition.Component != "nginx" || component == "nginx" || component == "") ||
+			component == strings.ToLower(strings.TrimSpace(definition.Component)) {
 			return row, true
 		}
 	}
 	if installed, exists := byKey[definition.SoftwareKey]; exists {
-		return installed, true
+		component := strings.ToLower(strings.TrimSpace(installed.Component))
+		if definition.Component != "nginx" || component == "nginx" || component == "" {
+			return installed, true
+		}
 	}
 	return models.Software{}, false
 }
 
 func defaultServiceActions(component string) []string {
 	result := []string{"start", "stop", "restart"}
-	if component == "nginx" || component == "php" {
+	if component == "nginx" || component == "openresty" || component == "tengine" ||
+		component == "apache" || component == "caddy" || component == "php" {
 		result = append(result, "reload")
 	}
 	return result

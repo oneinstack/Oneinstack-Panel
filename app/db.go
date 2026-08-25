@@ -167,6 +167,7 @@ func createTables() error {
 		&models.SoftwareTask{},
 		&models.SoftwareTaskEvent{},
 		&models.ComponentOperationLock{},
+		&models.RuntimeGroupOperationLock{},
 		&models.SoftwareConfigurationHistory{},
 	)
 	if err != nil {
@@ -179,6 +180,11 @@ func createTables() error {
 		&models.WebsiteTrafficCursor{},
 	)
 	if err != nil {
+		return err
+	}
+	if err := db.Model(&models.Website{}).
+		Where("engine = '' OR engine IS NULL").
+		Update("engine", "nginx").Error; err != nil {
 		return err
 	}
 	err = db.AutoMigrate(

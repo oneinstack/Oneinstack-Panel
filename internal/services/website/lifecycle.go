@@ -84,7 +84,11 @@ func (service *Service) SetEnabled(ctx context.Context, id int64, enabled bool) 
 
 	var publication *Publication
 	err := service.DB.Transaction(func(tx *gorm.DB) error {
-		published, publishErr := service.Publisher.Publish(ctx, changes)
+		publisher, publisherErr := service.publisherForSite(&site)
+		if publisherErr != nil {
+			return publisherErr
+		}
+		published, publishErr := publisher.Publish(ctx, changes)
 		if publishErr != nil {
 			return publishErr
 		}
@@ -391,7 +395,12 @@ func (service *Service) enforceTamperProtection(ctx context.Context) error {
 			continue
 		}
 		content := prepared.config
-		if _, err := service.Publisher.Publish(ctx, map[string]*string{prepared.configName: &content}); err != nil {
+		publisher, publisherErr := service.publisherForSite(&site)
+		if publisherErr != nil {
+			result = errors.Join(result, publisherErr)
+			continue
+		}
+		if _, err := publisher.Publish(ctx, map[string]*string{prepared.configName: &content}); err != nil {
 			result = errors.Join(result, fmt.Errorf("restore protected website %s: %w", site.Name, err))
 			continue
 		}

@@ -381,6 +381,10 @@ func prepareWebsiteWithTLSAndSettings(
 	if runtimeSettings.RootDir != "" {
 		rootDir = runtimeSettings.RootDir
 	}
+	engine, err := normalizeWebsiteEngine(input.Engine)
+	if err != nil {
+		return nil, err
+	}
 	data := siteTemplateData{
 		Name:              name,
 		ListenPort:        port,
@@ -405,15 +409,16 @@ func prepareWebsiteWithTLSAndSettings(
 		AccessLogEnabled:  runtimeSettings.AccessLogEnabled,
 		ErrorLogEnabled:   runtimeSettings.ErrorLogEnabled,
 	}
-	var rendered bytes.Buffer
-	if err := siteTemplates.ExecuteTemplate(&rendered, siteType, data); err != nil {
-		return nil, fmt.Errorf("render Nginx website config: %w", err)
+	rendered, err := renderWebsiteEngineConfig(engine, siteType, data)
+	if err != nil {
+		return nil, err
 	}
 
 	result := *input
 	result.Name = name
 	result.Domain = strings.Join(domains, ",")
 	result.Type = siteType
+	result.Engine = engine
 	result.RootDir = rootDir
 	result.Dir = dir
 	result.Remark = remark
@@ -422,10 +427,209 @@ func prepareWebsiteWithTLSAndSettings(
 	result.TarUrl = targetHost
 	return &preparedWebsite{
 		model:      result,
-		config:     strings.TrimSpace(rendered.String()) + "\n",
+		config:     strings.TrimSpace(rendered) + "\n",
 		configName: configName,
 		listenPort: port,
 	}, nil
+}
+
+func normalizeWebsiteEngine(value string) (string, error) {
+	engine := strings.ToLower(strings.TrimSpace(value))
+	if engine == "" {
+		engine = "nginx"
+	}
+	switch engine {
+	case "nginx", "openresty", "tengine", "apache", "caddy":
+		return engine, nil
+	default:
+		return "", fmt.Errorf("unsupported website engine %q", value)
+	}
+}
+
+// WebServerAdapter contains the engine-specific website lifecycle operations.
+// The Nginx-family adapters share the same renderer and command semantics,
+// while Apache and Caddy keep their native configuration validation paths.
+type WebServerAdapter interface {
+	Engine() string
+	Render(siteType string, data siteTemplateData) (string, error)
+	Validate(context.Context, *Publisher) error
+	Reload(context.Context, *Publisher) error
+}
+
+type NginxAdapter struct{}
+type OpenRestyAdapter struct{}
+type TengineAdapter struct{}
+type ApacheAdapter struct{}
+type CaddyAdapter struct{}
+
+func (NginxAdapter) Engine() string     { return "nginx" }
+func (OpenRestyAdapter) Engine() string { return "openresty" }
+func (TengineAdapter) Engine() string   { return "tengine" }
+func (ApacheAdapter) Engine() string    { return "apache" }
+func (CaddyAdapter) Engine() string     { return "caddy" }
+
+func (adapter NginxAdapter) Render(siteType string, data siteTemplateData) (string, error) {
+	return renderNginxWebsiteConfig(adapter.Engine(), siteType, data)
+}
+
+func (adapter OpenRestyAdapter) Render(siteType string, data siteTemplateData) (string, error) {
+	return renderNginxWebsiteConfig(adapter.Engine(), siteType, data)
+}
+
+func (adapter TengineAdapter) Render(siteType string, data siteTemplateData) (string, error) {
+	return renderNginxWebsiteConfig(adapter.Engine(), siteType, data)
+}
+
+func (NginxAdapter) Validate(ctx context.Context, publisher *Publisher) error {
+	return validateNginxPublisher(ctx, publisher)
+}
+
+func (OpenRestyAdapter) Validate(ctx context.Context, publisher *Publisher) error {
+	return validateNginxPublisher(ctx, publisher)
+}
+
+func (TengineAdapter) Validate(ctx context.Context, publisher *Publisher) error {
+	return validateNginxPublisher(ctx, publisher)
+}
+
+func (NginxAdapter) Reload(ctx context.Context, publisher *Publisher) error {
+	return reloadNginxPublisher(ctx, publisher)
+}
+
+func (OpenRestyAdapter) Reload(ctx context.Context, publisher *Publisher) error {
+	return reloadNginxPublisher(ctx, publisher)
+}
+
+func (TengineAdapter) Reload(ctx context.Context, publisher *Publisher) error {
+	return reloadNginxPublisher(ctx, publisher)
+}
+
+func (ApacheAdapter) Render(siteType string, data siteTemplateData) (string, error) {
+	if strings.TrimSpace(data.RewriteDirectives) != "" ||
+		strings.TrimSpace(data.ServerDirectives) != "" ||
+		strings.TrimSpace(data.ExtraLocations) != "" {
+		return "", errors.New("UNSUPPORTED_ENGINE_DIRECTIVE: Nginx-specific website directives cannot be rendered for Apache")
+	}
+	return renderApacheWebsiteConfig(siteType, data), nil
+}
+
+func (CaddyAdapter) Render(siteType string, data siteTemplateData) (string, error) {
+	if strings.TrimSpace(data.RewriteDirectives) != "" ||
+		strings.TrimSpace(data.ServerDirectives) != "" ||
+		strings.TrimSpace(data.ExtraLocations) != "" {
+		return "", errors.New("UNSUPPORTED_ENGINE_DIRECTIVE: Nginx-specific website directives cannot be rendered for Caddy")
+	}
+	return renderCaddyWebsiteConfig(siteType, data), nil
+}
+
+func (ApacheAdapter) Validate(ctx context.Context, publisher *Publisher) error {
+	if publisher == nil || publisher.MainConfigPath == "" {
+		return errors.New("Apache main config is not configured")
+	}
+	return publisher.runCommand(ctx, publisher.NginxBinary, "-t", "-f", publisher.MainConfigPath)
+}
+
+func (CaddyAdapter) Validate(ctx context.Context, publisher *Publisher) error {
+	if publisher == nil || publisher.MainConfigPath == "" {
+		return errors.New("Caddy main config is not configured")
+	}
+	return publisher.runCommand(ctx, publisher.NginxBinary, "validate", "--config", publisher.MainConfigPath, "--adapter", "caddyfile")
+}
+
+func (ApacheAdapter) Reload(ctx context.Context, publisher *Publisher) error {
+	return reloadSystemdPublisher(ctx, publisher)
+}
+
+func (CaddyAdapter) Reload(ctx context.Context, publisher *Publisher) error {
+	return reloadSystemdPublisher(ctx, publisher)
+}
+
+func webServerAdapterForEngine(engine string) (WebServerAdapter, error) {
+	normalized, err := normalizeWebsiteEngine(engine)
+	if err != nil {
+		return nil, err
+	}
+	switch normalized {
+	case "nginx":
+		return NginxAdapter{}, nil
+	case "openresty":
+		return OpenRestyAdapter{}, nil
+	case "tengine":
+		return TengineAdapter{}, nil
+	case "apache":
+		return ApacheAdapter{}, nil
+	case "caddy":
+		return CaddyAdapter{}, nil
+	default:
+		return nil, fmt.Errorf("unsupported website engine %q", engine)
+	}
+}
+
+func renderWebsiteEngineConfig(engine, siteType string, data siteTemplateData) (string, error) {
+	adapter, err := webServerAdapterForEngine(engine)
+	if err != nil {
+		return "", err
+	}
+	return adapter.Render(siteType, data)
+}
+
+func renderNginxWebsiteConfig(engine, siteType string, data siteTemplateData) (string, error) {
+	var rendered bytes.Buffer
+	if err := siteTemplates.ExecuteTemplate(&rendered, siteType, data); err != nil {
+		return "", fmt.Errorf("render %s website config: %w", engine, err)
+	}
+	return rendered.String(), nil
+}
+
+func renderApacheWebsiteConfig(siteType string, data siteTemplateData) string {
+	serverName := strings.Fields(data.ServerNames)
+	primary := "_"
+	if len(serverName) > 0 {
+		primary = serverName[0]
+	}
+	var builder strings.Builder
+	fmt.Fprintf(&builder, "# Managed by OneinStack Panel - %s\n<VirtualHost *:%d>\n  ServerName %s\n", data.Name, data.ListenPort, primary)
+	for _, alias := range serverName[1:] {
+		fmt.Fprintf(&builder, "  ServerAlias %s\n", alias)
+	}
+	if siteType == "proxy" {
+		fmt.Fprintf(&builder, "  ProxyPreserveHost On\n  ProxyPass / %s\n  ProxyPassReverse / %s\n", data.ProxyURL, data.ProxyURL)
+	} else {
+		fmt.Fprintf(&builder, "  DocumentRoot %s\n  <Directory %s>\n    AllowOverride All\n    Require all granted\n  </Directory>\n", data.RootDir, data.RootDir)
+		if siteType == "php" {
+			backend := strings.TrimPrefix(data.PHPBackend, "unix:")
+			fmt.Fprintf(&builder, "  <FilesMatch [.]php$>\n    SetHandler \"proxy:unix:%s|fcgi://localhost/\"\n  </FilesMatch>\n", backend)
+		}
+	}
+	if data.TLSEnabled {
+		fmt.Fprintf(&builder, "  SSLEngine on\n  SSLCertificateFile %s\n  SSLCertificateKeyFile %s\n", data.CertPath, data.KeyPath)
+	}
+	fmt.Fprintf(&builder, "  ErrorLog %s/%s_error.log\n  CustomLog %s/%s_access.log combined\n</VirtualHost>\n", data.LogDir, data.LogName, data.LogDir, data.LogName)
+	return builder.String()
+}
+
+func renderCaddyWebsiteConfig(siteType string, data siteTemplateData) string {
+	address := data.ServerNames
+	if data.ListenPort != 80 {
+		address = fmt.Sprintf("%s:%d", strings.Fields(data.ServerNames)[0], data.ListenPort)
+	}
+	var builder strings.Builder
+	fmt.Fprintf(&builder, "# Managed by OneinStack Panel - %s\n%s {\n", data.Name, address)
+	if data.TLSEnabled {
+		fmt.Fprintf(&builder, "  tls %s %s\n", data.CertPath, data.KeyPath)
+	}
+	if siteType == "proxy" {
+		fmt.Fprintf(&builder, "  reverse_proxy %s\n", data.ProxyURL)
+	} else {
+		fmt.Fprintf(&builder, "  root * %s\n", data.RootDir)
+		if siteType == "php" {
+			backend := strings.TrimPrefix(data.PHPBackend, "unix:")
+			fmt.Fprintf(&builder, "  php_fastcgi unix//%s\n", strings.TrimPrefix(backend, "/"))
+		}
+		builder.WriteString("  file_server\n")
+	}
+	fmt.Fprintf(&builder, "  log {\n    output file %s/%s_access.log\n  }\n}\n", data.LogDir, data.LogName)
+	return builder.String()
 }
 
 func normalizeTLSFilePath(value, label string) (string, error) {
@@ -678,9 +882,12 @@ func (OSCommandRunner) Run(ctx context.Context, command string, args ...string) 
 }
 
 type Publisher struct {
-	ConfigDir   string
-	NginxBinary string
-	Runner      CommandRunner
+	ConfigDir      string
+	NginxBinary    string
+	Engine         string
+	ServiceName    string
+	MainConfigPath string
+	Runner         CommandRunner
 }
 
 type configSnapshot struct {
@@ -698,30 +905,30 @@ type Publication struct {
 }
 
 // Publish atomically replaces the requested config files, validates the whole
-// Nginx configuration, and reloads only after validation succeeds. A nil value
-// means delete the named config.
+// target-engine configuration, and reloads only after validation succeeds. A
+// nil value means delete the named config.
 func (p *Publisher) Publish(ctx context.Context, changes map[string]*string) (*Publication, error) {
 	if p == nil || p.Runner == nil {
-		return nil, errors.New("Nginx publisher is not configured")
+		return nil, errors.New("Web server publisher is not configured")
 	}
 	if len(changes) == 0 {
-		return nil, errors.New("Nginx publication has no changes")
+		return nil, errors.New("Web server publication has no changes")
 	}
 	configDir := filepath.Clean(strings.TrimSpace(p.ConfigDir))
 	if !filepath.IsAbs(configDir) || configDir == string(filepath.Separator) {
-		return nil, errors.New("Nginx config directory must be a non-root absolute path")
+		return nil, errors.New("Web server config directory must be a non-root absolute path")
 	}
 	if strings.TrimSpace(p.NginxBinary) == "" {
-		return nil, errors.New("Nginx binary is not configured")
+		return nil, errors.New("Web server binary is not configured")
 	}
 	if err := os.MkdirAll(configDir, 0750); err != nil {
-		return nil, fmt.Errorf("create Nginx config directory: %w", err)
+		return nil, fmt.Errorf("create Web server config directory: %w", err)
 	}
 
 	names := make([]string, 0, len(changes))
 	for name := range changes {
 		if !configNamePattern.MatchString(name) || filepath.Base(name) != name {
-			return nil, fmt.Errorf("unsafe Nginx config name %q", name)
+			return nil, fmt.Errorf("unsafe Web server config name %q", name)
 		}
 		names = append(names, name)
 	}
@@ -744,23 +951,23 @@ func (p *Publisher) Publish(ctx context.Context, changes map[string]*string) (*P
 			}
 		} else if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			_ = publication.restore(context.Background())
-			return nil, fmt.Errorf("delete Nginx config %s: %w", name, err)
+			return nil, fmt.Errorf("delete Web server config %s: %w", name, err)
 		}
 	}
 
-	if err := p.runNginx(ctx, "-t"); err != nil {
+	if err := p.runEngine(ctx, "validate"); err != nil {
 		restoreErr := publication.restore(context.Background())
 		if restoreErr != nil {
-			return nil, fmt.Errorf("Nginx config test failed: %w; restore failed: %v", err, restoreErr)
+			return nil, fmt.Errorf("Web server config validation failed: %w; restore failed: %v", err, restoreErr)
 		}
-		return nil, fmt.Errorf("Nginx config test failed; previous configuration restored: %w", err)
+		return nil, fmt.Errorf("Web server config validation failed; previous configuration restored: %w", err)
 	}
-	if err := p.runNginx(ctx, "-s", "reload"); err != nil {
+	if err := p.runEngine(ctx, "reload"); err != nil {
 		restoreErr := publication.restore(context.Background())
 		if restoreErr != nil {
-			return nil, fmt.Errorf("Nginx reload failed: %w; restore/reload failed: %v", err, restoreErr)
+			return nil, fmt.Errorf("Web server reload failed: %w; restore/reload failed: %v", err, restoreErr)
 		}
-		return nil, fmt.Errorf("Nginx reload failed; previous configuration restored and reloaded: %w", err)
+		return nil, fmt.Errorf("Web server reload failed; previous configuration restored and reloaded: %w", err)
 	}
 	return publication, nil
 }
@@ -790,17 +997,17 @@ func (publication *Publication) restore(ctx context.Context) error {
 				return err
 			}
 			if err := os.Chmod(path, snapshot.mode.Perm()); err != nil {
-				return fmt.Errorf("restore Nginx config permissions: %w", err)
+				return fmt.Errorf("restore Web server config permissions: %w", err)
 			}
 		} else if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("remove newly published Nginx config: %w", err)
+			return fmt.Errorf("remove newly published Web server config: %w", err)
 		}
 	}
-	if err := publication.publisher.runNginx(ctx, "-t"); err != nil {
-		return fmt.Errorf("restored Nginx config test failed: %w", err)
+	if err := publication.publisher.runEngine(ctx, "validate"); err != nil {
+		return fmt.Errorf("restored Web server config validation failed: %w", err)
 	}
-	if err := publication.publisher.runNginx(ctx, "-s", "reload"); err != nil {
-		return fmt.Errorf("reload restored Nginx config: %w", err)
+	if err := publication.publisher.runEngine(ctx, "reload"); err != nil {
+		return fmt.Errorf("reload restored Web server config: %w", err)
 	}
 	return nil
 }
@@ -812,14 +1019,14 @@ func snapshotConfig(name, path string) (configSnapshot, error) {
 		return snapshot, nil
 	}
 	if err != nil {
-		return snapshot, fmt.Errorf("stat Nginx config %s: %w", name, err)
+		return snapshot, fmt.Errorf("stat Web server config %s: %w", name, err)
 	}
 	if !info.Mode().IsRegular() {
-		return snapshot, fmt.Errorf("Nginx config %s is not a regular file", name)
+		return snapshot, fmt.Errorf("Web server config %s is not a regular file", name)
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return snapshot, fmt.Errorf("read Nginx config %s: %w", name, err)
+		return snapshot, fmt.Errorf("read Web server config %s: %w", name, err)
 	}
 	snapshot.exists = true
 	snapshot.data = data
@@ -828,29 +1035,29 @@ func snapshotConfig(name, path string) (configSnapshot, error) {
 }
 
 func atomicWriteConfig(directory, target string, data []byte) error {
-	temporary, err := os.CreateTemp(directory, ".oneinstack-nginx-*.tmp")
+	temporary, err := os.CreateTemp(directory, ".oneinstack-web-server-*.tmp")
 	if err != nil {
-		return fmt.Errorf("create temporary Nginx config: %w", err)
+		return fmt.Errorf("create temporary Web server config: %w", err)
 	}
 	temporaryName := temporary.Name()
 	defer os.Remove(temporaryName)
 	if err := temporary.Chmod(0640); err != nil {
 		temporary.Close()
-		return fmt.Errorf("secure temporary Nginx config: %w", err)
+		return fmt.Errorf("secure temporary Web server config: %w", err)
 	}
 	if _, err := temporary.Write(data); err != nil {
 		temporary.Close()
-		return fmt.Errorf("write temporary Nginx config: %w", err)
+		return fmt.Errorf("write temporary Web server config: %w", err)
 	}
 	if err := temporary.Sync(); err != nil {
 		temporary.Close()
-		return fmt.Errorf("sync temporary Nginx config: %w", err)
+		return fmt.Errorf("sync temporary Web server config: %w", err)
 	}
 	if err := temporary.Close(); err != nil {
-		return fmt.Errorf("close temporary Nginx config: %w", err)
+		return fmt.Errorf("close temporary Web server config: %w", err)
 	}
 	if err := os.Rename(temporaryName, target); err != nil {
-		return fmt.Errorf("publish Nginx config: %w", err)
+		return fmt.Errorf("publish Web server config: %w", err)
 	}
 	directoryHandle, err := os.Open(directory)
 	if err == nil {
@@ -862,6 +1069,56 @@ func atomicWriteConfig(directory, target string, data []byte) error {
 
 func (p *Publisher) runNginx(ctx context.Context, args ...string) error {
 	output, err := p.Runner.Run(ctx, p.NginxBinary, args...)
+	return commandError(output, err)
+}
+
+func (p *Publisher) runEngine(ctx context.Context, operation string) error {
+	adapter, err := webServerAdapterForEngine(p.Engine)
+	if err != nil {
+		return err
+	}
+	switch operation {
+	case "validate":
+		return adapter.Validate(ctx, p)
+	case "reload":
+		return adapter.Reload(ctx, p)
+	default:
+		return fmt.Errorf("unsupported Web server operation %q for %s", operation, adapter.Engine())
+	}
+}
+
+func validateNginxPublisher(ctx context.Context, publisher *Publisher) error {
+	return publisher.runNginx(ctx, "-t")
+}
+
+func reloadNginxPublisher(ctx context.Context, publisher *Publisher) error {
+	if publisher.ServiceName != "" && !publisher.serviceActive(ctx) {
+		return nil
+	}
+	return publisher.runNginx(ctx, "-s", "reload")
+}
+
+func reloadSystemdPublisher(ctx context.Context, publisher *Publisher) error {
+	if publisher.ServiceName == "" || !publisher.serviceActive(ctx) {
+		return nil
+	}
+	return publisher.runCommand(ctx, "systemctl", "reload", publisher.ServiceName+".service")
+}
+
+func (p *Publisher) runCommand(ctx context.Context, command string, args ...string) error {
+	output, err := p.Runner.Run(ctx, command, args...)
+	return commandError(output, err)
+}
+
+func (p *Publisher) serviceActive(ctx context.Context) bool {
+	if strings.TrimSpace(p.ServiceName) == "" {
+		return true
+	}
+	output, err := p.Runner.Run(ctx, "systemctl", "is-active", "--quiet", p.ServiceName+".service")
+	return err == nil && strings.TrimSpace(string(output)) == ""
+}
+
+func commandError(output []byte, err error) error {
 	if err == nil {
 		return nil
 	}
