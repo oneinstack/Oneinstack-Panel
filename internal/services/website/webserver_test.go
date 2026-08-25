@@ -170,3 +170,58 @@ func newWebServerConfigTestManager(
 		BackupRoot: filepath.Join(t.TempDir(), "backups"),
 	}
 }
+
+func TestManagedWebServerCandidatesUseOneinstackSystemdUnit(t *testing.T) {
+	candidates := managedWebServerCandidatesWithLookup(func(unit string, properties ...string) (map[string]string, error) {
+		if unit != "oneinstack-nginx.service" {
+			return nil, errors.New("unit not found")
+		}
+		return map[string]string{
+			"ExecStart": "{ path=/opt/oneinstack/nginx/sbin/nginx ; argv[]=/opt/oneinstack/nginx/sbin/nginx ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }",
+		}, nil
+	})
+	if len(candidates) != 1 {
+		t.Fatalf("managed candidates = %d, want 1", len(candidates))
+	}
+	candidate := candidates[0]
+	if candidate.Component != "nginx" ||
+		candidate.Service != "oneinstack-nginx" ||
+		candidate.Binary != "/opt/oneinstack/nginx/sbin/nginx" {
+		t.Fatalf("unexpected managed candidate: %#v", candidate)
+	}
+	if candidate.Prefix != "/opt/oneinstack/nginx" ||
+		candidate.Config != "/opt/oneinstack/nginx/conf" {
+		t.Fatalf("unexpected managed candidate layout: %#v", candidate)
+	}
+}
+
+func TestParseSystemdExecStartBinary(t *testing.T) {
+	cases := []struct {
+		name  string
+		value string
+		want  string
+	}{
+		{
+			name:  "serialized path",
+			value: "{ path=/usr/local/nginx/sbin/nginx ; argv[]=/usr/local/nginx/sbin/nginx ; ignore_errors=no ; }",
+			want:  "/usr/local/nginx/sbin/nginx",
+		},
+		{
+			name:  "raw absolute command",
+			value: "/usr/bin/caddy run --config /etc/caddy/Caddyfile",
+			want:  "/usr/bin/caddy",
+		},
+		{
+			name:  "empty",
+			value: "",
+			want:  "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := parseSystemdExecStartBinary(tc.value); got != tc.want {
+				t.Fatalf("parseSystemdExecStartBinary(%q) = %q, want %q", tc.value, got, tc.want)
+			}
+		})
+	}
+}

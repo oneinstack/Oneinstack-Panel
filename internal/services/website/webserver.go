@@ -1,6 +1,8 @@
 package website
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -33,6 +35,8 @@ const (
 var (
 	webServerVersionPattern = regexp.MustCompile(`(?i)(?:nginx|openresty|tengine)/([0-9][0-9A-Za-z.+_-]*)|Apache/([0-9][0-9A-Za-z.+_-]*)|v?([0-9]+\.[0-9]+(?:\.[0-9]+)*)`)
 	webServerConfigMu       sync.Mutex
+	systemdExecPathPattern  = regexp.MustCompile(`(?:^|[ {;])path=([^ ;}]+)`)
+	systemdAbsPathPattern   = regexp.MustCompile(`(/[^ ;}{]+)`)
 )
 
 type WebServerInfo struct {
@@ -120,6 +124,8 @@ type webServerCandidate struct {
 	Config    string
 	Priority  int
 }
+
+type systemdShowLookup func(unit string, properties ...string) (map[string]string, error)
 
 type WebServerConfigManager struct {
 	Server     WebServerInfo
@@ -918,6 +924,7 @@ func (manager *WebServerConfigManager) runCommand(ctx context.Context, command s
 
 func webServerCandidates() []webServerCandidate {
 	var candidates []webServerCandidate
+	candidates = append(candidates, managedWebServerCandidates()...)
 	if binary := strings.TrimSpace(os.Getenv("ONEINSTACK_WEB_SERVER_BIN")); binary != "" {
 		component := strings.ToLower(strings.TrimSpace(os.Getenv("ONEINSTACK_WEB_SERVER")))
 		if component != "openresty" && component != "tengine" && component != "apache" && component != "caddy" {
@@ -1047,6 +1054,157 @@ func webServerCandidates() []webServerCandidate {
 		}
 	}
 	return candidates
+}
+
+func managedWebServerCandidates() []webServerCandidate {
+	return managedWebServerCandidatesWithLookup(systemctlShowProperties)
+}
+
+func managedWebServerCandidatesWithLookup(lookup systemdShowLookup) []webServerCandidate {
+	if lookup == nil {
+		return nil
+	}
+	definitions := []struct {
+		component string
+		name      string
+		priority  int
+	}{
+		{component: "nginx", name: "Nginx", priority: 160},
+		{component: "openresty", name: "OpenResty", priority: 160},
+		{component: "tengine", name: "Tengine", priority: 160},
+		{component: "apache", name: "Apache HTTP Server", priority: 160},
+		{component: "caddy", name: "Caddy", priority: 160},
+	}
+	candidates := make([]webServerCandidate, 0, len(definitions))
+	seen := make(map[string]struct{}, len(definitions))
+	for _, definition := range definitions {
+		serviceName := webServiceName(definition.component)
+		if serviceName == "" {
+			continue
+		}
+		properties, err := lookup(serviceName+".service", "ExecStart")
+		if err != nil {
+			continue
+		}
+		binary := parseSystemdExecStartBinary(properties["ExecStart"])
+		if binary == "" {
+			continue
+		}
+		key := definition.component + "|" + binary
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		prefix, config := defaultManagedWebServerLayout(definition.component, binary)
+		candidates = append(candidates, webServerCandidate{
+			Component: definition.component,
+			Name:      definition.name,
+			Service:   serviceName,
+			Binary:    binary,
+			Prefix:    prefix,
+			Config:    config,
+			Priority:  definition.priority,
+		})
+	}
+	return candidates
+}
+
+func systemctlShowProperties(unit string, properties ...string) (map[string]string, error) {
+	if strings.TrimSpace(unit) == "" || len(properties) == 0 {
+		return nil, errors.New("systemd unit properties are required")
+	}
+	args := []string{"show", unit}
+	for _, property := range properties {
+		property = strings.TrimSpace(property)
+		if property == "" {
+			continue
+		}
+		args = append(args, "--property="+property)
+	}
+	if len(args) == 2 {
+		return nil, errors.New("systemd property list is empty")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	output, err := exec.CommandContext(ctx, "systemctl", args...).Output()
+	if err != nil {
+		return nil, err
+	}
+	values := make(map[string]string, len(properties))
+	scanner := bufio.NewScanner(bytes.NewReader(output))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		values[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return values, nil
+}
+
+func parseSystemdExecStartBinary(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if match := systemdExecPathPattern.FindStringSubmatch(value); len(match) == 2 {
+		return filepath.Clean(match[1])
+	}
+	if match := systemdAbsPathPattern.FindStringSubmatch(value); len(match) == 2 {
+		return filepath.Clean(match[1])
+	}
+	return ""
+}
+
+func defaultManagedWebServerLayout(component, binary string) (string, string) {
+	binary = filepath.Clean(strings.TrimSpace(binary))
+	switch strings.ToLower(strings.TrimSpace(component)) {
+	case "nginx":
+		if binary == "/usr/sbin/nginx" {
+			return "/usr/share/nginx", "/etc/nginx"
+		}
+		if strings.HasSuffix(binary, "/sbin/nginx") {
+			prefix := filepath.Dir(filepath.Dir(binary))
+			return prefix, filepath.Join(prefix, "conf")
+		}
+	case "openresty":
+		if strings.HasSuffix(binary, "/nginx/sbin/nginx") {
+			prefix := filepath.Dir(filepath.Dir(binary))
+			return prefix, filepath.Join(prefix, "conf")
+		}
+		if strings.HasSuffix(binary, "/bin/openresty") {
+			root := filepath.Dir(filepath.Dir(binary))
+			prefix := filepath.Join(root, "nginx")
+			return prefix, filepath.Join(prefix, "conf")
+		}
+	case "tengine":
+		if strings.HasSuffix(binary, "/sbin/nginx") {
+			prefix := filepath.Dir(filepath.Dir(binary))
+			return prefix, filepath.Join(prefix, "conf")
+		}
+	case "apache":
+		if strings.HasSuffix(binary, "/bin/httpd") {
+			prefix := filepath.Dir(filepath.Dir(binary))
+			return prefix, filepath.Join(prefix, "conf")
+		}
+	case "caddy":
+		if strings.HasSuffix(binary, "/bin/caddy") {
+			prefix := filepath.Dir(binary)
+			return prefix, "/etc/caddy"
+		}
+	}
+	prefix := filepath.Dir(filepath.Dir(binary))
+	if prefix == "." || prefix == "/" {
+		prefix = filepath.Dir(binary)
+	}
+	return prefix, filepath.Join(prefix, "conf")
 }
 
 func installedWebServerComponents() map[string]bool {
