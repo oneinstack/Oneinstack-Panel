@@ -166,6 +166,10 @@ func migrateManagedVhostFiles(database *gorm.DB, server WebServerInfo, engineRoo
 		return err
 	}
 	vhostRoot := filepath.Dir(engineRoot)
+	currentEngine, err := normalizeWebsiteEngine(server.Component)
+	if err != nil {
+		return err
+	}
 	type movedFile struct {
 		source string
 		target string
@@ -195,11 +199,8 @@ func migrateManagedVhostFiles(database *gorm.DB, server WebServerInfo, engineRoo
 			continue
 		}
 		engine, engineErr := normalizeWebsiteEngine(sites[index].Engine)
-		if engineErr != nil {
-			engine, engineErr = normalizeWebsiteEngine(server.Component)
-			if engineErr != nil {
-				return rollback(engineErr)
-			}
+		if engineErr != nil || engine != currentEngine {
+			continue
 		}
 		legacy := filepath.Join(filepath.Clean(server.SiteConfigDir), name+".conf")
 		info, err := os.Lstat(legacy)
@@ -309,6 +310,57 @@ func (service *Service) websiteConfigRoot(site *models.Website) (string, error) 
 	return filepath.Join(root, engine), nil
 }
 
+func (service *Service) ensureWebsiteOwnerActive(site *models.Website) error {
+	if site == nil {
+		return errors.New("website is required")
+	}
+	if service == nil || service.Publisher == nil {
+		return errors.New("Web server publisher is not configured")
+	}
+	owner, err := normalizeWebsiteEngine(site.Engine)
+	if err != nil {
+		return err
+	}
+	current, err := normalizeWebsiteEngine(service.Publisher.Engine)
+	if err != nil {
+		return err
+	}
+	if owner == current {
+		return nil
+	}
+	return fmt.Errorf(
+		"%w: 网站 %s 属于 %s，当前运行 Web Server 为 %s，请切换回 %s 后操作",
+		ErrWebsiteWebServerMismatch,
+		site.Name,
+		websiteEngineDisplayName(owner),
+		websiteEngineDisplayName(current),
+		websiteEngineDisplayName(owner),
+	)
+}
+
+// EnsureWebsiteOwnerActive verifies that a website write targets the Web
+// Server that created it. Reads remain available across Web Server owners.
+func (service *Service) EnsureWebsiteOwnerActive(site *models.Website) error {
+	return service.ensureWebsiteOwnerActive(site)
+}
+
+func websiteEngineDisplayName(engine string) string {
+	switch engine {
+	case "nginx":
+		return "Nginx"
+	case "openresty":
+		return "OpenResty"
+	case "tengine":
+		return "Tengine"
+	case "apache":
+		return "Apache"
+	case "caddy":
+		return "Caddy"
+	default:
+		return engine
+	}
+}
+
 func (service *Service) publisherForSite(site *models.Website) (*Publisher, error) {
 	if service == nil || service.Publisher == nil {
 		return nil, errors.New("Web server publisher is not configured")
@@ -385,9 +437,14 @@ func (service *Service) prepareCreate(param *models.Website, allowManagedAbsolut
 	if param == nil {
 		return nil, errors.New("website parameters are required")
 	}
-	if strings.TrimSpace(param.Engine) == "" && service.Publisher != nil {
-		param.Engine = service.Publisher.Engine
+	if service.Publisher == nil {
+		return nil, errors.New("website Web server publisher is not configured")
 	}
+	currentEngine, err := normalizeWebsiteEngine(service.Publisher.Engine)
+	if err != nil {
+		return nil, err
+	}
+	param.Engine = currentEngine
 	prepared, err := prepareWebsiteForCreate(
 		param,
 		service.WebRoot,
@@ -631,18 +688,35 @@ func (service *Service) Update(ctx context.Context, param *models.Website) error
 	if param == nil || param.ID <= 0 {
 		return ErrWebsiteIDRequired
 	}
-	if err := validateWebsiteRootInput(service.WebRoot, param.RootDir, param.Dir, true); err != nil {
-		return err
-	}
 	var existing models.Website
 	if err := service.DB.First(&existing, "id = ?", param.ID).Error; err != nil {
 		return err
 	}
-	if strings.TrimSpace(param.Engine) == "" {
-		param.Engine = existing.Engine
-		if strings.TrimSpace(param.Engine) == "" && service.Publisher != nil {
-			param.Engine = service.Publisher.Engine
+	if err := service.ensureWebsiteOwnerActive(&existing); err != nil {
+		return err
+	}
+	ownerEngine, err := normalizeWebsiteEngine(existing.Engine)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(param.Engine) != "" {
+		requestedEngine, normalizeErr := normalizeWebsiteEngine(param.Engine)
+		if normalizeErr != nil {
+			return wrapWebsiteParameterError(normalizeErr)
 		}
+		if requestedEngine != ownerEngine {
+			return fmt.Errorf(
+				"%w: 网站 %s 的 Engine 已固定为 %s，不能修改为 %s",
+				ErrWebsiteEngineImmutable,
+				existing.Name,
+				websiteEngineDisplayName(ownerEngine),
+				websiteEngineDisplayName(requestedEngine),
+			)
+		}
+	}
+	param.Engine = ownerEngine
+	if err := validateWebsiteRootInput(service.WebRoot, param.RootDir, param.Dir, true); err != nil {
+		return err
 	}
 	_, settings, err := service.loadSettings(existing.ID)
 	if err != nil {
@@ -716,26 +790,10 @@ func (service *Service) Update(ctx context.Context, param *models.Website) error
 		}
 		return errors.New("stored website has an unsafe Nginx config name")
 	}
-	oldPublisher, err := service.publisherForSite(&existing)
+	publisher, err := service.publisherForSite(&existing)
 	if err != nil {
 		return err
 	}
-	newPublisher, err := service.publisherForSite(&prepared.model)
-	if err != nil {
-		return err
-	}
-	oldEngine, _ := normalizeWebsiteEngine(existing.Engine)
-	newEngine, _ := normalizeWebsiteEngine(prepared.model.Engine)
-	if oldEngine != newEngine {
-		oldConfigPath := filepath.Join(oldPublisher.ConfigDir, oldName)
-		if current, readErr := os.ReadFile(oldConfigPath); readErr == nil &&
-			strings.TrimSpace(string(current)) != strings.TrimSpace(previous.config) {
-			return errors.New("UNSUPPORTED_ENGINE_DIRECTIVE: existing custom Web server directives must be migrated explicitly before changing engines")
-		} else if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
-			return readErr
-		}
-	}
-
 	publications := make([]*Publication, 0, 2)
 	transactionErr := service.DB.Transaction(func(tx *gorm.DB) error {
 		var duplicate int64
@@ -750,41 +808,24 @@ func (service *Service) Update(ctx context.Context, param *models.Website) error
 		if err := tx.Save(&prepared.model).Error; err != nil {
 			return err
 		}
-		if filepath.Clean(oldPublisher.ConfigDir) == filepath.Clean(newPublisher.ConfigDir) {
-			changes := map[string]*string{prepared.configName: nil}
-			if prepared.model.Enabled {
-				content := prepared.config
-				merged, mergeErr := service.preserveCustomWebsiteConfig(&existing, previous.config, content)
-				if mergeErr != nil {
-					return mergeErr
-				}
-				content = merged
-				changes[prepared.configName] = &content
+		changes := map[string]*string{prepared.configName: nil}
+		if prepared.model.Enabled {
+			content := prepared.config
+			merged, mergeErr := service.preserveCustomWebsiteConfig(&existing, previous.config, content)
+			if mergeErr != nil {
+				return mergeErr
 			}
-			if oldName != prepared.configName {
-				changes[oldName] = nil
-			}
-			published, publishErr := newPublisher.Publish(ctx, changes)
-			if publishErr != nil {
-				return publishErr
-			}
-			publications = append(publications, published)
-			return nil
+			content = merged
+			changes[prepared.configName] = &content
 		}
-
-		oldPublished, publishErr := oldPublisher.Publish(ctx, map[string]*string{oldName: nil})
+		if oldName != prepared.configName {
+			changes[oldName] = nil
+		}
+		published, publishErr := publisher.Publish(ctx, changes)
 		if publishErr != nil {
 			return publishErr
 		}
-		publications = append(publications, oldPublished)
-		if prepared.model.Enabled {
-			content := prepared.config
-			newPublished, publishErr := newPublisher.Publish(ctx, map[string]*string{prepared.configName: &content})
-			if publishErr != nil {
-				return publishErr
-			}
-			publications = append(publications, newPublished)
-		}
+		publications = append(publications, published)
 		return nil
 	})
 	if transactionErr != nil {
@@ -825,6 +866,9 @@ func (service *Service) DeleteWithOptions(ctx context.Context, id int64, deleteF
 	}
 	var existing models.Website
 	if err := service.DB.First(&existing, "id = ?", id).Error; err != nil {
+		return err
+	}
+	if err := service.ensureWebsiteOwnerActive(&existing); err != nil {
 		return err
 	}
 	configName := existing.Name + ".conf"
@@ -1127,6 +1171,9 @@ func (deployer *CertificateDeployer) EnsureChallenge(ctx context.Context, websit
 	if err := deployer.service.DB.First(&site, "id = ?", websiteID).Error; err != nil {
 		return err
 	}
+	if err := deployer.service.ensureWebsiteOwnerActive(&site); err != nil {
+		return err
+	}
 	if !site.Enabled {
 		return errors.New("网站已停用，请先启用网站再申请或续签证书")
 	}
@@ -1192,6 +1239,9 @@ func (deployer *CertificateDeployer) publish(
 	}
 	var site models.Website
 	if err := deployer.service.DB.First(&site, "id = ?", websiteID).Error; err != nil {
+		return nil, err
+	}
+	if err := deployer.service.ensureWebsiteOwnerActive(&site); err != nil {
 		return nil, err
 	}
 	if !site.Enabled {

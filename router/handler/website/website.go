@@ -29,6 +29,34 @@ func List(c *gin.Context) {
 	core.HandleSuccess(c, list)
 }
 
+func handleWebsiteOwnershipError(c *gin.Context, err error) bool {
+	switch {
+	case errors.Is(err, website.ErrWebsiteWebServerMismatch):
+		core.HandleErrorWithStatus(c, http.StatusConflict, core.NewErrorWithDetail(
+			core.ErrResourceStateInvalid,
+			"网站归属 Web Server 不一致",
+			err.Error(),
+		))
+		return true
+	case errors.Is(err, website.ErrWebsiteEngineImmutable):
+		core.HandleError(c, core.NewErrorWithDetail(
+			core.ErrInvalidParameter,
+			"网站归属 Web Server 不可修改",
+			err.Error(),
+		))
+		return true
+	case errors.Is(err, website.ErrWebsiteConfigUnavailable):
+		core.HandleErrorWithStatus(c, http.StatusConflict, core.NewErrorWithDetail(
+			core.ErrResourceStateInvalid,
+			"网站运行配置不可用",
+			err.Error(),
+		))
+		return true
+	default:
+		return false
+	}
+}
+
 func SetStatus(c *gin.Context) {
 	if !rejectDirectMutation(c, "website.toggle") {
 		return
@@ -50,6 +78,9 @@ func SetStatus(c *gin.Context) {
 	}
 	site, err := service.SetEnabled(c.Request.Context(), id, request.Enabled)
 	if err != nil {
+		if handleWebsiteOwnershipError(c, err) {
+			return
+		}
 		core.HandleError(c, core.WrapError(err, core.ErrConfigError, "网站状态切换失败"))
 		return
 	}
@@ -68,6 +99,9 @@ func Add(c *gin.Context) {
 	}
 	err := website.Add(input)
 	if err != nil {
+		if handleWebsiteOwnershipError(c, err) {
+			return
+		}
 		if errors.Is(err, website.ErrWebsiteRootInvalid) {
 			core.HandleError(c, core.NewFieldError(core.ErrInvalidParameter, "网站根目录必须是受管网站根目录下的相对目录，不能越界或包含符号链接", "root_dir"))
 			return
@@ -96,6 +130,9 @@ func Update(c *gin.Context) {
 	}
 	err := website.Update(input)
 	if err != nil {
+		if handleWebsiteOwnershipError(c, err) {
+			return
+		}
 		message := "网站配置更新失败"
 		if errors.Is(err, website.ErrNginxUnavailable) {
 			message = "未检测到可用 Web 引擎，请先安装并确保服务可执行文件可被面板访问"

@@ -105,6 +105,9 @@ func UpdateWebServerConfig(c *gin.Context) {
 }
 
 func handleWebServerConfigError(c *gin.Context, err error, message string) {
+	if handleWebsiteOwnershipError(c, err) {
+		return
+	}
 	var applyErr *websiteService.WebServerConfigApplyError
 	switch {
 	case errors.As(err, &applyErr) && applyErr.Status == websiteService.WebServerConfigApplyStatusReloadFailedRolled:

@@ -135,6 +135,9 @@ func (service *Service) UpdateSettings(
 	if err != nil {
 		return nil, err
 	}
+	if err := service.ensureWebsiteOwnerActive(site); err != nil {
+		return nil, err
+	}
 	_, previousRecord, err := service.loadSettings(id)
 	if err != nil {
 		return nil, err
@@ -535,16 +538,32 @@ func (service *Service) ReadManagedConfig(
 	if !site.Enabled {
 		return WebServerConfigDocument{}, fmt.Errorf("%w: 当前没有运行配置文件", ErrWebsiteDisabled)
 	}
+	currentEngine, currentErr := normalizeWebsiteEngine(service.Publisher.Engine)
+	if currentErr != nil {
+		return WebServerConfigDocument{}, currentErr
+	}
+	siteEngine, siteErr := normalizeWebsiteEngine(site.Engine)
+	if siteErr != nil {
+		return WebServerConfigDocument{}, siteErr
+	}
+	if siteEngine != currentEngine {
+		return WebServerConfigDocument{}, fmt.Errorf(
+			"%w: 网站 %s 属于 %s，当前没有可用的该归属运行配置文件",
+			ErrWebsiteConfigUnavailable,
+			site.Name,
+			websiteEngineDisplayName(siteEngine),
+		)
+	}
 	if err := service.restoreManagedConfig(ctx, site); err != nil {
-		return WebServerConfigDocument{}, fmt.Errorf("恢复缺失的网站配置: %w", err)
+		return WebServerConfigDocument{}, fmt.Errorf("恢复当前 Web Server 缺失的网站配置: %w", err)
 	}
 	return manager.Read(relative)
 }
 
-// RestoreMissingManagedConfigs rebuilds every missing enabled website virtual
-// host from the Panel database. The database is the canonical source for
-// managed website settings; existing files are deliberately left untouched so
-// manual edits are not overwritten during a component reinstall.
+// RestoreMissingManagedConfigs rebuilds missing enabled website virtual hosts
+// owned by the currently active Web Server. The database is the canonical
+// source for managed website settings; existing files are deliberately left
+// untouched so manual edits are not overwritten during a component reinstall.
 func (service *Service) RestoreMissingManagedConfigs(ctx context.Context) (int, error) {
 	if err := service.validate(); err != nil {
 		return 0, err
@@ -563,6 +582,12 @@ func (service *Service) RestoreMissingManagedConfigs(ctx context.Context) (int, 
 	batches := make(map[string]*restoreBatch)
 	for i := range sites {
 		site := &sites[i]
+		if err := service.ensureWebsiteOwnerActive(site); err != nil {
+			if errors.Is(err, ErrWebsiteWebServerMismatch) {
+				continue
+			}
+			return 0, fmt.Errorf("检查网站 %s 的 Web Server 归属: %w", site.Name, err)
+		}
 		configPath, err := service.ConfigFile(site)
 		if err != nil {
 			return 0, fmt.Errorf("检查网站 %s 的配置路径: %w", site.Name, err)
@@ -644,6 +669,9 @@ func (service *Service) UpdateManagedConfig(
 ) (WebServerConfigUpdateResult, error) {
 	site, err := service.Get(id)
 	if err != nil {
+		return WebServerConfigUpdateResult{}, err
+	}
+	if err := service.ensureWebsiteOwnerActive(site); err != nil {
 		return WebServerConfigUpdateResult{}, err
 	}
 	if !site.Enabled {
@@ -729,10 +757,8 @@ func (service *Service) managedConfigRelativePath(
 	return normalized, nil
 }
 
-// restoreManagedConfig repairs an enabled website whose runtime configuration
-// was removed outside Panel. The database remains the source of truth; the
-// regenerated configuration still passes the normal syntax test and reload
-// transaction before it becomes active.
+// restoreManagedConfig repairs a missing configuration only for the active
+// Web Server owner. Cross-owner reads never call this function.
 func (service *Service) restoreManagedConfig(ctx context.Context, site *models.Website) error {
 	settings, record, err := service.loadSettings(site.ID)
 	if err != nil {
@@ -760,9 +786,9 @@ func (service *Service) restoreManagedConfig(ctx context.Context, site *models.W
 		return err
 	}
 	content := prepared.config
-	publisher, publisherErr := service.publisherForSite(site)
-	if publisherErr != nil {
-		return publisherErr
+	publisher, err := service.publisherForSite(site)
+	if err != nil {
+		return err
 	}
 	_, err = publisher.Publish(ctx, map[string]*string{
 		prepared.configName: &content,

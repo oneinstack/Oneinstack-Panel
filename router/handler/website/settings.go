@@ -76,6 +76,9 @@ func UpdateWebsiteSettings(c *gin.Context) {
 	if err != nil {
 		_ = configsnapshot.Default().Mark(snapshot.ID, "failed", err.Error())
 		configsnapshotHandler.RecordAudit(c, snapshot, "failed", err.Error())
+		if handleWebsiteOwnershipError(c, err) {
+			return
+		}
 		core.HandleError(c, core.WrapError(err, core.ErrConfigError, "发布网站设置失败"))
 		return
 	}
@@ -129,6 +132,9 @@ func GetWebsiteManagedConfig(c *gin.Context) {
 	}
 	document, err := service.ReadManagedConfig(c.Request.Context(), id)
 	if err != nil {
+		if handleWebsiteOwnershipError(c, err) {
+			return
+		}
 		if errors.Is(err, websiteService.ErrWebsiteDisabled) {
 			core.HandleErrorWithStatus(c, http.StatusConflict, core.NewErrorWithDetail(
 				core.ErrResourceStateInvalid,
@@ -165,6 +171,9 @@ func UpdateWebsiteManagedConfig(c *gin.Context) {
 		c.Request.Context(), id, request.Content, request.Revision,
 	)
 	if err != nil {
+		if handleWebsiteOwnershipError(c, err) {
+			return
+		}
 		handleWebServerConfigError(c, err, "网站配置校验或发布失败")
 		return
 	}

@@ -111,6 +111,29 @@ func (service *Service) PreviewWebsiteUpdate(param *models.Website) (WebsiteRunt
 	if err := service.DB.First(&existing, "id = ?", param.ID).Error; err != nil {
 		return WebsiteRuntimePreview{}, err
 	}
+	if err := service.ensureWebsiteOwnerActive(&existing); err != nil {
+		return WebsiteRuntimePreview{}, err
+	}
+	ownerEngine, err := normalizeWebsiteEngine(existing.Engine)
+	if err != nil {
+		return WebsiteRuntimePreview{}, err
+	}
+	if strings.TrimSpace(param.Engine) != "" {
+		requestedEngine, normalizeErr := normalizeWebsiteEngine(param.Engine)
+		if normalizeErr != nil {
+			return WebsiteRuntimePreview{}, wrapWebsiteParameterError(normalizeErr)
+		}
+		if requestedEngine != ownerEngine {
+			return WebsiteRuntimePreview{}, fmt.Errorf(
+				"%w: 网站 %s 的 Engine 已固定为 %s，不能修改为 %s",
+				ErrWebsiteEngineImmutable,
+				existing.Name,
+				websiteEngineDisplayName(ownerEngine),
+				websiteEngineDisplayName(requestedEngine),
+			)
+		}
+	}
+	param.Engine = ownerEngine
 	_, settings, err := service.loadSettings(existing.ID)
 	if err != nil {
 		return WebsiteRuntimePreview{}, err
@@ -205,6 +228,9 @@ func (service *Service) PreviewSettingsUpdate(id int64, settings WebsiteSettings
 	if err != nil {
 		return WebsiteRuntimePreview{}, err
 	}
+	if err := service.ensureWebsiteOwnerActive(site); err != nil {
+		return WebsiteRuntimePreview{}, err
+	}
 	_, previousRecord, err := service.loadSettings(id)
 	if err != nil {
 		return WebsiteRuntimePreview{}, err
@@ -263,6 +289,9 @@ func (service *Service) PreviewManagedConfig(ctx context.Context, id int64, cont
 	if err != nil {
 		return WebsiteRuntimePreview{}, err
 	}
+	if err := service.ensureWebsiteOwnerActive(site); err != nil {
+		return WebsiteRuntimePreview{}, err
+	}
 	manager, err := service.managedConfigManagerForSite(site)
 	if err != nil {
 		return WebsiteRuntimePreview{}, err
@@ -313,6 +342,9 @@ func (service *Service) PreviewToggle(id int64, enabled bool) (WebsiteRuntimePre
 	}
 	site, err := service.Get(id)
 	if err != nil {
+		return WebsiteRuntimePreview{}, err
+	}
+	if err := service.ensureWebsiteOwnerActive(site); err != nil {
 		return WebsiteRuntimePreview{}, err
 	}
 	path, err := service.ConfigFile(site)

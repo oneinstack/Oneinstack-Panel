@@ -45,6 +45,9 @@ func (service *Service) SetEnabled(ctx context.Context, id int64, enabled bool) 
 	if err := service.DB.First(&site, "id = ?", id).Error; err != nil {
 		return nil, err
 	}
+	if err := service.ensureWebsiteOwnerActive(&site); err != nil {
+		return nil, err
+	}
 	if site.Enabled == enabled {
 		return &site, nil
 	}
@@ -129,6 +132,13 @@ func (service *Service) disableExpired(ctx context.Context, now time.Time) error
 	}
 	var result error
 	for i := range sites {
+		if err := service.ensureWebsiteOwnerActive(&sites[i]); err != nil {
+			if errors.Is(err, ErrWebsiteWebServerMismatch) {
+				continue
+			}
+			result = errors.Join(result, fmt.Errorf("disable expired website %s: %w", sites[i].Name, err))
+			continue
+		}
 		if _, err := service.SetEnabled(ctx, sites[i].ID, false); err != nil {
 			result = errors.Join(result, fmt.Errorf("disable expired website %s: %w", sites[i].Name, err))
 			continue
@@ -364,6 +374,13 @@ func (service *Service) enforceTamperProtection(ctx context.Context) error {
 		var site models.Website
 		if err := service.DB.First(&site, "id = ? AND enabled = ?", settings[i].WebsiteID, true).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
+				continue
+			}
+			result = errors.Join(result, err)
+			continue
+		}
+		if err := service.ensureWebsiteOwnerActive(&site); err != nil {
+			if errors.Is(err, ErrWebsiteWebServerMismatch) {
 				continue
 			}
 			result = errors.Join(result, err)
