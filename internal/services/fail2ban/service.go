@@ -141,14 +141,28 @@ func (s *Service) NormalizePolicyChange(request PolicyChangeRequest, userID int6
 	return s.normalizePolicyChange(request, userID, false)
 }
 
+// NormalizePolicyChangeAction maps legacy client terminology to the canonical
+// policy-change actions used by the service and task executor.
+func NormalizePolicyChangeAction(action string) (string, error) {
+	action = strings.ToLower(strings.TrimSpace(action))
+	if action == "edit" {
+		action = "update"
+	}
+	if action != "create" && action != "update" && action != "delete" {
+		return "", validation("action 必须是 create、update 或 delete")
+	}
+	return action, nil
+}
+
 func (s *Service) normalizePolicyChange(request PolicyChangeRequest, userID int64, preserveCreateID bool) (PolicyChangeRequest, *models.Fail2banPolicy, error) {
 	if s == nil || s.db == nil {
 		return request, nil, ErrUnavailable
 	}
-	request.Action = strings.ToLower(strings.TrimSpace(request.Action))
-	if request.Action != "create" && request.Action != "update" && request.Action != "delete" {
-		return request, nil, validation("action 必须是 create、update 或 delete")
+	action, err := NormalizePolicyChangeAction(request.Action)
+	if err != nil {
+		return request, nil, err
 	}
+	request.Action = action
 	if userID < 0 {
 		return request, nil, validation("无法识别规则操作者")
 	}

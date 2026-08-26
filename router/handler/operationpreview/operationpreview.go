@@ -298,6 +298,17 @@ func Preview(c *gin.Context) {
 			return
 		}
 	}
+	if operation == "fail2ban.policy_change" {
+		var err error
+		payload, err = normalizeFail2banPolicyChangePayload(payload, userID)
+		if err != nil {
+			if handleFail2banPreviewError(c, err) {
+				return
+			}
+			core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "入侵防护预览参数无效"))
+			return
+		}
+	}
 	document, resourceVersion, err := buildDocument(operation, payload)
 	if err != nil {
 		if handleWebsitePreviewError(c, operation, err) {
@@ -355,6 +366,24 @@ func handleWebsitePreviewError(c *gin.Context, operation string, err error) bool
 		))
 	case errors.Is(err, website.ErrWebsiteIDRequired):
 		core.HandleError(c, core.NewError(core.ErrInvalidParameter, "网站操作缺少 websiteId 或 id"))
+	case errors.Is(err, website.ErrWebsiteWebServerMismatch):
+		core.HandleErrorWithStatus(c, http.StatusConflict, core.NewErrorWithDetail(
+			core.ErrResourceStateInvalid,
+			"网站归属 Web Server 不一致",
+			err.Error(),
+		))
+	case errors.Is(err, website.ErrWebsiteEngineImmutable):
+		core.HandleError(c, core.NewErrorWithDetail(
+			core.ErrInvalidParameter,
+			"网站归属 Web Server 不可修改",
+			err.Error(),
+		))
+	case errors.Is(err, website.ErrWebsiteConfigUnavailable):
+		core.HandleErrorWithStatus(c, http.StatusConflict, core.NewErrorWithDetail(
+			core.ErrResourceStateInvalid,
+			"网站运行配置不可用",
+			err.Error(),
+		))
 	case errors.Is(err, website.ErrWebsiteSettingsValidate):
 		detail := strings.TrimSpace(strings.TrimPrefix(
 			err.Error(), website.ErrWebsiteSettingsValidate.Error()+":",
@@ -410,6 +439,51 @@ func fail2banPreviewTarget(payload json.RawMessage) (string, bool) {
 		return "incident:" + incidentID, true
 	}
 	return "", false
+}
+
+func normalizeFail2banPolicyChangePayload(payload json.RawMessage, userID int64) (json.RawMessage, error) {
+	var request fail2banservice.PolicyChangeRequest
+	if err := json.Unmarshal(payload, &request); err != nil {
+		return nil, err
+	}
+	normalized, _, err := fail2banservice.DefaultService().NormalizePolicyChange(request, userID)
+	if err != nil {
+		return nil, err
+	}
+	result, err := json.Marshal(normalized)
+	if err != nil {
+		return nil, fmt.Errorf("normalize fail2ban policy payload: %w", err)
+	}
+	return result, nil
+}
+
+func handleFail2banPreviewError(c *gin.Context, err error) bool {
+	switch {
+	case isJSONDecodeError(err):
+		core.HandleError(c, core.NewError(core.ErrInvalidParameter, "入侵防护参数格式错误"))
+	case errors.Is(err, fail2banservice.ErrValidation):
+		detail := strings.TrimSpace(strings.TrimPrefix(err.Error(), fail2banservice.ErrValidation.Error()+":"))
+		if detail == "" {
+			detail = "请检查策略动作、模板和参数取值后重试。"
+		}
+		core.HandleError(c, core.NewErrorWithDetail(
+			core.ErrValidationFailed,
+			"入侵防护参数无效，请检查后重试",
+			detail,
+		))
+	case errors.Is(err, fail2banservice.ErrRevisionConflict):
+		core.HandleErrorWithStatus(c, http.StatusConflict, core.NewError(
+			core.ErrResourceStateInvalid,
+			"规则已被其他操作修改，请刷新后重试",
+		))
+	case errors.Is(err, gorm.ErrRecordNotFound):
+		core.HandleError(c, core.NewError(core.ErrNotFound, "目标入侵防护策略不存在，请刷新后重试"))
+	case errors.Is(err, fail2banservice.ErrUnavailable):
+		core.HandleError(c, core.NewError(core.ErrServiceUnavailable, "Fail2ban 未安装、未验证或服务不可用"))
+	default:
+		return false
+	}
+	return true
 }
 
 func localizeDocument(locale string, document *previewservice.Document) {
@@ -877,6 +951,9 @@ func executeOperation(ctx context.Context, operation string, payload json.RawMes
 		if err != nil {
 			return nil, err
 		}
+		if err := service.EnsureWebsiteOwnerActive(before); err != nil {
+			return nil, err
+		}
 		beforeConfig, _ := service.ReadManagedConfig(ctx, value.ID)
 		snapshot, err := createWebsiteOperationSnapshot("update", value.ID, before, value, []byte(beforeConfig.Content), "website-before.conf", userID)
 		if err != nil {
@@ -907,6 +984,9 @@ func executeOperation(ctx context.Context, operation string, payload json.RawMes
 		if err != nil {
 			return nil, err
 		}
+		if err := service.EnsureWebsiteOwnerActive(&before.Website); err != nil {
+			return nil, err
+		}
 		beforeJSON, err := json.Marshal(before)
 		if err != nil {
 			return nil, err
@@ -934,6 +1014,13 @@ func executeOperation(ctx context.Context, operation string, payload json.RawMes
 		id := websitePayloadID(request.ID, request.WebsiteID)
 		service, err := website.DefaultService()
 		if err != nil {
+			return nil, err
+		}
+		beforeSite, err := service.Get(id)
+		if err != nil {
+			return nil, err
+		}
+		if err := service.EnsureWebsiteOwnerActive(beforeSite); err != nil {
 			return nil, err
 		}
 		before, err := service.ReadManagedConfig(ctx, id)
@@ -978,6 +1065,9 @@ func executeOperation(ctx context.Context, operation string, payload json.RawMes
 		}
 		before, err := service.Get(raw.ID)
 		if err != nil {
+			return nil, err
+		}
+		if err := service.EnsureWebsiteOwnerActive(before); err != nil {
 			return nil, err
 		}
 		snapshot, err := createWebsiteOperationSnapshot("toggle", raw.ID, before, raw, nil, "", userID)
@@ -1410,6 +1500,12 @@ func writeExecutionError(c *gin.Context, err error) {
 	case errors.Is(err, website.ErrWebsiteIDRequired):
 		code, message = core.ErrInvalidParameter, "网站操作缺少 websiteId 或 id"
 		detail = ""
+	case errors.Is(err, website.ErrWebsiteWebServerMismatch):
+		code, message = core.ErrResourceStateInvalid, "网站归属 Web Server 不一致"
+	case errors.Is(err, website.ErrWebsiteEngineImmutable):
+		code, message = core.ErrInvalidParameter, "网站归属 Web Server 不可修改"
+	case errors.Is(err, website.ErrWebsiteConfigUnavailable):
+		code, message = core.ErrResourceStateInvalid, "网站运行配置不可用"
 	case errors.Is(err, website.ErrWebsiteConflict):
 		code, message = core.ErrConflict, "网站已存在，请检查网站名称或域名"
 		detail = ""
