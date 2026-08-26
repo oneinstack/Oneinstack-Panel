@@ -711,6 +711,10 @@ func (sm *ScriptManager) runActionContext(
 	cmd.Env = append(cmd.Env, "ONEINSTACK_PROGRESS_FD=3")
 
 	progressDone := make(chan struct{})
+	stopProgressClose := context.AfterFunc(ctx, func() {
+		_ = progressReader.Close()
+	})
+	defer stopProgressClose()
 	go func() {
 		defer close(progressDone)
 		consumeProgressEvents(progressReader, actionName, observer, logContext)
@@ -723,6 +727,12 @@ func (sm *ScriptManager) runActionContext(
 	}
 	_ = progressWriter.Close()
 	runErr := cmd.Wait()
+	if ctx.Err() != nil {
+		// A descendant process may keep the inherited progress FD open after
+		// the action process has been terminated. Do not let that stale FD
+		// prevent the canceled task from reaching its terminal state.
+		_ = progressReader.Close()
+	}
 	<-progressDone
 	if runErr != nil {
 		if parent.Err() != nil {
