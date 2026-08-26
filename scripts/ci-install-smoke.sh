@@ -36,10 +36,21 @@ trap cleanup EXIT
 extract_dir="${work_dir}/package"
 stage_root="${work_dir}/stage"
 runtime_dir="${work_dir}/runtime"
+web_server_root="${runtime_dir}/web-server"
+web_server_binary="${web_server_root}/sbin/nginx"
+web_server_config_root="${web_server_root}/conf"
 mkdir -p "$extract_dir" "$stage_root" \
   "${runtime_dir}/data/wwwroot" \
   "${runtime_dir}/data/wwwlogs" \
-  "${runtime_dir}/data/db"
+  "${runtime_dir}/data/db" \
+  "${web_server_root}/sbin" \
+  "$web_server_config_root"
+# The smoke test must not discover or mutate a Web server preinstalled on the
+# GitHub runner. Use a temporary no-op binary and a minimal isolated config so
+# website service initialization stays inside work_dir.
+cp "$(type -P true)" "$web_server_binary"
+chmod 0755 "$web_server_binary"
+printf '%s\n' 'events {}' 'http {}' >"${web_server_config_root}/nginx.conf"
 tar -xzf "$archive" -C "$extract_dir"
 package_root="$(find "$extract_dir" -mindepth 1 -maxdepth 1 -type d -print -quit)"
 [[ -n "$package_root" ]] || {
@@ -68,6 +79,11 @@ password_file="${runtime_dir}/admin-password"
 
 ONEINSTACK_BASE_PATH="$runtime_dir" \
   ONEINSTACK_CONFIG_PATH="$runtime_config" \
+  ONEINSTACK_SYSTEM_WEB_VHOST_ROOT="${runtime_dir}/vhost" \
+  ONEINSTACK_WEB_SERVER="nginx" \
+  ONEINSTACK_WEB_SERVER_BIN="$web_server_binary" \
+  ONEINSTACK_WEB_SERVER_PREFIX="$web_server_root" \
+  ONEINSTACK_WEB_SERVER_CONFIG_ROOT="$web_server_config_root" \
   "$installed_binary" init \
   --user smoke_operator \
   --password-file "$password_file"
@@ -75,6 +91,11 @@ rm -f -- "$password_file"
 
 ONEINSTACK_BASE_PATH="$runtime_dir" \
   ONEINSTACK_CONFIG_PATH="$runtime_config" \
+  ONEINSTACK_SYSTEM_WEB_VHOST_ROOT="${runtime_dir}/vhost" \
+  ONEINSTACK_WEB_SERVER="nginx" \
+  ONEINSTACK_WEB_SERVER_BIN="$web_server_binary" \
+  ONEINSTACK_WEB_SERVER_PREFIX="$web_server_root" \
+  ONEINSTACK_WEB_SERVER_CONFIG_ROOT="$web_server_config_root" \
   "$installed_binary" server start >"${runtime_dir}/server.log" 2>&1 &
 server_pid=$!
 
