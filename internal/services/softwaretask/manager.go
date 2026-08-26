@@ -279,6 +279,9 @@ func (m *Manager) submit(request InstallRequest, requestedBy int64) (*models.Sof
 		if err := m.validateCatalogInstall(request.Key, request.Version); err != nil {
 			return nil, err
 		}
+		if err := m.validateExclusiveWebServerInstall(component); err != nil {
+			return nil, err
+		}
 		if err := m.validateExclusiveDatabaseInstall(component); err != nil {
 			return nil, err
 		}
@@ -833,6 +836,42 @@ func (m *Manager) validateExclusiveDatabaseInstall(component string) error {
 	}
 	if err != nil {
 		return fmt.Errorf("check mutually exclusive database software: %w", err)
+	}
+	conflict := strings.TrimSpace(installed.Name)
+	if conflict == "" {
+		conflict = strings.TrimSpace(installed.Component)
+	}
+	return fmt.Errorf(
+		"cannot install %s while %s is installed; uninstall the conflicting component first",
+		component,
+		conflict,
+	)
+}
+
+func (m *Manager) validateExclusiveWebServerInstall(component string) error {
+	component = strings.ToLower(strings.TrimSpace(component))
+	group := []string{"nginx", "tengine", "openresty", "caddy", "apache"}
+	matched := false
+	for _, candidate := range group {
+		if component == candidate {
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		return nil
+	}
+
+	var installed models.Software
+	err := m.db.
+		Where("installed = ? AND component IN ? AND component <> ?", true, group, component).
+		Order("id DESC").
+		First(&installed).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("check mutually exclusive web-server software: %w", err)
 	}
 	conflict := strings.TrimSpace(installed.Name)
 	if conflict == "" {
