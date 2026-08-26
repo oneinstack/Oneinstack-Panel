@@ -89,6 +89,8 @@ var componentExecutionLocks sync.Map
 var progressCodePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{0,95}$`)
 var sensitiveLogAssignmentPattern = regexp.MustCompile(`(?i)(password|passwd|secret|token|cookie|authorization|private[_-]?key)([[:space:]]*[:=][[:space:]]*)([^[:space:]]+)`)
 
+const processCancelGracePeriod = 2 * time.Second
+
 // GetScript 获取脚本内容
 func (sm *ScriptManager) GetScript(scriptType ScriptType, name string) (*ScriptInfo, error) {
 	scriptPath := fmt.Sprintf("scripts/%s/%s.sh", scriptType, name)
@@ -687,7 +689,7 @@ func (sm *ScriptManager) runActionContext(
 		processGroupID := cmd.Process.Pid
 		err := syscall.Kill(-processGroupID, syscall.SIGTERM)
 		go func() {
-			timer := time.NewTimer(10 * time.Second)
+			timer := time.NewTimer(processCancelGracePeriod)
 			defer timer.Stop()
 			<-timer.C
 			if ctx.Err() != nil {
@@ -696,7 +698,7 @@ func (sm *ScriptManager) runActionContext(
 		}()
 		return err
 	}
-	cmd.WaitDelay = 10 * time.Second
+	cmd.WaitDelay = processCancelGracePeriod
 	for key, value := range params {
 		cmd.Env = append(cmd.Env, key+"="+value)
 	}
