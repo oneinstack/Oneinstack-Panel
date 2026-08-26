@@ -389,17 +389,14 @@ func (m *Manager) Cancel(taskID string) (*models.SoftwareTask, error) {
 	if models.IsSoftwareTaskTerminal(task.Status) {
 		return nil, fmt.Errorf("software task %s is already finished", taskID)
 	}
-	operationLabel := "安装"
-	if task.Operation == "uninstall" {
-		operationLabel = "卸载"
-	}
+	operationName := operationLabel(task.Operation)
 
 	reporter := newReporter(m, taskID)
 	reporter.mu.Lock()
 	err = reporter.publishLocked(taskUpdate{
 		status:          models.SoftwareTaskStatusCanceling,
 		phase:           models.SoftwareTaskStatusCanceling,
-		message:         "正在取消" + operationLabel + "任务",
+		message:         "正在取消" + operationName + "任务",
 		cancelRequested: boolPointer(true),
 	}, eventData{
 		eventType: "phase",
@@ -421,7 +418,7 @@ func (m *Manager) Cancel(taskID string) (*models.SoftwareTask, error) {
 		if err := reporter.finish(
 			models.SoftwareTaskStatusCanceled,
 			"ACTION_CANCELED",
-			"排队中的"+operationLabel+"任务已取消",
+			"排队中的"+operationName+"任务已取消",
 		); err != nil {
 			return nil, err
 		}

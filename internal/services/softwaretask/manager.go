@@ -468,7 +468,11 @@ func (m *Manager) run(item queuedTask) {
 	if err := m.db.First(&task, "id = ?", item.taskID).Error; err != nil {
 		return
 	}
-	if models.IsSoftwareTaskTerminal(task.Status) || task.CancelRequested {
+	if models.IsSoftwareTaskTerminal(task.Status) {
+		return
+	}
+	if task.CancelRequested {
+		m.finishCanceledBeforeExecution(&task)
 		return
 	}
 
@@ -486,6 +490,7 @@ func (m *Manager) run(item queuedTask) {
 		m.cancelMu.Unlock()
 	}()
 	if m.isCancelRequested(task.ID) {
+		m.finishCanceledBeforeExecution(&task)
 		return
 	}
 	if err := m.acquireComponentLock(&task); err != nil {
@@ -554,6 +559,19 @@ func (m *Manager) run(item queuedTask) {
 	}
 	code := classifyExecutionError(err)
 	_ = reporter.finish(models.SoftwareTaskStatusFailed, code, safeErrorMessage(err))
+}
+
+func (m *Manager) finishCanceledBeforeExecution(task *models.SoftwareTask) {
+	if task == nil {
+		return
+	}
+	operation := operationLabel(task.Operation)
+	reporter := newReporter(m, task.ID)
+	_ = reporter.finish(
+		models.SoftwareTaskStatusCanceled,
+		"ACTION_CANCELED",
+		operation+"任务已取消",
+	)
 }
 
 // Stop rejects new submissions, cancels running component processes through
