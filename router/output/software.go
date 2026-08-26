@@ -14,6 +14,7 @@ type Software struct {
 	Installed               bool         `json:"installed"`
 	Versions                []string     `json:"versions"`
 	InstallVersion          string       `json:"install_version"`
+	Port                    string       `json:"port,omitempty"`
 	InstalledPackageVersion string       `json:"installedPackageVersion,omitempty"`
 	LatestPackageVersion    string       `json:"latestPackageVersion,omitempty"`
 	UpdateReason            string       `json:"updateReason,omitempty"`

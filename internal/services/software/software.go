@@ -178,6 +178,7 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 				"MAX(CASE WHEN installed = 1 THEN 1 ELSE 0 END) as installed," +
 				"MAX(CASE WHEN catalog_visible = 1 AND installable = 1 THEN 1 ELSE 0 END) as installable," +
 				"MAX(CASE WHEN catalog_visible = 1 AND recommended = 1 THEN version ELSE '' END) as recommended_version," +
+				"MAX(CASE WHEN installed = 1 THEN http_port ELSE '' END) as http_port," +
 				"MAX(CASE WHEN catalog_managed = 1 THEN 1 ELSE 0 END) as catalog_managed," +
 				"MAX(manage_scopes) as manage_scopes," +
 				"MAX(service_name) as service_name," +
@@ -286,6 +287,7 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 			Status:                  item.Status,
 			Resource:                item.Resource,
 			InstallVersion:          item.InstallVersion,
+			Port:                    strings.TrimSpace(item.HttpPort),
 			InstalledPackageVersion: item.InstalledPackageVersion,
 			LatestPackageVersion:    item.LatestPackageVersion,
 			UpdateReason:            softwareUpdateReason(item),
