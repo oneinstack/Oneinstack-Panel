@@ -8,6 +8,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -68,17 +69,130 @@ func websiteTargetVersion(id int64, revision string) string {
 	return fmt.Sprintf("website|id=%d|revision=%s", id, revision)
 }
 
+type webServerPreviewPresentation struct {
+	Name            string
+	SyntaxName      string
+	ValidateName    string
+	ValidateCommand string
+	ReloadName      string
+	ReloadCommand   string
+	Service         string
+}
+
+func webServerPreviewForEngine(engine string) webServerPreviewPresentation {
+	component := strings.ToLower(strings.TrimSpace(engine))
+	if component == "" {
+		server := website.WebServerStatus()
+		return webServerPreviewForServer(server)
+	}
+	return webServerPreviewForServer(website.WebServerInfo{Component: component})
+}
+
+func webServerPreviewForServer(server website.WebServerInfo) webServerPreviewPresentation {
+	component := strings.ToLower(strings.TrimSpace(server.Component))
+	presentation := webServerPreviewPresentation{
+		Name:            strings.TrimSpace(server.Name),
+		ValidateCommand: fmt.Sprintf("%s -t", webServerDisplayBinary(server.BinaryPath, component)),
+		ReloadCommand:   fmt.Sprintf("%s -s reload", webServerDisplayBinary(server.BinaryPath, component)),
+		Service:         strings.TrimSpace(server.ServiceName),
+	}
+	switch component {
+	case "nginx":
+		presentation.Name = "Nginx"
+		presentation.Service = defaultWebServerService(component, presentation.Service)
+	case "openresty":
+		presentation.Name = "OpenResty"
+		presentation.Service = defaultWebServerService(component, presentation.Service)
+	case "tengine":
+		presentation.Name = "Tengine"
+		presentation.Service = defaultWebServerService(component, presentation.Service)
+	case "apache":
+		presentation.Name = "Apache"
+		presentation.ValidateCommand = fmt.Sprintf("%s -t -f <config>", webServerDisplayBinary(server.BinaryPath, component))
+		presentation.ReloadCommand = fmt.Sprintf("systemctl reload %s.service", defaultWebServerService(component, presentation.Service))
+		presentation.Service = defaultWebServerService(component, presentation.Service)
+	case "caddy":
+		presentation.Name = "Caddy"
+		presentation.ValidateCommand = fmt.Sprintf("%s validate --config <config> --adapter caddyfile", webServerDisplayBinary(server.BinaryPath, component))
+		presentation.ReloadCommand = fmt.Sprintf("systemctl reload %s.service", defaultWebServerService(component, presentation.Service))
+		presentation.Service = defaultWebServerService(component, presentation.Service)
+	default:
+		if presentation.Name == "" {
+			presentation.Name = "Web Server"
+		}
+		presentation.Service = defaultWebServerService(component, presentation.Service)
+	}
+	presentation.SyntaxName = presentation.Name + " 配置语法"
+	presentation.ValidateName = "校验 " + presentation.Name + " 配置"
+	presentation.ReloadName = "重新加载 " + presentation.Name
+	return presentation
+}
+
+func webServerDisplayBinary(binary, component string) string {
+	if value := strings.TrimSpace(binary); value != "" {
+		base := filepath.Base(value)
+		if base != "." && base != string(filepath.Separator) && base != "" {
+			return base
+		}
+	}
+	switch component {
+	case "apache":
+		return "httpd"
+	case "caddy":
+		return "caddy"
+	default:
+		return "nginx"
+	}
+}
+
+func defaultWebServerService(component, service string) string {
+	if strings.TrimSpace(service) != "" {
+		return strings.TrimSpace(service)
+	}
+	switch component {
+	case "nginx":
+		return "oneinstack-nginx"
+	case "openresty":
+		return "oneinstack-openresty"
+	case "tengine":
+		return "oneinstack-tengine"
+	case "apache":
+		return "oneinstack-httpd"
+	case "caddy":
+		return "oneinstack-caddy"
+	default:
+		return ""
+	}
+}
+
+func webServerPreviewActions(server website.WebServerInfo) []previewservice.Action {
+	presentation := webServerPreviewForServer(server)
+	return webServerPreviewActionsForPresentation(presentation)
+}
+
+func webServerPreviewActionsForEngine(engine string) []previewservice.Action {
+	return webServerPreviewActionsForPresentation(webServerPreviewForEngine(engine))
+}
+
+func webServerPreviewActionsForPresentation(presentation webServerPreviewPresentation) []previewservice.Action {
+	return []previewservice.Action{
+		{Type: "command", Name: presentation.ValidateName, DisplayCommand: presentation.ValidateCommand},
+		{Type: "service", Name: presentation.ReloadName, DisplayCommand: presentation.ReloadCommand, Service: presentation.Service},
+	}
+}
+
 func websiteRuntimeDocument(operation string, runtime website.WebsiteRuntimePreview) (previewservice.Document, string) {
+	presentation := webServerPreviewForEngine(runtime.Website.Engine)
 	document := previewservice.Document{
 		Review:    previewservice.Review{Required: true, RiskLevel: "high", Reason: fmt.Sprintf("网站 %s（%s）将修改运行配置或流量路径，执行前需要确认", runtime.Website.Name, runtime.Website.Domain)},
 		Files:     []previewservice.FileChange{{Path: runtime.AfterPath, Action: "update", ChangeSummary: "更新网站受管虚拟主机配置", Diff: boundedConfigDiff(runtime.BeforeContent, runtime.AfterContent)}},
-		Prechecks: []previewservice.Precheck{{Name: "网站配置版本", Status: "passed", Message: "预览基于当前网站和运行配置生成"}, {Name: "Nginx 配置语法", Status: "deferred", Message: "执行阶段将重新校验"}},
-		Actions:   []previewservice.Action{{Type: "command", Name: "校验 Nginx 配置", DisplayCommand: "nginx -t"}},
+		Prechecks: []previewservice.Precheck{{Name: "网站配置版本", Status: "passed", Message: "预览基于当前网站和运行配置生成"}, {Name: presentation.SyntaxName, Status: "deferred", Message: "执行阶段将重新校验"}},
+		Actions:   webServerPreviewActionsForEngine(runtime.Website.Engine),
 		Impact:    previewservice.Impact{WriteFiles: runtime.BeforePath != runtime.AfterPath || runtime.BeforeContent != runtime.AfterContent, ModifyDatabase: operation != "website.config.update", ReloadService: runtime.Reload},
 		Rollback:  previewservice.Rollback{Supported: true, Summary: "执行前创建配置快照；发布或重载失败时恢复原配置"},
 	}
-	if runtime.Reload {
-		document.Actions = append(document.Actions, previewservice.Action{Type: "service", Name: "重新加载 Nginx", DisplayCommand: "nginx -s reload", Service: "nginx"})
+	if !runtime.Reload {
+		document.Actions = document.Actions[:1]
 	}
 	if operation == "website.toggle" {
 		document.Files[0].Action = "enable_or_remove"
@@ -504,7 +618,7 @@ func buildDocument(operation string, payload json.RawMessage) (previewservice.Do
 				return previewservice.Document{}, "", fmt.Errorf("%w: %v", website.ErrWebServerConfigValidate, err)
 			}
 			document.Files = []previewservice.FileChange{{Path: current.Path, Action: "update", ChangeSummary: "更新 Web 服务器受管配置"}}
-			document.Actions = []previewservice.Action{{Type: "command", Name: "校验 Nginx 配置", DisplayCommand: "nginx -t"}, {Type: "service", Name: "重新加载 Nginx", DisplayCommand: "nginx -s reload", Service: "nginx"}}
+			document.Actions = webServerPreviewActions(manager.Server)
 			document.Impact = previewservice.Impact{WriteFiles: true, ModifyDatabase: true, ReloadService: true}
 			document.Rollback = previewservice.Rollback{Supported: true, Summary: "执行前创建配置快照，校验或重载失败时恢复原配置"}
 			return document, webServerTargetVersion(request.Path, current.Revision, manager.Server), nil
@@ -584,7 +698,7 @@ func buildDocument(operation string, payload json.RawMessage) (previewservice.Do
 			return previewservice.Document{}, "", fmt.Errorf("%w: %v", website.ErrWebServerConfigValidate, err)
 		}
 		document.Files = []previewservice.FileChange{{Path: current.Path, Action: "update", ChangeSummary: "更新 Web 服务器受管配置", Diff: boundedConfigDiff(current.Content, request.Content)}}
-		document.Actions = []previewservice.Action{{Type: "command", Name: "校验 Nginx 配置", DisplayCommand: "nginx -t"}, {Type: "service", Name: "重新加载 Nginx", DisplayCommand: "nginx -s reload", Service: "nginx"}}
+		document.Actions = webServerPreviewActions(manager.Server)
 		document.Impact = previewservice.Impact{WriteFiles: true, ModifyDatabase: true, ReloadService: true}
 		document.Rollback = previewservice.Rollback{Supported: true, Summary: "执行前创建配置快照，校验或重载失败时恢复原配置"}
 		return document, webServerTargetVersion(request.Path, current.Revision, manager.Server), nil

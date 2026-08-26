@@ -324,8 +324,32 @@ func (manager *WebServerConfigManager) Read(relativePath string) (WebServerConfi
 // ValidateContent checks a proposed managed server configuration without
 // touching the live configuration tree or reloading the service.
 func (manager *WebServerConfigManager) ValidateContent(ctx context.Context, relativePath, content string) error {
+	return manager.validateContent(ctx, manager.Server.ConfigRoot, relativePath, content)
+}
+
+// ValidateContentAtRoot validates a candidate file below an explicitly
+// managed configuration root while retaining the detected Web server runtime
+// context (prefix, real config root, main config and binary). Website vhosts
+// may live in a separate managed root, so using Server.ConfigRoot for both
+// purposes would reject valid candidates or lose relative include
+// dependencies.
+func (manager *WebServerConfigManager) ValidateContentAtRoot(
+	ctx context.Context,
+	configRoot, relativePath, content string,
+) error {
+	return manager.validateContent(ctx, configRoot, relativePath, content)
+}
+
+func (manager *WebServerConfigManager) validateContent(
+	ctx context.Context,
+	configRoot, relativePath, content string,
+) error {
 	if err := manager.validate(); err != nil {
 		return err
+	}
+	configRoot = filepath.Clean(strings.TrimSpace(configRoot))
+	if !filepath.IsAbs(configRoot) || configRoot == string(filepath.Separator) {
+		return errors.New("configuration root is invalid")
 	}
 	if len(content) > maxWebServerConfigBytes {
 		return fmt.Errorf("configuration exceeds the %d byte limit", maxWebServerConfigBytes)
@@ -336,7 +360,7 @@ func (manager *WebServerConfigManager) ValidateContent(ctx context.Context, rela
 	// A create preview validates a candidate file before it exists. Resolve the
 	// path lexically and inspect existing components for symlinks, while leaving
 	// creation of the missing directory/file to the execution publisher.
-	target, _, err := resolveManagedConfigPathForPreview(manager.Server.ConfigRoot, relativePath)
+	target, _, err := resolveManagedConfigPathForPreview(configRoot, relativePath)
 	if err != nil {
 		return err
 	}

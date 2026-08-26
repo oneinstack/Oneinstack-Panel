@@ -51,7 +51,7 @@ func (service *Service) PreviewCreate(param *models.Website) (WebsiteRuntimePrev
 	if err != nil {
 		return WebsiteRuntimePreview{}, err
 	}
-	if err := service.validateRuntimeCandidate(path, prepared.config); err != nil {
+	if err := service.validateRuntimeCandidate(&prepared.model, path, prepared.config); err != nil {
 		return WebsiteRuntimePreview{}, err
 	}
 	return WebsiteRuntimePreview{
@@ -180,7 +180,7 @@ func (service *Service) PreviewWebsiteUpdate(param *models.Website) (WebsiteRunt
 		after = ""
 	}
 	if existing.Enabled {
-		if err := service.validateRuntimeCandidate(newPath, after); err != nil {
+		if err := service.validateRuntimeCandidate(&prepared.model, newPath, after); err != nil {
 			return WebsiteRuntimePreview{}, err
 		}
 	}
@@ -241,7 +241,7 @@ func (service *Service) PreviewSettingsUpdate(id int64, settings WebsiteSettings
 		after = mergeWebsiteSettingsConfig(previous.config, prepared.config, before)
 	}
 	if site.Enabled {
-		if err := service.validateRuntimeCandidate(path, after); err != nil {
+		if err := service.validateRuntimeCandidate(site, path, after); err != nil {
 			return WebsiteRuntimePreview{}, err
 		}
 	}
@@ -263,7 +263,7 @@ func (service *Service) PreviewManagedConfig(ctx context.Context, id int64, cont
 	if err != nil {
 		return WebsiteRuntimePreview{}, err
 	}
-	manager, err := service.managedConfigManager()
+	manager, err := service.managedConfigManagerForSite(site)
 	if err != nil {
 		return WebsiteRuntimePreview{}, err
 	}
@@ -278,7 +278,19 @@ func (service *Service) PreviewManagedConfig(ctx context.Context, id int64, cont
 	if !strings.EqualFold(current.Revision, strings.TrimSpace(revision)) {
 		return WebsiteRuntimePreview{}, fmt.Errorf("%w: configuration changed after it was opened", ErrWebServerConfigConflict)
 	}
-	if err := manager.ValidateContent(ctx, relative, content); err != nil {
+	validationManager, err := service.managedConfigManager()
+	if err != nil {
+		return WebsiteRuntimePreview{}, err
+	}
+	configPath, err := service.ConfigFile(site)
+	if err != nil {
+		return WebsiteRuntimePreview{}, err
+	}
+	configRoot, validationRelative, err := service.websiteConfigValidationTarget(site, configPath)
+	if err != nil {
+		return WebsiteRuntimePreview{}, err
+	}
+	if err := validationManager.ValidateContentAtRoot(ctx, configRoot, validationRelative, content); err != nil {
 		return WebsiteRuntimePreview{}, fmt.Errorf("%w: %v", ErrWebServerConfigValidate, err)
 	}
 	version, err := service.RuntimeRevision(id)
@@ -328,7 +340,7 @@ func (service *Service) PreviewToggle(id int64, enabled bool) (WebsiteRuntimePre
 			return WebsiteRuntimePreview{}, wrapWebsiteParameterError(prepareErr)
 		}
 		after = prepared.config
-		if err := service.validateRuntimeCandidate(path, after); err != nil {
+		if err := service.validateRuntimeCandidate(site, path, after); err != nil {
 			return WebsiteRuntimePreview{}, err
 		}
 	}
@@ -343,19 +355,38 @@ func (service *Service) PreviewToggle(id int64, enabled bool) (WebsiteRuntimePre
 	}, nil
 }
 
-func (service *Service) validateRuntimeCandidate(path, content string) error {
+func (service *Service) validateRuntimeCandidate(site *models.Website, path, content string) error {
 	manager, err := service.managedConfigManager()
 	if err != nil {
 		return err
 	}
-	relative, err := filepath.Rel(manager.Server.ConfigRoot, path)
+	configRoot, relative, err := service.websiteConfigValidationTarget(site, path)
 	if err != nil || relative == "." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
 		return errors.New("网站候选配置不属于当前 Web 服务器配置目录")
 	}
-	if err := manager.ValidateContent(context.Background(), filepath.ToSlash(relative), content); err != nil {
+	if err := manager.ValidateContentAtRoot(context.Background(), configRoot, filepath.ToSlash(relative), content); err != nil {
 		return fmt.Errorf("%w: %v", ErrWebServerConfigValidate, err)
 	}
 	return nil
+}
+
+func (service *Service) websiteConfigValidationTarget(site *models.Website, configPath string) (string, string, error) {
+	if site == nil {
+		return "", "", errors.New("website is required")
+	}
+	configRoot, err := service.websiteConfigRoot(site)
+	if err != nil {
+		return "", "", err
+	}
+	configPath = filepath.Clean(strings.TrimSpace(configPath))
+	if configPath == "." || !filepath.IsAbs(configPath) {
+		return "", "", errors.New("website configuration path is invalid")
+	}
+	relative, err := filepath.Rel(configRoot, configPath)
+	if err != nil || relative == "." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return "", "", errors.New("website configuration is outside its managed vhost root")
+	}
+	return configRoot, filepath.ToSlash(relative), nil
 }
 
 func nowForWebsitePreview() (t time.Time) {
