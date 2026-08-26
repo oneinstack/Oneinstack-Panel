@@ -95,7 +95,7 @@ func ContainerStats(c *gin.Context) {
 	defer cancel()
 	result, err := service.Stats(ctx, c.Param("id"))
 	if err != nil {
-		operationError(c, err)
+		containerStatsError(c, err)
 		return
 	}
 	core.HandleSuccess(c, result)
@@ -306,8 +306,12 @@ func BatchDeleteNetwork(c *gin.Context) {
 	for _, id := range request.IDs {
 		item := gin.H{"id": id}
 		if err := service.DeleteNetwork(ctx, id, request.Confirm); err != nil {
-			item["success"], item["error"], item["errorCode"] = false, containerBatchError(c, err), core.ErrInternalError
-			recordAction(c, "container.network.delete", http.StatusInternalServerError, err)
+			errorCode, status := core.ErrInternalError, http.StatusInternalServerError
+			if errors.Is(err, containerService.ErrProtectedNetwork) {
+				errorCode, status = core.ErrResourceStateInvalid, http.StatusConflict
+			}
+			item["success"], item["error"], item["errorCode"] = false, containerBatchError(c, err), errorCode
+			recordAction(c, "container.network.delete", status, err)
 		} else {
 			item["success"] = true
 			recordAction(c, "container.network.delete", http.StatusOK, nil)
@@ -370,7 +374,7 @@ func CreateContainer(c *gin.Context) {
 		createRequest.Ports = append(createRequest.Ports, containerService.PortMapping{HostPort: port.HostPort, ContainerPort: port.ContainerPort, Protocol: port.Protocol})
 	}
 	for _, mount := range request.Mounts {
-		createRequest.Mounts = append(createRequest.Mounts, containerService.Mount{Source: mount.Source, Target: mount.Target, ReadOnly: mount.ReadOnly})
+		createRequest.Mounts = append(createRequest.Mounts, containerService.Mount{Type: mount.Type, Source: mount.Source, Target: mount.Target, ReadOnly: mount.ReadOnly})
 	}
 	userID, _ := middleware.AuthenticatedUserID(c)
 	task, err := createTaskManager.Submit(containerService.TaskRequest{Operation: models.ContainerTaskOperationCreate, Create: &createRequest, Image: request.Image}, userID)
@@ -598,11 +602,23 @@ func BatchAction(c *gin.Context) {
 }
 
 func containerBatchError(c *gin.Context, err error) string {
+	if errors.Is(err, containerService.ErrProtectedNetwork) {
+		response := core.ErrorResponseForLocale(protectedNetworkError(), c.GetString("locale"))
+		return response.Message
+	}
 	response := core.ErrorResponseForLocale(
 		core.WrapError(err, core.ErrInternalError, containerOperationMessage(c)),
 		c.GetString("locale"),
 	)
 	return response.Message
+}
+
+func protectedNetworkError() *core.AppError {
+	return core.NewErrorWithDetail(
+		core.ErrResourceStateInvalid,
+		"Docker内置网络不可删除",
+		"bridge、host 和 none 是 Docker 创建的内置网络，不能删除。请删除自定义网络，或使用“清理无用网络”清理未使用的自定义网络。",
+	)
 }
 
 func Action(c *gin.Context) {
@@ -1317,6 +1333,18 @@ func badRequest(c *gin.Context, err error) {
 }
 
 func operationError(c *gin.Context, err error) {
+	if errors.Is(err, containerService.ErrProtectedNetwork) {
+		core.HandleError(c, protectedNetworkError())
+		return
+	}
+	if errors.Is(err, containerService.ErrContainerInspectUnavailable) {
+		core.HandleError(c, core.NewErrorWithDetail(
+			core.ErrResourceStateInvalid,
+			"容器详情正在刷新，请稍后重试",
+			"Docker 在容器重启期间未返回完整详情；请保留当前详情并稍后重新加载。",
+		))
+		return
+	}
 	if errors.Is(err, containerService.ErrInvalidLogOptions) {
 		containerLogBadRequest(c, err)
 		return
@@ -1375,6 +1403,53 @@ func operationError(c *gin.Context, err error) {
 		return
 	}
 	core.HandleError(c, core.WrapError(err, core.ErrInternalError, containerOperationMessage(c)))
+}
+
+func containerStatsError(c *gin.Context, err error) {
+	switch {
+	case errors.Is(err, containerService.ErrContainerStatsInvalidReference):
+		core.HandleError(c, core.NewErrorWithDetail(
+			core.ErrInvalidParameter,
+			"容器标识无效",
+			"容器标识不能为空、不能包含换行符，且不能以短横线开头。",
+		))
+	case errors.Is(err, containerService.ErrContainerStatsTimeout):
+		core.HandleError(c, core.NewErrorWithDetail(
+			core.ErrTaskTimeout,
+			"Docker stats 读取超时",
+			"Docker stats 未在限定时间内返回容器实时指标，请检查 Docker daemon 状态、容器运行状态和面板请求超时设置后重试。",
+		))
+	case errors.Is(err, containerService.ErrContainerStatsPermissionDenied):
+		core.HandleError(c, core.NewErrorWithDetail(
+			core.ErrPermissionUnavailable,
+			"Docker stats 权限不足",
+			"面板进程无权访问 Docker daemon 或 Docker socket，请检查面板运行用户、Docker socket 所属用户组和访问权限。",
+		))
+	case errors.Is(err, containerService.ErrContainerStatsNotFound):
+		core.HandleError(c, core.NewErrorWithDetail(
+			core.ErrNotFound,
+			"目标容器不存在或已被删除",
+			"Docker 未找到该容器，请刷新容器列表后重新打开详情。",
+		))
+	case errors.Is(err, containerService.ErrContainerStatsEmpty):
+		core.HandleError(c, core.NewErrorWithDetail(
+			core.ErrResourceStateInvalid,
+			"容器实时指标正在刷新，请稍后重试",
+			"Docker 未返回完整容器实时指标，容器可能正在重启或 Docker daemon 尚未完成统计采样。",
+		))
+	case errors.Is(err, containerService.ErrRuntimeUnavailable):
+		core.HandleError(c, core.NewErrorWithDetail(
+			core.ErrContainerRuntimeUnavailable,
+			"Docker 运行时不可用，无法读取实时指标",
+			"Docker daemon 当前不可用，请确认 Docker 服务已启动，并检查面板运行用户是否有访问 Docker socket 的权限。",
+		))
+	default:
+		core.HandleError(c, core.NewErrorWithDetail(
+			core.ErrServiceUnavailable,
+			"Docker stats 读取失败",
+			"Docker 未能返回容器实时指标，请检查 Docker daemon、容器状态和面板运行用户权限后重试。",
+		))
+	}
 }
 
 func registryProbeError(err error) *core.AppError {

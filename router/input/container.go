@@ -29,6 +29,7 @@ type ContainerPortMapping struct {
 }
 
 type ContainerMount struct {
+	Type     string `json:"type,omitempty"`
 	Source   string `json:"source" binding:"required"`
 	Target   string `json:"target" binding:"required"`
 	ReadOnly bool   `json:"readOnly"`

@@ -27,13 +27,20 @@ import (
 )
 
 var (
-	ErrRuntimeUnavailable     = errors.New("container runtime unavailable")
-	ErrInvalidContainerConfig = errors.New("invalid container configuration")
-	ErrInvalidLogOptions      = errors.New("invalid container log options")
-	ErrInvalidRegistryInput   = errors.New("invalid container registry input")
-	ErrRegistryProbeFailed    = errors.New("container registry probe failed")
-	ErrImagePullFailed        = errors.New("container image pull failed")
-	ErrDockerCommandTimeout   = errors.New("docker command timed out")
+	ErrRuntimeUnavailable             = errors.New("container runtime unavailable")
+	ErrInvalidContainerConfig         = errors.New("invalid container configuration")
+	ErrInvalidLogOptions              = errors.New("invalid container log options")
+	ErrInvalidRegistryInput           = errors.New("invalid container registry input")
+	ErrRegistryProbeFailed            = errors.New("container registry probe failed")
+	ErrImagePullFailed                = errors.New("container image pull failed")
+	ErrDockerCommandTimeout           = errors.New("docker command timed out")
+	ErrProtectedNetwork               = errors.New("protected container network")
+	ErrContainerStatsTimeout          = errors.New("container stats timed out")
+	ErrContainerStatsPermissionDenied = errors.New("container stats permission denied")
+	ErrContainerStatsNotFound         = errors.New("container stats container not found")
+	ErrContainerStatsEmpty            = errors.New("container stats returned no data")
+	ErrContainerStatsInvalidReference = errors.New("invalid container stats reference")
+	ErrContainerInspectUnavailable    = errors.New("container inspect returned no data")
 )
 
 const (
@@ -43,6 +50,11 @@ const (
 	containerActionPollInterval    = 500 * time.Millisecond
 	containerActionObserveTimeout  = 30 * time.Second
 	containerActionStableRunWindow = 3 * time.Second
+	// Docker may briefly return an empty inspect/stats snapshot while a
+	// container is being restarted. Do not expose that transient snapshot to
+	// callers; give the daemon a short window to publish the real state.
+	containerReadRetryAttempts = 20
+	containerReadRetryInterval = 250 * time.Millisecond
 )
 
 // Service is a deliberately small, fixed-command Docker adapter. It never
@@ -161,9 +173,15 @@ type PortMapping struct {
 	Protocol                string
 }
 type Mount struct {
+	Type           string
 	Source, Target string
 	ReadOnly       bool
 }
+
+const (
+	MountTypeBind   = "bind"
+	MountTypeVolume = "volume"
+)
 
 type ContainerStats struct {
 	ID            string `json:"id"`
@@ -281,31 +299,91 @@ func (s *Service) InspectContainer(ctx context.Context, id string) (map[string]a
 	if err != nil {
 		return nil, err
 	}
-	out, err := s.run(ctx, "inspect", id)
-	if err != nil {
-		return nil, err
+	var lastErr error
+	for attempt := 0; ; attempt++ {
+		out, inspectErr := s.run(ctx, "inspect", id)
+		if inspectErr != nil {
+			return nil, inspectErr
+		}
+		var items []map[string]any
+		if unmarshalErr := json.Unmarshal([]byte(strings.TrimSpace(out)), &items); unmarshalErr == nil && len(items) > 0 && items[0] != nil {
+			result := sanitizeInspect(items[0])
+			if len(result) > 0 {
+				return result, nil
+			}
+		}
+		lastErr = ErrContainerInspectUnavailable
+		if attempt >= containerReadRetryAttempts-1 {
+			return nil, lastErr
+		}
+		if err := waitForContainerReadRetry(ctx); err != nil {
+			return nil, err
+		}
 	}
-	var items []map[string]any
-	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &items); err != nil || len(items) == 0 {
-		return nil, errors.New("容器详情响应无效")
-	}
-	return sanitizeInspect(items[0]), nil
 }
 
 func (s *Service) Stats(ctx context.Context, id string) (ContainerStats, error) {
 	id, err := validateReference(id)
 	if err != nil {
-		return ContainerStats{}, err
+		return ContainerStats{}, fmt.Errorf("%w: %v", ErrContainerStatsInvalidReference, err)
 	}
-	items, err := s.linesJSON(ctx, "stats", "--no-stream", "--format", "{{json .}}", id)
-	if err != nil {
-		return ContainerStats{}, err
+	for attempt := 0; ; attempt++ {
+		items, statsErr := s.linesJSON(ctx, "stats", "--no-stream", "--format", "{{json .}}", id)
+		if statsErr != nil {
+			return ContainerStats{}, classifyStatsError(statsErr)
+		}
+		if len(items) > 0 && validContainerStats(items[0]) {
+			item := items[0]
+			return ContainerStats{ID: stringValue(item, "ID"), Name: stringValue(item, "Name"), CPUPercent: stringValue(item, "CPUPerc"), MemoryUsage: stringValue(item, "MemUsage"), MemoryPercent: stringValue(item, "MemPerc"), NetworkIO: stringValue(item, "NetIO"), BlockIO: stringValue(item, "BlockIO"), PIDs: stringValue(item, "PIDs")}, nil
+		}
+		if attempt >= containerReadRetryAttempts-1 {
+			return ContainerStats{}, ErrContainerStatsEmpty
+		}
+		if err := waitForContainerReadRetry(ctx); err != nil {
+			return ContainerStats{}, err
+		}
 	}
-	if len(items) == 0 {
-		return ContainerStats{}, errors.New("容器统计信息为空")
+}
+
+func validContainerStats(item map[string]any) bool {
+	if item == nil || strings.TrimSpace(stringValue(item, "ID")) == "" {
+		return false
 	}
-	item := items[0]
-	return ContainerStats{ID: stringValue(item, "ID"), Name: stringValue(item, "Name"), CPUPercent: stringValue(item, "CPUPerc"), MemoryUsage: stringValue(item, "MemUsage"), MemoryPercent: stringValue(item, "MemPerc"), NetworkIO: stringValue(item, "NetIO"), BlockIO: stringValue(item, "BlockIO"), PIDs: stringValue(item, "PIDs")}, nil
+	for _, key := range []string{"CPUPerc", "MemUsage", "MemPerc", "NetIO", "BlockIO", "PIDs"} {
+		if strings.TrimSpace(stringValue(item, key)) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func waitForContainerReadRetry(ctx context.Context) error {
+	timer := time.NewTimer(containerReadRetryInterval)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func classifyStatsError(err error) error {
+	if err == nil {
+		return nil
+	}
+	lower := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(lower, "permission denied"), strings.Contains(lower, "operation not permitted"):
+		return fmt.Errorf("%w: %v", ErrContainerStatsPermissionDenied, err)
+	case errors.Is(err, ErrDockerCommandTimeout), errors.Is(err, context.DeadlineExceeded),
+		strings.Contains(lower, "timed out"), strings.Contains(lower, "timeout"):
+		return fmt.Errorf("%w: %v", ErrContainerStatsTimeout, err)
+	case strings.Contains(lower, "no such container"), strings.Contains(lower, "no such object"):
+		return fmt.Errorf("%w: %v", ErrContainerStatsNotFound, err)
+	default:
+		return err
+	}
 }
 
 func (s *Service) CreateContainer(ctx context.Context, request ContainerCreateRequest) (string, error) {
@@ -400,7 +478,7 @@ func (s *Service) CreateContainer(ctx context.Context, request ContainerCreateRe
 		args = append(args, "--ip6", request.IPv6)
 	}
 	for _, mount := range request.Mounts {
-		source, err := validateReference(mount.Source)
+		mountType, source, err := validateMountSource(mount)
 		if err != nil {
 			return "", err
 		}
@@ -408,7 +486,7 @@ func (s *Service) CreateContainer(ctx context.Context, request ContainerCreateRe
 		if err != nil {
 			return "", err
 		}
-		mountSpec := fmt.Sprintf("type=bind,src=%s,dst=%s", source, target)
+		mountSpec := fmt.Sprintf("type=%s,src=%s,dst=%s", mountType, source, target)
 		if mount.ReadOnly {
 			mountSpec += ",readonly"
 		}
@@ -505,9 +583,8 @@ func validateContainerCreateRequest(request ContainerCreateRequest) error {
 
 	targets := make(map[string]struct{}, len(request.Mounts))
 	for _, mount := range request.Mounts {
-		source := strings.TrimSpace(mount.Source)
-		if source == "" || strings.ContainsAny(source, "\r\n") || !filepath.IsAbs(source) {
-			return fmt.Errorf("挂载源路径 %q 无效，必须是 Docker 主机上的绝对路径", mount.Source)
+		if _, _, err := validateMountSource(mount); err != nil {
+			return err
 		}
 		target, err := validateMountTarget(mount.Target)
 		if err != nil {
@@ -635,7 +712,11 @@ func (s *Service) inspectContainerState(ctx context.Context, id string) (Contain
 	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &state); err != nil {
 		return ContainerActionState{}, fmt.Errorf("容器状态响应无效: %w", err)
 	}
-	return ContainerActionState{Status: strings.ToLower(strings.TrimSpace(state.Status)), Running: state.Running, Paused: state.Paused, ExitCode: state.ExitCode}, nil
+	status := strings.ToLower(strings.TrimSpace(state.Status))
+	if status == "" {
+		return ContainerActionState{}, errors.New("容器状态响应为空")
+	}
+	return ContainerActionState{Status: status, Running: state.Running, Paused: state.Paused, ExitCode: state.ExitCode}, nil
 }
 
 func (s *Service) Logs(ctx context.Context, id string, options LogOptions) (string, error) {
@@ -1029,6 +1110,7 @@ func (s *Service) ListNetworks(ctx context.Context) ([]map[string]any, error) {
 		if details, inspectErr := s.inspectResource(ctx, "network", name); inspectErr == nil {
 			items[index] = networkSummary(items[index], details)
 		}
+		markNetworkDeleteCapability(items[index])
 	}
 	return items, nil
 }
@@ -1109,7 +1191,16 @@ func (s *Service) DeleteNetwork(ctx context.Context, name string, confirm bool) 
 	}
 	switch name {
 	case "bridge", "host", "none":
-		return errors.New("Docker 系统网络不允许删除")
+		return ErrProtectedNetwork
+	}
+	// The list API exposes Docker's short ID, while the built-in network
+	// protection is defined by name. Resolve ID references before invoking
+	// `network rm`, otherwise bridge/host/none can bypass the guard and only
+	// fail later with Docker's generic command error.
+	if details, inspectErr := s.inspectResource(ctx, "network", name); inspectErr == nil {
+		if isProtectedNetwork(stringValue(details, "Name")) {
+			return ErrProtectedNetwork
+		}
 	}
 	_, err = s.run(ctx, "network", "rm", name)
 	return err
@@ -1262,6 +1353,27 @@ func networkSummary(item, details map[string]any) map[string]any {
 		}
 	}
 	return item
+}
+
+func markNetworkDeleteCapability(item map[string]any) {
+	if item == nil {
+		return
+	}
+	if isProtectedNetwork(stringValue(item, "Name")) {
+		item["canDelete"] = false
+		item["deleteDisabledReason"] = "Docker内置网络不可删除"
+		return
+	}
+	item["canDelete"] = true
+}
+
+func isProtectedNetwork(name string) bool {
+	switch strings.TrimSpace(name) {
+	case "bridge", "host", "none":
+		return true
+	default:
+		return false
+	}
 }
 
 func validateCIDRFamily(value, family string) error {
@@ -2242,6 +2354,35 @@ func validateRestart(value string) error {
 		return nil
 	}
 	return errors.New("重启策略无效")
+}
+
+func validateMountSource(mount Mount) (string, string, error) {
+	mountType := strings.ToLower(strings.TrimSpace(mount.Type))
+	if mountType == "" {
+		// Keep requests from older clients compatible. Before mount type was
+		// exposed, every mount was emitted as a bind mount.
+		mountType = MountTypeBind
+	}
+
+	source := strings.TrimSpace(mount.Source)
+	if source == "" || strings.ContainsAny(source, "\r\n") {
+		return "", "", errors.New("挂载源不能为空，且不能包含换行符")
+	}
+
+	switch mountType {
+	case MountTypeBind:
+		if !filepath.IsAbs(source) {
+			return "", "", fmt.Errorf("挂载源路径 %q 无效，type=bind 时必须是 Docker 主机上的绝对路径", mount.Source)
+		}
+	case MountTypeVolume:
+		if _, err := validateName(source); err != nil {
+			return "", "", fmt.Errorf("命名卷名称 %q 无效: %w", mount.Source, err)
+		}
+	default:
+		return "", "", fmt.Errorf("挂载类型 %q 无效，只支持 bind 或 volume", mount.Type)
+	}
+
+	return mountType, source, nil
 }
 
 func validateMountTarget(value string) (string, error) {

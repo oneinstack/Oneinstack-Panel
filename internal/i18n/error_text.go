@@ -28,6 +28,9 @@ func LocalizeText(locale, text string) string {
 	if translated, ok := englishErrorTexts[text]; ok {
 		return translated
 	}
+	if translated := translateContainerErrorText(text); translated != "" {
+		return translated
+	}
 	if translated, ok := translateValidationText(text); ok {
 		return translated
 	}
@@ -38,6 +41,17 @@ func LocalizeText(locale, text string) string {
 		return translated
 	}
 	return text
+}
+
+func translateContainerErrorText(text string) string {
+	switch text {
+	case "Docker内置网络不可删除":
+		return "Built-in Docker networks cannot be deleted"
+	case "bridge、host 和 none 是 Docker 创建的内置网络，不能删除。请删除自定义网络，或使用“清理无用网络”清理未使用的自定义网络。":
+		return "bridge, host, and none are built-in Docker networks and cannot be deleted. Delete a custom network instead, or use Prune unused networks to remove unused custom networks."
+	default:
+		return ""
+	}
 }
 
 func translateDynamicErrorText(text string) (string, bool) {
@@ -546,6 +560,20 @@ var englishTerms = map[string]string{
 }
 
 var englishErrorTexts = map[string]string{
+	"容器标识无效": "The container identifier is invalid",
+	"容器标识不能为空、不能包含换行符，且不能以短横线开头。": "The container identifier must not be empty, contain line breaks, or start with a hyphen.",
+	"Docker stats 读取超时":      "Docker stats timed out while reading container metrics",
+	"Docker stats 权限不足":      "The Panel process does not have permission to read Docker stats",
+	"目标容器不存在或已被删除":           "The target container does not exist or has been removed",
+	"Docker stats 未返回指标":     "Docker stats returned no container metrics",
+	"Docker 运行时不可用，无法读取实时指标": "The Docker runtime is unavailable, so real-time metrics cannot be read",
+	"Docker stats 读取失败":      "Docker stats failed while reading container metrics",
+	"Docker stats 未在限定时间内返回容器实时指标，请检查 Docker daemon 状态、容器运行状态和面板请求超时设置后重试。":      "Docker stats did not return container metrics within the allowed time. Check the Docker daemon, container state, and Panel request timeout before retrying.",
+	"面板进程无权访问 Docker daemon 或 Docker socket，请检查面板运行用户、Docker socket 所属用户组和访问权限。": "The Panel process cannot access the Docker daemon or Docker socket. Check the Panel user, the socket group, and its access permissions.",
+	"Docker 未找到该容器，请刷新容器列表后重新打开详情。":                                              "Docker could not find the container. Refresh the container list and reopen its details.",
+	"Docker 未返回容器实时指标，容器可能已停止或 Docker daemon 尚未完成统计采样。":                          "Docker returned no real-time container metrics. The container may have stopped or the Docker daemon may not have completed a stats sample.",
+	"Docker daemon 当前不可用，请确认 Docker 服务已启动，并检查面板运行用户是否有访问 Docker socket 的权限。":     "The Docker daemon is currently unavailable. Verify that Docker is running and that the Panel process user can access the Docker socket.",
+	"Docker 未能返回容器实时指标，请检查 Docker daemon、容器状态和面板运行用户权限后重试。":                      "Docker could not return real-time container metrics. Check the Docker daemon, container state, and Panel process permissions, then retry.",
 	"容器镜像仓库域名解析失败":                     "Failed to resolve the container registry domain",
 	"容器镜像仓库拒绝连接":                       "The container registry refused the connection",
 	"容器镜像仓库网络不可达":                      "The container registry network is unreachable",
