@@ -132,6 +132,22 @@ func (collector *ComponentHealthCollector) CollectServiceHealth(
 			observation.SubState = probe.SubState
 			observation.ServiceState = componentProbeState(probe.ActiveState)
 			observation.Healthy = probe.LoadState == "loaded" && probe.ActiveState == "active"
+			for _, owner := range ActiveRuntimeGroupOwners(
+				probeContext,
+				definition.RuntimeGroup,
+				"",
+			) {
+				if RuntimeGroupOwnerComponent(probeContext, owner) != definition.Component {
+					continue
+				}
+				observation.LoadState = "loaded"
+				observation.ActiveState = "active"
+				observation.SubState = "running"
+				observation.ServiceState = "running"
+				observation.Healthy = true
+				observation.Error = ""
+				break
+			}
 			if !observation.Healthy {
 				observation.Error = fmt.Sprintf(
 					"systemd 状态为 %s/%s/%s",

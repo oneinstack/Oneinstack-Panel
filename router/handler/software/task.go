@@ -118,7 +118,7 @@ func getTaskManager() (*softwaretask.Manager, error) {
 				if _, err := installer.InstallTask(ctx, params, logPath, reporter); err != nil {
 					return err
 				}
-				if params.Key == "webserver" {
+				if isManagedWebServerKey(params.Key) {
 					if err := restoreManagedWebsiteConfigs(ctx); err != nil {
 						return fmt.Errorf("restore managed website configurations: %w", err)
 					}
@@ -166,18 +166,22 @@ func getTaskManager() (*softwaretask.Manager, error) {
 }
 
 func restoreManagedWebsiteConfigs(ctx context.Context) error {
+	webServerKeys := []string{"webserver", "nginx", "openresty", "tengine", "apache", "caddy"}
 	var installed models.Software
 	if err := app.DB().
-		Where("`key` = ? AND installed = ?", "webserver", true).
+		Where("`key` IN ? AND installed = ?", webServerKeys, true).
 		Order("id DESC").
 		First(&installed).Error; err != nil {
 		return fmt.Errorf("read installed Web server: %w", err)
 	}
 	component := strings.ToLower(strings.TrimSpace(installed.Component))
 	if component == "" {
-		component = "nginx"
+		component = strings.ToLower(strings.TrimSpace(installed.Key))
+		if component == "" || component == "webserver" {
+			component = "nginx"
+		}
 	}
-	if component != "nginx" && component != "openresty" {
+	if !isManagedWebServerComponent(component) {
 		return nil
 	}
 	service, err := websiteService.DefaultService()
@@ -186,6 +190,24 @@ func restoreManagedWebsiteConfigs(ctx context.Context) error {
 	}
 	_, err = service.RestoreMissingManagedConfigs(ctx)
 	return err
+}
+
+func isManagedWebServerKey(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "webserver", "nginx", "openresty", "tengine", "apache", "caddy":
+		return true
+	default:
+		return false
+	}
+}
+
+func isManagedWebServerComponent(component string) bool {
+	switch strings.ToLower(strings.TrimSpace(component)) {
+	case "nginx", "openresty", "tengine", "apache", "caddy":
+		return true
+	default:
+		return false
+	}
 }
 
 // DefaultTaskManager initializes the durable task service at server startup so

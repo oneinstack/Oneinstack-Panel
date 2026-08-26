@@ -235,9 +235,9 @@ type RuntimeGroupOwner struct {
 }
 
 // RuntimeGroupOwnerComponent returns the logical component represented by a
-// runtime-group owner. The legacy nginx.service unit is kept as an explicit
-// unmanaged owner for lifecycle safety, but its status should still be
-// associated with the Web engine that owns its ExecStart binary.
+// runtime-group owner. Legacy web units are kept as explicit unmanaged owners
+// for lifecycle safety, but their status should still be associated with the
+// Web engine that owns their ExecStart binary.
 func RuntimeGroupOwnerComponent(ctx context.Context, owner RuntimeGroupOwner) string {
 	if owner.Component != "legacy-web" {
 		return owner.Component
@@ -255,6 +255,8 @@ func RuntimeGroupOwnerComponent(ctx context.Context, owner RuntimeGroupOwner) st
 	}
 	command := strings.ToLower(string(execStart))
 	switch {
+	case strings.Contains(command, "/apache/") || strings.Contains(command, "httpd"):
+		return "apache"
 	case strings.Contains(command, "/openresty/"):
 		return "openresty"
 	case strings.Contains(command, "/tengine/"):
@@ -267,7 +269,7 @@ func RuntimeGroupOwnerComponent(ctx context.Context, owner RuntimeGroupOwner) st
 }
 
 // ActiveRuntimeGroupOwners checks the actual systemd units for a runtime
-// group, including the legacy nginx unit kept for safe migration detection.
+// group, including legacy web units kept for safe migration detection.
 func ActiveRuntimeGroupOwners(ctx context.Context, runtimeGroup, excludeComponent string) []RuntimeGroupOwner {
 	if strings.TrimSpace(runtimeGroup) == "" {
 		return nil
@@ -279,6 +281,7 @@ func ActiveRuntimeGroupOwners(ctx context.Context, runtimeGroup, excludeComponen
 		{Component: "caddy", ServiceName: "oneinstack-caddy"},
 		{Component: "apache", ServiceName: "oneinstack-httpd"},
 		{Component: "legacy-web", ServiceName: "nginx"},
+		{Component: "legacy-web", ServiceName: "httpd"},
 	}
 	result := make([]RuntimeGroupOwner, 0, len(owners))
 	for _, owner := range owners {
