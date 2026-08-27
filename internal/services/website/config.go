@@ -518,10 +518,14 @@ func (ApacheAdapter) Render(siteType string, data siteTemplateData) (string, err
 
 func (CaddyAdapter) Render(siteType string, data siteTemplateData) (string, error) {
 	if strings.TrimSpace(data.RewriteDirectives) != "" ||
-		strings.TrimSpace(data.ServerDirectives) != "" ||
 		strings.TrimSpace(data.ExtraLocations) != "" {
 		return "", errors.New("UNSUPPORTED_ENGINE_DIRECTIVE: Nginx-specific website directives cannot be rendered for Caddy")
 	}
+	serverDirectives, err := renderCaddyServerDirectives(data.ServerDirectives)
+	if err != nil {
+		return "", err
+	}
+	data.ServerDirectives = serverDirectives
 	return renderCaddyWebsiteConfig(siteType, data), nil
 }
 
@@ -631,8 +635,40 @@ func renderCaddyWebsiteConfig(siteType string, data siteTemplateData) string {
 		}
 		builder.WriteString("  file_server\n")
 	}
+	if directives := data.ServerDirectives; strings.TrimSpace(directives) != "" {
+		builder.WriteString(directives)
+		builder.WriteByte('\n')
+	}
 	fmt.Fprintf(&builder, "  log {\n    output file %s/%s_access.log\n  }\n}\n", data.LogDir, data.LogName)
 	return builder.String()
+}
+
+// renderCaddyServerDirectives translates the one server-level setting that
+// has a direct Caddy equivalent. Other values remain explicitly unsupported
+// instead of being silently dropped from the generated configuration.
+func renderCaddyServerDirectives(value string) (string, error) {
+	lines := strings.Split(strings.TrimSpace(value), "\n")
+	for index := range lines {
+		lines[index] = strings.TrimSpace(lines[index])
+	}
+	normalized := strings.TrimSpace(strings.Join(lines, "\n"))
+	if normalized == "" {
+		return "", nil
+	}
+	if normalized != strings.Join([]string{
+		`add_header X-Content-Type-Options "nosniff" always;`,
+		`add_header X-Frame-Options "SAMEORIGIN" always;`,
+		`add_header Referrer-Policy "strict-origin-when-cross-origin" always;`,
+	}, "\n") {
+		return "", errors.New("UNSUPPORTED_ENGINE_DIRECTIVE: Nginx-specific website directives cannot be rendered for Caddy")
+	}
+	return strings.Join([]string{
+		"  header {",
+		"    X-Content-Type-Options \"nosniff\"",
+		"    X-Frame-Options \"SAMEORIGIN\"",
+		"    Referrer-Policy \"strict-origin-when-cross-origin\"",
+		"  }",
+	}, "\n"), nil
 }
 
 func normalizeTLSFilePath(value, label string) (string, error) {

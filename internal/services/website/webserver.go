@@ -341,6 +341,21 @@ func (manager *WebServerConfigManager) ValidateContentAtRoot(
 	return manager.validateContent(ctx, configRoot, relativePath, content)
 }
 
+// configIncludeRoots returns the runtime configuration roots that a managed
+// configuration is allowed to reference during preview. The website vhost
+// tree is intentionally separate from the detected OpenResty/Nginx config
+// root, but it is still a Panel-managed dependency.
+func (manager *WebServerConfigManager) configIncludeRoots() []string {
+	if manager == nil {
+		return nil
+	}
+	roots := []string{manager.Server.ConfigRoot, manager.Server.Prefix}
+	if engine, err := normalizeWebsiteEngine(manager.Server.Component); err == nil {
+		roots = append(roots, managedVhostDir(engine))
+	}
+	return uniqueCleanPaths(roots)
+}
+
 func (manager *WebServerConfigManager) validateContent(
 	ctx context.Context,
 	configRoot, relativePath, content string,
@@ -448,8 +463,8 @@ func (manager *WebServerConfigManager) validateContent(
 	}
 	if err := stageCustomConfigIncludes(
 		directory,
-		manager.Server.Prefix,
 		manager.Server.ConfigRoot,
+		manager.configIncludeRoots(),
 		includeContents...,
 	); err != nil {
 		return err
@@ -464,14 +479,14 @@ var nginxIncludePattern = regexp.MustCompile(`(?m)^[\t ]*include[\t ]+([^;#]+);`
 // stageCustomConfigIncludes stages fixed custom include dependencies while
 // preserving their relative paths in the disposable prefix. Dynamic includes
 // cannot be resolved safely during preview and are rejected explicitly.
-func stageCustomConfigIncludes(directory, prefix, configRoot string, contents ...string) error {
+func stageCustomConfigIncludes(directory, configRoot string, allowedRoots []string, contents ...string) error {
 	visited := make(map[string]struct{})
 	staged := 0
 	for _, content := range contents {
 		if err := collectConfigIncludes(
 			directory,
-			filepath.Clean(prefix),
 			filepath.Clean(configRoot),
+			allowedRoots,
 			filepath.Clean(configRoot),
 			content,
 			0,
@@ -485,7 +500,7 @@ func stageCustomConfigIncludes(directory, prefix, configRoot string, contents ..
 }
 
 func collectConfigIncludes(
-	directory, prefix, configRoot, baseDir, content string,
+	directory, configRoot string, allowedRoots []string, baseDir, content string,
 	depth int,
 	visited map[string]struct{}, staged *int,
 ) error {
@@ -505,7 +520,7 @@ func collectConfigIncludes(
 			return fmt.Errorf("dynamic web server configuration include is not supported: %s", expression)
 		}
 
-		matches, root, err := resolveConfigInclude(expression, baseDir, prefix, configRoot)
+		matches, root, err := resolveConfigInclude(expression, baseDir, allowedRoots)
 		if err != nil {
 			return err
 		}
@@ -556,8 +571,8 @@ func collectConfigIncludes(
 
 			if err := collectConfigIncludes(
 				directory,
-				prefix,
 				configRoot,
+				allowedRoots,
 				filepath.Dir(source),
 				string(data),
 				depth+1,
@@ -571,14 +586,14 @@ func collectConfigIncludes(
 	return nil
 }
 
-func resolveConfigInclude(expression, baseDir, prefix, configRoot string) ([]string, string, error) {
+func resolveConfigInclude(expression, baseDir string, allowedRoots []string) ([]string, string, error) {
 	if filepath.IsAbs(expression) {
 		matches, err := filepath.Glob(filepath.Clean(expression))
 		if err != nil {
 			return nil, "", fmt.Errorf("invalid web server configuration include %s: %w", expression, err)
 		}
 		for _, match := range matches {
-			if !pathWithinRoot(match, configRoot) && !pathWithinRoot(match, prefix) {
+			if !pathWithinAnyRoot(match, allowedRoots) {
 				return nil, "", fmt.Errorf("web server configuration include is outside the managed roots: %s", expression)
 			}
 		}
@@ -588,7 +603,8 @@ func resolveConfigInclude(expression, baseDir, prefix, configRoot string) ([]str
 	if cleaned == "." || cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
 		return nil, "", fmt.Errorf("web server configuration include escapes the managed root: %s", expression)
 	}
-	for _, root := range []string{baseDir, configRoot, prefix} {
+	roots := append([]string{filepath.Clean(baseDir)}, allowedRoots...)
+	for _, root := range uniqueCleanPaths(roots) {
 		candidate := filepath.Join(root, cleaned)
 		matches, err := filepath.Glob(candidate)
 		if err != nil {
@@ -608,6 +624,32 @@ func hasGlobPattern(path string) bool {
 func pathWithinRoot(path, root string) bool {
 	relative, err := filepath.Rel(filepath.Clean(root), filepath.Clean(path))
 	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) && !filepath.IsAbs(relative)
+}
+
+func pathWithinAnyRoot(path string, roots []string) bool {
+	for _, root := range roots {
+		if pathWithinRoot(path, root) {
+			return true
+		}
+	}
+	return false
+}
+
+func uniqueCleanPaths(paths []string) []string {
+	result := make([]string, 0, len(paths))
+	seen := make(map[string]struct{}, len(paths))
+	for _, path := range paths {
+		cleaned := filepath.Clean(strings.TrimSpace(path))
+		if cleaned == "." || cleaned == string(filepath.Separator) {
+			continue
+		}
+		if _, exists := seen[cleaned]; exists {
+			continue
+		}
+		seen[cleaned] = struct{}{}
+		result = append(result, cleaned)
+	}
+	return result
 }
 
 // stageRelativeConfigFiles stages the common files referenced by Nginx
