@@ -540,12 +540,18 @@ func componentServiceStatusesFor(
 			activeByComponent[task.Component] = task
 		}
 	}
+	activeOwners := activeRuntimeGroupOwners(ctx, definitions)
 
 	result := make([]componentServiceStatus, len(definitions))
 	var probes sync.WaitGroup
 	for index, definition := range definitions {
 		now := time.Now().UTC()
-		installed, exists := installedComponentService(definition, installedRows, installedByKey)
+		installed, exists := installedComponentService(
+			definition,
+			installedRows,
+			installedByKey,
+			activeOwners[definition.RuntimeGroup],
+		)
 		runtimeDefinition := definition
 		status := componentServiceStatus{
 			ComponentServiceDefinition: runtimeDefinition,
@@ -606,17 +612,6 @@ func componentServiceStatusesFor(
 		}(index, runtimeDefinition, status)
 	}
 	probes.Wait()
-	activeOwners := make(map[string]string)
-	for _, definition := range definitions {
-		group := strings.TrimSpace(definition.RuntimeGroup)
-		if group == "" {
-			continue
-		}
-		owners := softwareService.ActiveRuntimeGroupOwners(ctx, group, "")
-		if len(owners) > 0 {
-			activeOwners[group] = softwareService.RuntimeGroupOwnerComponent(ctx, owners[0])
-		}
-	}
 	for _, status := range result {
 		if status.RuntimeGroup == "" || status.ActiveState != "active" {
 			continue
@@ -650,10 +645,17 @@ func installedComponentService(
 	definition softwareService.ComponentServiceDefinition,
 	rows []models.Software,
 	byKey map[string]models.Software,
+	activeOwner string,
 ) (models.Software, bool) {
 	for _, row := range rows {
 		key := strings.ToLower(strings.TrimSpace(row.Key))
 		component := strings.ToLower(strings.TrimSpace(row.Component))
+		if legacyWebServerRecord(row) &&
+			definition.RuntimeGroup == "web-server" &&
+			activeOwner != "" &&
+			activeOwner != strings.ToLower(strings.TrimSpace(definition.Component)) {
+			continue
+		}
 		canonicalComponent := component
 		if normalized, err := softwareService.NormalizeServiceComponent(component); err == nil {
 			canonicalComponent = normalized.Component
@@ -664,7 +666,21 @@ func installedComponentService(
 			return row, true
 		}
 	}
+	if definition.RuntimeGroup == "web-server" &&
+		activeOwner == strings.ToLower(strings.TrimSpace(definition.Component)) {
+		for _, row := range rows {
+			if legacyWebServerRecord(row) {
+				return row, true
+			}
+		}
+	}
 	if installed, exists := byKey[definition.SoftwareKey]; exists {
+		if legacyWebServerRecord(installed) &&
+			definition.RuntimeGroup == "web-server" &&
+			activeOwner != "" &&
+			activeOwner != strings.ToLower(strings.TrimSpace(definition.Component)) {
+			return models.Software{}, false
+		}
 		component := strings.ToLower(strings.TrimSpace(installed.Component))
 		canonicalComponent := component
 		if normalized, err := softwareService.NormalizeServiceComponent(component); err == nil {
@@ -675,6 +691,32 @@ func installedComponentService(
 		}
 	}
 	return models.Software{}, false
+}
+
+func activeRuntimeGroupOwners(
+	ctx context.Context,
+	definitions []softwareService.ComponentServiceDefinition,
+) map[string]string {
+	ownersByGroup := make(map[string]string)
+	for _, definition := range definitions {
+		group := strings.TrimSpace(definition.RuntimeGroup)
+		if group == "" {
+			continue
+		}
+		if _, exists := ownersByGroup[group]; exists {
+			continue
+		}
+		owners := softwareService.ActiveRuntimeGroupOwners(ctx, group, "")
+		if len(owners) > 0 {
+			ownersByGroup[group] = softwareService.RuntimeGroupOwnerComponent(ctx, owners[0])
+		}
+	}
+	return ownersByGroup
+}
+
+func legacyWebServerRecord(row models.Software) bool {
+	return strings.EqualFold(strings.TrimSpace(row.Key), "webserver") &&
+		strings.TrimSpace(row.Component) == ""
 }
 
 func defaultServiceActions(component string) []string {

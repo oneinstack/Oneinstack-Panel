@@ -34,6 +34,7 @@ const (
 
 var (
 	webServerVersionPattern = regexp.MustCompile(`(?i)(?:nginx|openresty|tengine)/([0-9][0-9A-Za-z.+_-]*)|Apache/([0-9][0-9A-Za-z.+_-]*)|v?([0-9]+\.[0-9]+(?:\.[0-9]+)*)`)
+	caddyVersionPattern     = regexp.MustCompile(`(?m)^\s*v?([0-9]+\.[0-9]+\.[0-9]+)(?:[-+][0-9A-Za-z.-]+)?(?:\s|$)`)
 	webServerConfigMu       sync.Mutex
 	systemdExecPathPattern  = regexp.MustCompile(`(?:^|[ {;])path=([^ ;}]+)`)
 	systemdAbsPathPattern   = regexp.MustCompile(`(/[^ ;}{]+)`)
@@ -212,7 +213,7 @@ func DetectWebServer() (WebServerInfo, error) {
 	mainConfig := filepath.Join(configRoot, mainConfigName)
 	configurationAvailable := isRegularFile(mainConfig)
 	siteConfigDir := detectSiteConfigDir(configRoot, mainConfig)
-	version := inspectWebServerVersion(selected.Binary)
+	version := inspectWebServerVersion(selected.Component, selected.Binary)
 
 	return WebServerInfo{
 		Available:              true,
@@ -1316,11 +1317,18 @@ func nginxPIDPath(config, prefix string) (string, bool) {
 	return "", false
 }
 
-func inspectWebServerVersion(binary string) string {
+func inspectWebServerVersion(component, binary string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	output, err := exec.CommandContext(ctx, binary, "-v").CombinedOutput()
 	if err != nil && len(output) == 0 {
+		return ""
+	}
+	if strings.EqualFold(strings.TrimSpace(component), "caddy") {
+		match := caddyVersionPattern.FindStringSubmatch(string(output))
+		if len(match) == 2 {
+			return match[1]
+		}
 		return ""
 	}
 	match := webServerVersionPattern.FindStringSubmatch(string(output))

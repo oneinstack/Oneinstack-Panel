@@ -440,9 +440,12 @@ func (sm *ScriptManager) runInstallActionsContext(
 	actions := []struct {
 		name string
 		path string
-	}{
-		{name: "precheck", path: scriptInfo.PrecheckPath},
-		{name: mainAction, path: installPath},
+	}{{name: mainAction, path: installPath}}
+	if !isServiceControlAction(mainAction) {
+		actions = append([]struct {
+			name string
+			path string
+		}{{name: "precheck", path: scriptInfo.PrecheckPath}}, actions...)
 	}
 	if mainAction != "uninstall" && !isServiceControlAction(mainAction) {
 		actions = append(actions,
@@ -734,13 +737,20 @@ func (sm *ScriptManager) runActionContext(
 		_ = progressReader.Close()
 	}
 	<-progressDone
-	if runErr != nil {
-		if parent.Err() != nil {
-			return parent.Err()
-		}
+	// A canceled parent must never be reported as a successful action just
+	// because the shell happened to exit cleanly after receiving SIGTERM.
+	// This is especially important for service actions: systemctl may finish
+	// its client process while the service job is still being interrupted.
+	if parent.Err() != nil {
+		return parent.Err()
+	}
+	if ctx.Err() != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			return fmt.Errorf("action exceeded timeout %s", timeout)
 		}
+		return ctx.Err()
+	}
+	if runErr != nil {
 		return runErr
 	}
 	return nil
@@ -924,6 +934,19 @@ func (w *redactingWriter) Write(data []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	originalLength := len(data)
+	if len(w.secrets) == 0 {
+		w.pending += string(data)
+		for {
+			lineEnd := strings.IndexByte(w.pending, '\n')
+			if lineEnd < 0 {
+				return originalLength, nil
+			}
+			if _, err := io.WriteString(w.target, redactExactValues(w.pending[:lineEnd+1], nil)); err != nil {
+				return 0, err
+			}
+			w.pending = w.pending[lineEnd+1:]
+		}
+	}
 	w.pending += string(data)
 	retain := w.maxSecret - 1
 	if retain < 255 {
