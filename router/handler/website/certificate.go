@@ -210,12 +210,12 @@ func DisableCertificate(c *gin.Context) {
 }
 
 func ListCertificateTasks(c *gin.Context) {
-	manager, ok := certificateManagerForRequest(c)
+	reader, ok := certificateTaskReaderForRequest(c)
 	if !ok {
 		return
 	}
 	websiteID, _ := strconv.ParseInt(c.Query("websiteId"), 10, 64)
-	result, err := manager.ListTasks(certificateService.TaskListOptions{
+	result, err := reader.ListTasks(certificateService.TaskListOptions{
 		WebsiteID: websiteID,
 		Status:    c.Query("status"),
 		Page:      positiveCertificateQueryInt(c, "page", 1),
@@ -229,11 +229,11 @@ func ListCertificateTasks(c *gin.Context) {
 }
 
 func GetCertificateTask(c *gin.Context) {
-	manager, ok := certificateManagerForRequest(c)
+	reader, ok := certificateTaskReaderForRequest(c)
 	if !ok {
 		return
 	}
-	task, err := manager.GetTask(c.Param("id"))
+	task, err := reader.GetTask(c.Param("id"))
 	if err != nil {
 		handleCertificateError(c, err, "读取证书任务失败")
 		return
@@ -242,11 +242,11 @@ func GetCertificateTask(c *gin.Context) {
 }
 
 func GetCertificateTaskLog(c *gin.Context) {
-	manager, ok := certificateManagerForRequest(c)
+	reader, ok := certificateTaskReaderForRequest(c)
 	if !ok {
 		return
 	}
-	result, err := manager.ReadTaskLog(c.Param("id"))
+	result, err := reader.ReadTaskLog(c.Param("id"))
 	if err != nil {
 		handleCertificateError(c, err, "读取证书任务日志失败")
 		return
@@ -274,6 +274,15 @@ func certificateManagerForRequest(c *gin.Context) (*certificateService.Manager, 
 		return nil, false
 	}
 	return manager, true
+}
+
+func certificateTaskReaderForRequest(c *gin.Context) (*certificateService.TaskReader, bool) {
+	database := app.DB()
+	if database == nil {
+		core.HandleError(c, core.NewError(core.ErrInternalError, "证书数据库不可用"))
+		return nil, false
+	}
+	return certificateService.NewTaskReader(database), true
 }
 
 func handleCertificateError(c *gin.Context, err error, message string) {

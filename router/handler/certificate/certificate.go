@@ -141,7 +141,7 @@ func Unbind(c *gin.Context) {
 		core.HandleError(c, core.NewError(core.ErrBadRequest, "websiteId 必须是正整数"))
 		return
 	}
-	catalog, ok := certificateCatalog(c)
+	catalog, ok := certificateDeploymentCatalog(c)
 	if !ok {
 		return
 	}
@@ -212,12 +212,12 @@ func DeleteDNSAccount(c *gin.Context) {
 }
 
 func ListTasks(c *gin.Context) {
-	manager, ok := taskManager(c)
+	reader, ok := taskReader(c)
 	if !ok {
 		return
 	}
 	websiteID, _ := strconv.ParseInt(c.Query("websiteId"), 10, 64)
-	result, err := manager.ListTasks(certificateService.TaskListOptions{WebsiteID: websiteID, Status: c.Query("status"), Page: positive(c.Query("page"), 1), PageSize: positive(c.Query("pageSize"), 20)})
+	result, err := reader.ListTasks(certificateService.TaskListOptions{WebsiteID: websiteID, Status: c.Query("status"), Page: positive(c.Query("page"), 1), PageSize: positive(c.Query("pageSize"), 20)})
 	if err != nil {
 		catalogError(c, err, "读取证书任务失败")
 		return
@@ -226,11 +226,11 @@ func ListTasks(c *gin.Context) {
 }
 
 func GetTask(c *gin.Context) {
-	manager, ok := taskManager(c)
+	reader, ok := taskReader(c)
 	if !ok {
 		return
 	}
-	task, err := manager.GetTask(c.Param("id"))
+	task, err := reader.GetTask(c.Param("id"))
 	if err != nil {
 		catalogError(c, err, "读取证书任务失败")
 		return
@@ -239,11 +239,11 @@ func GetTask(c *gin.Context) {
 }
 
 func GetTaskLog(c *gin.Context) {
-	manager, ok := taskManager(c)
+	reader, ok := taskReader(c)
 	if !ok {
 		return
 	}
-	result, err := manager.ReadTaskLog(c.Param("id"))
+	result, err := reader.ReadTaskLog(c.Param("id"))
 	if err != nil {
 		catalogError(c, err, "读取证书任务日志失败")
 		return
@@ -284,12 +284,28 @@ func certificateCatalog(c *gin.Context) (*certificateService.Catalog, bool) {
 		core.HandleError(c, core.NewError(core.ErrInternalError, "证书数据库不可用"))
 		return nil, false
 	}
+	return certificateService.NewCatalog(app.DB(), app.ONE_CONFIG.System.CertificatePath, nil), true
+}
+
+func certificateDeploymentCatalog(c *gin.Context) (*certificateService.Catalog, bool) {
+	if app.DB() == nil {
+		core.HandleError(c, core.NewError(core.ErrInternalError, "证书数据库不可用"))
+		return nil, false
+	}
 	deployer, err := websiteService.NewCertificateDeployer()
 	if err != nil {
 		core.HandleError(c, core.NewErrorWithDetail(core.ErrTaskServiceUnavailable, "证书部署服务不可用", certificateService.SafeCertificateErrorDetail(err)))
 		return nil, false
 	}
 	return certificateService.NewCatalog(app.DB(), app.ONE_CONFIG.System.CertificatePath, deployer), true
+}
+
+func taskReader(c *gin.Context) (*certificateService.TaskReader, bool) {
+	if app.DB() == nil {
+		core.HandleError(c, core.NewError(core.ErrInternalError, "证书数据库不可用"))
+		return nil, false
+	}
+	return certificateService.NewTaskReader(app.DB()), true
 }
 
 func taskManager(c *gin.Context) (*certificateService.Manager, bool) {

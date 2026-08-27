@@ -87,6 +87,45 @@ type Manager struct {
 	stopping  atomic.Bool
 }
 
+// TaskReader provides read-only access to certificate tasks without starting
+// the worker or requiring a Web server deployer. Task history must remain
+// inspectable when deployment dependencies are unavailable.
+type TaskReader struct {
+	db *gorm.DB
+}
+
+func NewTaskReader(db *gorm.DB) *TaskReader {
+	return &TaskReader{db: db}
+}
+
+func (reader *TaskReader) configured() error {
+	if reader == nil || reader.db == nil {
+		return errors.New("certificate task database is not initialized")
+	}
+	return nil
+}
+
+func (reader *TaskReader) GetTask(taskID string) (*models.CertificateTask, error) {
+	if err := reader.configured(); err != nil {
+		return nil, err
+	}
+	return getCertificateTask(reader.db, taskID)
+}
+
+func (reader *TaskReader) ListTasks(options TaskListOptions) (*TaskList, error) {
+	if err := reader.configured(); err != nil {
+		return nil, err
+	}
+	return listCertificateTasks(reader.db, options)
+}
+
+func (reader *TaskReader) ReadTaskLog(taskID string) (*LogResult, error) {
+	if err := reader.configured(); err != nil {
+		return nil, err
+	}
+	return readCertificateTaskLog(reader.db, taskID)
+}
+
 func NewManager(
 	db *gorm.DB,
 	certificateRoot, challengeRoot, directoryURL string,
@@ -793,19 +832,27 @@ func (manager *Manager) GetTask(taskID string) (*models.CertificateTask, error) 
 	if err := manager.Start(); err != nil {
 		return nil, err
 	}
-	var task models.CertificateTask
-	if err := manager.db.First(&task, "id = ?", strings.TrimSpace(taskID)).Error; err != nil {
-		return nil, err
-	}
-	return &task, nil
+	return getCertificateTask(manager.db, taskID)
 }
 
 func (manager *Manager) ListTasks(options TaskListOptions) (*TaskList, error) {
 	if err := manager.Start(); err != nil {
 		return nil, err
 	}
+	return listCertificateTasks(manager.db, options)
+}
+
+func getCertificateTask(db *gorm.DB, taskID string) (*models.CertificateTask, error) {
+	var task models.CertificateTask
+	if err := db.First(&task, "id = ?", strings.TrimSpace(taskID)).Error; err != nil {
+		return nil, err
+	}
+	return &task, nil
+}
+
+func listCertificateTasks(db *gorm.DB, options TaskListOptions) (*TaskList, error) {
 	options.Page, options.PageSize = normalizePage(options.Page, options.PageSize)
-	query := manager.db.Model(&models.CertificateTask{})
+	query := db.Model(&models.CertificateTask{})
 	if options.WebsiteID > 0 {
 		query = query.Where("website_id = ?", options.WebsiteID)
 	}
@@ -840,8 +887,12 @@ func normalizePage(page, pageSize int) (int, int) {
 }
 
 func (manager *Manager) ReadTaskLog(taskID string) (*LogResult, error) {
+	return readCertificateTaskLog(manager.db, taskID)
+}
+
+func readCertificateTaskLog(db *gorm.DB, taskID string) (*LogResult, error) {
 	var task models.CertificateTask
-	if err := manager.db.Select("status", "log_text").First(&task, "id = ?", strings.TrimSpace(taskID)).Error; err != nil {
+	if err := db.Select("status", "log_text").First(&task, "id = ?", strings.TrimSpace(taskID)).Error; err != nil {
 		return nil, err
 	}
 	return &LogResult{
