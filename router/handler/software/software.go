@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"oneinstack/core"
+	"oneinstack/internal/i18n"
 	"oneinstack/internal/models"
 	softwareService "oneinstack/internal/services/software"
 	"oneinstack/router/input"
@@ -56,11 +57,23 @@ func GetSoftware(c *gin.Context) {
 		core.HandleError(c, appErr)
 		return
 	}
+	for index := range data.Data {
+		data.Data[index].Describe = i18n.LocalizeSoftwareDescription(
+			middleware.RequestLocale(c),
+			data.Data[index].Key,
+			data.Data[index].Describe,
+		)
+	}
 	core.HandleSuccess(c, data)
 }
 
 func ListSoftwareCategories(c *gin.Context) {
-	categories, err := softwareService.ListCategories()
+	var req input.SoftwareCategoryParam
+	if err := c.ShouldBindQuery(&req); err != nil {
+		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "软件分类查询参数格式不正确"))
+		return
+	}
+	categories, err := softwareService.ListCategories(&req)
 	if err != nil {
 		core.HandleError(c, core.WrapError(err, core.ErrInternalError, "查询软件分类失败"))
 		return

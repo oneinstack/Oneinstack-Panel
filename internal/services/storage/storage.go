@@ -20,8 +20,56 @@ var (
 	ErrLibraryNotFound              = errors.New("database library not found")
 	ErrLibraryCredentialUnavailable = errors.New("database library has no managed MySQL account")
 	ErrLibraryCredentialCorrupt     = errors.New("database library credential cannot be decrypted")
+	ErrConnectionAlreadyExists      = errors.New("database connection already exists")
+	ErrConnectionUnavailable        = errors.New("database connection unavailable")
 	ErrConnectionTestFailed         = errors.New("database connection test failed")
 )
+
+// IsConnectionError identifies connection failures from both the explicit
+// connection-test wrapper and storage operations that connect directly.
+func IsConnectionError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, ErrConnectionUnavailable) ||
+		errors.Is(err, ErrConnectionTestFailed) ||
+		errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	lower := strings.ToLower(err.Error())
+	for _, fragment := range []string{
+		"access denied",
+		"authentication failed",
+		"invalid username",
+		"invalid password",
+		"wrongpass",
+		"invalid username-password pair",
+		"connection refused",
+		"connection reset",
+		"connection closed",
+		"broken pipe",
+		"lost connection",
+		"server has gone away",
+		"no such host",
+		"network is unreachable",
+		"no route to host",
+		"i/o timeout",
+		"timed out",
+		"timeout",
+	} {
+		if strings.Contains(lower, fragment) {
+			return true
+		}
+	}
+	return false
+}
+
+func wrapConnectionError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%w: %w", ErrConnectionUnavailable, err)
+}
 
 func Add(param *input.AddParam) error {
 	return AddContext(context.Background(), param)
@@ -41,7 +89,7 @@ func AddContext(ctx context.Context, param *input.AddParam) error {
 		return tx.Error
 	}
 	if s.ID > 0 {
-		return fmt.Errorf("%s:%v 已存在", param.Addr, param.Port)
+		return fmt.Errorf("%w: %s:%s 已存在", ErrConnectionAlreadyExists, param.Addr, param.Port)
 	}
 	m := &models.Storage{
 		Addr:     param.Addr,

@@ -87,17 +87,17 @@ func (s *MysqlOP) ConnectContext(ctx context.Context) error {
 		DisableAutomaticPing: true,
 	})
 	if err != nil {
-		return err
+		return wrapConnectionError(err)
 	}
 	sqlDB, err := db.DB()
 	if err != nil {
-		return err
+		return wrapConnectionError(err)
 	}
 	pingContext, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	if err := sqlDB.PingContext(pingContext); err != nil {
 		_ = sqlDB.Close()
-		return err
+		return wrapConnectionError(err)
 	}
 	s.DB = db
 	return nil

@@ -56,7 +56,7 @@ func (s *RedisOP) ConnectContext(ctx context.Context) error {
 	_, err := rdb.Ping(pingContext).Result()
 	if err != nil {
 		_ = rdb.Close()
-		return err
+		return wrapConnectionError(err)
 	}
 	s.DB = rdb
 	return nil

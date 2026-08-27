@@ -374,7 +374,11 @@ func CreateContainer(c *gin.Context) {
 		createRequest.Ports = append(createRequest.Ports, containerService.PortMapping{HostPort: port.HostPort, ContainerPort: port.ContainerPort, Protocol: port.Protocol})
 	}
 	for _, mount := range request.Mounts {
-		createRequest.Mounts = append(createRequest.Mounts, containerService.Mount{Type: mount.Type, Source: mount.Source, Target: mount.Target, ReadOnly: mount.ReadOnly})
+		mountType := strings.TrimSpace(mount.Type)
+		if mountType == "" {
+			mountType = strings.TrimSpace(mount.Mode)
+		}
+		createRequest.Mounts = append(createRequest.Mounts, containerService.Mount{Type: mountType, Source: mount.Source, Target: mount.Target, ReadOnly: mount.ReadOnly})
 	}
 	userID, _ := middleware.AuthenticatedUserID(c)
 	task, err := createTaskManager.Submit(containerService.TaskRequest{Operation: models.ContainerTaskOperationCreate, Create: &createRequest, Image: request.Image}, userID)

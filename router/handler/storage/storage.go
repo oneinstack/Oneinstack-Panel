@@ -76,8 +76,7 @@ func ADDLib(c *gin.Context) {
 	}
 	credential, err := storage.AddLibs(&req)
 	if err != nil {
-		appErr := core.WrapError(err, core.ErrInternalError, "新增数据库实例失败")
-		core.HandleError(c, appErr)
+		handleStorageOperationError(c, err, core.ErrInternalError, "新增数据库实例失败")
 		return
 	}
 	// The caller may receive the newly created credential so it can be saved
@@ -89,8 +88,7 @@ func GetStorage(c *gin.Context) {
 	t := c.Query("type")
 	data, err := storage.List(t)
 	if err != nil {
-		appErr := core.WrapError(err, core.ErrInternalError, "查询数据库连接列表失败")
-		core.HandleError(c, appErr)
+		handleStorageOperationError(c, err, core.ErrInternalError, "查询数据库连接列表失败")
 		return
 	}
 	core.HandleSuccess(c, data)
@@ -186,7 +184,15 @@ func TestStorageConnection(c *gin.Context) {
 }
 
 func handleStorageOperationError(c *gin.Context, err error, code core.ErrorCode, message string) {
-	if errors.Is(err, storage.ErrConnectionTestFailed) || errors.Is(err, context.DeadlineExceeded) {
+	if errors.Is(err, storage.ErrConnectionAlreadyExists) {
+		core.HandleError(c, core.NewErrorWithDetail(
+			core.ErrConflict,
+			"数据库连接已存在",
+			"相同地址、端口和数据库类型的连接已存在，请刷新连接列表后直接使用或编辑现有连接。",
+		))
+		return
+	}
+	if storage.IsConnectionError(err) {
 		core.HandleError(c, storageConnectionError(err))
 		return
 	}
@@ -235,7 +241,9 @@ func storageConnectionError(err error) *core.AppError {
 	case strings.Contains(lower, "access denied"),
 		strings.Contains(lower, "authentication failed"),
 		strings.Contains(lower, "invalid username"),
-		strings.Contains(lower, "invalid password"):
+		strings.Contains(lower, "invalid password"),
+		strings.Contains(lower, "wrongpass"),
+		strings.Contains(lower, "invalid username-password pair"):
 		appErr = core.NewErrorWithDetail(
 			core.ErrBadRequest,
 			"数据库认证失败",
@@ -259,7 +267,7 @@ func DeleteLibrary(c *gin.Context) {
 		return
 	}
 	if err := storage.DeleteLibrary(&req); err != nil {
-		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "删除数据库失败"))
+		handleStorageOperationError(c, err, core.ErrBadRequest, "删除数据库失败")
 		return
 	}
 	core.HandleSuccess(c, nil)
@@ -274,8 +282,7 @@ func SyncStorage(c *gin.Context) {
 	}
 	err := storage.Sync(&req)
 	if err != nil {
-		appErr := core.WrapError(err, core.ErrInternalError, "同步数据库信息失败")
-		core.HandleError(c, appErr)
+		handleStorageOperationError(c, err, core.ErrInternalError, "同步数据库信息失败")
 		return
 	}
 	core.HandleSuccess(c, nil)
@@ -289,8 +296,7 @@ func GetLib(c *gin.Context) {
 	}
 	data, err := storage.LibList(&req)
 	if err != nil {
-		appErr := core.WrapError(err, core.ErrInternalError, "查询数据库实例列表失败")
-		core.HandleError(c, appErr)
+		handleStorageOperationError(c, err, core.ErrInternalError, "查询数据库实例列表失败")
 		return
 	}
 	core.HandleSuccess(c, data)
@@ -305,8 +311,7 @@ func GetRedisKeys(c *gin.Context) {
 	}
 	data, err := storage.RedisKeyList(&req)
 	if err != nil {
-		appErr := core.WrapError(err, core.ErrInternalError, "查询 Redis 键列表失败")
-		core.HandleError(c, appErr)
+		handleStorageOperationError(c, err, core.ErrInternalError, "查询 Redis 键列表失败")
 		return
 	}
 	core.HandleSuccess(c, data)
@@ -366,7 +371,7 @@ func UpdateLibraryCredential(c *gin.Context) {
 	}
 	credential, err := storage.UpdateLibraryCredential(id, req.Password)
 	if err != nil {
-		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "修改数据库账号密码失败"))
+		handleStorageOperationError(c, err, core.ErrBadRequest, "修改数据库账号密码失败")
 		return
 	}
 	// Return the newly rotated password to the operator who explicitly set it.

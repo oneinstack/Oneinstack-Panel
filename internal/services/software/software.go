@@ -33,14 +33,20 @@ type Category struct {
 	Count int    `json:"count"`
 }
 
-func ListCategories() ([]Category, error) {
+func ListCategories(param *input.SoftwareCategoryParam) ([]Category, error) {
 	var rows []struct {
-		Key  string
-		Tags string
+		Key       string
+		Tags      string
+		Installed int
+		IsUpdate  int
 	}
 	if err := app.DB().Model(&models.Software{}).
 		Where("(catalog_visible = ? OR installed = ?)", true, true).
-		Select("`key`, tags").
+		Select(
+			"`key`, tags," +
+				"MAX(CASE WHEN installed = 1 THEN 1 ELSE 0 END) as installed," +
+				"MAX(CASE WHEN is_update = 1 THEN 1 ELSE 0 END) as is_update",
+		).
 		Group("`key`, tags").
 		Scan(&rows).Error; err != nil {
 		return nil, err
@@ -49,7 +55,28 @@ func ListCategories() ([]Category, error) {
 	counts := make(map[string]int)
 	productKeys := make(map[string]struct{})
 	productCategories := make(map[string]map[string]struct{})
+	productStates := make(map[string]struct {
+		installed int
+		isUpdate  int
+	})
 	for _, row := range rows {
+		state := productStates[row.Key]
+		if row.Installed > state.installed {
+			state.installed = row.Installed
+		}
+		if row.IsUpdate > state.isUpdate {
+			state.isUpdate = row.IsUpdate
+		}
+		productStates[row.Key] = state
+	}
+	for _, row := range rows {
+		state := productStates[row.Key]
+		if param != nil && param.Installed != nil && state.installed != boolToInt(*param.Installed) {
+			continue
+		}
+		if param != nil && param.IsUpdate != nil && state.isUpdate != boolToInt(*param.IsUpdate) {
+			continue
+		}
 		productKeys[row.Key] = struct{}{}
 		if productCategories[row.Key] == nil {
 			productCategories[row.Key] = make(map[string]struct{})
@@ -88,6 +115,13 @@ func ListCategories() ([]Category, error) {
 	}
 	categories = append(categories, Category{Name: "其他", Value: "其他", Count: otherCount})
 	return categories, nil
+}
+
+func boolToInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 func RunInstall(p *input.InstallParams) (string, error) {

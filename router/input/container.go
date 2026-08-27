@@ -29,7 +29,11 @@ type ContainerPortMapping struct {
 }
 
 type ContainerMount struct {
-	Type     string `json:"type,omitempty"`
+	Type string `json:"type,omitempty"`
+	// Mode accepts the UI mount selection when a client includes it. Older
+	// clients may omit both type and mode; the service infers that case from
+	// whether source is an absolute path or a volume name.
+	Mode     string `json:"mode,omitempty"`
 	Source   string `json:"source" binding:"required"`
 	Target   string `json:"target" binding:"required"`
 	ReadOnly bool   `json:"readOnly"`

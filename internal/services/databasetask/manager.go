@@ -22,8 +22,9 @@ import (
 )
 
 const (
-	defaultQueueSize  = 64
-	defaultWorkerSize = 2
+	defaultQueueSize                    = 64
+	defaultWorkerSize                   = 2
+	databaseConnectionValidationTimeout = 10 * time.Second
 )
 
 type ProgressReporter func(progress int, message string)
@@ -45,6 +46,10 @@ type Operator interface {
 		log io.Writer,
 		report ProgressReporter,
 	) error
+}
+
+type connectionValidator interface {
+	ValidateConnection(ctx context.Context, libraryID int64) error
 }
 
 type Request struct {
@@ -175,6 +180,14 @@ func (m *Manager) submit(request Request, requestedBy int64) (*models.DatabaseTa
 			return nil, errors.New("backup does not belong to the selected database")
 		}
 	}
+	if validator, ok := m.operator.(connectionValidator); ok {
+		validationContext, cancel := context.WithTimeout(context.Background(), databaseConnectionValidationTimeout)
+		err := validator.ValidateConnection(validationContext, request.LibraryID)
+		cancel()
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	m.submitMu.Lock()
 	defer m.submitMu.Unlock()
@@ -302,6 +315,10 @@ func (m *Manager) run(item queuedTask) {
 		status := models.DatabaseTaskStatusFailed
 		code := "DATABASE_OPERATION_FAILED"
 		message := err.Error()
+		if classifiedCode, classifiedMessage := classifyDatabaseTaskError(err); classifiedMessage != "" {
+			code = classifiedCode
+			message = classifiedMessage
+		}
 		if errors.Is(err, context.Canceled) || m.cancelRequested(task.ID) {
 			if m.stopping.Load() {
 				status = models.DatabaseTaskStatusInterrupted
@@ -319,6 +336,45 @@ func (m *Manager) run(item queuedTask) {
 	}
 	_, _ = fmt.Fprintf(logFile, "[%s] task completed\n", time.Now().UTC().Format(time.RFC3339))
 	_ = m.finish(task.ID, models.DatabaseTaskStatusSucceeded, "", "数据库任务执行成功")
+}
+
+func classifyDatabaseTaskError(err error) (string, string) {
+	if err == nil {
+		return "", ""
+	}
+	lower := strings.ToLower(err.Error())
+	switch {
+	case errors.Is(err, context.DeadlineExceeded),
+		strings.Contains(lower, "timed out"),
+		strings.Contains(lower, "timeout"):
+		return "DATABASE_CONNECTION_TIMEOUT", "目标数据库在 5 秒内未响应，请检查地址、端口、防火墙和数据库服务状态后重试。"
+	case strings.Contains(lower, "access denied"),
+		strings.Contains(lower, "authentication failed"),
+		strings.Contains(lower, "wrongpass"),
+		strings.Contains(lower, "invalid username-password pair"),
+		strings.Contains(lower, "invalid password"):
+		return "DATABASE_AUTH_FAILED", "目标数据库已响应，但用户名或密码未通过认证，请核对登录凭据。"
+	case strings.Contains(lower, "connection refused"):
+		return "DATABASE_CONNECTION_REFUSED", "目标数据库拒绝连接，请确认服务已启动、监听地址和端口配置正确。"
+	case strings.Contains(lower, "no such host"):
+		return "DATABASE_HOST_UNREACHABLE", "无法解析目标数据库地址，请检查地址和 DNS 配置后重试。"
+	case strings.Contains(lower, "network is unreachable"),
+		strings.Contains(lower, "no route to host"):
+		return "DATABASE_HOST_UNREACHABLE", "面板服务器当前无法访问目标数据库网络，请检查路由、安全组和防火墙配置。"
+	case strings.Contains(lower, "connection reset"),
+		strings.Contains(lower, "connection closed"),
+		strings.Contains(lower, "broken pipe"),
+		strings.Contains(lower, "lost connection"),
+		strings.Contains(lower, "server has gone away"),
+		strings.Contains(lower, "database connection unavailable"),
+		strings.Contains(lower, "database connection test failed"):
+		return "DATABASE_CONNECTION_FAILED", "无法连接到目标数据库，请检查地址、端口、登录凭据和网络访问策略后重试。"
+	case strings.Contains(lower, "mysqldump failed"),
+		strings.Contains(lower, "mysql restore failed"):
+		return "DATABASE_OPERATION_FAILED", "数据库备份或恢复失败，请查看任务日志中的具体原因后重试。"
+	default:
+		return "", ""
+	}
 }
 
 func (m *Manager) runBackup(

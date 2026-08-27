@@ -116,6 +116,13 @@ func RestoreDatabaseBackup(c *gin.Context) {
 	}
 	userID, _ := middleware.AuthenticatedUserID(c)
 	if shouldRequestDatabaseApproval(c) {
+		validationContext, cancel := context.WithTimeout(c.Request.Context(), storageOperationTimeout)
+		validationErr := storageService.TestLibraryConnectionContext(validationContext, req.LibraryID)
+		cancel()
+		if validationErr != nil {
+			handleDatabaseTaskError(c, validationErr, "创建数据库恢复任务失败")
+			return
+		}
 		approval, err := createDatabaseApproval(
 			c,
 			ApprovalActionDatabaseRestore,
@@ -320,6 +327,10 @@ func databaseManagerForRequest(c *gin.Context) (*databasetask.Manager, bool) {
 }
 
 func handleDatabaseTaskError(c *gin.Context, err error, message string) {
+	if storageService.IsConnectionError(err) {
+		core.HandleError(c, storageConnectionError(err))
+		return
+	}
 	if databasetask.IsNotFound(err) {
 		core.HandleError(c, core.WrapError(err, core.ErrNotFound, message))
 		return

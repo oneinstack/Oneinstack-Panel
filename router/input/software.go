@@ -14,6 +14,11 @@ type SoftwareParam struct {
 	Page
 }
 
+type SoftwareCategoryParam struct {
+	Installed *bool `form:"installed"`
+	IsUpdate  *bool `form:"isUpdate"`
+}
+
 type LogResult struct {
 	Content   string `json:"content"`
 	Completed bool   `json:"completed"`

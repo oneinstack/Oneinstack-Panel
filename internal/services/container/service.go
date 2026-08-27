@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -795,15 +796,59 @@ func ValidateLogOptions(options LogOptions) error {
 	return nil
 }
 
-type synchronizedWriter struct {
-	mu     sync.Mutex
-	writer io.Writer
+var containerSensitiveLogAssignmentPattern = regexp.MustCompile(`(?i)([[:alnum:]_.-]*(?:password|passwd|passphrase|secret|token|cookie|authorization|api[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret|credential)[[:alnum:]_.-]*)(["']?[[:space:]]*[:=][[:space:]]*)("[^"\r\n]*"|'[^'\r\n]*'|[^[:space:],;}\]]+)`)
+
+type containerLogRedactingWriter struct {
+	mu      sync.Mutex
+	target  io.Writer
+	pending string
 }
 
-func (writer *synchronizedWriter) Write(data []byte) (int, error) {
+func newContainerLogRedactingWriter(target io.Writer) *containerLogRedactingWriter {
+	return &containerLogRedactingWriter{target: target}
+}
+
+func (writer *containerLogRedactingWriter) Write(data []byte) (int, error) {
 	writer.mu.Lock()
 	defer writer.mu.Unlock()
-	return writer.writer.Write(data)
+
+	originalLength := len(data)
+	writer.pending += string(data)
+	for {
+		lineEnd := strings.IndexByte(writer.pending, '\n')
+		if lineEnd < 0 {
+			return originalLength, nil
+		}
+		if _, err := io.WriteString(writer.target, redactContainerLogLine(writer.pending[:lineEnd+1])); err != nil {
+			return 0, err
+		}
+		writer.pending = writer.pending[lineEnd+1:]
+	}
+}
+
+func (writer *containerLogRedactingWriter) Flush() error {
+	writer.mu.Lock()
+	defer writer.mu.Unlock()
+	if writer.pending == "" {
+		return nil
+	}
+	_, err := io.WriteString(writer.target, redactContainerLogLine(writer.pending))
+	writer.pending = ""
+	return err
+}
+
+func redactContainerLogLine(line string) string {
+	return containerSensitiveLogAssignmentPattern.ReplaceAllStringFunc(line, func(match string) string {
+		parts := containerSensitiveLogAssignmentPattern.FindStringSubmatch(match)
+		if len(parts) != 4 {
+			return "[REDACTED]"
+		}
+		value := parts[3]
+		if len(value) >= 2 && ((value[0] == '"' && value[len(value)-1] == '"') || (value[0] == '\'' && value[len(value)-1] == '\'')) {
+			return parts[1] + parts[2] + string(value[0]) + "[REDACTED]" + string(value[len(value)-1])
+		}
+		return parts[1] + parts[2] + "[REDACTED]"
+	})
 }
 
 type limitedBuffer struct {
@@ -832,20 +877,22 @@ func (s *Service) runContainerLogs(ctx context.Context, args []string, output io
 		return fmt.Errorf("%w: %s executable file not found in PATH", ErrRuntimeUnavailable, s.binary)
 	}
 	command := exec.CommandContext(ctx, s.binary, args...)
-	safeOutput := &synchronizedWriter{writer: output}
+	safeOutput := newContainerLogRedactingWriter(output)
 	command.Stdout = safeOutput
 	stderr := &limitedBuffer{limit: 8192}
 	command.Stderr = io.MultiWriter(safeOutput, stderr)
-	if err := command.Run(); err != nil {
+	runErr := command.Run()
+	flushErr := safeOutput.Flush()
+	if runErr != nil {
 		if ctx.Err() != nil {
 			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 				return fmt.Errorf("%w: docker logs", ErrDockerCommandTimeout)
 			}
 			return ctx.Err()
 		}
-		message := strings.TrimSpace(stderr.String())
+		message := redactContainerLogLine(strings.TrimSpace(stderr.String()))
 		if message == "" {
-			message = err.Error()
+			message = runErr.Error()
 		}
 		lowerMessage := strings.ToLower(message)
 		if strings.Contains(lowerMessage, "cannot connect to the docker daemon") ||
@@ -853,6 +900,9 @@ func (s *Service) runContainerLogs(ctx context.Context, args []string, output io
 			return fmt.Errorf("%w: %s", ErrRuntimeUnavailable, message)
 		}
 		return errors.New(message)
+	}
+	if flushErr != nil {
+		return flushErr
 	}
 	return nil
 }
@@ -2358,15 +2408,20 @@ func validateRestart(value string) error {
 
 func validateMountSource(mount Mount) (string, string, error) {
 	mountType := strings.ToLower(strings.TrimSpace(mount.Type))
-	if mountType == "" {
-		// Keep requests from older clients compatible. Before mount type was
-		// exposed, every mount was emitted as a bind mount.
-		mountType = MountTypeBind
-	}
-
 	source := strings.TrimSpace(mount.Source)
 	if source == "" || strings.ContainsAny(source, "\r\n") {
 		return "", "", errors.New("挂载源不能为空，且不能包含换行符")
+	}
+	if mountType == "" {
+		// The bundled container form historically omitted the selected mount
+		// type from its JSON payload. Preserve absolute-path bind mounts while
+		// treating a valid non-absolute source name as a named volume.
+		mountType = MountTypeBind
+		if !filepath.IsAbs(source) {
+			if _, err := validateName(source); err == nil {
+				mountType = MountTypeVolume
+			}
+		}
 	}
 
 	switch mountType {

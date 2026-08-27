@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"bytes"
 	"compress/gzip"
 	"context"
 	"errors"
@@ -25,6 +26,18 @@ type MySQLDatabaseOperator struct{}
 
 func NewMySQLDatabaseOperator() *MySQLDatabaseOperator {
 	return &MySQLDatabaseOperator{}
+}
+
+func (o *MySQLDatabaseOperator) ValidateConnection(ctx context.Context, libraryID int64) error {
+	return TestLibraryConnectionContext(ctx, libraryID)
+}
+
+func TestLibraryConnectionContext(ctx context.Context, libraryID int64) error {
+	_, connection, err := loadMySQLLibrary(libraryID)
+	if err != nil {
+		return err
+	}
+	return testStorageConnectionContext(ctx, connection)
 }
 
 func (o *MySQLDatabaseOperator) Backup(
@@ -84,7 +97,8 @@ func (o *MySQLDatabaseOperator) Backup(
 		"--databases",
 		library.Name,
 	)
-	command.Stderr = log
+	var stderr bytes.Buffer
+	command.Stderr = io.MultiWriter(log, &stderr)
 	gzipWriter, err := gzip.NewWriterLevel(output, gzip.BestSpeed)
 	if err != nil {
 		return fmt.Errorf("initialize database backup compression: %w", err)
@@ -99,7 +113,10 @@ func (o *MySQLDatabaseOperator) Backup(
 		if errors.Is(ctx.Err(), context.Canceled) {
 			return context.Canceled
 		}
-		return fmt.Errorf("mysqldump failed: %w", runErr)
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return context.DeadlineExceeded
+		}
+		return commandError("mysqldump", runErr, stderr.String())
 	}
 	if closeErr != nil {
 		return fmt.Errorf("finalize database backup compression: %w", closeErr)
@@ -160,16 +177,28 @@ func (o *MySQLDatabaseOperator) Restore(
 		"--database="+library.Name,
 	)
 	command.Stdin = gzipReader
-	command.Stderr = log
+	var stderr bytes.Buffer
+	command.Stderr = io.MultiWriter(log, &stderr)
 	report(25, "正在恢复数据库，请勿中断服务")
 	if err := command.Run(); err != nil {
 		if errors.Is(ctx.Err(), context.Canceled) {
 			return context.Canceled
 		}
-		return fmt.Errorf("mysql restore failed: %w", err)
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return context.DeadlineExceeded
+		}
+		return commandError("mysql restore", err, stderr.String())
 	}
 	report(100, "数据库恢复完成")
 	return nil
+}
+
+func commandError(command string, runErr error, stderr string) error {
+	detail := strings.TrimSpace(stderr)
+	if detail == "" {
+		return fmt.Errorf("%s failed: %w", command, runErr)
+	}
+	return fmt.Errorf("%s failed: %s: %w", command, detail, runErr)
 }
 
 func loadMySQLLibrary(libraryID int64) (*models.Library, *models.Storage, error) {

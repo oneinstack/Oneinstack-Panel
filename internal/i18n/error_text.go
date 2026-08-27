@@ -797,6 +797,7 @@ var englishErrorTexts = map[string]string{
 	"数据库地址解析失败":                             "The database address could not be resolved",
 	"数据库网络不可达":                              "The database network is unreachable",
 	"数据库认证失败":                               "Database authentication failed",
+	"数据库连接已存在":                              "The database connection already exists",
 	"数据库连接失败":                               "The database connection failed",
 	"数据库连接测试失败":                             "The database connection test failed",
 	"目标数据库在 5 秒内未响应，请检查地址、端口、防火墙和数据库服务状态后重试。": "The target database did not respond within 5 seconds. Check the address, port, firewall, and database service status before retrying.",
