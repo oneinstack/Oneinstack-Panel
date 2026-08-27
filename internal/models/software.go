@@ -1,6 +1,7 @@
 package models
 
 import (
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -17,6 +18,39 @@ const (
 	Soft_Status_Suc     = 2
 	Soft_Status_Err     = 3
 )
+
+// DefaultSoftwarePort returns the install-time default port for components
+// whose packages use a conventional fixed listener. It is a compatibility
+// fallback for older installed rows that predate port persistence; it does
+// not claim to be a live listener probe.
+func DefaultSoftwarePort(key, component string) string {
+	value := strings.ToLower(strings.TrimSpace(component))
+	if value == "" {
+		value = strings.ToLower(strings.TrimSpace(key))
+	}
+	switch value {
+	case "nginx", "openresty", "tengine", "apache", "caddy", "phpmyadmin":
+		return "80"
+	case "db", "mysql", "mariadb", "percona":
+		return "3306"
+	case "postgresql":
+		return "5432"
+	case "mongodb":
+		return "27017"
+	case "redis":
+		return "6379"
+	case "memcached":
+		return "11211"
+	case "tomcat":
+		return "8080"
+	case "pureftpd":
+		return "21"
+	case "n8n":
+		return "5678"
+	default:
+		return ""
+	}
+}
 
 type Software struct {
 	Id                      int       `json:"id" gorm:"primaryKey;autoIncrement"`

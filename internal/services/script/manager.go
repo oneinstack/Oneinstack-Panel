@@ -315,11 +315,17 @@ func (sm *ScriptManager) ExecuteScriptTask(
 	if strings.EqualFold(scriptInfo.ActionName, "uninstall") ||
 		scriptInfo.Type == ScriptTypeUninstall {
 		sm.updateSoftwareStatus(params, models.Soft_Status_Default, logName)
-		sm.updateSoftwareInstallInfo(params, false, "", "")
+		sm.updateSoftwareInstallInfo(params, false, "", "", "")
 		return logName, nil
 	}
 	sm.updateSoftwareStatus(params, models.Soft_Status_Suc, logName)
-	sm.updateSoftwareInstallInfo(params, true, params.Version, scriptInfo.PackageVersion)
+	sm.updateSoftwareInstallInfo(
+		params,
+		true,
+		params.Version,
+		scriptInfo.PackageVersion,
+		effectiveSoftwarePort(params, scriptInfo),
+	)
 	return logName, nil
 }
 
@@ -419,7 +425,13 @@ func (sm *ScriptManager) executeScriptAsync(scriptInfo *ScriptInfo, scriptPath s
 
 	// 更新最终状态
 	sm.updateSoftwareStatus(params, status, filepath.Base(logPath))
-	sm.updateSoftwareInstallInfo(params, installed, installVersion, scriptInfo.PackageVersion)
+	sm.updateSoftwareInstallInfo(
+		params,
+		installed,
+		installVersion,
+		scriptInfo.PackageVersion,
+		effectiveSoftwarePort(params, scriptInfo),
+	)
 }
 
 func (sm *ScriptManager) runInstallActions(scriptInfo *ScriptInfo, installPath string, output *os.File) error {
@@ -1083,6 +1095,33 @@ func (sm *ScriptManager) updateSoftwareStatus(params *input.InstallParams, statu
 		})
 }
 
+func effectiveSoftwarePort(params *input.InstallParams, scriptInfo *ScriptInfo) string {
+	if params != nil {
+		if port := strings.TrimSpace(params.Port); port != "" {
+			return port
+		}
+	}
+	if scriptInfo != nil {
+		for _, spec := range scriptInfo.ParameterSpecs {
+			if !strings.EqualFold(strings.TrimSpace(spec.Type), "port") {
+				continue
+			}
+			if port := strings.TrimSpace(scriptInfo.Params[spec.Name]); port != "" {
+				return port
+			}
+		}
+	}
+	key := ""
+	if params != nil {
+		key = params.Key
+	}
+	component := ""
+	if scriptInfo != nil {
+		component = scriptInfo.Name
+	}
+	return models.DefaultSoftwarePort(key, component)
+}
+
 // updateSoftwareInstallInfo 更新软件安装信息
 func (sm *ScriptManager) updateSoftwareInstallInfo(
 	params *input.InstallParams,
@@ -1091,8 +1130,12 @@ func (sm *ScriptManager) updateSoftwareInstallInfo(
 	packageVersions ...string,
 ) {
 	packageVersion := ""
+	port := ""
 	if len(packageVersions) > 0 {
 		packageVersion = strings.TrimSpace(packageVersions[0])
+	}
+	if len(packageVersions) > 1 {
+		port = strings.TrimSpace(packageVersions[1])
 	}
 	if installed {
 		if err := app.DB().Transaction(func(tx *gorm.DB) error {
@@ -1112,6 +1155,7 @@ func (sm *ScriptManager) updateSoftwareInstallInfo(
 					"installed":                 true,
 					"install_version":           version,
 					"installed_package_version": packageVersion,
+					"http_port":                 strings.TrimSpace(port),
 					"is_update":                 false,
 					"install_time":              time.Now(),
 				}).Error
@@ -1126,6 +1170,7 @@ func (sm *ScriptManager) updateSoftwareInstallInfo(
 			"installed":                 false,
 			"install_version":           "",
 			"installed_package_version": "",
+			"http_port":                 "",
 			"is_update":                 false,
 			"status":                    models.Soft_Status_Default,
 		}).Error; err != nil {

@@ -440,7 +440,7 @@ print_install_notice() {
     printf '| 安装前说明：                                               |\n'
     printf '| - 需要 root、systemd 和 prlimit                            |\n'
     printf '| - 将安装到 /usr/local/one，并创建 one.service              |\n'
-    if [[ -x "${install_dir}/one" || -e "${install_dir}/config.yaml" || -e "$service_file" ]]; then
+    if [[ -x "${install_dir}/one" || -e "$service_file" ]]; then
       printf '| - 检测到受管控旧 Panel，将停止并替换程序                  |\n'
     else
       printf '| - 未检测到受管控旧 Panel，将执行首次安装                   |\n'
@@ -455,7 +455,7 @@ print_install_notice() {
     printf '| Installation notes:                                        |\n'
     printf '| - root, systemd, and prlimit are required                  |\n'
     printf '| - Installs to /usr/local/one and creates one.service       |\n'
-    if [[ -x "${install_dir}/one" || -e "${install_dir}/config.yaml" || -e "$service_file" ]]; then
+    if [[ -x "${install_dir}/one" || -e "$service_file" ]]; then
       printf '| - A managed Panel was found; it will be stopped and replaced|\n'
     else
       printf '| - No managed Panel was found; this is a fresh installation |\n'
@@ -888,7 +888,9 @@ run_install() {
   check_managed_link
 
 	local reinstalling=false
-	if [[ -e "${install_dir}/one" || -e "${install_dir}/config.yaml" ||
+	# A normal uninstall intentionally preserves config.yaml and data. Those
+	# retained files must not make a removed Panel look like an installation.
+	if [[ -e "${install_dir}/one" ||
 		-e "$service_file" || -e "$update_service_file" ||
 		-e "$network_recovery_service_file" || -e "$panel_restore_service_file" ]]; then
 		reinstalling=true

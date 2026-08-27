@@ -309,6 +309,10 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 	// 转换版本格式
 	var groupedResults []output.Software
 	for i, item := range paginated.Data {
+		port := strings.TrimSpace(item.HttpPort)
+		if item.Installed && port == "" {
+			port = models.DefaultSoftwarePort(item.Key, item.Component)
+		}
 		groupedResults = append(groupedResults, output.Software{
 			Id:                      item.Id,
 			Describe:                item.Describe,
@@ -321,7 +325,7 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 			Status:                  item.Status,
 			Resource:                item.Resource,
 			InstallVersion:          item.InstallVersion,
-			Port:                    strings.TrimSpace(item.HttpPort),
+			Port:                    port,
 			InstalledPackageVersion: item.InstalledPackageVersion,
 			LatestPackageVersion:    item.LatestPackageVersion,
 			UpdateReason:            softwareUpdateReason(item),

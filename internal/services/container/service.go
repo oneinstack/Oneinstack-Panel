@@ -522,6 +522,9 @@ func validateContainerCreateRequest(request ContainerCreateRequest) error {
 	if _, err := validateReference(request.Image); err != nil {
 		return fmt.Errorf("镜像名称无效: %w", err)
 	}
+	if err := validateOfficialPostgresEnvironment(request.Image, request.Environment); err != nil {
+		return err
+	}
 	if request.AutoRemove && request.Restart != "" && request.Restart != "no" {
 		return errors.New("autoRemove=true 不能与 restart 同时使用；请关闭 autoRemove，或将 restart 设置为 no")
 	}
@@ -612,6 +615,36 @@ func validateContainerCreateRequest(request ContainerCreateRequest) error {
 		}
 	}
 	return nil
+}
+
+// validateOfficialPostgresEnvironment prevents a container created from the
+// official postgres image from reaching Docker in a state that is guaranteed
+// to exit during first-time database initialization. The image's entrypoint
+// owns cluster creation, while the application owns its schema migrations.
+// Do not generate a password here: container task requests are persisted and
+// Docker inspect can expose environment variables to administrators.
+func validateOfficialPostgresEnvironment(image string, environment map[string]string) error {
+	reference := strings.TrimSpace(image)
+	if at := strings.IndexByte(reference, '@'); at >= 0 {
+		reference = reference[:at]
+	}
+	if slash := strings.LastIndexByte(reference, '/'); slash >= 0 {
+		reference = reference[slash+1:]
+	}
+	if colon := strings.IndexByte(reference, ':'); colon >= 0 {
+		reference = reference[:colon]
+	}
+	if !strings.EqualFold(reference, "postgres") {
+		return nil
+	}
+
+	password := strings.TrimSpace(environment["POSTGRES_PASSWORD"])
+	passwordFile := strings.TrimSpace(environment["POSTGRES_PASSWORD_FILE"])
+	authMethod := strings.TrimSpace(environment["POSTGRES_HOST_AUTH_METHOD"])
+	if password != "" || passwordFile != "" || strings.EqualFold(authMethod, "trust") {
+		return nil
+	}
+	return errors.New("PostgreSQL 官方镜像缺少初始化认证参数，请在 environment 中设置非空 POSTGRES_PASSWORD 或已挂载的 POSTGRES_PASSWORD_FILE；仅测试环境可使用 POSTGRES_HOST_AUTH_METHOD=trust，生产环境不建议这样配置")
 }
 
 func (s *Service) ContainerAction(ctx context.Context, id, action string, force, confirm bool) error {
