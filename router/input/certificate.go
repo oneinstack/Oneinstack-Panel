@@ -23,6 +23,17 @@ type CertificateSelfSignedParam struct {
 	RenewBeforeDays int      `json:"renewBeforeDays"`
 }
 
+type CertificateACMEParam struct {
+	ChallengeType   string   `json:"challengeType"`
+	WebsiteID       int64    `json:"websiteId"`
+	Domains         []string `json:"domains"`
+	Email           string   `json:"email"`
+	DNSAccountID    string   `json:"dnsAccountId"`
+	AutoRenew       *bool    `json:"autoRenew"`
+	RenewBeforeDays int      `json:"renewBeforeDays"`
+	Remark          string   `json:"remark"`
+}
+
 type CertificateBindingParam struct {
 	WebsiteID  int64 `json:"websiteId"`
 	ForceHTTPS bool  `json:"forceHttps"`

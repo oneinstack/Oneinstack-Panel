@@ -68,6 +68,34 @@ type SelfSignedOptions struct {
 	RenewBeforeDays int
 }
 
+type ACMECertificateOptions struct {
+	Domains            []string
+	CertificatePEM     []byte
+	PrivateKeyPEM      []byte
+	Email              string
+	DirectoryURL       string
+	ChallengeType      string
+	DNSAccountID       string
+	ChallengeWebsiteID int64
+	Metadata           *x509.Certificate
+	AutoRenew          bool
+	RenewBeforeDays    int
+	Remark             string
+}
+
+type ACMERenewalOptions struct {
+	CertificatePEM     []byte
+	PrivateKeyPEM      []byte
+	Metadata           *x509.Certificate
+	Email              string
+	DirectoryURL       string
+	ChallengeType      string
+	DNSAccountID       string
+	ChallengeWebsiteID int64
+	AutoRenew          bool
+	RenewBeforeDays    int
+}
+
 // RequestValidationError identifies a certificate request field that can be
 // corrected by the caller. These errors must be returned before a task is
 // queued so the UI can restore the submit button and show the reason.
@@ -89,14 +117,17 @@ type BindingResult struct {
 }
 
 type DNSProvider struct {
-	Value string `json:"value"`
-	Label string `json:"label"`
+	Value                 string `json:"value"`
+	Label                 string `json:"label"`
+	CredentialOneLabel    string `json:"credentialOneLabel"`
+	CredentialTwoLabel    string `json:"credentialTwoLabel,omitempty"`
+	CredentialTwoRequired bool   `json:"credentialTwoRequired"`
 }
 
 var dnsProviders = []DNSProvider{
-	{Value: "cloudflare", Label: "Cloudflare"},
-	{Value: "aliyun", Label: "阿里云"},
-	{Value: "tencentcloud", Label: "腾讯云"},
+	{Value: "cloudflare", Label: "Cloudflare", CredentialOneLabel: "API Token"},
+	{Value: "aliyun", Label: "阿里云", CredentialOneLabel: "AccessKey ID", CredentialTwoLabel: "AccessKey Secret", CredentialTwoRequired: true},
+	{Value: "tencentcloud", Label: "腾讯云", CredentialOneLabel: "SecretId", CredentialTwoLabel: "SecretKey", CredentialTwoRequired: true},
 }
 
 func NewCatalog(db *gorm.DB, root string, deployer Deployer) *Catalog {
@@ -200,6 +231,175 @@ func (catalog *Catalog) CreateSelfSigned(options SelfSignedOptions) (*models.Man
 	return catalog.persistMaterial("self-signed", domains, certificatePEM, privateKeyPEM, template, algorithm, options.Remark, options.AutoRenew, options.RenewBeforeDays)
 }
 
+func (catalog *Catalog) CreateACME(options ACMECertificateOptions) (*models.ManagedCertificate, error) {
+	if err := catalog.ensureRoot(); err != nil {
+		return nil, err
+	}
+	domains, err := normalizeACMEDomains(options.Domains, defaultChallengeType(options.ChallengeType))
+	if err != nil {
+		return nil, err
+	}
+	metadata, algorithm, err := validateCertificateMaterial(options.CertificatePEM, options.PrivateKeyPEM, domains)
+	if err != nil {
+		return nil, err
+	}
+	if options.Metadata != nil {
+		metadata = options.Metadata
+	}
+	return catalog.persistMaterialWithACME("acme", domains, options.CertificatePEM, options.PrivateKeyPEM, metadata, algorithm, options.Email, options.DirectoryURL, defaultChallengeType(options.ChallengeType), options.DNSAccountID, options.ChallengeWebsiteID, options.Remark, options.AutoRenew, options.RenewBeforeDays)
+}
+
+func (catalog *Catalog) RenewACME(ctx context.Context, id string, options ACMERenewalOptions) (*models.ManagedCertificate, error) {
+	record, err := catalog.Get(id)
+	if err != nil {
+		return nil, err
+	}
+	if record.Provider != "acme" {
+		return nil, errors.New("only ACME certificates can be renewed")
+	}
+	if record.Status == models.CertificateStatusDisabled {
+		return nil, errors.New("disabled certificate cannot be renewed")
+	}
+	challengeType := strings.TrimSpace(options.ChallengeType)
+	if challengeType == "" {
+		challengeType = record.ChallengeType
+	}
+	challengeType, err = normalizeChallengeType(challengeType)
+	if err != nil {
+		return nil, err
+	}
+	domains, err := normalizeACMEDomains(taskDomains(record.Domains), challengeType)
+	if err != nil {
+		return nil, err
+	}
+	if options.Email == "" {
+		options.Email = record.Email
+	}
+	if options.DirectoryURL == "" {
+		options.DirectoryURL = record.DirectoryURL
+	}
+	if options.DNSAccountID == "" {
+		options.DNSAccountID = record.DNSAccountID
+	}
+	if options.RenewBeforeDays == 0 {
+		options.RenewBeforeDays = record.RenewBeforeDays
+	}
+	if options.RenewBeforeDays == 0 {
+		options.RenewBeforeDays = 30
+	}
+	if options.RenewBeforeDays < 1 || options.RenewBeforeDays > 90 {
+		return nil, errors.New("renew-before days must be between 1 and 90")
+	}
+	metadata, algorithm, err := validateCertificateMaterial(options.CertificatePEM, options.PrivateKeyPEM, domains)
+	if err != nil {
+		return nil, err
+	}
+	if options.Metadata != nil {
+		metadata = options.Metadata
+	}
+	if !isWithin(catalog.root, record.CertificatePath) || !isWithin(catalog.root, record.PrivateKeyPath) {
+		return nil, errors.New("certificate material path is outside the managed directory")
+	}
+	previousCertificate, err := os.ReadFile(record.CertificatePath)
+	if err != nil {
+		return nil, err
+	}
+	previousPrivateKey, err := os.ReadFile(record.PrivateKeyPath)
+	if err != nil {
+		return nil, err
+	}
+	if err := writeFileAtomic(record.CertificatePath, options.CertificatePEM, 0644); err != nil {
+		return nil, err
+	}
+	if err := writeFileAtomic(record.PrivateKeyPath, options.PrivateKeyPEM, 0600); err != nil {
+		_ = writeFileAtomic(record.CertificatePath, previousCertificate, 0644)
+		return nil, err
+	}
+	restoreMaterial := func() {
+		_ = writeFileAtomic(record.CertificatePath, previousCertificate, 0644)
+		_ = writeFileAtomic(record.PrivateKeyPath, previousPrivateKey, 0600)
+	}
+	rollbackDeployments := func(rollbacks []DeploymentRollback) {
+		for index := len(rollbacks) - 1; index >= 0; index-- {
+			_ = rollbacks[index](context.Background())
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		restoreMaterial()
+		return nil, err
+	}
+
+	var bindings []models.CertificateBinding
+	if err := catalog.db.Where("managed_certificate_id = ? AND status = ?", record.ID, BindingStatusActive).Order("created_at ASC").Find(&bindings).Error; err != nil {
+		restoreMaterial()
+		return nil, err
+	}
+	rollbacks := make([]DeploymentRollback, 0, len(bindings))
+	for _, binding := range bindings {
+		if catalog.deployer == nil {
+			rollbackDeployments(rollbacks)
+			restoreMaterial()
+			return nil, errors.New("certificate deployer is not configured")
+		}
+		rollback, deployErr := catalog.deployer.Deploy(ctx, binding.WebsiteID, record.CertificatePath, record.PrivateKeyPath, binding.ForceHTTPS)
+		if deployErr != nil {
+			rollbackDeployments(rollbacks)
+			restoreMaterial()
+			return nil, deployErr
+		}
+		rollbacks = append(rollbacks, rollback)
+	}
+
+	now := time.Now().UTC()
+	nextRenewAt := metadata.NotAfter.Add(-time.Duration(options.RenewBeforeDays) * 24 * time.Hour)
+	updates := map[string]any{
+		"email": options.Email, "directory_url": options.DirectoryURL, "challenge_type": challengeType,
+		"dns_account_id": options.DNSAccountID, "challenge_website_id": options.ChallengeWebsiteID,
+		"serial_number": metadata.SerialNumber.String(), "issuer": metadata.Issuer.String(), "algorithm": algorithm,
+		"status": certificateStatus(metadata.NotAfter, now, options.RenewBeforeDays), "auto_renew": options.AutoRenew,
+		"renew_before_days": options.RenewBeforeDays, "not_before": metadata.NotBefore.UTC(), "not_after": metadata.NotAfter.UTC(),
+		"last_renew_at": now, "next_renew_at": nextRenewAt, "last_error": "", "updated_at": now,
+	}
+	persistErr := catalog.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&models.ManagedCertificate{}).Where("id = ?", record.ID).Updates(updates).Error; err != nil {
+			return err
+		}
+		return tx.Model(&models.Certificate{}).Where("managed_id = ?", record.ID).Updates(map[string]any{
+			"provider": "acme", "email": options.Email, "domains": strings.Join(domains, ","), "directory_url": options.DirectoryURL,
+			"challenge_type": challengeType, "dns_account_id": options.DNSAccountID,
+			"certificate_path": record.CertificatePath, "private_key_path": record.PrivateKeyPath,
+			"serial_number": metadata.SerialNumber.String(), "issuer": metadata.Issuer.String(),
+			"status": certificateStatus(metadata.NotAfter, now, options.RenewBeforeDays), "auto_renew": options.AutoRenew,
+			"renew_before_days": options.RenewBeforeDays, "not_before": metadata.NotBefore.UTC(), "not_after": metadata.NotAfter.UTC(),
+			"last_renew_at": now, "next_renew_at": nextRenewAt, "last_error": "", "updated_at": now,
+		}).Error
+	})
+	if persistErr != nil {
+		rollbackDeployments(rollbacks)
+		restoreMaterial()
+		return nil, persistErr
+	}
+	updated := *record
+	updated.Email = options.Email
+	updated.DirectoryURL = options.DirectoryURL
+	updated.ChallengeType = challengeType
+	updated.DNSAccountID = options.DNSAccountID
+	updated.ChallengeWebsiteID = options.ChallengeWebsiteID
+	updated.SerialNumber = metadata.SerialNumber.String()
+	updated.Issuer = metadata.Issuer.String()
+	updated.Algorithm = algorithm
+	updated.Status = certificateStatus(metadata.NotAfter, now, options.RenewBeforeDays)
+	updated.AutoRenew = options.AutoRenew
+	updated.RenewBeforeDays = options.RenewBeforeDays
+	updated.NotBefore = metadata.NotBefore.UTC()
+	updated.NotAfter = metadata.NotAfter.UTC()
+	updated.LastRenewAt = &now
+	updated.NextRenewAt = &nextRenewAt
+	updated.LastError = ""
+	updated.UpdatedAt = now
+	return &updated, nil
+}
+
 // bigIntLimit is deliberately large enough for a positive serial while still
 // keeping the serial bounded and compatible with common certificate tooling.
 var bigIntLimit = func() *big.Int {
@@ -208,6 +408,10 @@ var bigIntLimit = func() *big.Int {
 }()
 
 func (catalog *Catalog) persistMaterial(provider string, domains []string, certificatePEM, privateKeyPEM []byte, metadata *x509.Certificate, algorithm, remark string, autoRenew bool, renewBeforeDays int) (*models.ManagedCertificate, error) {
+	return catalog.persistMaterialWithACME(provider, domains, certificatePEM, privateKeyPEM, metadata, algorithm, "", "", "", "", 0, remark, autoRenew, renewBeforeDays)
+}
+
+func (catalog *Catalog) persistMaterialWithACME(provider string, domains []string, certificatePEM, privateKeyPEM []byte, metadata *x509.Certificate, algorithm, email, directoryURL, challengeType, dnsAccountID string, challengeWebsiteID int64, remark string, autoRenew bool, renewBeforeDays int) (*models.ManagedCertificate, error) {
 	if renewBeforeDays == 0 {
 		renewBeforeDays = 30
 	}
@@ -232,11 +436,17 @@ func (catalog *Catalog) persistMaterial(provider string, domains []string, certi
 	now := time.Now().UTC()
 	record := &models.ManagedCertificate{
 		ID: id, Provider: provider, Domains: strings.Join(domains, ","),
+		Email: email, DirectoryURL: directoryURL, ChallengeType: challengeType, DNSAccountID: dnsAccountID, ChallengeWebsiteID: challengeWebsiteID,
 		CertificatePath: certificatePath, PrivateKeyPath: privateKeyPath,
 		SerialNumber: metadata.SerialNumber.String(), Issuer: metadata.Issuer.String(),
 		Algorithm: algorithm, Status: certificateStatus(metadata.NotAfter, now, renewBeforeDays),
 		AutoRenew: autoRenew, RenewBeforeDays: renewBeforeDays, NotBefore: metadata.NotBefore.UTC(),
 		NotAfter: metadata.NotAfter.UTC(), Remark: truncate(remark, 512), CreatedAt: now, UpdatedAt: now,
+	}
+	if provider == "acme" {
+		record.LastRenewAt = &now
+		nextRenewAt := metadata.NotAfter.Add(-time.Duration(renewBeforeDays) * 24 * time.Hour)
+		record.NextRenewAt = &nextRenewAt
 	}
 	if err := catalog.db.Create(record).Error; err != nil {
 		_ = os.RemoveAll(directory)
@@ -349,7 +559,7 @@ func (catalog *Catalog) Bind(ctx context.Context, id string, websiteID int64, fo
 		return nil, err
 	}
 	for _, domain := range domains {
-		if err := leaf.VerifyHostname(domain); err != nil {
+		if !certificateMatchesDomain(leaf, domain) {
 			return nil, fmt.Errorf("certificate does not cover website domain %s", domain)
 		}
 	}
@@ -376,7 +586,7 @@ func (catalog *Catalog) Bind(ctx context.Context, id string, websiteID int64, fo
 		} else {
 			return err
 		}
-		legacy := &models.Certificate{ID: uuid.NewString(), WebsiteID: websiteID, ManagedID: record.ID, Provider: record.Provider, Domains: record.Domains, CertificatePath: record.CertificatePath, PrivateKeyPath: record.PrivateKeyPath, SerialNumber: record.SerialNumber, Issuer: record.Issuer, Status: models.CertificateStatusActive, AutoRenew: record.AutoRenew, RenewBeforeDays: record.RenewBeforeDays, ForceHTTPS: forceHTTPS, NotBefore: record.NotBefore, NotAfter: record.NotAfter, CreatedAt: now, UpdatedAt: now}
+		legacy := &models.Certificate{ID: uuid.NewString(), WebsiteID: websiteID, ManagedID: record.ID, Provider: record.Provider, Email: record.Email, Domains: record.Domains, DirectoryURL: record.DirectoryURL, ChallengeType: record.ChallengeType, DNSAccountID: record.DNSAccountID, CertificatePath: record.CertificatePath, PrivateKeyPath: record.PrivateKeyPath, SerialNumber: record.SerialNumber, Issuer: record.Issuer, Status: models.CertificateStatusActive, AutoRenew: record.AutoRenew, RenewBeforeDays: record.RenewBeforeDays, ForceHTTPS: forceHTTPS, NotBefore: record.NotBefore, NotAfter: record.NotAfter, LastRenewAt: record.LastRenewAt, NextRenewAt: record.NextRenewAt, LastError: record.LastError, CreatedAt: now, UpdatedAt: now}
 		var current models.Certificate
 		if err := tx.Where("website_id = ?", websiteID).First(&current).Error; err == nil {
 			legacy.ID = current.ID
@@ -436,14 +646,22 @@ func (catalog *Catalog) SaveDNSAccount(id, name, provider, credentialOne, creden
 	if !IsSupportedDNSProvider(provider) {
 		return nil, errors.New("unsupported DNS provider")
 	}
-	if strings.TrimSpace(credentialOne) == "" && strings.TrimSpace(id) == "" {
-		return nil, errors.New("DNS account credential is required")
-	}
 	var account models.DNSAccount
 	if id != "" {
 		if err := catalog.db.First(&account, "id = ?", id).Error; err != nil {
 			return nil, err
 		}
+	}
+	providerNeedsTwo := provider == "aliyun" || provider == "tencentcloud"
+	providerChanged := account.ID != "" && account.Provider != provider
+	if providerChanged && strings.TrimSpace(credentialOne) == "" {
+		return nil, errors.New("new DNS provider credentials are required")
+	}
+	if strings.TrimSpace(credentialOne) == "" && (account.ID == "" || !account.CredentialConfigured) {
+		return nil, errors.New("DNS account credential is required")
+	}
+	if providerNeedsTwo && (account.ID == "" || providerChanged || strings.TrimSpace(account.CredentialTwo) == "") && strings.TrimSpace(credentialTwo) == "" {
+		return nil, errors.New("DNS provider requires a second credential")
 	}
 	if strings.TrimSpace(credentialOne) != "" {
 		encOne, err := utils.EncryptCredential(credentialOne, utils.CredentialPurposeCertificateDNS)
@@ -471,7 +689,17 @@ func (catalog *Catalog) SaveDNSAccount(id, name, provider, credentialOne, creden
 }
 
 func (catalog *Catalog) DeleteDNSAccount(id string) error {
-	return catalog.db.Delete(&models.DNSAccount{}, "id = ?", strings.TrimSpace(id)).Error
+	id = strings.TrimSpace(id)
+	var count int64
+	if err := catalog.db.Model(&models.ManagedCertificate{}).
+		Where("provider = ? AND dns_account_id = ? AND status <> ?", "acme", id, models.CertificateStatusDisabled).
+		Count(&count).Error; err != nil {
+		return err
+	}
+	if count > 0 {
+		return errors.New("DNS account is used by an active ACME certificate")
+	}
+	return catalog.db.Delete(&models.DNSAccount{}, "id = ?", id).Error
 }
 
 func generatePrivateKey(value string) (any, any, string, error) {
@@ -603,11 +831,27 @@ func validateCertificateMaterial(certificatePEM, privateKeyPEM []byte, domains [
 		return nil, "", fmt.Errorf("certificate and private key do not match: %w", err)
 	}
 	for _, domain := range domains {
-		if err := leaf.VerifyHostname(domain); err != nil {
+		if !certificateMatchesDomain(leaf, domain) {
 			return nil, "", fmt.Errorf("certificate does not cover domain %s", domain)
 		}
 	}
 	return leaf, publicKeyAlgorithm(leaf.PublicKey), nil
+}
+
+func certificateMatchesDomain(certificate *x509.Certificate, domain string) bool {
+	if certificate == nil {
+		return false
+	}
+	domain = strings.TrimSpace(domain)
+	if strings.HasPrefix(domain, "*.") {
+		for _, name := range certificate.DNSNames {
+			if strings.EqualFold(name, domain) {
+				return true
+			}
+		}
+		return false
+	}
+	return certificate.VerifyHostname(domain) == nil
 }
 
 func parseCertificateFile(path string) (*x509.Certificate, error) {

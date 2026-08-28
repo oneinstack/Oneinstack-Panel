@@ -35,9 +35,12 @@ func getCertificateManager() (*certificateService.Manager, error) {
 		return nil, errors.New("database is not initialized")
 	}
 	if certificateManager == nil || certificateManagerDB != database {
-		deployer, err := websiteService.NewCertificateDeployer()
-		if err != nil {
-			return nil, err
+		deployer, deployerErr := websiteService.NewCertificateDeployer()
+		if deployerErr != nil && !errors.Is(deployerErr, websiteService.ErrNginxUnavailable) {
+			return nil, deployerErr
+		}
+		if deployerErr != nil {
+			deployer = nil
 		}
 		certificateManager = certificateService.NewManager(
 			database,

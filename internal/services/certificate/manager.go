@@ -47,6 +47,18 @@ type IssueOptions struct {
 	RequestedBy     int64
 }
 
+type ManagedIssueOptions struct {
+	ChallengeType   string
+	WebsiteID       int64
+	Domains         []string
+	Email           string
+	DNSAccountID    string
+	AutoRenew       bool
+	RenewBeforeDays int
+	Remark          string
+	RequestedBy     int64
+}
+
 type TaskListOptions struct {
 	WebsiteID int64
 	Status    string
@@ -154,12 +166,8 @@ func (manager *Manager) Start() error {
 			manager.startErr = errors.New("certificate database is not initialized")
 		case manager.issuer == nil:
 			manager.startErr = errors.New("certificate issuer is not configured")
-		case manager.deployer == nil:
-			manager.startErr = errors.New("certificate deployer is not configured")
 		case invalidPathRoot(manager.certificateRoot):
 			manager.startErr = errors.New("certificate directory is invalid")
-		case invalidPathRoot(manager.challengeRoot):
-			manager.startErr = errors.New("ACME challenge directory is invalid")
 		case manager.directoryURL == "":
 			manager.startErr = errors.New("ACME directory URL is required")
 		case manager.issueTimeout < time.Minute || manager.issueTimeout > 2*time.Hour:
@@ -174,10 +182,6 @@ func (manager *Manager) Start() error {
 		}
 		if err := os.Chmod(manager.certificateRoot, 0700); err != nil {
 			manager.startErr = fmt.Errorf("secure certificate directory: %w", err)
-			return
-		}
-		if err := os.MkdirAll(manager.challengeRoot, 0755); err != nil {
-			manager.startErr = fmt.Errorf("create ACME challenge directory: %w", err)
 			return
 		}
 		now := time.Now().UTC()
@@ -247,6 +251,102 @@ func (manager *Manager) SubmitIssue(options IssueOptions) (*models.CertificateTa
 	})
 }
 
+func (manager *Manager) SubmitManagedIssue(options ManagedIssueOptions) (*models.CertificateTask, error) {
+	if err := manager.Start(); err != nil {
+		return nil, err
+	}
+	options, websiteID, websiteName, domains, err := manager.prepareManagedIssue(options)
+	if err != nil {
+		return nil, err
+	}
+	return manager.submit(&models.CertificateTask{
+		Operation:       models.CertificateTaskOperationManagedIssue,
+		WebsiteID:       websiteID,
+		WebsiteName:     websiteName,
+		Email:           options.Email,
+		Domains:         strings.Join(domains, ","),
+		DirectoryURL:    manager.directoryURL,
+		ChallengeType:   options.ChallengeType,
+		DNSAccountID:    options.DNSAccountID,
+		AutoRenew:       options.AutoRenew,
+		RenewBeforeDays: options.RenewBeforeDays,
+		Remark:          options.Remark,
+		RequestedBy:     options.RequestedBy,
+	})
+}
+
+func (manager *Manager) ValidateManagedIssue(options ManagedIssueOptions) error {
+	_, _, _, _, err := manager.prepareManagedIssue(options)
+	return err
+}
+
+func (manager *Manager) prepareManagedIssue(options ManagedIssueOptions) (ManagedIssueOptions, int64, string, []string, error) {
+	if manager == nil || manager.db == nil {
+		return ManagedIssueOptions{}, 0, "", nil, errors.New("certificate database is not initialized")
+	}
+	challengeType, err := normalizeChallengeType(options.ChallengeType)
+	if err != nil {
+		return ManagedIssueOptions{}, 0, "", nil, err
+	}
+	email, err := normalizeEmail(options.Email)
+	if err != nil {
+		return ManagedIssueOptions{}, 0, "", nil, err
+	}
+	if options.RenewBeforeDays == 0 {
+		options.RenewBeforeDays = 30
+	}
+	if options.RenewBeforeDays < 1 || options.RenewBeforeDays > 90 {
+		return ManagedIssueOptions{}, 0, "", nil, errors.New("renew-before days must be between 1 and 90")
+	}
+	options.ChallengeType = challengeType
+	options.Email = email
+	options.DNSAccountID = strings.TrimSpace(options.DNSAccountID)
+
+	websiteName := "certificate"
+	websiteID := int64(0)
+	var domains []string
+	if challengeType == ChallengeHTTP01 {
+		if options.WebsiteID <= 0 {
+			return ManagedIssueOptions{}, 0, "", nil, errors.New("website is required for HTTP-01 issuance")
+		}
+		var website models.Website
+		if err := manager.db.First(&website, "id = ?", options.WebsiteID).Error; err != nil {
+			return ManagedIssueOptions{}, 0, "", nil, err
+		}
+		websiteID = website.ID
+		websiteName = website.Name
+		domains, err = certificateDomains(website.Domain)
+		if err != nil {
+			return ManagedIssueOptions{}, 0, "", nil, err
+		}
+		if len(options.Domains) > 0 {
+			requestedDomains, domainErr := normalizeACMEDomains(options.Domains, challengeType)
+			if domainErr != nil {
+				return ManagedIssueOptions{}, 0, "", nil, domainErr
+			}
+			if !sameDomains(domains, requestedDomains) {
+				return ManagedIssueOptions{}, 0, "", nil, errors.New("HTTP-01 domains must match the selected website")
+			}
+		}
+	} else {
+		if strings.TrimSpace(options.DNSAccountID) == "" {
+			return ManagedIssueOptions{}, 0, "", nil, errors.New("DNS account is required for DNS-01 issuance")
+		}
+		var account models.DNSAccount
+		if err := manager.db.First(&account, "id = ?", options.DNSAccountID).Error; err != nil {
+			return ManagedIssueOptions{}, 0, "", nil, err
+		}
+		if !account.Enabled || !account.CredentialConfigured {
+			return ManagedIssueOptions{}, 0, "", nil, errors.New("DNS account is disabled or not configured")
+		}
+		domains, err = normalizeACMEDomains(options.Domains, challengeType)
+		if err != nil {
+			return ManagedIssueOptions{}, 0, "", nil, err
+		}
+	}
+	return options, websiteID, websiteName, domains, nil
+}
+
 func (manager *Manager) SubmitRenew(certificateID string, requestedBy int64) (*models.CertificateTask, error) {
 	if err := manager.Start(); err != nil {
 		return nil, err
@@ -281,9 +381,85 @@ func (manager *Manager) SubmitRenew(certificateID string, requestedBy int64) (*m
 		Email:           certificate.Email,
 		Domains:         strings.Join(currentDomains, ","),
 		DirectoryURL:    directoryURL,
+		ChallengeType:   defaultChallengeType(certificate.ChallengeType),
+		DNSAccountID:    certificate.DNSAccountID,
 		AutoRenew:       certificate.AutoRenew,
 		RenewBeforeDays: certificate.RenewBeforeDays,
 		ForceHTTPS:      certificate.ForceHTTPS,
+		RequestedBy:     requestedBy,
+	})
+}
+
+func (manager *Manager) SubmitManagedRenew(managedID string, requestedBy int64) (*models.CertificateTask, error) {
+	if err := manager.Start(); err != nil {
+		return nil, err
+	}
+	var certificate models.ManagedCertificate
+	if err := manager.db.First(&certificate, "id = ?", strings.TrimSpace(managedID)).Error; err != nil {
+		return nil, err
+	}
+	if certificate.Provider != "acme" {
+		return nil, errors.New("only ACME certificates can be renewed")
+	}
+	challengeType, err := normalizeChallengeType(certificate.ChallengeType)
+	if err != nil {
+		return nil, err
+	}
+	domains, err := normalizeACMEDomains(taskDomains(certificate.Domains), challengeType)
+	if err != nil {
+		return nil, err
+	}
+	email, err := normalizeEmail(certificate.Email)
+	if err != nil {
+		return nil, err
+	}
+	if certificate.RenewBeforeDays == 0 {
+		certificate.RenewBeforeDays = 30
+	}
+	if certificate.RenewBeforeDays < 1 || certificate.RenewBeforeDays > 90 {
+		return nil, errors.New("renew-before days must be between 1 and 90")
+	}
+	websiteID := certificate.ChallengeWebsiteID
+	websiteName := "certificate"
+	if challengeType == ChallengeHTTP01 {
+		if websiteID <= 0 {
+			return nil, errors.New("HTTP-01 renewal website is unavailable")
+		}
+		var website models.Website
+		if err := manager.db.First(&website, "id = ?", websiteID).Error; err != nil {
+			return nil, err
+		}
+		websiteName = website.Name
+		currentDomains, domainErr := certificateDomains(website.Domain)
+		if domainErr != nil {
+			return nil, domainErr
+		}
+		if !sameDomains(domains, currentDomains) {
+			return nil, errors.New("website domains changed; request a new certificate instead of renewing")
+		}
+	} else {
+		if _, _, err := loadDNSChallengeProvider(manager.db, certificate.DNSAccountID); err != nil {
+			return nil, err
+		}
+	}
+	directoryURL := strings.TrimSpace(certificate.DirectoryURL)
+	if directoryURL == "" {
+		directoryURL = manager.directoryURL
+	}
+	return manager.submit(&models.CertificateTask{
+		Operation:       models.CertificateTaskOperationManagedRenew,
+		WebsiteID:       websiteID,
+		WebsiteName:     websiteName,
+		CertificateID:   certificate.ID,
+		ManagedID:       certificate.ID,
+		Email:           email,
+		Domains:         strings.Join(domains, ","),
+		DirectoryURL:    directoryURL,
+		ChallengeType:   challengeType,
+		DNSAccountID:    certificate.DNSAccountID,
+		AutoRenew:       certificate.AutoRenew,
+		RenewBeforeDays: certificate.RenewBeforeDays,
+		Remark:          certificate.Remark,
 		RequestedBy:     requestedBy,
 	})
 }
@@ -472,29 +648,18 @@ func (manager *Manager) run(taskID string) {
 		manager.runManagedTask(ctx, &task, report)
 		return
 	}
-	if err := manager.deployer.EnsureChallenge(ctx, task.WebsiteID); err != nil {
-		manager.failTask(&task, "CHALLENGE_CONFIG_FAILED", fmt.Errorf("publish HTTP-01 route: %w", err))
+	if task.Operation == models.CertificateTaskOperationManagedIssue ||
+		task.Operation == models.CertificateTaskOperationManagedRenew {
+		manager.runManagedACMETask(ctx, &task, report)
 		return
 	}
-	directoryHash := sha256.Sum256([]byte(task.DirectoryURL))
-	issued, err := manager.issuer.Issue(ctx, IssueRequest{
-		DirectoryURL:   task.DirectoryURL,
-		Email:          task.Email,
-		Domains:        strings.Split(task.Domains, ","),
-		AccountKeyPath: filepath.Join(manager.certificateRoot, "accounts", hex.EncodeToString(directoryHash[:16])+".key"),
-		ChallengeRoot:  manager.challengeRoot,
-	}, report)
+	issued, metadata, err := manager.issueACME(ctx, &task, report)
 	if err != nil {
-		manager.failTask(&task, "ACME_ISSUE_FAILED", err)
+		manager.failTask(&task, acmeTaskErrorCode(&task, err), err)
 		return
 	}
 	if err := ctx.Err(); err != nil {
 		manager.failTask(&task, "TASK_CANCELED", err)
-		return
-	}
-	metadata, err := validateIssuedCertificate(issued, strings.Split(task.Domains, ","))
-	if err != nil {
-		manager.failTask(&task, "CERTIFICATE_INVALID", err)
 		return
 	}
 	report(92, "正在安全写入证书文件")
@@ -519,6 +684,11 @@ func (manager *Manager) run(taskID string) {
 	if err := ctx.Err(); err != nil {
 		_ = os.RemoveAll(versionDirectory)
 		manager.failTask(&task, "TASK_CANCELED", err)
+		return
+	}
+	if manager.deployer == nil {
+		_ = os.RemoveAll(versionDirectory)
+		manager.failTask(&task, "CERTIFICATE_DEPLOYER_UNAVAILABLE", errors.New("certificate deployer is not configured"))
 		return
 	}
 	report(96, "正在验证并重新加载 Nginx")
@@ -573,6 +743,8 @@ func (manager *Manager) run(taskID string) {
 		Email:           task.Email,
 		Domains:         task.Domains,
 		DirectoryURL:    task.DirectoryURL,
+		ChallengeType:   defaultChallengeType(task.ChallengeType),
+		DNSAccountID:    task.DNSAccountID,
 		CertificatePath: certificatePath,
 		PrivateKeyPath:  privateKeyPath,
 		SerialNumber:    metadata.SerialNumber.String(),
@@ -609,11 +781,14 @@ func (manager *Manager) run(taskID string) {
 		}
 		return tx.Save(&models.ManagedCertificate{
 			ID: certificateRecord.ManagedID, Provider: certificateRecord.Provider, Domains: certificateRecord.Domains,
+			Email: certificateRecord.Email, DirectoryURL: certificateRecord.DirectoryURL, ChallengeType: certificateRecord.ChallengeType,
+			DNSAccountID: certificateRecord.DNSAccountID, ChallengeWebsiteID: task.WebsiteID,
 			CertificatePath: certificateRecord.CertificatePath, PrivateKeyPath: certificateRecord.PrivateKeyPath,
 			SerialNumber: certificateRecord.SerialNumber, Issuer: certificateRecord.Issuer,
 			Algorithm: publicKeyAlgorithm(metadata.PublicKey), Status: certificateRecord.Status,
 			AutoRenew: certificateRecord.AutoRenew, RenewBeforeDays: certificateRecord.RenewBeforeDays,
 			NotBefore: certificateRecord.NotBefore, NotAfter: certificateRecord.NotAfter,
+			LastRenewAt: certificateRecord.LastRenewAt, NextRenewAt: certificateRecord.NextRenewAt, LastError: certificateRecord.LastError,
 			CreatedAt: certificateRecord.CreatedAt, UpdatedAt: certificateRecord.UpdatedAt,
 		}).Error
 	})
@@ -637,6 +812,121 @@ func (manager *Manager) run(taskID string) {
 	}
 	manager.appendLog(task.ID, "证书已部署，Nginx 配置验证和重载成功")
 	_ = manager.finish(task.ID, models.CertificateTaskStatusSucceeded, "", "证书签发和部署成功")
+}
+
+func (manager *Manager) issueACME(ctx context.Context, task *models.CertificateTask, report ProgressReporter) (*IssuedCertificate, *x509.Certificate, error) {
+	challengeType := defaultChallengeType(task.ChallengeType)
+	var dnsProvider DNSChallengeProvider
+	if challengeType == ChallengeHTTP01 {
+		if manager.deployer == nil {
+			return nil, nil, errors.New("certificate deployer is not configured")
+		}
+		if err := manager.deployer.EnsureChallenge(ctx, task.WebsiteID); err != nil {
+			return nil, nil, fmt.Errorf("publish HTTP-01 route: %w", err)
+		}
+	} else {
+		var err error
+		dnsProvider, _, err = loadDNSChallengeProvider(manager.db, task.DNSAccountID)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	directoryHash := sha256.Sum256([]byte(task.DirectoryURL))
+	issued, err := manager.issuer.Issue(ctx, IssueRequest{
+		DirectoryURL:   task.DirectoryURL,
+		Email:          task.Email,
+		Domains:        strings.Split(task.Domains, ","),
+		AccountKeyPath: filepath.Join(manager.certificateRoot, "accounts", hex.EncodeToString(directoryHash[:16])+".key"),
+		ChallengeRoot:  manager.challengeRoot,
+		ChallengeType:  challengeType,
+		DNSProvider:    dnsProvider,
+	}, report)
+	if err != nil {
+		return nil, nil, err
+	}
+	metadata, err := validateIssuedCertificate(issued, strings.Split(task.Domains, ","))
+	if err != nil {
+		return nil, nil, err
+	}
+	return issued, metadata, nil
+}
+
+func (manager *Manager) runManagedACMETask(ctx context.Context, task *models.CertificateTask, report ProgressReporter) {
+	issued, metadata, err := manager.issueACME(ctx, task, report)
+	if err != nil {
+		manager.failTask(task, acmeTaskErrorCode(task, err), err)
+		return
+	}
+	if err := ctx.Err(); err != nil {
+		manager.failTask(task, "TASK_CANCELED", err)
+		return
+	}
+	report(92, "正在安全写入证书文件")
+	catalog := NewCatalog(manager.db, manager.certificateRoot, manager.deployer)
+	if task.Operation == models.CertificateTaskOperationManagedIssue {
+		record, createErr := catalog.CreateACME(ACMECertificateOptions{
+			Domains:            taskDomains(task.Domains),
+			CertificatePEM:     issued.CertificatePEM,
+			PrivateKeyPEM:      issued.PrivateKeyPEM,
+			Email:              task.Email,
+			DirectoryURL:       task.DirectoryURL,
+			ChallengeType:      defaultChallengeType(task.ChallengeType),
+			DNSAccountID:       task.DNSAccountID,
+			ChallengeWebsiteID: task.WebsiteID,
+			Metadata:           metadata,
+			AutoRenew:          task.AutoRenew,
+			RenewBeforeDays:    task.RenewBeforeDays,
+			Remark:             task.Remark,
+		})
+		if createErr != nil {
+			manager.failTask(task, "CERTIFICATE_PERSIST_FAILED", createErr)
+			return
+		}
+		task.ManagedID = record.ID
+		task.CertificateID = record.ID
+		_ = manager.db.Model(&models.CertificateTask{}).Where("id = ?", task.ID).Updates(map[string]any{
+			"managed_id": task.ManagedID, "certificate_id": task.CertificateID,
+		}).Error
+	} else {
+		report(96, "正在验证并重新加载已绑定网站")
+		if _, renewErr := catalog.RenewACME(ctx, task.ManagedID, ACMERenewalOptions{
+			CertificatePEM:     issued.CertificatePEM,
+			PrivateKeyPEM:      issued.PrivateKeyPEM,
+			Metadata:           metadata,
+			Email:              task.Email,
+			DirectoryURL:       task.DirectoryURL,
+			ChallengeType:      defaultChallengeType(task.ChallengeType),
+			DNSAccountID:       task.DNSAccountID,
+			ChallengeWebsiteID: task.WebsiteID,
+			AutoRenew:          task.AutoRenew,
+			RenewBeforeDays:    task.RenewBeforeDays,
+		}); renewErr != nil {
+			manager.failTask(task, "CERTIFICATE_DEPLOY_FAILED", renewErr)
+			return
+		}
+	}
+	manager.appendLog(task.ID, "ACME 证书资源操作完成")
+	message := "证书申请成功，已生成证书资源"
+	if task.Operation == models.CertificateTaskOperationManagedRenew {
+		message = "证书续期成功，已更新证书资源及绑定网站"
+	}
+	_ = manager.finish(task.ID, models.CertificateTaskStatusSucceeded, "", message)
+}
+
+func acmeTaskErrorCode(task *models.CertificateTask, err error) string {
+	if err == nil {
+		return "ACME_ISSUE_FAILED"
+	}
+	if task != nil && defaultChallengeType(task.ChallengeType) == ChallengeDNS01 {
+		if strings.Contains(strings.ToLower(err.Error()), "dns account") || strings.Contains(strings.ToLower(err.Error()), "dns provider") {
+			return "DNS_ACCOUNT_INVALID"
+		}
+		return "DNS_CHALLENGE_FAILED"
+	}
+	if strings.Contains(strings.ToLower(err.Error()), "deployer") || strings.Contains(strings.ToLower(err.Error()), "http-01 route") {
+		return "CHALLENGE_CONFIG_FAILED"
+	}
+	return "ACME_ISSUE_FAILED"
 }
 
 func (manager *Manager) runManagedTask(ctx context.Context, task *models.CertificateTask, report ProgressReporter) {
@@ -701,6 +991,9 @@ func taskDomains(value string) []string {
 func (manager *Manager) failTask(task *models.CertificateTask, code string, err error) {
 	status := models.CertificateTaskStatusFailed
 	message := truncate(err.Error(), 1024)
+	if task.Operation == models.CertificateTaskOperationManagedIssue || task.Operation == models.CertificateTaskOperationManagedRenew {
+		message = SafeCertificateErrorDetail(err)
+	}
 	if errors.Is(err, context.Canceled) || task.CancelRequested {
 		if manager.stopping.Load() {
 			status = models.CertificateTaskStatusInterrupted
@@ -722,6 +1015,14 @@ func (manager *Manager) failTask(task *models.CertificateTask, code string, err 
 	if task.CertificateID != "" {
 		retryAt := time.Now().UTC().Add(24 * time.Hour)
 		_ = manager.db.Model(&models.Certificate{}).Where("id = ?", task.CertificateID).Updates(map[string]any{
+			"last_error":    message,
+			"next_renew_at": retryAt,
+		}).Error
+	}
+	if task.ManagedID != "" && (task.Operation == models.CertificateTaskOperationManagedIssue || task.Operation == models.CertificateTaskOperationManagedRenew) {
+		retryAt := time.Now().UTC().Add(24 * time.Hour)
+		_ = manager.db.Model(&models.ManagedCertificate{}).Where("id = ?", task.ManagedID).Updates(map[string]any{
+			"status":        models.CertificateStatusError,
 			"last_error":    message,
 			"next_renew_at": retryAt,
 		}).Error
@@ -751,6 +1052,10 @@ func SafeCertificateErrorDetail(err error) string {
 		return "证书签发器未配置，请检查证书任务服务配置后重试。"
 	case strings.Contains(lower, "certificate deployer is not configured"):
 		return "证书部署器未配置，请检查证书任务服务配置后重试。"
+	case strings.Contains(lower, "dns account"), strings.Contains(lower, "dns provider"), strings.Contains(lower, "cloudflare"), strings.Contains(lower, "aliyun"), strings.Contains(lower, "tencent"):
+		return "DNS 账号或 DNS 挑战处理失败，请检查账号凭据、权限及域名 DNS 托管是否匹配后重试。"
+	case strings.Contains(lower, "dns challenge"), strings.Contains(lower, "validate domain"), strings.Contains(lower, "acme server"), strings.Contains(lower, "create acme order"):
+		return "ACME 域名验证失败，请检查域名解析、验证方式和 CA 服务状态后重试。"
 	case strings.Contains(lower, "acme directory url is required"):
 		return "ACME 目录地址未配置，证书任务服务无法启动，请检查 ACME 配置后重试。"
 	case strings.Contains(lower, "acme issue timeout must be between"):
@@ -1009,6 +1314,42 @@ func normalizeEmail(value string) (string, error) {
 	return strings.ToLower(value), nil
 }
 
+func normalizeChallengeType(value string) (string, error) {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		value = ChallengeHTTP01
+	}
+	if value != ChallengeHTTP01 && value != ChallengeDNS01 {
+		return "", errors.New("unsupported ACME challenge type")
+	}
+	return value, nil
+}
+
+func defaultChallengeType(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return ChallengeHTTP01
+	}
+	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func normalizeACMEDomains(values []string, challengeType string) ([]string, error) {
+	domains, err := normalizeManagedDomains(values)
+	if err != nil {
+		return nil, err
+	}
+	for _, domain := range domains {
+		base := strings.TrimPrefix(domain, "*.")
+		if net.ParseIP(base) != nil {
+			return nil, errors.New("public ACME certificate issuance requires domain names, not IP addresses")
+		}
+		if strings.Contains(domain, "*") &&
+			(challengeType != ChallengeDNS01 || !strings.HasPrefix(domain, "*.") || strings.Count(domain, "*") != 1) {
+			return nil, errors.New("wildcard domains require DNS-01 and must use the *.example.com format")
+		}
+	}
+	return domains, nil
+}
+
 func certificateDomains(value string) ([]string, error) {
 	parts := strings.Split(value, ",")
 	domains := make([]string, 0, len(parts))
@@ -1075,8 +1416,8 @@ func validateIssuedCertificate(
 		return nil, errors.New("issued certificate validity period is not usable")
 	}
 	for _, domain := range domains {
-		if err := leaf.VerifyHostname(domain); err != nil {
-			return nil, fmt.Errorf("issued certificate does not cover %s: %w", domain, err)
+		if !certificateMatchesDomain(leaf, domain) {
+			return nil, fmt.Errorf("issued certificate does not cover %s", domain)
 		}
 	}
 	block, _ := pem.Decode(issued.CertificatePEM)

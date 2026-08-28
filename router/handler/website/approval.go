@@ -35,11 +35,16 @@ type RestoreApprovalPayload struct {
 }
 
 type CertificateIssueApprovalPayload struct {
-	WebsiteID       int64  `json:"websiteId"`
-	Email           string `json:"email"`
-	AutoRenew       *bool  `json:"autoRenew"`
-	RenewBeforeDays int    `json:"renewBeforeDays"`
-	ForceHTTPS      bool   `json:"forceHttps"`
+	Managed         bool     `json:"managed"`
+	WebsiteID       int64    `json:"websiteId"`
+	Domains         []string `json:"domains"`
+	Email           string   `json:"email"`
+	DNSAccountID    string   `json:"dnsAccountId"`
+	ChallengeType   string   `json:"challengeType"`
+	AutoRenew       *bool    `json:"autoRenew"`
+	RenewBeforeDays int      `json:"renewBeforeDays"`
+	ForceHTTPS      bool     `json:"forceHttps"`
+	Remark          string   `json:"remark"`
 }
 
 type CertificateRenewApprovalPayload struct {
@@ -141,14 +146,20 @@ func ExecuteCertificateApproval(service *approvalservice.Service, request *model
 		if payload.AutoRenew != nil {
 			autoRenew = *payload.AutoRenew
 		}
-		task, err := manager.SubmitIssue(certificateService.IssueOptions{
-			WebsiteID:       payload.WebsiteID,
-			Email:           payload.Email,
-			AutoRenew:       autoRenew,
-			RenewBeforeDays: payload.RenewBeforeDays,
-			ForceHTTPS:      payload.ForceHTTPS,
-			RequestedBy:     request.RequestedBy,
-		})
+		var task *models.CertificateTask
+		if payload.Managed {
+			task, err = manager.SubmitManagedIssue(certificateService.ManagedIssueOptions{
+				ChallengeType: payload.ChallengeType, WebsiteID: payload.WebsiteID, Domains: payload.Domains,
+				Email: payload.Email, DNSAccountID: payload.DNSAccountID, AutoRenew: autoRenew,
+				RenewBeforeDays: payload.RenewBeforeDays, Remark: payload.Remark, RequestedBy: request.RequestedBy,
+			})
+		} else {
+			task, err = manager.SubmitIssue(certificateService.IssueOptions{
+				WebsiteID: payload.WebsiteID, Email: payload.Email, AutoRenew: autoRenew,
+				RenewBeforeDays: payload.RenewBeforeDays, ForceHTTPS: payload.ForceHTTPS,
+				RequestedBy: request.RequestedBy,
+			})
+		}
 		if err != nil {
 			return err
 		}

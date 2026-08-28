@@ -21,11 +21,13 @@ const (
 )
 
 const (
-	CertificateTaskOperationIssue      = "issue"
-	CertificateTaskOperationRenew      = "renew"
-	CertificateTaskOperationUpload     = "upload"
-	CertificateTaskOperationSelfSigned = "self_signed"
-	CertificateTaskOperationBind       = "bind"
+	CertificateTaskOperationIssue        = "issue"
+	CertificateTaskOperationManagedIssue = "issue_managed"
+	CertificateTaskOperationRenew        = "renew"
+	CertificateTaskOperationManagedRenew = "renew_managed"
+	CertificateTaskOperationUpload       = "upload"
+	CertificateTaskOperationSelfSigned   = "self_signed"
+	CertificateTaskOperationBind         = "bind"
 )
 
 // Certificate stores deployment metadata. Private key and certificate paths
@@ -38,6 +40,8 @@ type Certificate struct {
 	Email           string     `json:"email" gorm:"size:254;not null"`
 	Domains         string     `json:"domains" gorm:"type:text;not null"`
 	DirectoryURL    string     `json:"-" gorm:"size:1024;not null"`
+	ChallengeType   string     `json:"challengeType,omitempty" gorm:"size:16"`
+	DNSAccountID    string     `json:"dnsAccountId,omitempty" gorm:"size:36;index"`
 	CertificatePath string     `json:"-" gorm:"size:1024;not null"`
 	PrivateKeyPath  string     `json:"-" gorm:"size:1024;not null"`
 	SerialNumber    string     `json:"serialNumber" gorm:"size:128"`
@@ -58,22 +62,30 @@ type Certificate struct {
 // ManagedCertificate is the canonical certificate resource. WebsiteID on the
 // legacy Certificate model remains as a deployment compatibility projection.
 type ManagedCertificate struct {
-	ID              string    `json:"id" gorm:"primaryKey;size:36"`
-	Provider        string    `json:"provider" gorm:"size:32;not null"`
-	Domains         string    `json:"domains" gorm:"type:text;not null"`
-	CertificatePath string    `json:"-" gorm:"size:1024;not null"`
-	PrivateKeyPath  string    `json:"-" gorm:"size:1024;not null"`
-	SerialNumber    string    `json:"serialNumber" gorm:"size:128"`
-	Issuer          string    `json:"issuer" gorm:"size:512"`
-	Algorithm       string    `json:"algorithm" gorm:"size:32;not null"`
-	Status          string    `json:"status" gorm:"size:32;not null;index"`
-	AutoRenew       bool      `json:"autoRenew" gorm:"not null;default:false"`
-	RenewBeforeDays int       `json:"renewBeforeDays" gorm:"not null;default:30"`
-	NotBefore       time.Time `json:"notBefore"`
-	NotAfter        time.Time `json:"notAfter" gorm:"index"`
-	Remark          string    `json:"remark" gorm:"size:512"`
-	CreatedAt       time.Time `json:"createdAt"`
-	UpdatedAt       time.Time `json:"updatedAt"`
+	ID                 string     `json:"id" gorm:"primaryKey;size:36"`
+	Provider           string     `json:"provider" gorm:"size:32;not null"`
+	Domains            string     `json:"domains" gorm:"type:text;not null"`
+	Email              string     `json:"email,omitempty" gorm:"size:254"`
+	DirectoryURL       string     `json:"-" gorm:"size:1024"`
+	ChallengeType      string     `json:"challengeType,omitempty" gorm:"size:16"`
+	DNSAccountID       string     `json:"dnsAccountId,omitempty" gorm:"size:36;index"`
+	ChallengeWebsiteID int64      `json:"challengeWebsiteId,omitempty" gorm:"index"`
+	CertificatePath    string     `json:"-" gorm:"size:1024;not null"`
+	PrivateKeyPath     string     `json:"-" gorm:"size:1024;not null"`
+	SerialNumber       string     `json:"serialNumber" gorm:"size:128"`
+	Issuer             string     `json:"issuer" gorm:"size:512"`
+	Algorithm          string     `json:"algorithm" gorm:"size:32;not null"`
+	Status             string     `json:"status" gorm:"size:32;not null;index"`
+	AutoRenew          bool       `json:"autoRenew" gorm:"not null;default:false"`
+	RenewBeforeDays    int        `json:"renewBeforeDays" gorm:"not null;default:30"`
+	NotBefore          time.Time  `json:"notBefore"`
+	NotAfter           time.Time  `json:"notAfter" gorm:"index"`
+	Remark             string     `json:"remark" gorm:"size:512"`
+	LastRenewAt        *time.Time `json:"lastRenewAt,omitempty"`
+	NextRenewAt        *time.Time `json:"nextRenewAt,omitempty" gorm:"index"`
+	LastError          string     `json:"lastError,omitempty" gorm:"size:1024"`
+	CreatedAt          time.Time  `json:"createdAt"`
+	UpdatedAt          time.Time  `json:"updatedAt"`
 }
 
 func (ManagedCertificate) TableName() string { return "managed_certificate" }
@@ -122,6 +134,8 @@ type CertificateTask struct {
 	Email           string     `json:"email" gorm:"size:254;not null"`
 	Domains         string     `json:"domains" gorm:"type:text;not null"`
 	DirectoryURL    string     `json:"-" gorm:"size:1024;not null"`
+	ChallengeType   string     `json:"challengeType,omitempty" gorm:"size:16"`
+	DNSAccountID    string     `json:"dnsAccountId,omitempty" gorm:"size:36;index"`
 	AutoRenew       bool       `json:"autoRenew" gorm:"not null;default:true"`
 	RenewBeforeDays int        `json:"renewBeforeDays" gorm:"not null;default:30"`
 	ForceHTTPS      bool       `json:"forceHttps" gorm:"column:force_https;not null;default:false"`

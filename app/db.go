@@ -320,10 +320,14 @@ func migrateManagedCertificates() error {
 	for _, certificate := range legacy {
 		managed := models.ManagedCertificate{
 			ID: certificate.ID, Provider: certificate.Provider, Domains: certificate.Domains,
+			Email: certificate.Email, DirectoryURL: certificate.DirectoryURL,
+			ChallengeType: certificate.ChallengeType, DNSAccountID: certificate.DNSAccountID,
 			CertificatePath: certificate.CertificatePath, PrivateKeyPath: certificate.PrivateKeyPath,
 			SerialNumber: certificate.SerialNumber, Issuer: certificate.Issuer, Algorithm: "unknown",
 			Status: certificate.Status, AutoRenew: certificate.AutoRenew, RenewBeforeDays: certificate.RenewBeforeDays,
-			NotBefore: certificate.NotBefore, NotAfter: certificate.NotAfter, CreatedAt: certificate.CreatedAt, UpdatedAt: certificate.UpdatedAt,
+			NotBefore: certificate.NotBefore, NotAfter: certificate.NotAfter, Remark: "",
+			LastRenewAt: certificate.LastRenewAt, NextRenewAt: certificate.NextRenewAt, LastError: certificate.LastError,
+			CreatedAt: certificate.CreatedAt, UpdatedAt: certificate.UpdatedAt,
 		}
 		if managed.RenewBeforeDays == 0 {
 			managed.RenewBeforeDays = 30

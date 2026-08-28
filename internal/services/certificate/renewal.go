@@ -66,12 +66,39 @@ func (scheduler *RenewalScheduler) Start() error {
 
 func (scheduler *RenewalScheduler) Scan(ctx context.Context) error {
 	now := time.Now().UTC()
+	var managedCertificates []models.ManagedCertificate
+	if err := scheduler.db.Where("provider = ? AND status <> ?", "acme", models.CertificateStatusDisabled).
+		Find(&managedCertificates).Error; err != nil {
+		return err
+	}
 	var certificates []models.Certificate
-	if err := scheduler.db.Where("status <> ?", models.CertificateStatusDisabled).
+	if err := scheduler.db.Where("(managed_id IS NULL OR managed_id = '') AND status <> ?", models.CertificateStatusDisabled).
 		Find(&certificates).Error; err != nil {
 		return err
 	}
 	var scanErr error
+	for _, certificate := range managedCertificates {
+		select {
+		case <-ctx.Done():
+			return errors.Join(scanErr, ctx.Err())
+		default:
+		}
+		status := certificateStatus(certificate.NotAfter, now, certificate.RenewBeforeDays)
+		if certificate.LastError != "" && certificate.NextRenewAt != nil && certificate.NextRenewAt.After(now) {
+			status = models.CertificateStatusError
+		} else if err := scheduler.db.Model(&models.ManagedCertificate{}).
+			Where("id = ?", certificate.ID).
+			Update("status", status).Error; err != nil {
+			scanErr = errors.Join(scanErr, err)
+			continue
+		}
+		if !certificate.AutoRenew || !renewalDue(certificate.NotAfter, certificate.NextRenewAt, certificate.RenewBeforeDays, now) {
+			continue
+		}
+		if err := scheduler.submitManagedRenewal(certificate, now); err != nil {
+			scanErr = errors.Join(scanErr, err)
+		}
+	}
 	for _, certificate := range certificates {
 		select {
 		case <-ctx.Done():
@@ -88,13 +115,7 @@ func (scheduler *RenewalScheduler) Scan(ctx context.Context) error {
 		if !certificate.AutoRenew {
 			continue
 		}
-		due := certificate.NotAfter.Before(
-			now.Add(time.Duration(certificate.RenewBeforeDays) * 24 * time.Hour),
-		)
-		if certificate.NextRenewAt != nil && certificate.NextRenewAt.After(now) {
-			due = false
-		}
-		if !due {
+		if !renewalDue(certificate.NotAfter, certificate.NextRenewAt, certificate.RenewBeforeDays, now) {
 			continue
 		}
 		if _, err := scheduler.manager.SubmitRenew(certificate.ID, 0); err != nil {
@@ -108,6 +129,37 @@ func (scheduler *RenewalScheduler) Scan(ctx context.Context) error {
 		}
 	}
 	return scanErr
+}
+
+func renewalDue(notAfter time.Time, nextRenewAt *time.Time, renewBeforeDays int, now time.Time) bool {
+	if nextRenewAt != nil && nextRenewAt.After(now) {
+		return false
+	}
+	if renewBeforeDays <= 0 {
+		renewBeforeDays = 30
+	}
+	return notAfter.Before(now.Add(time.Duration(renewBeforeDays) * 24 * time.Hour))
+}
+
+func (scheduler *RenewalScheduler) submitManagedRenewal(certificate models.ManagedCertificate, now time.Time) error {
+	if _, err := scheduler.manager.SubmitManagedRenew(certificate.ID, 0); err != nil {
+		var active int64
+		activeErr := scheduler.db.Model(&models.CertificateTask{}).
+			Where("website_id = ? AND status IN ?", certificate.ChallengeWebsiteID, models.ActiveCertificateTaskStatuses()).
+			Count(&active).Error
+		if activeErr != nil {
+			return activeErr
+		}
+		if active > 0 {
+			return nil
+		}
+		_ = scheduler.db.Model(&models.ManagedCertificate{}).Where("id = ?", certificate.ID).Updates(map[string]any{
+			"status": models.CertificateStatusError, "last_error": truncate(SafeCertificateErrorDetail(err), 1024),
+			"next_renew_at": now.Add(24 * time.Hour),
+		}).Error
+		return err
+	}
+	return nil
 }
 
 func (scheduler *RenewalScheduler) Stop(ctx context.Context) error {

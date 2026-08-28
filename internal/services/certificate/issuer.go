@@ -10,13 +10,16 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/mail"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
+	"github.com/go-acme/lego/v4/challenge/dns01"
 	"golang.org/x/crypto/acme"
 )
 
@@ -24,12 +27,19 @@ var challengeTokenPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,512}$`)
 
 type ProgressReporter func(progress int, message string)
 
+const (
+	ChallengeHTTP01 = "http-01"
+	ChallengeDNS01  = "dns-01"
+)
+
 type IssueRequest struct {
 	DirectoryURL   string
 	Email          string
 	Domains        []string
 	AccountKeyPath string
 	ChallengeRoot  string
+	ChallengeType  string
+	DNSProvider    DNSChallengeProvider
 }
 
 type IssuedCertificate struct {
@@ -53,6 +63,7 @@ func (issuer *ACMEIssuer) Issue(
 	if err := validateIssueRequest(request); err != nil {
 		return nil, err
 	}
+	request.ChallengeType = defaultChallengeType(request.ChallengeType)
 	report = nonNilReporter(report)
 	report(12, "正在加载 ACME 账户")
 	accountKey, err := loadOrCreateECKey(request.AccountKeyPath)
@@ -82,13 +93,11 @@ func (issuer *ACMEIssuer) Issue(
 		return nil, fmt.Errorf("create ACME order: %w", err)
 	}
 
-	challengeDirectory := filepath.Join(
-		filepath.Clean(request.ChallengeRoot),
-		".well-known",
-		"acme-challenge",
-	)
-	if err := os.MkdirAll(challengeDirectory, 0755); err != nil {
-		return nil, fmt.Errorf("create ACME challenge directory: %w", err)
+	challengeDirectory := filepath.Join(filepath.Clean(request.ChallengeRoot), ".well-known", "acme-challenge")
+	if request.ChallengeType == ChallengeHTTP01 {
+		if err := os.MkdirAll(challengeDirectory, 0755); err != nil {
+			return nil, fmt.Errorf("create ACME challenge directory: %w", err)
+		}
 	}
 	for index, authorizationURL := range order.AuthzURLs {
 		authorization, err := client.GetAuthorization(ctx, authorizationURL)
@@ -98,32 +107,57 @@ func (issuer *ACMEIssuer) Issue(
 		if authorization.Status == acme.StatusValid {
 			continue
 		}
-		challenge := findHTTPChallenge(authorization)
+		challenge := findChallenge(authorization, request.ChallengeType)
 		if challenge == nil {
-			return nil, fmt.Errorf("ACME server did not offer http-01 for %s", authorization.Identifier.Value)
+			return nil, fmt.Errorf("ACME server did not offer %s for %s", request.ChallengeType, authorization.Identifier.Value)
 		}
 		if !challengeTokenPattern.MatchString(challenge.Token) {
 			return nil, errors.New("ACME server returned an unsafe challenge token")
 		}
-		response, err := client.HTTP01ChallengeResponse(challenge.Token)
-		if err != nil {
-			return nil, fmt.Errorf("create ACME challenge response: %w", err)
-		}
-		challengePath := filepath.Join(challengeDirectory, challenge.Token)
-		if err := writeFileAtomic(challengePath, []byte(response), 0644); err != nil {
-			return nil, fmt.Errorf("publish ACME challenge: %w", err)
+		challengePath := ""
+		challengeResponse := ""
+		if request.ChallengeType == ChallengeHTTP01 {
+			challengeResponse, err = client.HTTP01ChallengeResponse(challenge.Token)
+			if err != nil {
+				return nil, fmt.Errorf("create ACME challenge response: %w", err)
+			}
+			challengePath = filepath.Join(challengeDirectory, challenge.Token)
+			if err := writeFileAtomic(challengePath, []byte(challengeResponse), 0644); err != nil {
+				return nil, fmt.Errorf("publish ACME challenge: %w", err)
+			}
+		} else {
+			keyAuthorization, keyErr := acmeKeyAuthorization(accountKey, challenge.Token)
+			if keyErr != nil {
+				return nil, fmt.Errorf("create DNS challenge response: %w", keyErr)
+			}
+			challengeResponse = keyAuthorization
+			if err := request.DNSProvider.Present(authorization.Identifier.Value, challenge.Token, keyAuthorization); err != nil {
+				return nil, fmt.Errorf("publish DNS challenge: %w", err)
+			}
+			if err := waitForDNSChallenge(ctx, request.DNSProvider, authorization.Identifier.Value, keyAuthorization); err != nil {
+				_ = request.DNSProvider.CleanUp(authorization.Identifier.Value, challenge.Token, keyAuthorization)
+				return nil, fmt.Errorf("wait for DNS challenge propagation: %w", err)
+			}
 		}
 		report(25+(index*35/max(1, len(order.AuthzURLs))), "正在验证域名 "+authorization.Identifier.Value)
 		_, acceptErr := client.Accept(ctx, challenge)
 		if acceptErr == nil {
 			_, acceptErr = client.WaitAuthorization(ctx, authorizationURL)
 		}
-		removeErr := os.Remove(challengePath)
+		var cleanupErr error
+		if request.ChallengeType == ChallengeHTTP01 {
+			cleanupErr = os.Remove(challengePath)
+			if errors.Is(cleanupErr, os.ErrNotExist) {
+				cleanupErr = nil
+			}
+		} else {
+			cleanupErr = request.DNSProvider.CleanUp(authorization.Identifier.Value, challenge.Token, challengeResponse)
+		}
 		if acceptErr != nil {
 			return nil, fmt.Errorf("validate domain %s: %w", authorization.Identifier.Value, acceptErr)
 		}
-		if removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
-			return nil, fmt.Errorf("remove ACME challenge: %w", removeErr)
+		if cleanupErr != nil {
+			return nil, fmt.Errorf("clean up %s challenge: %w", request.ChallengeType, cleanupErr)
 		}
 	}
 
@@ -183,33 +217,89 @@ func validateIssueRequest(request IssueRequest) error {
 	if len(request.Domains) == 0 || len(request.Domains) > 100 {
 		return errors.New("between 1 and 100 certificate domains are required")
 	}
+	challengeType := strings.TrimSpace(strings.ToLower(request.ChallengeType))
+	if challengeType == "" {
+		challengeType = ChallengeHTTP01
+	}
+	if challengeType != ChallengeHTTP01 && challengeType != ChallengeDNS01 {
+		return errors.New("unsupported ACME challenge type")
+	}
 	for _, domain := range request.Domains {
-		if strings.TrimSpace(domain) == "" || strings.Contains(domain, "*") {
+		if strings.TrimSpace(domain) == "" || (challengeType == ChallengeHTTP01 && strings.Contains(domain, "*")) {
 			return errors.New("HTTP-01 certificate issuance does not support wildcard domains")
 		}
 	}
-	for label, value := range map[string]string{
-		"account key":    request.AccountKeyPath,
-		"challenge root": request.ChallengeRoot,
-	} {
+	paths := map[string]string{"account key": request.AccountKeyPath}
+	if challengeType == ChallengeHTTP01 {
+		paths["challenge root"] = request.ChallengeRoot
+	}
+	for label, value := range paths {
 		cleaned := filepath.Clean(strings.TrimSpace(value))
 		if !filepath.IsAbs(cleaned) || cleaned == string(filepath.Separator) {
 			return fmt.Errorf("%s path must be a non-root absolute path", label)
 		}
 	}
+	if challengeType == ChallengeDNS01 && request.DNSProvider == nil {
+		return errors.New("DNS provider is required for DNS-01 issuance")
+	}
 	return nil
 }
 
-func findHTTPChallenge(authorization *acme.Authorization) *acme.Challenge {
+func findChallenge(authorization *acme.Authorization, challengeType string) *acme.Challenge {
 	if authorization == nil {
 		return nil
 	}
 	for _, challenge := range authorization.Challenges {
-		if challenge != nil && challenge.Type == "http-01" {
+		if challenge != nil && challenge.Type == challengeType {
 			return challenge
 		}
 	}
 	return nil
+}
+
+func acmeKeyAuthorization(key *ecdsa.PrivateKey, token string) (string, error) {
+	thumbprint, err := acme.JWKThumbprint(key.Public())
+	if err != nil {
+		return "", err
+	}
+	return token + "." + thumbprint, nil
+}
+
+func waitForDNSChallenge(ctx context.Context, provider DNSChallengeProvider, domain, keyAuthorization string) error {
+	timeout, interval := provider.Timeout()
+	if timeout <= 0 {
+		timeout = 2 * time.Minute
+	}
+	if interval <= 0 {
+		interval = 2 * time.Second
+	}
+	fqdn, expected := dns01.GetRecord(domain, keyAuthorization)
+	deadline := time.Now().Add(timeout)
+	for {
+		lookupCtx, cancel := context.WithTimeout(ctx, interval)
+		records, lookupErr := net.DefaultResolver.LookupTXT(lookupCtx, fqdn)
+		cancel()
+		if lookupErr == nil {
+			for _, record := range records {
+				if record == expected {
+					return nil
+				}
+			}
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return fmt.Errorf("DNS TXT record %s did not propagate within %s", fqdn, timeout)
+		}
+		wait := interval
+		if remaining < wait {
+			wait = remaining
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(wait):
+		}
+	}
 }
 
 func loadOrCreateECKey(path string) (*ecdsa.PrivateKey, error) {

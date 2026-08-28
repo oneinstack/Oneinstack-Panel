@@ -10,6 +10,8 @@ import (
 
 	"oneinstack/app"
 	"oneinstack/core"
+	"oneinstack/internal/models"
+	approvalservice "oneinstack/internal/services/approval"
 	certificateService "oneinstack/internal/services/certificate"
 	websiteService "oneinstack/internal/services/website"
 	websiteHandler "oneinstack/router/handler/website"
@@ -102,6 +104,50 @@ func SelfSigned(c *gin.Context) {
 	}, userID)
 	if err != nil {
 		catalogError(c, err, "创建自签证书任务失败")
+		return
+	}
+	c.JSON(http.StatusAccepted, core.SuccessResponseForContext(c, task))
+}
+
+func IssueACME(c *gin.Context) {
+	var request input.CertificateACMEParam
+	if err := c.ShouldBindJSON(&request); err != nil {
+		core.HandleError(c, core.NewError(core.ErrBadRequest, "申请 ACME 证书参数格式不正确"))
+		return
+	}
+	manager, err := websiteHandler.DefaultCertificateManager()
+	if err != nil {
+		core.HandleError(c, core.NewErrorWithDetail(core.ErrTaskServiceUnavailable, "证书任务服务不可用", certificateService.SafeCertificateErrorDetail(err)))
+		return
+	}
+	autoRenew := true
+	if request.AutoRenew != nil {
+		autoRenew = *request.AutoRenew
+	}
+	userID, _ := middleware.AuthenticatedUserID(c)
+	issueOptions := certificateService.ManagedIssueOptions{
+		ChallengeType: request.ChallengeType, WebsiteID: request.WebsiteID, Domains: request.Domains,
+		Email: request.Email, DNSAccountID: request.DNSAccountID, AutoRenew: autoRenew,
+		RenewBeforeDays: request.RenewBeforeDays, Remark: request.Remark, RequestedBy: userID,
+	}
+	if access, ok := middleware.UserAccess(c); ok && !access.IsSuperAdmin {
+		if err := manager.ValidateManagedIssue(issueOptions); err != nil {
+			catalogError(c, err, "校验证书申请参数失败")
+			return
+		}
+		approval, approvalErr := createCertificateIssueApproval(c, request)
+		if approvalErr != nil {
+			core.HandleError(c, core.WrapError(approvalErr, core.ErrBadRequest, "创建证书申请审批失败"))
+			return
+		}
+		c.JSON(http.StatusAccepted, core.SuccessResponseForContext(c, gin.H{
+			"mode": "approval_pending", "approvalId": approval.ID, "status": approval.Status,
+		}))
+		return
+	}
+	task, err := manager.SubmitManagedIssue(issueOptions)
+	if err != nil {
+		catalogError(c, err, "创建 ACME 证书申请任务失败")
 		return
 	}
 	c.JSON(http.StatusAccepted, core.SuccessResponseForContext(c, task))
@@ -287,6 +333,31 @@ func certificateCatalog(c *gin.Context) (*certificateService.Catalog, bool) {
 	return certificateService.NewCatalog(app.DB(), app.ONE_CONFIG.System.CertificatePath, nil), true
 }
 
+func createCertificateIssueApproval(c *gin.Context, request input.CertificateACMEParam) (*models.ApprovalRequest, error) {
+	userID, _ := middleware.AuthenticatedUserID(c)
+	access, _ := middleware.UserAccess(c)
+	username := ""
+	if access != nil {
+		username = access.Username
+	}
+	resourceID := ""
+	if request.WebsiteID > 0 {
+		resourceID = strconv.FormatInt(request.WebsiteID, 10)
+	}
+	approval, _, err := approvalservice.NewService(app.DB()).CreateOrReusePending(approvalservice.CreateInput{
+		Module: "certificate", Action: websiteHandler.ApprovalActionCertificateIssue,
+		ResourceID: resourceID, ResourceName: "证书", RiskLevel: "high",
+		Reason: websiteHandler.ApprovalActionCertificateIssue,
+		Payload: websiteHandler.CertificateIssueApprovalPayload{
+			Managed: true, WebsiteID: request.WebsiteID, Domains: request.Domains,
+			Email: request.Email, DNSAccountID: request.DNSAccountID, ChallengeType: request.ChallengeType,
+			AutoRenew: request.AutoRenew, RenewBeforeDays: request.RenewBeforeDays, Remark: request.Remark,
+		},
+		RequestedBy: userID, RequestedByName: username,
+	})
+	return approval, err
+}
+
 func certificateDeploymentCatalog(c *gin.Context) (*certificateService.Catalog, bool) {
 	if app.DB() == nil {
 		core.HandleError(c, core.NewError(core.ErrInternalError, "证书数据库不可用"))
@@ -331,7 +402,12 @@ func catalogError(c *gin.Context, err error, message string) {
 		core.HandleError(c, core.NewErrorWithDetail(core.ErrConflict, "当前已有证书任务正在执行，请等待任务完成后重试", certificateService.SafeCertificateErrorDetail(err)))
 		return
 	}
-	if strings.Contains(strings.ToLower(err.Error()), "required") || strings.Contains(strings.ToLower(err.Error()), "invalid") || strings.Contains(strings.ToLower(err.Error()), "unsupported") || strings.Contains(strings.ToLower(err.Error()), "cover") || strings.Contains(strings.ToLower(err.Error()), "match") {
+	lower := strings.ToLower(err.Error())
+	if strings.Contains(lower, "used by") {
+		core.HandleError(c, core.NewErrorWithDetail(core.ErrConflict, "DNS 账号仍被有效证书使用，不能删除", certificateService.SafeCertificateErrorDetail(err)))
+		return
+	}
+	if strings.Contains(lower, "required") || strings.Contains(lower, "invalid") || strings.Contains(lower, "unsupported") || strings.Contains(lower, "cover") || strings.Contains(lower, "match") || strings.Contains(lower, "disabled") || strings.Contains(lower, "requires") {
 		core.HandleError(c, core.NewError(core.ErrBadRequest, err.Error()))
 		return
 	}
