@@ -130,6 +130,14 @@ func RunComponentServiceAction(c *gin.Context) {
 			))
 			return
 		}
+		if strings.HasPrefix(message, "RUNTIME_DEPENDENCY_BUSY:") {
+			core.HandleErrorWithStatus(c, http.StatusConflict, core.NewErrorWithDetail(
+				core.ErrConflict,
+				"RUNTIME_DEPENDENCY_BUSY",
+				strings.TrimSpace(strings.TrimPrefix(message, "RUNTIME_DEPENDENCY_BUSY:")),
+			))
+			return
+		}
 		if strings.HasPrefix(message, "SWITCH_UNSUPPORTED:") {
 			core.HandleError(c, core.NewErrorWithDetail(
 				core.ErrBadRequest,

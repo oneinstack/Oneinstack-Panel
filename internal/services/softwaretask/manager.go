@@ -182,6 +182,19 @@ func (m *Manager) SubmitServiceActionWithSwitch(
 	if !isServiceOperation(action) {
 		return nil, fmt.Errorf("unsupported service action: %s", action)
 	}
+	resolvedComponent, err := m.componentForKey(key)
+	if err != nil {
+		return nil, err
+	}
+	if resolvedComponent == "php" && action == "stop" {
+		owners := activeRuntimeGroupOwners(context.Background(), "web-server", "")
+		if len(owners) > 0 {
+			return nil, fmt.Errorf(
+				"RUNTIME_DEPENDENCY_BUSY: PHP-FPM is required by active Web server %s; stopping it would make PHP sites return 502",
+				owners[0].ServiceName,
+			)
+		}
+	}
 	return m.submit(InstallRequest{
 		Operation:       action,
 		Key:             key,
@@ -928,6 +941,11 @@ func activeRuntimeGroupOwners(ctx context.Context, runtimeGroup, excludeComponen
 		{Component: "caddy", ServiceName: "oneinstack-caddy"},
 		{Component: "apache", ServiceName: "oneinstack-httpd"},
 		{Component: "legacy-web", ServiceName: "nginx"},
+		{Component: "legacy-web", ServiceName: "httpd"},
+		{Component: "legacy-web", ServiceName: "apache2"},
+		{Component: "legacy-web", ServiceName: "openresty"},
+		{Component: "legacy-web", ServiceName: "tengine"},
+		{Component: "legacy-web", ServiceName: "caddy"},
 	}
 	result := make([]RuntimeGroupOwner, 0, len(units))
 	for _, owner := range units {

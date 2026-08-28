@@ -191,6 +191,12 @@ func websiteRuntimeDocument(operation string, runtime website.WebsiteRuntimePrev
 		Impact:    previewservice.Impact{WriteFiles: runtime.BeforePath != runtime.AfterPath || runtime.BeforeContent != runtime.AfterContent, ModifyDatabase: operation != "website.config.update", ReloadService: runtime.Reload},
 		Rollback:  previewservice.Rollback{Supported: true, Summary: "执行前创建配置快照；发布或重载失败时恢复原配置"},
 	}
+	if runtime.AccessLogPath != "" && strings.EqualFold(runtime.Website.Engine, "caddy") {
+		document.Impact.WriteFiles = true
+		document.Files = append(document.Files, previewservice.FileChange{
+			Path: runtime.AccessLogPath, Action: "create_or_use_file", ChangeSummary: "创建或复用 Caddy 访问日志文件并授予运行用户写入权限",
+		})
+	}
 	if !runtime.Reload {
 		document.Actions = document.Actions[:1]
 	}
@@ -658,7 +664,11 @@ func buildDocument(operation string, payload json.RawMessage) (previewservice.Do
 		}
 		document, _ = websiteRuntimeDocument(operation, runtime)
 		document.Files = append([]previewservice.FileChange{{Path: runtime.Website.RootDir, Action: "create_or_use_directory", ChangeSummary: "创建或复用规范化后的网站根目录"}}, document.Files...)
+		document.Actions = append([]previewservice.Action{{
+			Type: "firewall", Name: "按需放行网站端口", DisplayCommand: "由受管防火墙适配器检查并按需放行网站端口",
+		}}, document.Actions...)
 		document.Impact.ModifyDatabase = true
+		document.Impact.NetworkRisk = true
 		document.Impact.ReloadService = true
 		return document, "", nil
 	case "website.update":

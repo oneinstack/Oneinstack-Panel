@@ -391,6 +391,9 @@ func (service *Service) publisherForSite(site *models.Website) (*Publisher, erro
 		return nil, err
 	}
 	publisher.ConfigDir = configRoot
+	if engine == "caddy" {
+		publisher.CaddyLogPath = websiteAccessLogPath(service.LogRoot, *site)
+	}
 	currentEngine, _ := normalizeWebsiteEngine(service.Publisher.Engine)
 	if currentEngine != engine {
 		publisher.NginxBinary = webEngineBinary(engine)
@@ -398,6 +401,11 @@ func (service *Service) publisherForSite(site *models.Website) (*Publisher, erro
 		publisher.MainConfigPath = webEngineMainConfig(engine)
 	}
 	return &publisher, nil
+}
+
+func websiteAccessLogPath(logRoot string, site models.Website) string {
+	logName := strings.ReplaceAll(strings.TrimSpace(site.Name), ".", "_") + "_access.log"
+	return filepath.Join(filepath.Clean(logRoot), logName)
 }
 
 func webEngineBinary(engine string) string {
@@ -814,7 +822,7 @@ func (service *Service) Update(ctx context.Context, param *models.Website) error
 		}
 		return errors.New("stored website has an unsafe Nginx config name")
 	}
-	publisher, err := service.publisherForSite(&existing)
+	publisher, err := service.publisherForSite(&prepared.model)
 	if err != nil {
 		return err
 	}

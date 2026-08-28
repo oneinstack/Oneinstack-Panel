@@ -7,10 +7,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"oneinstack/app"
 	"oneinstack/internal/models"
@@ -229,6 +233,144 @@ func IsServiceAction(value string) bool {
 	}
 }
 
+const (
+	webServerRuntimeGroup = "web-server"
+	phpFPMDefaultSocket   = "/dev/shm/php-cgi.sock"
+	serviceReadyTimeout   = 5 * time.Second
+)
+
+// verifyServiceActionReady checks the runtime result of a successful service
+// script. A systemd command can return successfully before the process has
+// created its listener or FastCGI socket, so service state alone is not enough
+// for production traffic.
+func verifyServiceActionReady(
+	ctx context.Context,
+	definition ComponentServiceDefinition,
+	action string,
+) error {
+	action = strings.ToLower(strings.TrimSpace(action))
+	if action != "start" && action != "restart" && action != "reload" {
+		return nil
+	}
+	serviceName := strings.TrimSpace(definition.ServiceName)
+	if serviceName == "" {
+		return fmt.Errorf("%s action verification failed: service name is missing", action)
+	}
+	if err := exec.CommandContext(ctx, "systemctl", "is-active", "--quiet", serviceName+".service").Run(); err != nil {
+		return fmt.Errorf("%s action verification failed: service %s is not active", action, serviceName)
+	}
+
+	readyCtx, cancel := context.WithTimeout(ctx, serviceReadyTimeout)
+	defer cancel()
+	switch strings.ToLower(strings.TrimSpace(definition.Component)) {
+	case "php":
+		if err := waitForPHPFPMReady(readyCtx); err != nil {
+			return fmt.Errorf("%s action verification failed: PHP-FPM socket is not ready: %w", action, err)
+		}
+	case "nginx", "openresty", "tengine", "caddy", "apache":
+		if definition.RuntimeGroup != webServerRuntimeGroup {
+			break
+		}
+		if err := waitForWebServerListener(readyCtx); err != nil {
+			return fmt.Errorf("%s action verification failed: Web server listener is not ready: %w", action, err)
+		}
+	}
+	return nil
+}
+
+func waitForPHPFPMReady(ctx context.Context) error {
+	paths := []string{phpFPMDefaultSocket, "/run/php/php-fpm.sock"}
+	if matches, err := filepath.Glob("/run/php/php*-fpm.sock"); err == nil {
+		paths = append(paths, matches...)
+	}
+	paths = uniqueStrings(paths)
+	var lastErr error
+	for {
+		for _, path := range paths {
+			info, err := os.Stat(path)
+			if err != nil {
+				lastErr = err
+				continue
+			}
+			if info.Mode()&os.ModeSocket == 0 {
+				lastErr = fmt.Errorf("%s is not a Unix socket", path)
+				continue
+			}
+			probeCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+			connection, err := (&net.Dialer{}).DialContext(probeCtx, "unix", path)
+			cancel()
+			if err == nil {
+				_ = connection.Close()
+				return nil
+			}
+			lastErr = err
+		}
+		if !waitForReadinessRetry(ctx) {
+			break
+		}
+	}
+	if lastErr == nil {
+		lastErr = errors.New("no supported PHP-FPM socket was found")
+	}
+	return lastErr
+}
+
+func waitForWebServerListener(ctx context.Context) error {
+	ports := []int{80, 443}
+	var lastErr error
+	for {
+		for _, port := range ports {
+			probeCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+			connection, err := (&net.Dialer{}).DialContext(
+				probeCtx,
+				"tcp",
+				fmt.Sprintf("127.0.0.1:%d", port),
+			)
+			cancel()
+			if err == nil {
+				_ = connection.Close()
+				return nil
+			}
+			lastErr = err
+		}
+		if !waitForReadinessRetry(ctx) {
+			break
+		}
+	}
+	if lastErr == nil {
+		lastErr = errors.New("ports 80 and 443 are not accepting TCP connections")
+	}
+	return lastErr
+}
+
+func waitForReadinessRetry(ctx context.Context) bool {
+	timer := time.NewTimer(250 * time.Millisecond)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+func uniqueStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
+}
+
 type RuntimeGroupOwner struct {
 	Component   string `json:"component"`
 	ServiceName string `json:"serviceName"`
@@ -282,6 +424,10 @@ func ActiveRuntimeGroupOwners(ctx context.Context, runtimeGroup, excludeComponen
 		{Component: "apache", ServiceName: "oneinstack-httpd"},
 		{Component: "legacy-web", ServiceName: "nginx"},
 		{Component: "legacy-web", ServiceName: "httpd"},
+		{Component: "legacy-web", ServiceName: "apache2"},
+		{Component: "legacy-web", ServiceName: "openresty"},
+		{Component: "legacy-web", ServiceName: "tengine"},
+		{Component: "legacy-web", ServiceName: "caddy"},
 	}
 	result := make([]RuntimeGroupOwner, 0, len(owners))
 	for _, owner := range owners {

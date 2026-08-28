@@ -199,7 +199,14 @@ func (installer *Installer) ServiceActionTask(
 		version: strings.TrimSpace(version),
 	}).input()
 	installer.setScriptParams(scriptInfo, params)
-	return installer.scriptManager.ExecuteScriptTask(ctx, scriptInfo, params, logPath, observer)
+	logName, err := installer.scriptManager.ExecuteScriptTask(ctx, scriptInfo, params, logPath, observer)
+	if err != nil {
+		return logName, err
+	}
+	if err := verifyServiceActionReady(ctx, definition, action); err != nil {
+		return logName, err
+	}
+	return logName, nil
 }
 
 // SwitchServiceActionTask stops the active owner of a runtime group, starts

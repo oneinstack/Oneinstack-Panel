@@ -22,6 +22,7 @@ type WebsiteRuntimePreview struct {
 	Website        models.Website
 	BeforePath     string
 	AfterPath      string
+	AccessLogPath  string
 	BeforeContent  string
 	AfterContent   string
 	CurrentVersion string
@@ -55,8 +56,8 @@ func (service *Service) PreviewCreate(param *models.Website) (WebsiteRuntimePrev
 		return WebsiteRuntimePreview{}, err
 	}
 	return WebsiteRuntimePreview{
-		Website: prepared.model, AfterPath: path, AfterContent: prepared.config,
-		Reload: true,
+		Website: prepared.model, AfterPath: path, AccessLogPath: websiteAccessLogPath(service.LogRoot, prepared.model),
+		AfterContent: prepared.config, Reload: true,
 	}, nil
 }
 
@@ -213,8 +214,8 @@ func (service *Service) PreviewWebsiteUpdate(param *models.Website) (WebsiteRunt
 	}
 	return WebsiteRuntimePreview{
 		Website: existing, BeforePath: oldPath, AfterPath: newPath,
-		BeforeContent: before, AfterContent: after, CurrentVersion: version,
-		Reload: existing.Enabled,
+		AccessLogPath: websiteAccessLogPath(service.LogRoot, prepared.model),
+		BeforeContent: before, AfterContent: after, CurrentVersion: version, Reload: existing.Enabled,
 	}, nil
 }
 
@@ -277,8 +278,8 @@ func (service *Service) PreviewSettingsUpdate(id int64, settings WebsiteSettings
 	}
 	return WebsiteRuntimePreview{
 		Website: *site, BeforePath: path, AfterPath: path,
-		BeforeContent: before, AfterContent: after, CurrentVersion: version,
-		Reload: site.Enabled,
+		AccessLogPath: websiteAccessLogPath(service.LogRoot, *site),
+		BeforeContent: before, AfterContent: after, CurrentVersion: version, Reload: site.Enabled,
 	}, nil
 }
 
@@ -382,8 +383,13 @@ func (service *Service) PreviewToggle(id int64, enabled bool) (WebsiteRuntimePre
 	}
 	return WebsiteRuntimePreview{
 		Website: *site, BeforePath: path, AfterPath: path,
-		BeforeContent: before, AfterContent: after,
-		CurrentVersion: version, Reload: site.Enabled != enabled,
+		AccessLogPath: func() string {
+			if enabled {
+				return websiteAccessLogPath(service.LogRoot, *site)
+			}
+			return ""
+		}(),
+		BeforeContent: before, AfterContent: after, CurrentVersion: version, Reload: site.Enabled != enabled,
 	}, nil
 }
 

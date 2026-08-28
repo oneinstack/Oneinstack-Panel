@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"text/template"
 	"time"
 
@@ -950,6 +951,7 @@ type Publisher struct {
 	Engine         string
 	ServiceName    string
 	MainConfigPath string
+	CaddyLogPath   string
 	Runner         CommandRunner
 }
 
@@ -1032,6 +1034,15 @@ func (p *Publisher) Publish(ctx context.Context, changes map[string]*string) (*P
 			}
 			return nil, fmt.Errorf("prepare Caddy runtime config access failed; previous configuration restored: %w", err)
 		}
+		if p.CaddyLogPath != "" && caddyPublicationWritesConfig(changes) {
+			if err := ensureCaddyRuntimeLogAccess(p.CaddyLogPath); err != nil {
+				restoreErr := restorePublication(publication)
+				if restoreErr != nil {
+					return nil, fmt.Errorf("prepare Caddy access log failed: %w; restore failed: %v", err, restoreErr)
+				}
+				return nil, fmt.Errorf("prepare Caddy access log failed; previous configuration restored: %w", err)
+			}
+		}
 	}
 
 	if err := p.runEngine(ctx, "validate"); err != nil {
@@ -1049,6 +1060,15 @@ func (p *Publisher) Publish(ctx context.Context, changes map[string]*string) (*P
 		return nil, fmt.Errorf("Web server reload failed; previous configuration restored and reloaded: %w", err)
 	}
 	return publication, nil
+}
+
+func caddyPublicationWritesConfig(changes map[string]*string) bool {
+	for _, content := range changes {
+		if content != nil {
+			return true
+		}
+	}
+	return false
 }
 
 func (publication *Publication) Rollback(ctx context.Context) error {
@@ -1171,9 +1191,10 @@ func atomicWriteConfig(directory, target string, data []byte) error {
 const caddyRuntimeGroupName = "caddy"
 
 // ensureCaddyManagedConfigAccess keeps Caddy-managed configuration readable
-// by the non-root user used by the OneinStack Caddy unit. The Panel runs as
-// root and atomic renames otherwise recreate files as root:root, which makes
-// a later systemd reload fail even though root-level validation succeeds.
+// by the non-root user used by the OneinStack Caddy unit. Atomic renames can
+// otherwise recreate files with a group that Caddy cannot read. The setgid
+// directory and idempotent permission checks also avoid requiring a chown on
+// every request when the host has already provisioned the runtime layout.
 func ensureCaddyManagedConfigAccess(configDir, mainConfigPath string, paths ...string) error {
 	configDir = filepath.Clean(strings.TrimSpace(configDir))
 	if configDir == "." || !filepath.IsAbs(configDir) || configDir == string(filepath.Separator) {
@@ -1243,15 +1264,35 @@ func ensureCaddyConfigDirectory(path string, gid int) error {
 			return fmt.Errorf("%s is not a real directory", current)
 		}
 		isLeaf := current == path
-		if isLeaf || info.Mode().Perm()&0001 == 0 {
-			if err := os.Chown(current, -1, gid); err != nil {
+		requiredGroup := os.FileMode(0010)
+		requiredOther := os.FileMode(0001)
+		if isLeaf {
+			requiredGroup = 0050
+			requiredOther = 0005
+		}
+		groupMatches := caddyGroupMatches(info, gid)
+		groupReady := groupMatches && info.Mode().Perm()&requiredGroup == requiredGroup
+		otherReady := info.Mode().Perm()&requiredOther == requiredOther
+		if !groupReady && (!otherReady || isLeaf) {
+			if !groupMatches {
+				if err := os.Chown(current, -1, gid); err != nil {
+					return err
+				}
+				groupMatches = true
+			}
+			mode := info.Mode().Perm() | requiredGroup
+			if isLeaf {
+				// New files created below this directory inherit caddy's group,
+				// so a non-root Panel process can publish a readable config.
+				mode |= os.ModeSetgid
+			}
+			if err := os.Chmod(current, mode); err != nil {
 				return err
 			}
-			required := os.FileMode(0010)
-			if isLeaf {
-				required = 0050
-			}
-			if err := os.Chmod(current, info.Mode().Perm()|required); err != nil {
+		} else if isLeaf && groupMatches && info.Mode()&os.ModeSetgid == 0 {
+			// Existing permissions are sufficient for the current Caddy
+			// process, but setgid is still needed for the next atomic write.
+			if err := os.Chmod(current, info.Mode().Perm()|os.ModeSetgid); err != nil {
 				return err
 			}
 		}
@@ -1276,9 +1317,14 @@ func ensureCaddyConfigTraversal(path string, gid int) error {
 		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 			return fmt.Errorf("%s is not a real directory", current)
 		}
-		if info.Mode().Perm()&0001 == 0 {
-			if err := os.Chown(current, -1, gid); err != nil {
-				return err
+		groupMatches := caddyGroupMatches(info, gid)
+		groupReady := groupMatches && info.Mode().Perm()&0010 != 0
+		otherReady := info.Mode().Perm()&0001 != 0
+		if !groupReady && !otherReady {
+			if !groupMatches {
+				if err := os.Chown(current, -1, gid); err != nil {
+					return err
+				}
 			}
 			if err := os.Chmod(current, info.Mode().Perm()|0010); err != nil {
 				return err
@@ -1303,10 +1349,70 @@ func ensureCaddyConfigFile(path string, gid int) error {
 	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
 		return fmt.Errorf("%s is not a regular file", path)
 	}
+	if info.Mode().Perm()&0004 != 0 || caddyGroupMatches(info, gid) && info.Mode().Perm()&0040 != 0 {
+		return nil
+	}
 	if err := os.Chown(path, -1, gid); err != nil {
 		return err
 	}
 	return os.Chmod(path, 0640)
+}
+
+// ensureCaddyRuntimeLogAccess prepares the per-site access log before Caddy
+// loads a site configuration. The Panel may run as root while Caddy runs as
+// the caddy user; creating the file first lets us grant only that user write
+// access without changing the owner used by the other Web Server processes.
+func ensureCaddyRuntimeLogAccess(path string) error {
+	path = filepath.Clean(strings.TrimSpace(path))
+	if path == "." || !filepath.IsAbs(path) || path == string(filepath.Separator) {
+		return errors.New("Caddy access log path is invalid")
+	}
+	group, err := osuser.LookupGroup(caddyRuntimeGroupName)
+	if err != nil {
+		return fmt.Errorf("lookup Caddy runtime group: %w", err)
+	}
+	gid, err := strconv.Atoi(strings.TrimSpace(group.Gid))
+	if err != nil || gid < 0 {
+		return errors.New("Caddy runtime group ID is invalid")
+	}
+	parent := filepath.Dir(path)
+	if err := ensureCaddyConfigTraversal(parent, gid); err != nil {
+		return fmt.Errorf("prepare Caddy access log directory: %w", err)
+	}
+
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		file, createErr := os.OpenFile(path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0660)
+		if createErr != nil {
+			return createErr
+		}
+		if closeErr := file.Close(); closeErr != nil {
+			return closeErr
+		}
+		info, err = os.Lstat(path)
+	}
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return fmt.Errorf("%s is not a regular file", path)
+	}
+	if !caddyGroupMatches(info, gid) {
+		if err := os.Chown(path, -1, gid); err != nil {
+			return err
+		}
+	}
+	if info.Mode().Perm()&0060 != 0060 {
+		if err := os.Chmod(path, info.Mode().Perm()|0060); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func caddyGroupMatches(info os.FileInfo, gid int) bool {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	return ok && int(stat.Gid) == gid
 }
 
 func (p *Publisher) runNginx(ctx context.Context, args ...string) error {
