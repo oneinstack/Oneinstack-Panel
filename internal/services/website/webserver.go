@@ -117,13 +117,14 @@ func (err *WebServerConfigApplyError) Unwrap() error {
 }
 
 type webServerCandidate struct {
-	Component string
-	Name      string
-	Service   string
-	Binary    string
-	Prefix    string
-	Config    string
-	Priority  int
+	Component     string
+	Name          string
+	Service       string
+	Binary        string
+	Prefix        string
+	Config        string
+	Priority      int
+	SystemdActive bool
 }
 
 type systemdShowLookup func(unit string, properties ...string) (map[string]string, error)
@@ -179,20 +180,39 @@ func DetectWebServer() (WebServerInfo, error) {
 	})
 
 	selected := ranked[0].candidate
+	active := make([]webServerCandidate, 0, len(ranked))
 	running := make([]webServerCandidate, 0, len(ranked))
 	for _, item := range ranked {
-		if runningExecutables[canonicalPath(filepath.Clean(item.candidate.Binary))] {
-			running = append(running, item.candidate)
+		candidate := item.candidate
+		if candidate.SystemdActive {
+			active = append(active, candidate)
+		}
+		if candidate.SystemdActive || runningExecutables[canonicalPath(filepath.Clean(candidate.Binary))] {
+			running = append(running, candidate)
 		}
 	}
-	if len(running) > 1 {
+	// An active managed unit is the authoritative runtime owner. This avoids
+	// treating a stale process from the previous Web server as the current
+	// owner after a component switch. If systemd does not provide an active
+	// unit, fall back to the executable scan.
+	if len(active) > 1 {
 		return WebServerInfo{}, fmt.Errorf(
-			"%w: multiple running web servers were detected; select a single managed instance",
+			"%w: multiple active managed Web servers were detected; select a single managed instance",
 			ErrWebServerUnavailable,
 		)
 	}
-	if len(running) == 1 {
-		selected = running[0]
+	if len(active) == 1 {
+		selected = active[0]
+	} else {
+		if len(running) > 1 {
+			return WebServerInfo{}, fmt.Errorf(
+				"%w: multiple running web servers were detected; select a single managed instance",
+				ErrWebServerUnavailable,
+			)
+		}
+		if len(running) == 1 {
+			selected = running[0]
+		}
 	}
 
 	configRoot := filepath.Clean(selected.Config)
@@ -200,6 +220,9 @@ func DetectWebServer() (WebServerInfo, error) {
 	if detectedPrefix, detectedConfig, ok := inspectWebServerLayout(selected.Binary); ok {
 		prefix = detectedPrefix
 		configRoot = detectedConfig
+	}
+	if selected.Component == "caddy" {
+		configRoot = resolveCaddyConfigRoot(selected.Binary, configRoot)
 	}
 	runtimeCandidate := selected
 	runtimeCandidate.Prefix = prefix
@@ -777,10 +800,19 @@ func (manager *WebServerConfigManager) Update(
 		_ = atomicWriteConfig(filepath.Dir(target), target, original)
 		return WebServerConfigUpdateResult{}, fmt.Errorf("restore configuration permissions: %w", err)
 	}
+	if strings.EqualFold(manager.Server.Component, "caddy") {
+		if err := ensureCaddyManagedConfigAccess(manager.Server.ConfigRoot, manager.Server.MainConfigPath, target); err != nil {
+			_ = restoreWebServerConfig(target, original, fileInfo.Mode())
+			return WebServerConfigUpdateResult{}, fmt.Errorf("prepare Caddy runtime config access: %w", err)
+		}
+	}
 
 	if err := manager.testConfiguration(ctx); err != nil {
 		validationErr := fmt.Errorf("%w: %v", ErrWebServerConfigValidate, err)
 		restoreErr := restoreWebServerConfig(target, original, fileInfo.Mode())
+		if restoreErr == nil && strings.EqualFold(manager.Server.Component, "caddy") {
+			restoreErr = ensureCaddyManagedConfigAccess(manager.Server.ConfigRoot, manager.Server.MainConfigPath, target)
+		}
 		if restoreErr != nil {
 			return WebServerConfigUpdateResult{}, fmt.Errorf(
 				"%w; restore failed: %v",
@@ -798,6 +830,9 @@ func (manager *WebServerConfigManager) Update(
 	if manager.Server.Running {
 		if err := manager.reload(ctx); err != nil {
 			restoreErr := restoreWebServerConfig(target, original, fileInfo.Mode())
+			if restoreErr == nil && strings.EqualFold(manager.Server.Component, "caddy") {
+				restoreErr = ensureCaddyManagedConfigAccess(manager.Server.ConfigRoot, manager.Server.MainConfigPath, target)
+			}
 			if restoreErr == nil {
 				_ = manager.testConfiguration(context.Background())
 				_ = manager.reload(context.Background())
@@ -951,9 +986,21 @@ func (manager *WebServerConfigManager) testConfiguration(ctx context.Context) er
 }
 
 func (manager *WebServerConfigManager) reload(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	timeoutCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	if manager.Server.Component == "apache" || manager.Server.Component == "caddy" {
+	if manager.Server.Component == "caddy" {
+		return reloadCaddyPublisher(timeoutCtx, &Publisher{
+			NginxBinary:    manager.Server.BinaryPath,
+			Engine:         "caddy",
+			ServiceName:    manager.Server.ServiceName,
+			MainConfigPath: manager.Server.MainConfigPath,
+			Runner:         manager.Runner,
+		})
+	}
+	if manager.Server.Component == "apache" {
 		if strings.TrimSpace(manager.Server.ServiceName) == "" {
 			return errors.New("Web server service name is not configured")
 		}
@@ -1149,7 +1196,7 @@ func managedWebServerCandidatesWithLookup(lookup systemdShowLookup) []webServerC
 		if serviceName == "" {
 			continue
 		}
-		properties, err := lookup(serviceName+".service", "ExecStart")
+		properties, err := lookup(serviceName+".service", "ExecStart", "ActiveState", "SubState")
 		if err != nil {
 			continue
 		}
@@ -1163,6 +1210,15 @@ func managedWebServerCandidatesWithLookup(lookup systemdShowLookup) []webServerC
 		}
 		seen[key] = struct{}{}
 		prefix, config := defaultManagedWebServerLayout(definition.component, binary)
+		if definition.component == "caddy" {
+			// Caddy does not expose Nginx-style --conf-path metadata via -V.
+			// Prefer the path from the actual systemd command line so execution
+			// validates the same Caddyfile that the service runs with.
+			if configPath := parseSystemdExecStartConfig(properties["ExecStart"]); configPath != "" {
+				config = filepath.Dir(configPath)
+				prefix = filepath.Dir(config)
+			}
+		}
 		candidates = append(candidates, webServerCandidate{
 			Component: definition.component,
 			Name:      definition.name,
@@ -1171,6 +1227,8 @@ func managedWebServerCandidatesWithLookup(lookup systemdShowLookup) []webServerC
 			Prefix:    prefix,
 			Config:    config,
 			Priority:  definition.priority,
+			SystemdActive: strings.EqualFold(properties["ActiveState"], "active") &&
+				(strings.TrimSpace(properties["SubState"]) == "" || strings.EqualFold(properties["SubState"], "running")),
 		})
 	}
 	return candidates
@@ -1230,6 +1288,59 @@ func parseSystemdExecStartBinary(value string) string {
 	return ""
 }
 
+func parseSystemdExecStartConfig(value string) string {
+	fields := strings.Fields(strings.TrimSpace(value))
+	for index, field := range fields {
+		field = strings.Trim(field, "{};")
+		configPath := ""
+		switch {
+		case field == "--config" && index+1 < len(fields):
+			configPath = fields[index+1]
+		case strings.HasPrefix(field, "--config="):
+			configPath = strings.TrimPrefix(field, "--config=")
+		case field == "-c" && index+1 < len(fields):
+			configPath = fields[index+1]
+		case strings.HasPrefix(field, "-c") && len(field) > 2:
+			configPath = strings.TrimPrefix(field, "-c")
+		default:
+			continue
+		}
+		configPath = strings.Trim(configPath, "{};'\"")
+		if filepath.IsAbs(configPath) && filepath.Base(configPath) == "Caddyfile" {
+			return filepath.Clean(configPath)
+		}
+	}
+	return ""
+}
+
+func resolveCaddyConfigRoot(binary, configuredRoot string) string {
+	configuredRoot = filepath.Clean(strings.TrimSpace(configuredRoot))
+	roots := []string{configuredRoot}
+	binary = filepath.Clean(strings.TrimSpace(binary))
+	if filepath.IsAbs(binary) {
+		roots = append(roots,
+			filepath.Join(filepath.Dir(filepath.Dir(binary)), "conf"),
+			"/etc/caddy",
+			"/usr/local/etc/caddy",
+		)
+	}
+	seen := make(map[string]struct{}, len(roots))
+	for _, root := range roots {
+		root = filepath.Clean(root)
+		if root == "." || !filepath.IsAbs(root) {
+			continue
+		}
+		if _, exists := seen[root]; exists {
+			continue
+		}
+		seen[root] = struct{}{}
+		if isRegularFile(filepath.Join(root, "Caddyfile")) {
+			return root
+		}
+	}
+	return configuredRoot
+}
+
 func defaultManagedWebServerLayout(component, binary string) (string, string) {
 	binary = filepath.Clean(strings.TrimSpace(binary))
 	switch strings.ToLower(strings.TrimSpace(component)) {
@@ -1263,8 +1374,8 @@ func defaultManagedWebServerLayout(component, binary string) (string, string) {
 		}
 	case "caddy":
 		if strings.HasSuffix(binary, "/bin/caddy") {
-			prefix := filepath.Dir(binary)
-			return prefix, "/etc/caddy"
+			prefix := filepath.Dir(filepath.Dir(binary))
+			return prefix, filepath.Join(prefix, "conf")
 		}
 	}
 	prefix := filepath.Dir(filepath.Dir(binary))

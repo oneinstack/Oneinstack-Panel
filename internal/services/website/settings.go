@@ -174,39 +174,42 @@ func (service *Service) UpdateSettings(
 		return nil, err
 	}
 
+	content := prepared.config
+	if site.Enabled {
+		configPath, pathErr := service.ConfigFile(site)
+		if pathErr != nil {
+			return nil, pathErr
+		}
+		current, readErr := readBoundedFile(configPath, maxWebServerConfigBytes)
+		if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+			return nil, readErr
+		}
+		if readErr == nil {
+			content = mergeWebsiteSettingsConfig(previous.config, prepared.config, string(current))
+		}
+	}
+	// Publish the runtime configuration before opening the database write
+	// transaction. Caddy validation/reload can be slow or block on systemd;
+	// keeping it inside the transaction would hold SQLite's write lock and
+	// make a subsequent preview fail with "database is locked".
 	var publication *Publication
-	err = service.DB.Transaction(func(tx *gorm.DB) error {
-		if saveErr := tx.Save(record).Error; saveErr != nil {
-			return saveErr
-		}
-		if !site.Enabled {
-			return nil
-		}
-		content := prepared.config
-		if site.Enabled {
-			configPath, pathErr := service.ConfigFile(site)
-			if pathErr != nil {
-				return pathErr
-			}
-			current, readErr := readBoundedFile(configPath, maxWebServerConfigBytes)
-			if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
-				return readErr
-			}
-			if readErr == nil {
-				content = mergeWebsiteSettingsConfig(previous.config, prepared.config, string(current))
-			}
-		}
+	if site.Enabled {
 		publisher, publisherErr := service.publisherForSite(site)
 		if publisherErr != nil {
-			return publisherErr
+			return nil, publisherErr
 		}
 		published, publishErr := publisher.Publish(ctx, map[string]*string{
 			prepared.configName: &content,
 		})
 		if publishErr != nil {
-			return publishErr
+			return nil, publishErr
 		}
 		publication = published
+	}
+	err = service.DB.Transaction(func(tx *gorm.DB) error {
+		if saveErr := tx.Save(record).Error; saveErr != nil {
+			return saveErr
+		}
 		return nil
 	})
 	if err != nil {

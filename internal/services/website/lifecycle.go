@@ -85,21 +85,23 @@ func (service *Service) SetEnabled(ctx context.Context, id int64, enabled bool) 
 		changes[configName] = &content
 	}
 
-	var publication *Publication
+	// Publish the runtime configuration before opening the database write
+	// transaction. Caddy validation/reload can be slow or block on systemd;
+	// keeping it inside the transaction would hold SQLite's write lock and
+	// make a subsequent preview fail with "database is locked".
+	publisher, publisherErr := service.publisherForSite(&site)
+	if publisherErr != nil {
+		return nil, publisherErr
+	}
+	publication, publishErr := publisher.Publish(ctx, changes)
+	if publishErr != nil {
+		return nil, publishErr
+	}
+	reason := ""
+	if !enabled {
+		reason = WebsiteDisabledManual
+	}
 	err := service.DB.Transaction(func(tx *gorm.DB) error {
-		publisher, publisherErr := service.publisherForSite(&site)
-		if publisherErr != nil {
-			return publisherErr
-		}
-		published, publishErr := publisher.Publish(ctx, changes)
-		if publishErr != nil {
-			return publishErr
-		}
-		publication = published
-		reason := ""
-		if !enabled {
-			reason = WebsiteDisabledManual
-		}
 		if updateErr := tx.Model(&models.Website{}).
 			Where("id = ?", id).
 			Updates(map[string]any{
@@ -112,9 +114,7 @@ func (service *Service) SetEnabled(ctx context.Context, id int64, enabled bool) 
 		return nil
 	})
 	if err != nil {
-		if publication != nil {
-			err = errors.Join(err, publication.Rollback(context.Background()))
-		}
+		err = errors.Join(err, publication.Rollback(context.Background()))
 		return nil, err
 	}
 	if err := service.DB.First(&site, "id = ?", id).Error; err != nil {

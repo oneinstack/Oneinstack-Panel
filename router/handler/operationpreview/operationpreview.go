@@ -114,7 +114,7 @@ func webServerPreviewForServer(server website.WebServerInfo) webServerPreviewPre
 	case "caddy":
 		presentation.Name = "Caddy"
 		presentation.ValidateCommand = fmt.Sprintf("%s validate --config <config> --adapter caddyfile", webServerDisplayBinary(server.BinaryPath, component))
-		presentation.ReloadCommand = fmt.Sprintf("systemctl reload %s.service", defaultWebServerService(component, presentation.Service))
+		presentation.ReloadCommand = fmt.Sprintf("%s reload --config <config> --adapter caddyfile --force", webServerDisplayBinary(server.BinaryPath, component))
 		presentation.Service = defaultWebServerService(component, presentation.Service)
 	default:
 		if presentation.Name == "" {
@@ -1483,6 +1483,12 @@ func writeExecutionError(c *gin.Context, err error) {
 	detail := err.Error()
 	var applyErr *website.WebServerConfigApplyError
 	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		code, message = core.ErrTaskTimeout, "操作超时，原配置已尝试恢复"
+		detail = "Web Server 配置校验或重载未在限定时间内完成，请检查服务状态和日志后重试。"
+	case errors.Is(err, context.Canceled):
+		code, message = core.ErrTaskCanceled, "操作已取消，原配置已尝试恢复"
+		detail = "当前请求已取消，操作未完成；请确认服务状态后重新预览并执行。"
 	case errors.Is(err, website.ErrWebServerConfigConflict):
 		code, message = core.ErrConflict, "配置已发生变化，请重新预览后再执行"
 		detail = ""
@@ -1516,7 +1522,7 @@ func writeExecutionError(c *gin.Context, err error) {
 		code, message = core.ErrWebsiteNotFound, "网站不存在或已被删除，请刷新后重试"
 		detail = ""
 	case errors.Is(err, website.ErrWebServerUnavailable):
-		code, message = core.ErrConfigError, "未检测到可管理的 Nginx 或 OpenResty"
+		code, message = core.ErrConfigError, "未检测到可管理的 Web Server"
 		detail = ""
 	case errors.Is(err, errUnsupportedWebsiteOperation):
 		code, message = core.ErrBadRequest, "不支持的网站更新操作"

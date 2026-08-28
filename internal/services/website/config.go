@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	osuser "os/user"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -16,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"text/template"
+	"time"
 
 	"oneinstack/internal/models"
 )
@@ -24,6 +26,14 @@ const (
 	defaultNginxConfigDir = "/usr/local/nginx/conf/conf.d"
 	defaultNginxBinary    = "/usr/local/nginx/sbin/nginx"
 	defaultChallengeRoot  = "/usr/local/one/acme-webroot"
+	// publishCommandTimeout bounds each engine validation/reload command during
+	// Publish and Rollback. Caddy validate or reload can block
+	// indefinitely; a bounded context prevents one stuck command from holding
+	// the operation preview or task locks.
+	publishCommandTimeout = 20 * time.Second
+	// Rollback is best effort, but must not turn a failed publication into an
+	// unbounded request. Runtime commands remain guarded by the shorter timeout.
+	publishRollbackTimeout = 10 * time.Second
 )
 
 var (
@@ -43,6 +53,11 @@ var (
 	domainLabelPattern          = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
 	configNamePattern           = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,252}\.conf$`)
 )
+
+// Caddy has one admin endpoint per running instance. Serialize reloads so a
+// second website operation cannot enqueue another reload while the first one
+// is still being handled by Caddy.
+var caddyReloadSlot = make(chan struct{}, 1)
 
 func wrapWebsiteParameterError(err error) error {
 	if err == nil || errors.Is(err, ErrWebsiteRootInvalid) ||
@@ -548,7 +563,7 @@ func (ApacheAdapter) Reload(ctx context.Context, publisher *Publisher) error {
 }
 
 func (CaddyAdapter) Reload(ctx context.Context, publisher *Publisher) error {
-	return reloadSystemdPublisher(ctx, publisher)
+	return reloadCaddyPublisher(ctx, publisher)
 }
 
 func webServerAdapterForEngine(engine string) (WebServerAdapter, error) {
@@ -616,10 +631,19 @@ func renderApacheWebsiteConfig(siteType string, data siteTemplateData) string {
 }
 
 func renderCaddyWebsiteConfig(siteType string, data siteTemplateData) string {
-	address := data.ServerNames
-	if data.ListenPort != 80 {
-		address = fmt.Sprintf("%s:%d", strings.Fields(data.ServerNames)[0], data.ListenPort)
+	addresses := strings.Fields(data.ServerNames)
+	for index, address := range addresses {
+		if data.ListenPort != 80 {
+			address = fmt.Sprintf("%s:%d", address, data.ListenPort)
+		}
+		// A site without a certificate must be explicitly HTTP-only. Otherwise
+		// Caddy enables automatic HTTPS and starts an ACME order during reload.
+		if !data.TLSEnabled {
+			address = "http://" + address
+		}
+		addresses[index] = address
 	}
+	address := strings.Join(addresses, " ")
 	var builder strings.Builder
 	fmt.Fprintf(&builder, "# Managed by OneinStack Panel - %s\n%s {\n", data.Name, address)
 	if data.TLSEnabled {
@@ -963,6 +987,11 @@ func (p *Publisher) Publish(ctx context.Context, changes map[string]*string) (*P
 	if err := os.MkdirAll(configDir, 0750); err != nil {
 		return nil, fmt.Errorf("create Web server config directory: %w", err)
 	}
+	if strings.EqualFold(p.Engine, "caddy") {
+		if err := ensureCaddyManagedConfigAccess(configDir, p.MainConfigPath); err != nil {
+			return nil, fmt.Errorf("prepare Caddy runtime config access: %w", err)
+		}
+	}
 
 	names := make([]string, 0, len(changes))
 	for name := range changes {
@@ -973,36 +1002,47 @@ func (p *Publisher) Publish(ctx context.Context, changes map[string]*string) (*P
 	}
 	sort.Strings(names)
 	publication := &Publication{publisher: p}
+	changedPaths := make([]string, 0, len(names))
 	for _, name := range names {
 		path := filepath.Join(configDir, name)
+		changedPaths = append(changedPaths, path)
 		snapshot, err := snapshotConfig(name, path)
 		if err != nil {
 			if len(publication.snapshots) > 0 {
-				_ = publication.restore(context.Background())
+				_ = restorePublication(publication)
 			}
 			return nil, err
 		}
 		publication.snapshots = append(publication.snapshots, snapshot)
 		if content := changes[name]; content != nil {
 			if err := atomicWriteConfig(configDir, path, []byte(*content)); err != nil {
-				_ = publication.restore(context.Background())
+				_ = restorePublication(publication)
 				return nil, err
 			}
 		} else if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-			_ = publication.restore(context.Background())
+			_ = restorePublication(publication)
 			return nil, fmt.Errorf("delete Web server config %s: %w", name, err)
+		}
+	}
+	if strings.EqualFold(p.Engine, "caddy") {
+		if err := ensureCaddyManagedConfigAccess(configDir, p.MainConfigPath, changedPaths...); err != nil {
+			restoreErr := restorePublication(publication)
+			if restoreErr != nil {
+				return nil, fmt.Errorf("prepare Caddy runtime config access failed: %w; restore failed: %v", err, restoreErr)
+			}
+			return nil, fmt.Errorf("prepare Caddy runtime config access failed; previous configuration restored: %w", err)
 		}
 	}
 
 	if err := p.runEngine(ctx, "validate"); err != nil {
-		restoreErr := publication.restore(context.Background())
+		restoreErr := restorePublication(publication)
 		if restoreErr != nil {
 			return nil, fmt.Errorf("Web server config validation failed: %w; restore failed: %v", err, restoreErr)
 		}
 		return nil, fmt.Errorf("Web server config validation failed; previous configuration restored: %w", err)
 	}
 	if err := p.runEngine(ctx, "reload"); err != nil {
-		restoreErr := publication.restore(context.Background())
+		restoreErr := restorePublication(publication)
 		if restoreErr != nil {
 			return nil, fmt.Errorf("Web server reload failed: %w; restore/reload failed: %v", err, restoreErr)
 		}
@@ -1016,9 +1056,23 @@ func (publication *Publication) Rollback(ctx context.Context) error {
 		return nil
 	}
 	publication.once.Do(func() {
-		publication.err = publication.restore(ctx)
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		rollbackCtx, cancel := context.WithTimeout(ctx, publishRollbackTimeout)
+		defer cancel()
+		publication.err = publication.restore(rollbackCtx)
 	})
 	return publication.err
+}
+
+func restorePublication(publication *Publication) error {
+	if publication == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), publishRollbackTimeout)
+	defer cancel()
+	return publication.restore(ctx)
 }
 
 func (publication *Publication) restore(ctx context.Context) error {
@@ -1040,6 +1094,14 @@ func (publication *Publication) restore(ctx context.Context) error {
 			}
 		} else if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("remove newly published Web server config: %w", err)
+		}
+	}
+	if strings.EqualFold(publication.publisher.Engine, "caddy") {
+		if err := ensureCaddyManagedConfigAccess(
+			publication.publisher.ConfigDir,
+			publication.publisher.MainConfigPath,
+		); err != nil {
+			return fmt.Errorf("restore Caddy runtime config access: %w", err)
 		}
 	}
 	if err := publication.publisher.runEngine(ctx, "validate"); err != nil {
@@ -1106,21 +1168,170 @@ func atomicWriteConfig(directory, target string, data []byte) error {
 	return nil
 }
 
+const caddyRuntimeGroupName = "caddy"
+
+// ensureCaddyManagedConfigAccess keeps Caddy-managed configuration readable
+// by the non-root user used by the OneinStack Caddy unit. The Panel runs as
+// root and atomic renames otherwise recreate files as root:root, which makes
+// a later systemd reload fail even though root-level validation succeeds.
+func ensureCaddyManagedConfigAccess(configDir, mainConfigPath string, paths ...string) error {
+	configDir = filepath.Clean(strings.TrimSpace(configDir))
+	if configDir == "." || !filepath.IsAbs(configDir) || configDir == string(filepath.Separator) {
+		return errors.New("Caddy managed config directory is invalid")
+	}
+	group, err := osuser.LookupGroup(caddyRuntimeGroupName)
+	if err != nil {
+		return fmt.Errorf("lookup Caddy runtime group: %w", err)
+	}
+	gid, err := strconv.Atoi(strings.TrimSpace(group.Gid))
+	if err != nil || gid < 0 {
+		return fmt.Errorf("Caddy runtime group ID is invalid")
+	}
+
+	if err := ensureCaddyConfigDirectory(configDir, gid); err != nil {
+		return fmt.Errorf("prepare Caddy managed config directory: %w", err)
+	}
+	if mainConfigPath != "" {
+		mainConfigPath = filepath.Clean(mainConfigPath)
+		if err := ensureCaddyConfigTraversal(filepath.Dir(mainConfigPath), gid); err != nil {
+			return fmt.Errorf("prepare Caddy main config path: %w", err)
+		}
+		if err := ensureCaddyConfigFile(mainConfigPath, gid); err != nil {
+			return fmt.Errorf("prepare Caddy main config: %w", err)
+		}
+	}
+	for _, path := range paths {
+		path = filepath.Clean(strings.TrimSpace(path))
+		if path == "." || !filepath.IsAbs(path) || path == string(filepath.Separator) {
+			continue
+		}
+		if err := ensureCaddyConfigDirectory(filepath.Dir(path), gid); err != nil {
+			return fmt.Errorf("prepare Caddy config path %s: %w", filepath.Base(path), err)
+		}
+		if err := ensureCaddyConfigFile(path, gid); err != nil {
+			return fmt.Errorf("prepare Caddy config %s: %w", filepath.Base(path), err)
+		}
+	}
+
+	entries, err := os.ReadDir(configDir)
+	if err != nil {
+		return fmt.Errorf("inspect Caddy managed config directory: %w", err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.EqualFold(filepath.Ext(entry.Name()), ".conf") {
+			continue
+		}
+		path := filepath.Join(configDir, entry.Name())
+		if err := ensureCaddyConfigFile(path, gid); err != nil {
+			return fmt.Errorf("prepare Caddy managed config %s: %w", entry.Name(), err)
+		}
+	}
+	return nil
+}
+
+func ensureCaddyConfigDirectory(path string, gid int) error {
+	path = filepath.Clean(path)
+	if !filepath.IsAbs(path) || path == string(filepath.Separator) {
+		return errors.New("Caddy config directory must be a non-root absolute path")
+	}
+	for current := path; ; current = filepath.Dir(current) {
+		info, err := os.Lstat(current)
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return fmt.Errorf("%s is not a real directory", current)
+		}
+		isLeaf := current == path
+		if isLeaf || info.Mode().Perm()&0001 == 0 {
+			if err := os.Chown(current, -1, gid); err != nil {
+				return err
+			}
+			required := os.FileMode(0010)
+			if isLeaf {
+				required = 0050
+			}
+			if err := os.Chmod(current, info.Mode().Perm()|required); err != nil {
+				return err
+			}
+		}
+		parent := filepath.Dir(current)
+		if parent == current || current == string(filepath.Separator) {
+			break
+		}
+	}
+	return nil
+}
+
+func ensureCaddyConfigTraversal(path string, gid int) error {
+	path = filepath.Clean(path)
+	if !filepath.IsAbs(path) || path == string(filepath.Separator) {
+		return errors.New("Caddy config parent must be a non-root absolute path")
+	}
+	for current := path; ; current = filepath.Dir(current) {
+		info, err := os.Lstat(current)
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return fmt.Errorf("%s is not a real directory", current)
+		}
+		if info.Mode().Perm()&0001 == 0 {
+			if err := os.Chown(current, -1, gid); err != nil {
+				return err
+			}
+			if err := os.Chmod(current, info.Mode().Perm()|0010); err != nil {
+				return err
+			}
+		}
+		parent := filepath.Dir(current)
+		if parent == current || current == string(filepath.Separator) {
+			break
+		}
+	}
+	return nil
+}
+
+func ensureCaddyConfigFile(path string, gid int) error {
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return fmt.Errorf("%s is not a regular file", path)
+	}
+	if err := os.Chown(path, -1, gid); err != nil {
+		return err
+	}
+	return os.Chmod(path, 0640)
+}
+
 func (p *Publisher) runNginx(ctx context.Context, args ...string) error {
 	output, err := p.Runner.Run(ctx, p.NginxBinary, args...)
-	return commandError(output, err)
+	return commandErrorForContext(ctx, output, err)
 }
 
 func (p *Publisher) runEngine(ctx context.Context, operation string) error {
+	// Bound each engine command so a stuck caddy validate or a blocked
+	// systemctl reload cannot hold locks indefinitely. Matches the timeout
+	// used by the configuration preview path in webserver.go.
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	timeoutCtx, cancel := context.WithTimeout(ctx, publishCommandTimeout)
+	defer cancel()
 	adapter, err := webServerAdapterForEngine(p.Engine)
 	if err != nil {
 		return err
 	}
 	switch operation {
 	case "validate":
-		return adapter.Validate(ctx, p)
+		return adapter.Validate(timeoutCtx, p)
 	case "reload":
-		return adapter.Reload(ctx, p)
+		return adapter.Reload(timeoutCtx, p)
 	default:
 		return fmt.Errorf("unsupported Web server operation %q for %s", operation, adapter.Engine())
 	}
@@ -1131,22 +1342,75 @@ func validateNginxPublisher(ctx context.Context, publisher *Publisher) error {
 }
 
 func reloadNginxPublisher(ctx context.Context, publisher *Publisher) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if publisher.ServiceName != "" && !publisher.serviceActive(ctx) {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		return nil
 	}
 	return publisher.runNginx(ctx, "-s", "reload")
 }
 
 func reloadSystemdPublisher(ctx context.Context, publisher *Publisher) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if publisher.ServiceName == "" || !publisher.serviceActive(ctx) {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		return nil
 	}
 	return publisher.runCommand(ctx, "systemctl", "reload", publisher.ServiceName+".service")
 }
 
+func reloadCaddyPublisher(ctx context.Context, publisher *Publisher) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if publisher == nil {
+		return errors.New("Caddy publisher is not configured")
+	}
+	if publisher.ServiceName == "" {
+		return nil
+	}
+	if strings.TrimSpace(publisher.MainConfigPath) == "" {
+		return errors.New("Caddy main config is not configured")
+	}
+
+	select {
+	case caddyReloadSlot <- struct{}{}:
+		defer func() { <-caddyReloadSlot }()
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	if !publisher.serviceActive(ctx) {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return nil
+	}
+	// Invoke Caddy directly instead of `systemctl reload`. The latter can
+	// leave a long-running ExecReload job behind after the HTTP request times
+	// out, so later operations contend with stale systemd reload jobs.
+	return publisher.runCommand(
+		ctx,
+		publisher.NginxBinary,
+		"reload",
+		"--config",
+		publisher.MainConfigPath,
+		"--adapter",
+		"caddyfile",
+		"--force",
+	)
+}
+
 func (p *Publisher) runCommand(ctx context.Context, command string, args ...string) error {
 	output, err := p.Runner.Run(ctx, command, args...)
-	return commandError(output, err)
+	return commandErrorForContext(ctx, output, err)
 }
 
 func (p *Publisher) serviceActive(ctx context.Context) bool {
@@ -1169,4 +1433,16 @@ func commandError(output []byte, err error) error {
 		message = err.Error()
 	}
 	return errors.New(message)
+}
+
+func commandErrorForContext(ctx context.Context, output []byte, err error) error {
+	if err == nil {
+		return nil
+	}
+	if ctx != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+	}
+	return commandError(output, err)
 }

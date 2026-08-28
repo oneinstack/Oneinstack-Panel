@@ -104,7 +104,17 @@ func ensureManagedVhostLayout(database *gorm.DB, server WebServerInfo, vhostRoot
 		if restoreErr := atomicWriteConfig(filepath.Dir(mainPath), mainPath, originalMain); restoreErr != nil {
 			return fmt.Errorf("%w; restore Web server main configuration failed: %v", cause, restoreErr)
 		}
+		if strings.EqualFold(server.Component, "caddy") {
+			if permissionErr := ensureCaddyManagedConfigAccess(engineRoot, mainPath); permissionErr != nil {
+				return fmt.Errorf("%w; restore Caddy runtime config access failed: %v", cause, permissionErr)
+			}
+		}
 		return cause
+	}
+	if strings.EqualFold(server.Component, "caddy") {
+		if err := ensureCaddyManagedConfigAccess(engineRoot, mainPath); err != nil {
+			return restoreMain(fmt.Errorf("prepare Caddy runtime config access: %w", err))
+		}
 	}
 	marker := filepath.Join(root, managedVhostMigrationMarker)
 	if _, err := os.Stat(marker); err == nil {
@@ -114,6 +124,11 @@ func ensureManagedVhostLayout(database *gorm.DB, server WebServerInfo, vhostRoot
 	}
 	if err := migrateManagedVhostFiles(database, server, engineRoot); err != nil {
 		return restoreMain(err)
+	}
+	if strings.EqualFold(server.Component, "caddy") {
+		if err := ensureCaddyManagedConfigAccess(engineRoot, mainPath); err != nil {
+			return restoreMain(fmt.Errorf("prepare Caddy migrated config access: %w", err))
+		}
 	}
 	if err := os.WriteFile(marker, []byte("version=1\n"), 0640); err != nil {
 		return restoreMain(err)
@@ -632,8 +647,27 @@ func (service *Service) add(ctx context.Context, param *models.Website, allowMan
 			return fmt.Errorf("自动放行网站端口 %d 失败: %w", prepared.listenPort, err)
 		}
 	}
-	var publication *Publication
-	transactionErr := service.DB.Transaction(func(tx *gorm.DB) error {
+
+	// Publish the runtime configuration before opening the database write
+	// transaction. Caddy validation/reload can be slow or block on systemd;
+	// keeping it inside the transaction would hold SQLite's write lock and
+	// make a subsequent preview fail with "database is locked".
+	content := prepared.config
+	publication, publishErr := publisher.Publish(ctx, map[string]*string{
+		prepared.configName: &content,
+	})
+	if publishErr != nil {
+		if createdFirewallRule {
+			publishErr = errors.Join(
+				publishErr,
+				service.Firewall.Delete(context.Background(), firewallRuleID),
+			)
+		}
+		cleanupWebsiteAddFiles(prepared.model.RootDir, defaultPagePath, createdRoot, createdDefaultPage)
+		return publishErr
+	}
+
+	transactionErr := service.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var existing int64
 		if err := tx.Model(&models.Website{}).
 			Where("name = ? OR domain = ?", prepared.model.Name, prepared.model.Domain).
@@ -646,20 +680,10 @@ func (service *Service) add(ctx context.Context, param *models.Website, allowMan
 		if err := tx.Create(&prepared.model).Error; err != nil {
 			return err
 		}
-		content := prepared.config
-		published, err := publisher.Publish(ctx, map[string]*string{
-			prepared.configName: &content,
-		})
-		if err != nil {
-			return err
-		}
-		publication = published
 		return nil
 	})
 	if transactionErr != nil {
-		if publication != nil {
-			transactionErr = errors.Join(transactionErr, publication.Rollback(context.Background()))
-		}
+		transactionErr = errors.Join(transactionErr, publication.Rollback(context.Background()))
 		if createdFirewallRule {
 			transactionErr = errors.Join(
 				transactionErr,
@@ -794,7 +818,30 @@ func (service *Service) Update(ctx context.Context, param *models.Website) error
 	if err != nil {
 		return err
 	}
-	publications := make([]*Publication, 0, 2)
+	// Publish the runtime configuration before opening the database write
+	// transaction. Caddy validation/reload can be slow or block on systemd;
+	// keeping it inside the transaction would hold SQLite's write lock and
+	// make a subsequent preview fail with "database is locked".
+	changes := map[string]*string{prepared.configName: nil}
+	if prepared.model.Enabled {
+		content := prepared.config
+		merged, mergeErr := service.preserveCustomWebsiteConfig(&existing, previous.config, content)
+		if mergeErr != nil {
+			return mergeErr
+		}
+		content = merged
+		changes[prepared.configName] = &content
+	}
+	if oldName != prepared.configName {
+		changes[oldName] = nil
+	}
+	publication, publishErr := publisher.Publish(ctx, changes)
+	if publishErr != nil {
+		if createdRoot {
+			_ = os.Remove(prepared.model.RootDir)
+		}
+		return publishErr
+	}
 	transactionErr := service.DB.Transaction(func(tx *gorm.DB) error {
 		var duplicate int64
 		if err := tx.Model(&models.Website{}).
@@ -808,30 +855,10 @@ func (service *Service) Update(ctx context.Context, param *models.Website) error
 		if err := tx.Save(&prepared.model).Error; err != nil {
 			return err
 		}
-		changes := map[string]*string{prepared.configName: nil}
-		if prepared.model.Enabled {
-			content := prepared.config
-			merged, mergeErr := service.preserveCustomWebsiteConfig(&existing, previous.config, content)
-			if mergeErr != nil {
-				return mergeErr
-			}
-			content = merged
-			changes[prepared.configName] = &content
-		}
-		if oldName != prepared.configName {
-			changes[oldName] = nil
-		}
-		published, publishErr := publisher.Publish(ctx, changes)
-		if publishErr != nil {
-			return publishErr
-		}
-		publications = append(publications, published)
 		return nil
 	})
 	if transactionErr != nil {
-		for index := len(publications) - 1; index >= 0; index-- {
-			transactionErr = errors.Join(transactionErr, publications[index].Rollback(context.Background()))
-		}
+		transactionErr = errors.Join(transactionErr, publication.Rollback(context.Background()))
 		if createdRoot {
 			_ = os.Remove(prepared.model.RootDir)
 		}
@@ -950,7 +977,20 @@ func (service *Service) DeleteWithOptions(ctx context.Context, id int64, deleteF
 	if err := stage(certificateRoot, certificateSiteDirectory); err != nil {
 		return errors.Join(fmt.Errorf("prepare certificate deletion: %w", err), restoreStaged())
 	}
-	var publication *Publication
+	// Publish the runtime configuration before opening the database write
+	// transaction. Caddy validation/reload can be slow or block on systemd;
+	// keeping it inside the transaction would hold SQLite's write lock and
+	// make a subsequent preview fail with "database is locked".
+	publisher, publisherErr := service.publisherForSite(&existing)
+	if publisherErr != nil {
+		return errors.Join(publisherErr, restoreStaged())
+	}
+	publication, publishErr := publisher.Publish(ctx, map[string]*string{
+		configName: nil,
+	})
+	if publishErr != nil {
+		return errors.Join(publishErr, restoreStaged())
+	}
 	transactionErr := service.DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Model(&models.CertificateTask{}).
 			Where("website_id = ? AND status IN ?", id, models.ActiveCertificateTaskStatuses()).
@@ -975,23 +1015,10 @@ func (service *Service) DeleteWithOptions(ctx context.Context, id int64, deleteF
 		if err := tx.Delete(&models.WebsiteTrafficCursor{}, "website_id = ?", id).Error; err != nil {
 			return err
 		}
-		publisher, publisherErr := service.publisherForSite(&existing)
-		if publisherErr != nil {
-			return publisherErr
-		}
-		published, err := publisher.Publish(ctx, map[string]*string{
-			configName: nil,
-		})
-		if err != nil {
-			return err
-		}
-		publication = published
 		return nil
 	})
-	if transactionErr != nil && publication != nil {
-		transactionErr = errors.Join(transactionErr, publication.Rollback(context.Background()))
-	}
 	if transactionErr != nil {
+		transactionErr = errors.Join(transactionErr, publication.Rollback(context.Background()))
 		return errors.Join(transactionErr, restoreStaged())
 	}
 	for i := range staged {
