@@ -89,14 +89,15 @@ type Manager struct {
 	queue           chan string
 	stopCh          chan struct{}
 
-	startOnce sync.Once
-	startErr  error
-	stopOnce  sync.Once
-	submitMu  sync.Mutex
-	cancelMu  sync.Mutex
-	cancels   map[string]context.CancelFunc
-	runWG     sync.WaitGroup
-	stopping  atomic.Bool
+	startOnce  sync.Once
+	startErr   error
+	stopOnce   sync.Once
+	submitMu   sync.Mutex
+	deployerMu sync.RWMutex
+	cancelMu   sync.Mutex
+	cancels    map[string]context.CancelFunc
+	runWG      sync.WaitGroup
+	stopping   atomic.Bool
 }
 
 // TaskReader provides read-only access to certificate tasks without starting
@@ -157,6 +158,29 @@ func NewManager(
 		stopCh:          make(chan struct{}),
 		cancels:         make(map[string]context.CancelFunc),
 	}
+}
+
+// SetDeployer refreshes the runtime deployment adapter without restarting the
+// worker. Web server switching is independent from the certificate task
+// queue, so recreating the manager here would incorrectly interrupt queued
+// tasks just to pick up the new active Web server.
+func (manager *Manager) SetDeployer(deployer Deployer) {
+	if manager == nil {
+		return
+	}
+	manager.deployerMu.Lock()
+	manager.deployer = deployer
+	manager.deployerMu.Unlock()
+}
+
+func (manager *Manager) currentDeployer() Deployer {
+	if manager == nil {
+		return nil
+	}
+	manager.deployerMu.RLock()
+	deployer := manager.deployer
+	manager.deployerMu.RUnlock()
+	return deployer
 }
 
 func (manager *Manager) Start() error {
@@ -686,13 +710,14 @@ func (manager *Manager) run(taskID string) {
 		manager.failTask(&task, "TASK_CANCELED", err)
 		return
 	}
-	if manager.deployer == nil {
+	deployer := manager.currentDeployer()
+	if deployer == nil {
 		_ = os.RemoveAll(versionDirectory)
 		manager.failTask(&task, "CERTIFICATE_DEPLOYER_UNAVAILABLE", errors.New("certificate deployer is not configured"))
 		return
 	}
 	report(96, "正在验证并重新加载 Nginx")
-	rollback, err := manager.deployer.Deploy(
+	rollback, err := deployer.Deploy(
 		ctx,
 		task.WebsiteID,
 		certificatePath,
@@ -816,12 +841,13 @@ func (manager *Manager) run(taskID string) {
 
 func (manager *Manager) issueACME(ctx context.Context, task *models.CertificateTask, report ProgressReporter) (*IssuedCertificate, *x509.Certificate, error) {
 	challengeType := defaultChallengeType(task.ChallengeType)
+	deployer := manager.currentDeployer()
 	var dnsProvider DNSChallengeProvider
 	if challengeType == ChallengeHTTP01 {
-		if manager.deployer == nil {
+		if deployer == nil {
 			return nil, nil, errors.New("certificate deployer is not configured")
 		}
-		if err := manager.deployer.EnsureChallenge(ctx, task.WebsiteID); err != nil {
+		if err := deployer.EnsureChallenge(ctx, task.WebsiteID); err != nil {
 			return nil, nil, fmt.Errorf("publish HTTP-01 route: %w", err)
 		}
 	} else {
@@ -862,7 +888,7 @@ func (manager *Manager) runManagedACMETask(ctx context.Context, task *models.Cer
 		return
 	}
 	report(92, "正在安全写入证书文件")
-	catalog := NewCatalog(manager.db, manager.certificateRoot, manager.deployer)
+	catalog := NewCatalog(manager.db, manager.certificateRoot, manager.currentDeployer())
 	if task.Operation == models.CertificateTaskOperationManagedIssue {
 		record, createErr := catalog.CreateACME(ACMECertificateOptions{
 			Domains:            taskDomains(task.Domains),
@@ -930,7 +956,7 @@ func acmeTaskErrorCode(task *models.CertificateTask, err error) string {
 }
 
 func (manager *Manager) runManagedTask(ctx context.Context, task *models.CertificateTask, report ProgressReporter) {
-	catalog := NewCatalog(manager.db, manager.certificateRoot, manager.deployer)
+	catalog := NewCatalog(manager.db, manager.certificateRoot, manager.currentDeployer())
 	var (
 		record *models.ManagedCertificate
 		err    error
@@ -991,7 +1017,7 @@ func taskDomains(value string) []string {
 func (manager *Manager) failTask(task *models.CertificateTask, code string, err error) {
 	status := models.CertificateTaskStatusFailed
 	message := truncate(err.Error(), 1024)
-	if task.Operation == models.CertificateTaskOperationManagedIssue || task.Operation == models.CertificateTaskOperationManagedRenew {
+	if isManagedCertificateTask(task.Operation) {
 		message = SafeCertificateErrorDetail(err)
 	}
 	if errors.Is(err, context.Canceled) || task.CancelRequested {
@@ -1029,6 +1055,18 @@ func (manager *Manager) failTask(task *models.CertificateTask, code string, err 
 	}
 }
 
+func isManagedCertificateTask(operation string) bool {
+	switch operation {
+	case models.CertificateTaskOperationUpload,
+		models.CertificateTaskOperationBind,
+		models.CertificateTaskOperationManagedIssue,
+		models.CertificateTaskOperationManagedRenew:
+		return true
+	default:
+		return false
+	}
+}
+
 // SafeCertificateErrorDetail turns expected certificate environment failures
 // into actionable text without exposing absolute paths or raw lower-level
 // errors through task APIs.
@@ -1038,6 +1076,18 @@ func SafeCertificateErrorDetail(err error) string {
 	}
 	lower := strings.ToLower(err.Error())
 	switch {
+	case strings.Contains(lower, "website_web_server_mismatch"):
+		return "网站所属 Web Server 与当前运行实例不一致，请切换回网站所属 Web Server 后重试。"
+	case strings.Contains(lower, "caddy runtime config"),
+		strings.Contains(lower, "caddy main config"),
+		strings.Contains(lower, "caddy managed config"),
+		strings.Contains(lower, "web server config directory"):
+		return "Caddy 配置目录或主配置文件不可用，请检查 Caddy 安装、服务配置和目录权限后重试。"
+	case strings.Contains(lower, "does not cover domain"),
+		strings.Contains(lower, "does not cover website domain"):
+		return "现有证书不包含网站的全部域名，请重新上传或签发同时覆盖这些域名的证书。"
+	case strings.Contains(lower, "website is disabled"), strings.Contains(lower, "网站已停用"):
+		return "网站已停用，请先启用网站后再绑定证书。"
 	case strings.Contains(lower, "permission denied"), strings.Contains(lower, "operation not permitted"):
 		return "证书文件或存储目录不可写，请检查面板运行用户的目录权限后重试。"
 	case strings.Contains(lower, "no such file or directory"):
@@ -1265,7 +1315,11 @@ func (manager *Manager) Disable(websiteID int64) (*models.Certificate, error) {
 	if err := manager.db.First(&certificate, "website_id = ?", websiteID).Error; err != nil {
 		return nil, err
 	}
-	rollback, err := manager.deployer.Disable(context.Background(), websiteID)
+	deployer := manager.currentDeployer()
+	if deployer == nil {
+		return nil, errors.New("certificate deployer is not configured")
+	}
+	rollback, err := deployer.Disable(context.Background(), websiteID)
 	if err != nil {
 		return nil, err
 	}

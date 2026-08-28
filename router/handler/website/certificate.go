@@ -25,6 +25,7 @@ var (
 	certificateManagerMu sync.Mutex
 	certificateManagerDB *gorm.DB
 	certificateManager   *certificateService.Manager
+	certificateRuntime   string
 )
 
 func getCertificateManager() (*certificateService.Manager, error) {
@@ -34,7 +35,10 @@ func getCertificateManager() (*certificateService.Manager, error) {
 	if database == nil {
 		return nil, errors.New("database is not initialized")
 	}
+	runtime := websiteService.WebServerStatus()
+	runtimeKey := certificateRuntimeKey(runtime)
 	if certificateManager == nil || certificateManagerDB != database {
+		var deployer certificateService.Deployer
 		deployer, deployerErr := websiteService.NewCertificateDeployer()
 		if deployerErr != nil && !errors.Is(deployerErr, websiteService.ErrNginxUnavailable) {
 			return nil, deployerErr
@@ -52,11 +56,32 @@ func getCertificateManager() (*certificateService.Manager, error) {
 			deployer,
 		)
 		certificateManagerDB = database
+		certificateRuntime = runtimeKey
+	} else if runtimeKey != certificateRuntime {
+		deployer, deployerErr := websiteService.NewCertificateDeployer()
+		if deployerErr != nil && !errors.Is(deployerErr, websiteService.ErrNginxUnavailable) {
+			return nil, deployerErr
+		}
+		if deployerErr != nil {
+			deployer = nil
+		}
+		certificateManager.SetDeployer(deployer)
+		certificateRuntime = runtimeKey
 	}
 	if err := certificateManager.Start(); err != nil {
 		return nil, err
 	}
 	return certificateManager, nil
+}
+
+func certificateRuntimeKey(server websiteService.WebServerInfo) string {
+	return strings.Join([]string{
+		strconv.FormatBool(server.Available),
+		server.Component,
+		server.BinaryPath,
+		server.MainConfigPath,
+		server.ServiceName,
+	}, "\x00")
 }
 
 // DefaultCertificateManager initializes interrupted-task recovery at startup.
