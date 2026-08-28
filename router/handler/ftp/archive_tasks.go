@@ -24,6 +24,7 @@ import (
 
 var archiveTaskQueue = make(chan string, 32)
 var archiveTaskStarter sync.Once
+var archiveTaskStartErr error
 
 // StartArchiveTaskManager starts the single-worker archive queue and resumes
 // tasks that had been accepted before a panel restart.
@@ -31,11 +32,31 @@ func StartArchiveTaskManager() error {
 	if app.DB() == nil {
 		return fmt.Errorf("file archive task database is unavailable")
 	}
-	var startErr error
 	archiveTaskStarter.Do(func() {
+		var interrupted []models.FileArchiveTask
+		if err := app.DB().Where("status = ?", models.FileArchiveTaskStatusRunning).Find(&interrupted).Error; err != nil {
+			archiveTaskStartErr = err
+			return
+		}
+		now := time.Now().UTC()
+		for index := range interrupted {
+			message := "面板重启导致归档任务中断，请重新提交"
+			code := "FILE_ARCHIVE_INTERRUPTED"
+			if interrupted[index].Operation == models.FileArchiveTaskOperationExtract {
+				message = "面板重启导致解压任务中断，请重新提交"
+				code = "FILE_EXTRACT_INTERRUPTED"
+			}
+			if err := app.DB().Model(&interrupted[index]).Updates(map[string]any{
+				"status": models.FileArchiveTaskStatusFailed, "message": message, "error_code": code,
+				"finished_at": now, "updated_at": now,
+			}).Error; err != nil {
+				archiveTaskStartErr = err
+				return
+			}
+		}
 		var queued []models.FileArchiveTask
 		if err := app.DB().Where("status = ?", models.FileArchiveTaskStatusQueued).Find(&queued).Error; err != nil {
-			startErr = err
+			archiveTaskStartErr = err
 			return
 		}
 		go runArchiveTaskWorker()
@@ -43,7 +64,7 @@ func StartArchiveTaskManager() error {
 			archiveTaskQueue <- task.ID
 		}
 	})
-	return startErr
+	return archiveTaskStartErr
 }
 
 func submitArchiveTask(input archiveTaskInput, requestedBy int64, rootPath string, capacityPolicy filemanager.CapacityPolicy) (*models.FileArchiveTask, error) {
@@ -55,7 +76,8 @@ func submitArchiveTask(input archiveTaskInput, requestedBy int64, rootPath strin
 	}
 	now := time.Now().UTC()
 	task := &models.FileArchiveTask{
-		ID: uuid.NewString(), SourcePath: input.Path, TargetDir: input.TargetDir, ArchiveName: input.ArchiveName,
+		ID: uuid.NewString(), Operation: models.FileArchiveTaskOperationArchive,
+		SourcePath: input.Path, TargetDir: input.TargetDir, ArchiveName: input.ArchiveName,
 		FileRootPath: rootPath, QuotaBytes: capacityPolicy.QuotaBytes, MinFreeBytes: capacityPolicy.MinFreeBytes,
 		Status: models.FileArchiveTaskStatusQueued, Message: "归档任务已进入队列", RequestedBy: requestedBy,
 		CreatedAt: now, UpdatedAt: now,
@@ -78,18 +100,31 @@ func runArchiveTask(taskID string) {
 	if err := app.DB().First(&task, "id = ? AND status = ?", taskID, models.FileArchiveTaskStatusQueued).Error; err != nil {
 		return
 	}
+	message := "正在创建压缩包"
+	if task.Operation == models.FileArchiveTaskOperationExtract {
+		message = "正在解压文件"
+	}
 	now := time.Now().UTC()
 	if err := app.DB().Model(&task).Updates(map[string]any{
-		"status": models.FileArchiveTaskStatusRunning, "message": "正在创建压缩包", "started_at": now, "updated_at": now,
+		"status": models.FileArchiveTaskStatusRunning, "message": message, "started_at": now, "updated_at": now,
 	}).Error; err != nil {
 		return
 	}
 	manager, err := newArchiveTaskFileManager(task.FileRootPath)
-	var measured filemanager.OperationResult
-	if err == nil {
-		defer manager.Close()
-		measured, err = manager.MeasureForArchive(task.SourcePath)
+	if err != nil {
+		failArchiveTask(&task, err)
+		return
 	}
+	defer manager.Close()
+	if task.Operation == models.FileArchiveTaskOperationExtract {
+		runExtractTask(manager, &task)
+		return
+	}
+	runCreateArchiveTask(manager, &task)
+}
+
+func runCreateArchiveTask(manager *filemanager.Manager, task *models.FileArchiveTask) {
+	measured, err := manager.MeasureForArchive(task.SourcePath)
 	if err == nil {
 		reservation, reserveErr := reserveArchiveCapacity(manager, measured.Bytes, filemanager.CapacityPolicy{
 			QuotaBytes: task.QuotaBytes, MinFreeBytes: task.MinFreeBytes,
@@ -98,17 +133,17 @@ func runArchiveTask(taskID string) {
 			err = reserveErr
 		} else {
 			defer reservation.Release()
-			reporter := newArchiveTaskProgressReporter(&task)
-			result, archiveErr := archiveWithAvailableName(manager, &task, reporter.Report)
+			reporter := newArchiveTaskProgressReporter(task)
+			result, archiveErr := archiveWithAvailableName(manager, task, reporter.Report)
 			if archiveErr != nil {
 				err = archiveErr
 			} else {
-				finishArchiveTask(&task, result)
+				finishArchiveTask(task, result)
 				return
 			}
 		}
 	}
-	failArchiveTask(&task, err)
+	failArchiveTask(task, err)
 }
 
 func archiveWithAvailableName(manager *filemanager.Manager, task *models.FileArchiveTask, report filemanager.ArchiveProgressFunc) (filemanager.OperationResult, error) {
@@ -207,9 +242,17 @@ func newArchiveTaskProgressReporter(task *models.FileArchiveTask) *archiveTaskPr
 }
 
 func (r *archiveTaskProgressReporter) Report(progress filemanager.ArchiveProgress) {
+	r.persist(progress.ProcessedBytes, progress.TotalBytes, progress.Entries, progress.CurrentPath)
+}
+
+func (r *archiveTaskProgressReporter) ReportExtract(progress filemanager.ExtractProgress) {
+	r.persist(progress.ProcessedBytes, progress.TotalBytes, progress.Entries, progress.CurrentPath)
+}
+
+func (r *archiveTaskProgressReporter) persist(processedBytes, totalBytes int64, entries int, currentPath string) {
 	percentage := 0
-	if progress.TotalBytes > 0 {
-		percentage = min(99, int(math.Floor(float64(progress.ProcessedBytes)*100/float64(progress.TotalBytes))))
+	if totalBytes > 0 {
+		percentage = min(99, int(math.Floor(float64(processedBytes)*100/float64(totalBytes))))
 	}
 	now := time.Now().UTC()
 	if percentage == r.lastProgress && now.Sub(r.lastPersisted) < 500*time.Millisecond {
@@ -218,8 +261,8 @@ func (r *archiveTaskProgressReporter) Report(progress filemanager.ArchiveProgres
 	r.lastPersisted = now
 	r.lastProgress = percentage
 	_ = app.DB().Model(r.task).Updates(map[string]any{
-		"total_bytes": progress.TotalBytes, "processed_bytes": progress.ProcessedBytes, "progress": percentage,
-		"current_path": progress.CurrentPath, "updated_at": now,
+		"total_bytes": totalBytes, "processed_bytes": processedBytes, "progress": percentage,
+		"current_path": currentPath, "entries": entries, "updated_at": now,
 	}).Error
 }
 
@@ -254,7 +297,7 @@ func archiveTaskFailure(cause error) (code, message string) {
 
 func GetArchiveTask(c *gin.Context) {
 	var task models.FileArchiveTask
-	if err := app.DB().First(&task, "id = ?", c.Param("id")).Error; err != nil {
+	if err := app.DB().First(&task, "id = ? AND operation = ?", c.Param("id"), models.FileArchiveTaskOperationArchive).Error; err != nil {
 		core.HandleError(c, core.NewError(core.ErrFileNotFound, "归档任务不存在"))
 		return
 	}
@@ -287,7 +330,7 @@ func ListArchiveTasks(c *gin.Context) {
 		handleBadRequest(c, fmt.Errorf("unsupported archive task status"), "归档任务状态无效")
 		return
 	}
-	query := app.DB().Model(&models.FileArchiveTask{}).Where("requested_by = ?", userID)
+	query := app.DB().Model(&models.FileArchiveTask{}).Where("requested_by = ? AND operation = ?", userID, models.FileArchiveTaskOperationArchive)
 	if status != "" {
 		query = query.Where("status = ?", status)
 	}

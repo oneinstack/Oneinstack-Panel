@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"oneinstack/core"
+	accessservice "oneinstack/internal/services/access"
+	"oneinstack/internal/services/filemanager"
 	"oneinstack/router/middleware"
 
 	"github.com/gin-gonic/gin"
@@ -109,6 +111,12 @@ type archiveTaskInput struct {
 	ArchiveName string `json:"archiveName" binding:"required"`
 }
 
+type extractTaskInput struct {
+	Path      string `json:"path" binding:"required"`
+	TargetDir string `json:"targetDir"`
+	Overwrite bool   `json:"overwrite"`
+}
+
 func ArchiveFileOrDir(c *gin.Context) {
 	var input archiveTaskInput
 	if err := c.ShouldBindJSON(&input); err != nil {
@@ -149,6 +157,54 @@ func ArchiveFileOrDir(c *gin.Context) {
 	finishFileOperation(c, "success", "归档任务已提交")
 }
 
+func ExtractFile(c *gin.Context) {
+	var input extractTaskInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		handleBadRequest(c, err, "解压参数格式不正确")
+		return
+	}
+	manager, ok := managerForRequest(c)
+	if !ok {
+		return
+	}
+	defer manager.Close()
+	probe, err := manager.ProbeArchive(input.Path)
+	if err != nil {
+		_, message := extractTaskFailure(err)
+		handleBadRequest(c, err, message)
+		return
+	}
+	if strings.TrimSpace(input.TargetDir) == "" {
+		sourceRelative, relativeErr := manager.Relative(input.Path)
+		if relativeErr != nil {
+			handleFileError(c, relativeErr, "解压源路径无效")
+			return
+		}
+		parent := pathpkg.Dir(sourceRelative)
+		targetRelative := probe.BaseName
+		if parent != "." {
+			targetRelative = pathpkg.Join(parent, probe.BaseName)
+		}
+		input.TargetDir = manager.VirtualPath(targetRelative)
+	} else if _, err := manager.Relative(input.TargetDir); err != nil {
+		handleFileError(c, err, "解压目标路径无效")
+		return
+	}
+	startFileOperation(c, "file.extract", strings.TrimSpace(input.Path)+" -> "+strings.TrimSpace(input.TargetDir))
+	userID, _ := middleware.AuthenticatedUserID(c)
+	settings := currentFileSettings()
+	task, err := submitExtractTask(input, userID, manager.RootPath(), probe.Format, settings)
+	if err != nil {
+		handleFileError(c, err, "创建解压任务失败")
+		return
+	}
+	c.JSON(http.StatusAccepted, core.SuccessResponseForContext(c, gin.H{
+		"taskId": task.ID, "status": task.Status, "targetDir": task.TargetDir,
+		"archiveFormat": task.ArchiveFormat, "statusUrl": "/v1/ftp/extract/tasks/" + task.ID,
+	}))
+	finishFileOperation(c, "success", "解压任务已提交")
+}
+
 func GetFileProperties(c *gin.Context) {
 	var input struct {
 		Path string `json:"path" binding:"required"`
@@ -181,19 +237,28 @@ func GetFileProperties(c *gin.Context) {
 		mimeType = mime.TypeByExtension(pathpkg.Ext(info.Name()))
 	}
 	canEdit := hasFileEditPermission(c) && !info.IsDir() && !isSymlink && canEditFile(manager, input.Path, currentFileSettings().editMaxBytes)
+	archiveInfo := filemanager.InspectArchiveName(info.Name())
+	isArchive := !info.IsDir() && !isSymlink && archiveInfo.Format != ""
+	canExtract := false
+	if access, ok := middleware.UserAccess(c); ok {
+		canExtract = access.HasPermission(accessservice.PermissionFileArchive)
+	}
 	core.HandleSuccess(c, gin.H{
-		"path":        manager.VirtualPath(relative),
-		"name":        info.Name(),
-		"type":        fileType,
-		"isDir":       info.IsDir(),
-		"isSymlink":   isSymlink,
-		"permissions": fmt.Sprintf("%04o", info.Mode().Perm()),
-		"owner":       userName,
-		"uid":         uid,
-		"size":        info.Size(),
-		"mimeType":    mimeType,
-		"modTime":     info.ModTime().Format(time.RFC3339),
-		"canEdit":     canEdit,
+		"path":          manager.VirtualPath(relative),
+		"name":          info.Name(),
+		"type":          fileType,
+		"isDir":         info.IsDir(),
+		"isSymlink":     isSymlink,
+		"permissions":   fmt.Sprintf("%04o", info.Mode().Perm()),
+		"owner":         userName,
+		"uid":           uid,
+		"size":          info.Size(),
+		"mimeType":      mimeType,
+		"modTime":       info.ModTime().Format(time.RFC3339),
+		"canEdit":       canEdit,
+		"isArchive":     isArchive,
+		"archiveFormat": archiveInfo.Format,
+		"canExtract":    canExtract && isArchive && archiveInfo.Supported,
 	})
 }
 

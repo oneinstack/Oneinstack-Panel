@@ -21,6 +21,8 @@ type System struct {
 	CredentialKey                 string   `mapstructure:"credentialKey" json:"-" yaml:"credentialKey"`
 	FileUploadMaxBytes            int64    `mapstructure:"fileUploadMaxBytes" json:"fileUploadMaxBytes" yaml:"fileUploadMaxBytes"`
 	FileEditMaxBytes              int64    `mapstructure:"fileEditMaxBytes" json:"fileEditMaxBytes" yaml:"fileEditMaxBytes"`
+	FileExtractMaxBytes           int64    `mapstructure:"fileExtractMaxBytes" json:"fileExtractMaxBytes" yaml:"fileExtractMaxBytes"`
+	FileExtractMaxFiles           int      `mapstructure:"fileExtractMaxFiles" json:"fileExtractMaxFiles" yaml:"fileExtractMaxFiles"`
 	FileRootQuotaBytes            int64    `mapstructure:"fileRootQuotaBytes" json:"fileRootQuotaBytes" yaml:"fileRootQuotaBytes"`
 	FileMinFreeBytes              int64    `mapstructure:"fileMinFreeBytes" json:"fileMinFreeBytes" yaml:"fileMinFreeBytes"`
 	TrashRetentionDays            int      `mapstructure:"trashRetentionDays" json:"trashRetentionDays" yaml:"trashRetentionDays"`

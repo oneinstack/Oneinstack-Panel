@@ -138,6 +138,8 @@ func (cm *ConfigManager) setDefaults() {
 	cm.viper.SetDefault("system.dataPath", "/data/db/")
 	cm.viper.SetDefault("system.fileUploadMaxBytes", int64(100<<20))
 	cm.viper.SetDefault("system.fileEditMaxBytes", int64(10<<20))
+	cm.viper.SetDefault("system.fileExtractMaxBytes", int64(20<<30))
+	cm.viper.SetDefault("system.fileExtractMaxFiles", 200000)
 	cm.viper.SetDefault("system.fileRootQuotaBytes", int64(0))
 	cm.viper.SetDefault("system.fileMinFreeBytes", int64(1<<30))
 	cm.viper.SetDefault("system.trashRetentionDays", 30)
@@ -266,6 +268,8 @@ system:
   credentialKey: ""  # Will be auto-generated if empty
   fileUploadMaxBytes: 104857600
   fileEditMaxBytes: 10485760
+  fileExtractMaxBytes: 21474836480
+  fileExtractMaxFiles: 200000
   fileRootQuotaBytes: 0
   fileMinFreeBytes: 1073741824
   trashRetentionDays: 30

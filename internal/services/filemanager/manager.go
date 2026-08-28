@@ -20,7 +20,10 @@ var (
 	ErrRevisionConflict = errors.New("file revision conflict")
 )
 
-const internalDirectoryName = ".oneinstack-trash"
+const (
+	internalDirectoryName     = ".oneinstack-trash"
+	internalWorkDirectoryName = ".oneinstack-work"
+)
 
 // Manager confines filesystem access to a configured directory tree. Paths
 // accepted by its methods are virtual paths: "/" is the configured root and
@@ -276,10 +279,10 @@ func (m *Manager) ReadDir(virtualPath string) ([]os.DirEntry, string, error) {
 	}
 	visible := entries[:0]
 	for _, entry := range entries {
-		if relative == "." && entry.Name() == internalDirectoryName {
+		childRelative := pathpkg.Join(relative, entry.Name())
+		if isInternalPath(childRelative) {
 			continue
 		}
-		childRelative := pathpkg.Join(relative, entry.Name())
 		if m.isProtectedRelative(childRelative) {
 			continue
 		}
@@ -388,7 +391,7 @@ func (m *Manager) Walk(virtualPath string, walkFn fs.WalkDirFunc) error {
 			}
 			return nil
 		}
-		if path == internalDirectoryName || strings.HasPrefix(path, internalDirectoryName+"/") {
+		if isInternalPath(path) {
 			if entry != nil && entry.IsDir() {
 				return fs.SkipDir
 			}
@@ -409,5 +412,6 @@ func validatePublicRelative(relative string) error {
 }
 
 func isInternalPath(relative string) bool {
-	return relative == internalDirectoryName || strings.HasPrefix(relative, internalDirectoryName+"/")
+	return relative == internalDirectoryName || strings.HasPrefix(relative, internalDirectoryName+"/") ||
+		relative == internalWorkDirectoryName || strings.HasPrefix(relative, internalWorkDirectoryName+"/")
 }

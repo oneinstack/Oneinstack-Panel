@@ -107,8 +107,10 @@ func ListDirectory(c *gin.Context) {
 	fileInfos := make([]gin.H, 0, len(entries))
 	favoritePaths := make([]string, 0, len(entries))
 	canDelete := false
+	canExtract := false
 	if access, ok := middleware.UserAccess(c); ok {
 		canDelete = access.HasPermission(accessservice.PermissionFileDelete)
+		canExtract = access.HasPermission(accessservice.PermissionFileArchive)
 	}
 	for _, entry := range entries {
 		childRelative := pathpkg.Join(relative, entry.Name())
@@ -142,19 +144,24 @@ func ListDirectory(c *gin.Context) {
 			}
 		}
 		canEdit := canEditPermission && !isDir && !isSymlink && canEditFile(manager, childPath, settings.editMaxBytes)
+		archiveInfo := filemanager.InspectArchiveName(entry.Name())
+		isArchive := !isDir && !isSymlink && archiveInfo.Format != ""
 		fileInfos = append(fileInfos, gin.H{
-			"path":        childPath,
-			"name":        entry.Name(),
-			"isDir":       isDir,
-			"isSymlink":   isSymlink,
-			"permissions": fmt.Sprintf("%04o", info.Mode().Perm()),
-			"user":        userName,
-			"group":       groupName,
-			"modTime":     info.ModTime().Format("2006-01-02 15:04:05"),
-			"size":        utils.FormatBytes(info.Size()),
-			"favoriteID":  favoriteMap[childPath],
-			"canDelete":   canDelete,
-			"canEdit":     canEdit,
+			"path":          childPath,
+			"name":          entry.Name(),
+			"isDir":         isDir,
+			"isSymlink":     isSymlink,
+			"permissions":   fmt.Sprintf("%04o", info.Mode().Perm()),
+			"user":          userName,
+			"group":         groupName,
+			"modTime":       info.ModTime().Format("2006-01-02 15:04:05"),
+			"size":          utils.FormatBytes(info.Size()),
+			"favoriteID":    favoriteMap[childPath],
+			"canDelete":     canDelete,
+			"canEdit":       canEdit,
+			"isArchive":     isArchive,
+			"archiveFormat": archiveInfo.Format,
+			"canExtract":    canExtract && isArchive && archiveInfo.Supported,
 		})
 	}
 	core.HandleSuccess(c, gin.H{"files": fileInfos, "path": manager.VirtualPath(relative)})
@@ -1064,9 +1071,11 @@ func contentRevision(content []byte) string {
 }
 
 type fileSettings struct {
-	uploadMaxBytes int64
-	editMaxBytes   int64
-	capacityPolicy filemanager.CapacityPolicy
+	uploadMaxBytes  int64
+	editMaxBytes    int64
+	extractMaxBytes int64
+	extractMaxFiles int
+	capacityPolicy  filemanager.CapacityPolicy
 }
 
 func currentFileSettings() fileSettings {
@@ -1078,9 +1087,19 @@ func currentFileSettings() fileSettings {
 	if editMaxBytes <= 0 {
 		editMaxBytes = 10 << 20
 	}
+	extractMaxBytes := app.ONE_CONFIG.System.FileExtractMaxBytes
+	if extractMaxBytes <= 0 {
+		extractMaxBytes = 20 << 30
+	}
+	extractMaxFiles := app.ONE_CONFIG.System.FileExtractMaxFiles
+	if extractMaxFiles <= 0 {
+		extractMaxFiles = 200000
+	}
 	return fileSettings{
-		uploadMaxBytes: uploadMaxBytes,
-		editMaxBytes:   editMaxBytes,
+		uploadMaxBytes:  uploadMaxBytes,
+		editMaxBytes:    editMaxBytes,
+		extractMaxBytes: extractMaxBytes,
+		extractMaxFiles: extractMaxFiles,
 		capacityPolicy: filemanager.CapacityPolicy{
 			QuotaBytes:   max(app.ONE_CONFIG.System.FileRootQuotaBytes, 0),
 			MinFreeBytes: max(app.ONE_CONFIG.System.FileMinFreeBytes, 0),
