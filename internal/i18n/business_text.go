@@ -169,6 +169,13 @@ func localizeResponseValue(locale string, value reflect.Value, field string, vis
 		}
 		return result
 	case reflect.String:
+		// Diagnostic error fields contain the actionable cause of a failed
+		// operation (for example, Docker's stderr). Keep them intact so
+		// response localization does not replace the cause with a generic
+		// failure message. User-facing summary fields are localized below.
+		if isRawDiagnosticErrorField(field) {
+			return value
+		}
 		if isBackendErrorField(field) {
 			translated := LocalizeBusinessText(locale, value.String())
 			if translated == value.String() {
@@ -227,9 +234,18 @@ func mapRepresentsFailure(value reflect.Value) bool {
 	return false
 }
 
+func isRawDiagnosticErrorField(field string) bool {
+	switch strings.ToLower(strings.TrimSpace(field)) {
+	case "errormessage", "error_message":
+		return true
+	default:
+		return false
+	}
+}
+
 func isBackendErrorField(field string) bool {
 	switch strings.ToLower(strings.TrimSpace(field)) {
-	case "error", "lasterror", "last_error", "errormessage", "error_message", "failuremessage", "failure_message", "recoverymessage", "recovery_message":
+	case "error", "lasterror", "last_error", "failuremessage", "failure_message", "recoverymessage", "recovery_message":
 		return true
 	default:
 		return false

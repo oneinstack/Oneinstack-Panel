@@ -501,7 +501,11 @@ func StreamContainerTaskEvents(c *gin.Context) {
 
 func containerTaskEventResponse(locale string, event *models.ContainerTaskEvent) gin.H {
 	failed := strings.EqualFold(event.Level, "error") || strings.EqualFold(event.Status, "failed")
-	result := gin.H{"seq": event.Seq, "type": event.Type, "level": event.Level, "status": event.Status, "phase": event.Phase, "progress": event.Progress, "message": i18n.LocalizeStatusText(locale, event.Message, failed), "log": event.Log, "code": event.Code, "createdAt": event.CreatedAt}
+	message := event.Message
+	if !failed {
+		message = i18n.LocalizeStatusText(locale, event.Message, false)
+	}
+	result := gin.H{"seq": event.Seq, "type": event.Type, "level": event.Level, "status": event.Status, "phase": event.Phase, "progress": event.Progress, "message": message, "log": event.Log, "code": event.Code, "createdAt": event.CreatedAt}
 	if event.PhaseProgress != nil {
 		result["phaseProgress"] = *event.PhaseProgress
 	}
