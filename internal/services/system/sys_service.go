@@ -3,6 +3,7 @@ package system
 import (
 	"errors"
 	"fmt"
+	"log"
 	"oneinstack/app"
 	"oneinstack/internal/crypto"
 	"oneinstack/internal/models"
@@ -141,29 +142,29 @@ func GetDiskIOCounters() ([]*output.DiskIOSpeed, error) {
 func GetSystemInfo() (*output.SystemInfo, error) {
 	info, err := host.Info()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("collect host information: %w", err)
 	}
 	// CPU Info
 	cpuInfo, err := cpu.Info()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("collect CPU information: %w", err)
 	}
 	// CPU Usage and capacity. CPU capacity is represented by logical cores so
 	// that used/available values remain meaningful on hosts with SMT enabled.
 	cpuPercent, err := cpu.Percent(time.Second, false)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("collect CPU usage: %w", err)
 	}
 	if len(cpuPercent) == 0 {
 		return nil, fmt.Errorf("cpu usage is unavailable")
 	}
 	logicalCores, err := cpu.Counts(true)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("collect logical CPU count: %w", err)
 	}
 	physicalCores, err := cpu.Counts(false)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("collect physical CPU count: %w", err)
 	}
 	usedPercent := cpuPercent[0]
 	if usedPercent < 0 {
@@ -178,18 +179,26 @@ func GetSystemInfo() (*output.SystemInfo, error) {
 	// Memory Info
 	vmem, err := mem.VirtualMemory()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("collect memory information: %w", err)
 	}
 	// Disk Info
 	partitions, err := disk.Partitions(true)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("list disk partitions: %w", err)
 	}
 	var diskUsages []disk.UsageStat
 	for _, partition := range partitions {
 		usage, err := disk.Usage(partition.Mountpoint)
 		if err != nil {
-			return nil, err
+			// The mount list and the filesystem state can change between the
+			// two calls. A stale or inaccessible optional mount must not make
+			// the whole system-info endpoint unavailable.
+			log.Printf("system info: skip disk usage for mountpoint %q: %v", partition.Mountpoint, err)
+			continue
+		}
+		if usage == nil {
+			log.Printf("system info: skip disk usage for mountpoint %q: empty result", partition.Mountpoint)
+			continue
 		}
 		diskUsages = append(diskUsages, *usage)
 	}
@@ -197,7 +206,7 @@ func GetSystemInfo() (*output.SystemInfo, error) {
 	// Network Info
 	interfaces, err := net.IOCounters(true)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("collect network information: %w", err)
 	}
 	sysinfo := &output.SystemInfo{
 		HostInfo: info,

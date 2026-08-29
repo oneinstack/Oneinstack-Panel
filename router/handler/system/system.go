@@ -2,6 +2,7 @@ package system
 
 import (
 	"errors"
+	"log"
 	"oneinstack/core"
 	auditservice "oneinstack/internal/services/audit"
 	configsnapshot "oneinstack/internal/services/configsnapshot"
@@ -21,6 +22,7 @@ type publicBaseInfoResponse struct {
 func GetSystemInfo(c *gin.Context) {
 	info, err := system.GetSystemInfo()
 	if err != nil {
+		log.Printf("get system info failed: %v", err)
 		appErr := core.WrapError(err, core.ErrSystemError, "获取系统信息失败")
 		core.HandleError(c, appErr)
 		return
