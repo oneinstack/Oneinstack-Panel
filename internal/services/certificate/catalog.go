@@ -550,18 +550,23 @@ func (catalog *Catalog) Bind(ctx context.Context, id string, websiteID int64, fo
 	if !website.Enabled {
 		return nil, errors.New("website is disabled")
 	}
-	leaf, err := parseCertificateFile(record.CertificatePath)
-	if err != nil {
-		return nil, err
-	}
 	domains, err := certificateDomains(website.Domain)
 	if err != nil {
 		return nil, err
 	}
-	for _, domain := range domains {
-		if !certificateMatchesDomain(leaf, domain) {
-			return nil, fmt.Errorf("certificate does not cover website domain %s", domain)
-		}
+	if !isWithin(catalog.root, record.CertificatePath) || !isWithin(catalog.root, record.PrivateKeyPath) {
+		return nil, errors.New("certificate material path is outside the managed directory")
+	}
+	certificatePEM, err := os.ReadFile(record.CertificatePath)
+	if err != nil {
+		return nil, fmt.Errorf("read certificate material: %w", err)
+	}
+	privateKeyPEM, err := os.ReadFile(record.PrivateKeyPath)
+	if err != nil {
+		return nil, fmt.Errorf("read certificate material: %w", err)
+	}
+	if _, _, err := validateCertificateMaterial(certificatePEM, privateKeyPEM, domains); err != nil {
+		return nil, fmt.Errorf("certificate bind validation failed: %w", err)
 	}
 	rollback, err := catalog.deployer.Deploy(ctx, websiteID, record.CertificatePath, record.PrivateKeyPath, forceHTTPS)
 	if err != nil {
@@ -852,18 +857,6 @@ func certificateMatchesDomain(certificate *x509.Certificate, domain string) bool
 		return false
 	}
 	return certificate.VerifyHostname(domain) == nil
-}
-
-func parseCertificateFile(path string) (*x509.Certificate, error) {
-	content, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	block, _ := pem.Decode(content)
-	if block == nil {
-		return nil, errors.New("certificate file is invalid")
-	}
-	return x509.ParseCertificate(block.Bytes)
 }
 
 func publicKeyAlgorithm(key any) string {

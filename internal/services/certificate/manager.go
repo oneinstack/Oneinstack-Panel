@@ -1078,13 +1078,35 @@ func SafeCertificateErrorDetail(err error) string {
 	switch {
 	case strings.Contains(lower, "website_web_server_mismatch"):
 		return "网站所属 Web Server 与当前运行实例不一致，请切换回网站所属 Web Server 后重试。"
+	case strings.Contains(lower, "certificate and private key are required"):
+		return "证书或私钥文件为空，请重新上传包含证书和私钥的完整材料。"
+	case strings.Contains(lower, "certificate must be pem encoded"),
+		strings.Contains(lower, "certificate file is invalid"),
+		strings.Contains(lower, "parse certificate"),
+		strings.Contains(lower, "x509:"):
+		return "证书文件格式不可用，请上传 PEM 编码的有效证书文件。"
+	case strings.Contains(lower, "certificate is expired"):
+		return "证书已过期，请重新申请或上传未过期的证书。"
+	case strings.Contains(lower, "certificate is not valid yet"):
+		return "证书尚未生效，请检查服务器时间或稍后重试。"
+	case strings.Contains(lower, "certificate and private key do not match"):
+		return "证书与私钥不匹配，请重新上传同一证书对应的私钥。"
+	case strings.Contains(lower, "certificate material path is outside"),
+		strings.Contains(lower, "certificate files are outside"):
+		return "证书资源文件位置无效，请重新导入证书资源。"
 	case strings.Contains(lower, "caddy runtime config"),
 		strings.Contains(lower, "caddy main config"),
 		strings.Contains(lower, "caddy managed config"),
 		strings.Contains(lower, "web server config directory"):
 		return "Caddy 配置目录或主配置文件不可用，请检查 Caddy 安装、服务配置和目录权限后重试。"
+	case strings.Contains(lower, "web server config validation failed"):
+		return "Web Server 配置校验失败，请检查当前站点配置及证书文件后重试。"
+	case strings.Contains(lower, "web server reload failed"):
+		return "Web Server 重载失败，当前配置已回滚，请检查服务状态和错误日志后重试。"
 	case strings.Contains(lower, "does not cover domain"),
 		strings.Contains(lower, "does not cover website domain"):
+		return "现有证书不包含网站的全部域名，请重新上传或签发同时覆盖这些域名的证书。"
+	case strings.Contains(lower, "新域名不在当前证书范围内"):
 		return "现有证书不包含网站的全部域名，请重新上传或签发同时覆盖这些域名的证书。"
 	case strings.Contains(lower, "website is disabled"), strings.Contains(lower, "网站已停用"):
 		return "网站已停用，请先启用网站后再绑定证书。"
