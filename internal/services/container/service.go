@@ -35,6 +35,7 @@ var (
 	ErrRegistryProbeFailed            = errors.New("container registry probe failed")
 	ErrImagePullFailed                = errors.New("container image pull failed")
 	ErrDockerCommandTimeout           = errors.New("docker command timed out")
+	ErrContainerLogsUnavailable       = errors.New("container logs unavailable")
 	ErrProtectedNetwork               = errors.New("protected container network")
 	ErrContainerStatsTimeout          = errors.New("container stats timed out")
 	ErrContainerStatsPermissionDenied = errors.New("container stats permission denied")
@@ -112,6 +113,7 @@ type ContainerActionState struct {
 	Running  bool
 	Paused   bool
 	ExitCode int
+	Error    string
 }
 
 type ImagePullRequest struct {
@@ -742,6 +744,7 @@ func (s *Service) inspectContainerState(ctx context.Context, id string) (Contain
 		Running  bool   `json:"Running"`
 		Paused   bool   `json:"Paused"`
 		ExitCode int    `json:"ExitCode"`
+		Error    string `json:"Error"`
 	}
 	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &state); err != nil {
 		return ContainerActionState{}, fmt.Errorf("容器状态响应无效: %w", err)
@@ -750,7 +753,7 @@ func (s *Service) inspectContainerState(ctx context.Context, id string) (Contain
 	if status == "" {
 		return ContainerActionState{}, errors.New("容器状态响应为空")
 	}
-	return ContainerActionState{Status: status, Running: state.Running, Paused: state.Paused, ExitCode: state.ExitCode}, nil
+	return ContainerActionState{Status: status, Running: state.Running, Paused: state.Paused, ExitCode: state.ExitCode, Error: strings.TrimSpace(state.Error)}, nil
 }
 
 func (s *Service) Logs(ctx context.Context, id string, options LogOptions) (string, error) {
@@ -761,10 +764,31 @@ func (s *Service) Logs(ctx context.Context, id string, options LogOptions) (stri
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	var output bytes.Buffer
-	if err := s.runContainerLogs(ctx, args, &output); err != nil {
-		return "", err
+	var runErr error
+	for attempt := 0; ; attempt++ {
+		output.Reset()
+		runErr = s.runContainerLogs(ctx, args, &output)
+		if runErr == nil || !retryableContainerLogsError(runErr) || attempt >= containerReadRetryAttempts-1 {
+			break
+		}
+		if err := waitForContainerReadRetry(ctx); err != nil {
+			return "", err
+		}
 	}
-	return output.String(), nil
+	if runErr == nil {
+		if strings.TrimSpace(output.String()) == "" {
+			if diagnostic, diagnosticErr := s.containerLogDiagnostic(ctx, id, nil); diagnosticErr == nil && diagnostic != "" {
+				return diagnostic, nil
+			}
+		}
+		return output.String(), nil
+	}
+	if errors.Is(runErr, ErrContainerLogsUnavailable) {
+		if diagnostic, diagnosticErr := s.containerLogDiagnostic(ctx, id, runErr); diagnosticErr == nil && diagnostic != "" {
+			return diagnostic, nil
+		}
+	}
+	return "", runErr
 }
 
 func (s *Service) FollowLogs(ctx context.Context, id string, options LogOptions, output io.Writer) error {
@@ -772,7 +796,45 @@ func (s *Service) FollowLogs(ctx context.Context, id string, options LogOptions,
 	if err != nil {
 		return err
 	}
-	return s.runContainerLogs(ctx, args, output)
+	if err := s.runContainerLogs(ctx, args, output); err != nil {
+		if errors.Is(err, ErrContainerLogsUnavailable) {
+			if diagnostic, diagnosticErr := s.containerLogDiagnostic(ctx, id, err); diagnosticErr == nil && diagnostic != "" {
+				_, _ = io.WriteString(output, diagnostic)
+				return nil
+			}
+		}
+		return err
+	}
+	return nil
+}
+
+func retryableContainerLogsError(err error) bool {
+	if err == nil || errors.Is(err, ErrContainerLogsUnavailable) || errors.Is(err, ErrRuntimeUnavailable) || errors.Is(err, ErrDockerCommandTimeout) {
+		return false
+	}
+	lower := strings.ToLower(err.Error())
+	return strings.Contains(lower, "no such container") ||
+		strings.Contains(lower, "no such object") ||
+		strings.Contains(lower, "is restarting") ||
+		strings.Contains(lower, "container is not running")
+}
+
+func (s *Service) containerLogDiagnostic(ctx context.Context, id string, logErr error) (string, error) {
+	state, err := s.inspectContainerState(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	if state.Error != "" {
+		return fmt.Sprintf("容器启动错误：%s\n", redactContainerLogLine(state.Error)), nil
+	}
+	if errors.Is(logErr, ErrContainerLogsUnavailable) {
+		status := state.Status
+		if status == "" {
+			status = "未知"
+		}
+		return fmt.Sprintf("Docker 当前日志驱动不支持读取该容器日志。容器状态：%s，退出码：%d。请检查 Docker 日志驱动配置或主机日志。\n", status, state.ExitCode), nil
+	}
+	return "", nil
 }
 
 func containerLogArgs(id string, options LogOptions, follow bool) ([]string, error) {
@@ -928,6 +990,10 @@ func (s *Service) runContainerLogs(ctx context.Context, args []string, output io
 			message = runErr.Error()
 		}
 		lowerMessage := strings.ToLower(message)
+		if strings.Contains(lowerMessage, "configured logging driver does not support reading") ||
+			(strings.Contains(lowerMessage, "logging driver") && strings.Contains(lowerMessage, "does not support") && strings.Contains(lowerMessage, "read")) {
+			return fmt.Errorf("%w: %s", ErrContainerLogsUnavailable, message)
+		}
 		if strings.Contains(lowerMessage, "cannot connect to the docker daemon") ||
 			strings.Contains(lowerMessage, "is the docker daemon running") {
 			return fmt.Errorf("%w: %s", ErrRuntimeUnavailable, message)

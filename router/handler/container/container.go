@@ -1357,6 +1357,14 @@ func operationError(c *gin.Context, err error) {
 		containerLogBadRequest(c, err)
 		return
 	}
+	if errors.Is(err, containerService.ErrContainerLogsUnavailable) {
+		core.HandleError(c, core.NewErrorWithDetail(
+			core.ErrServiceUnavailable,
+			"Docker日志不可读取",
+			"该容器使用的 Docker 日志驱动不支持通过 docker logs 读取，请检查 Docker 日志驱动配置或改用主机日志查看。",
+		))
+		return
+	}
 	if errors.Is(err, containerService.ErrInvalidRegistryInput) {
 		detail := strings.TrimSpace(strings.TrimPrefix(err.Error(), containerService.ErrInvalidRegistryInput.Error()+": "))
 		core.HandleError(c, core.NewErrorWithDetail(
