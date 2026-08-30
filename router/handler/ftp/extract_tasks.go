@@ -68,6 +68,13 @@ func finishExtractTask(task *models.FileArchiveTask, result filemanager.Operatio
 func failExtractTask(task *models.FileArchiveTask, cause error) {
 	now := time.Now().UTC()
 	code, message := extractTaskFailure(cause)
+	if code == "FILE_EXTRACT_TARGET_CONFLICT" {
+		target := strings.TrimSpace(task.TargetDir)
+		if target == "" {
+			target = "指定目录"
+		}
+		message = fmt.Sprintf("解压目标目录 %s 存在同名文件，未覆盖原文件；请选择其他目录或确认覆盖后重试", target)
+	}
 	log.Printf("file extract task failed task_id=%s code=%s cause=%v", task.ID, code, cause)
 	_ = app.DB().Model(task).Updates(map[string]any{
 		"status": models.FileArchiveTaskStatusFailed, "message": message, "error_code": code,
@@ -91,24 +98,33 @@ func extractTaskFailure(cause error) (code, message string) {
 		return "FILE_EXTRACT_UNSUPPORTED_ENTRY", "压缩包包含链接或特殊文件，已拒绝解压"
 	case errors.Is(cause, filemanager.ErrArchiveLimitExceeded):
 		return "FILE_EXTRACT_LIMIT_EXCEEDED", "压缩包展开后超过文件数量或容量限制"
-	case errors.Is(cause, filemanager.ErrArchiveTargetConflict), errors.Is(cause, fs.ErrExist):
+	case errors.Is(cause, filemanager.ErrArchiveTargetConflict), errors.Is(cause, fs.ErrExist),
+		errors.Is(cause, syscall.EISDIR), errors.Is(cause, syscall.ENOTEMPTY):
 		return "FILE_EXTRACT_TARGET_CONFLICT", "目标目录存在同名文件，请确认覆盖后重试"
 	case errors.Is(cause, filemanager.ErrArchiveRollbackFailed):
 		return "FILE_EXTRACT_ROLLBACK_FAILED", "解压提交失败且未能完整回滚，请检查目标目录"
-	case errors.Is(cause, fs.ErrPermission), errors.Is(cause, syscall.EROFS):
+	case errors.Is(cause, fs.ErrPermission), errors.Is(cause, syscall.EPERM), errors.Is(cause, syscall.EROFS):
 		return "FILE_EXTRACT_PERMISSION_DENIED", "无权读取压缩文件或写入目标目录"
 	case errors.Is(cause, fs.ErrNotExist):
 		return "FILE_EXTRACT_PATH_NOT_FOUND", "压缩文件或目标父目录不存在"
 	case errors.Is(cause, filemanager.ErrQuotaExceeded), errors.Is(cause, filemanager.ErrInsufficientSpace),
 		errors.Is(cause, syscall.ENOSPC), errors.Is(cause, syscall.EDQUOT):
 		return "FILE_EXTRACT_INSUFFICIENT_SPACE", "解压所需存储容量不足"
+	case errors.Is(cause, syscall.EXDEV):
+		return "FILE_EXTRACT_FILESYSTEM_BOUNDARY", "解压提交失败：源文件与目标目录不在同一文件系统"
+	case errors.Is(cause, syscall.ENOSYS), errors.Is(cause, syscall.EOPNOTSUPP):
+		return "FILE_EXTRACT_FILESYSTEM_UNSUPPORTED", "解压提交失败：当前文件系统不支持安全提交操作"
+	case errors.Is(cause, syscall.EIO):
+		return "FILE_EXTRACT_FILESYSTEM_IO", "解压失败：文件系统读写异常，请检查磁盘或存储状态"
+	case errors.Is(cause, syscall.EINVAL):
+		return "FILE_EXTRACT_INVALID_OPERATION", "解压提交失败：文件系统拒绝当前操作，请检查目标目录和文件系统状态"
 	case errors.Is(cause, filemanager.ErrArchiveInvalid):
 		return "FILE_EXTRACT_INVALID_ARCHIVE", "压缩文件损坏或内容无效"
 	case errors.Is(cause, filemanager.ErrInvalidPath), errors.Is(cause, filemanager.ErrReservedPath),
 		errors.Is(cause, filemanager.ErrRootOperation), errors.Is(cause, filemanager.ErrNotRegular), errors.Is(cause, syscall.ENOTDIR):
 		return "FILE_EXTRACT_INVALID_PATH", "解压源或目标路径无效"
 	default:
-		return "FILE_EXTRACT_FAILED", "文件解压失败"
+		return "FILE_EXTRACT_FAILED", "文件解压失败：执行阶段未能完成，请检查源文件完整性、目标目录权限、剩余空间和文件系统状态后重试"
 	}
 }
 
