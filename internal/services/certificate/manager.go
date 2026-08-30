@@ -943,13 +943,28 @@ func acmeTaskErrorCode(task *models.CertificateTask, err error) string {
 	if err == nil {
 		return "ACME_ISSUE_FAILED"
 	}
+	lower := strings.ToLower(err.Error())
 	if task != nil && defaultChallengeType(task.ChallengeType) == ChallengeDNS01 {
-		if strings.Contains(strings.ToLower(err.Error()), "dns account") || strings.Contains(strings.ToLower(err.Error()), "dns provider") {
+		if strings.Contains(lower, "dns account") || strings.Contains(lower, "dns provider") {
 			return "DNS_ACCOUNT_INVALID"
 		}
 		return "DNS_CHALLENGE_FAILED"
 	}
-	if strings.Contains(strings.ToLower(err.Error()), "deployer") || strings.Contains(strings.ToLower(err.Error()), "http-01 route") {
+	if task != nil && defaultChallengeType(task.ChallengeType) == ChallengeHTTP01 {
+		switch {
+		case isDNSLookupNotFoundError(lower):
+			return "HTTP01_DNS_NOT_FOUND"
+		case certificateHTTPResponseStatus(err.Error()) == 403:
+			return "HTTP01_CHALLENGE_FORBIDDEN"
+		case certificateHTTPResponseStatus(err.Error()) == 404:
+			return "HTTP01_CHALLENGE_NOT_FOUND"
+		case strings.Contains(lower, "http-01 dns lookup"):
+			return "HTTP01_DNS_LOOKUP_FAILED"
+		case strings.Contains(lower, "http-01 challenge"):
+			return "HTTP01_CHALLENGE_FAILED"
+		}
+	}
+	if strings.Contains(lower, "deployer") || strings.Contains(lower, "http-01 route") {
 		return "CHALLENGE_CONFIG_FAILED"
 	}
 	return "ACME_ISSUE_FAILED"
@@ -1057,7 +1072,9 @@ func (manager *Manager) failTask(task *models.CertificateTask, code string, err 
 
 func isManagedCertificateTask(operation string) bool {
 	switch operation {
-	case models.CertificateTaskOperationUpload,
+	case models.CertificateTaskOperationIssue,
+		models.CertificateTaskOperationRenew,
+		models.CertificateTaskOperationUpload,
 		models.CertificateTaskOperationBind,
 		models.CertificateTaskOperationManagedIssue,
 		models.CertificateTaskOperationManagedRenew:
@@ -1110,6 +1127,26 @@ func SafeCertificateErrorDetail(err error) string {
 		return "现有证书不包含网站的全部域名，请重新上传或签发同时覆盖这些域名的证书。"
 	case strings.Contains(lower, "website is disabled"), strings.Contains(lower, "网站已停用"):
 		return "网站已停用，请先启用网站后再绑定证书。"
+	case isDNSLookupNotFoundError(lower):
+		domain := certificateErrorDomain(err.Error())
+		if domain != "" {
+			return fmt.Sprintf("域名 %s 没有有效的 A/AAAA DNS 记录，请先将域名解析到本服务器后再申请 HTTP-01 证书。", domain)
+		}
+		return "域名没有有效的 A/AAAA DNS 记录，请先将域名解析到本服务器后再申请 HTTP-01 证书。"
+	case certificateHTTPResponseStatus(err.Error()) == 403:
+		domain := certificateErrorDomain(err.Error())
+		if domain != "" {
+			return fmt.Sprintf("域名 %s 的 HTTP-01 验证地址返回 403，请检查 DNS 是否指向本服务器，以及 CDN/WAF 是否拦截了验证请求。", domain)
+		}
+		return "HTTP-01 验证地址返回 403，请检查 DNS 是否指向本服务器，以及 CDN/WAF 是否拦截了验证请求。"
+	case certificateHTTPResponseStatus(err.Error()) == 404:
+		domain := certificateErrorDomain(err.Error())
+		if domain != "" {
+			return fmt.Sprintf("域名 %s 的 HTTP-01 验证地址返回 404，请检查网站是否启用、80 端口是否可访问，以及 ACME 验证路由是否已发布。", domain)
+		}
+		return "HTTP-01 验证地址返回 404，请检查网站是否启用、80 端口是否可访问，以及 ACME 验证路由是否已发布。"
+	case strings.Contains(lower, "publish http-01 route"):
+		return "HTTP-01 验证路由发布失败，请检查网站所属 Web Server、配置校验和服务状态后重试。"
 	case strings.Contains(lower, "permission denied"), strings.Contains(lower, "operation not permitted"):
 		return "证书文件或存储目录不可写，请检查面板运行用户的目录权限后重试。"
 	case strings.Contains(lower, "no such file or directory"):
@@ -1145,6 +1182,62 @@ func SafeCertificateErrorDetail(err error) string {
 	default:
 		return "证书资源创建失败，请查看证书任务详情或任务日志获取具体原因。"
 	}
+}
+
+func isDNSLookupNotFoundError(lower string) bool {
+	return strings.Contains(lower, "no a or aaaa record") ||
+		strings.Contains(lower, "nxdomain") ||
+		strings.Contains(lower, "no such host")
+}
+
+func certificateHTTPResponseStatus(value string) int {
+	lower := strings.ToLower(value)
+	if marker := "returned http "; strings.Contains(lower, marker) {
+		start := strings.Index(lower, marker) + len(marker)
+		fields := strings.Fields(lower[start:])
+		if len(fields) == 0 {
+			return 0
+		}
+		status, _ := strconv.Atoi(fields[0])
+		return status
+	}
+	marker := "invalid response from"
+	start := strings.Index(lower, marker)
+	if start < 0 {
+		return 0
+	}
+	response := lower[start+len(marker):]
+	separator := strings.Index(response, ": ")
+	if separator < 0 {
+		return 0
+	}
+	fields := strings.Fields(response[separator+2:])
+	if len(fields) == 0 {
+		return 0
+	}
+	status, _ := strconv.Atoi(fields[0])
+	return status
+}
+
+func certificateErrorDomain(value string) string {
+	lower := strings.ToLower(value)
+	markers := []string{"validate domain ", "http-01 challenge self-check for "}
+	for _, marker := range markers {
+		start := strings.Index(lower, marker)
+		if start < 0 {
+			continue
+		}
+		start += len(marker)
+		end := strings.IndexAny(value[start:], ": ")
+		if end < 0 {
+			end = len(value) - start
+		}
+		domain := strings.TrimSpace(value[start : start+end])
+		if domain != "" {
+			return domain
+		}
+	}
+	return ""
 }
 
 func (manager *Manager) finish(taskID, status, code, message string) error {

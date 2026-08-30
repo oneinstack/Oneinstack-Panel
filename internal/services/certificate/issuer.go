@@ -64,6 +64,11 @@ func (issuer *ACMEIssuer) Issue(
 		return nil, err
 	}
 	request.ChallengeType = defaultChallengeType(request.ChallengeType)
+	if request.ChallengeType == ChallengeHTTP01 {
+		if err := validateHTTP01DNS(ctx, request.Domains); err != nil {
+			return nil, err
+		}
+	}
 	report = nonNilReporter(report)
 	report(12, "正在加载 ACME 账户")
 	accountKey, err := loadOrCreateECKey(request.AccountKeyPath)
@@ -243,6 +248,33 @@ func validateIssueRequest(request IssueRequest) error {
 		return errors.New("DNS provider is required for DNS-01 issuance")
 	}
 	return nil
+}
+
+func validateHTTP01DNS(ctx context.Context, domains []string) error {
+	for _, domain := range domains {
+		lookupCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		addresses, err := net.DefaultResolver.LookupIPAddr(lookupCtx, domain)
+		cancel()
+		if err != nil {
+			if isDNSNameNotFound(err) {
+				return fmt.Errorf("HTTP-01 DNS lookup for %s failed: no A or AAAA record", domain)
+			}
+			return fmt.Errorf("HTTP-01 DNS lookup for %s failed: %w", domain, err)
+		}
+		if len(addresses) == 0 {
+			return fmt.Errorf("HTTP-01 DNS lookup for %s failed: no A or AAAA record", domain)
+		}
+	}
+	return nil
+}
+
+func isDNSNameNotFound(err error) bool {
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) && dnsErr.IsNotFound {
+		return true
+	}
+	lower := strings.ToLower(err.Error())
+	return strings.Contains(lower, "no such host") || strings.Contains(lower, "nxdomain")
 }
 
 func findChallenge(authorization *acme.Authorization, challengeType string) *acme.Challenge {
