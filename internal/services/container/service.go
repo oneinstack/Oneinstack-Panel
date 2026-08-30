@@ -1638,13 +1638,50 @@ func (s *Service) DeleteVolume(ctx context.Context, name string, confirm bool) e
 }
 
 func (s *Service) ListComposeProjects(ctx context.Context) ([]map[string]any, error) {
-	out, err := s.run(ctx, "compose", "ls", "--format", "json")
+	// Keep this check aligned with Runtime: a healthy Docker Engine does not
+	// imply that the optional Compose CLI plugin is installed. Checking the
+	// capability first also avoids depending on the exact stderr wording of
+	// different Docker CLI versions.
+	if out, err := s.run(ctx, "compose", "version", "--short"); err != nil || strings.TrimSpace(out) == "" {
+		return []map[string]any{}, nil
+	}
+
+	out, err := s.run(ctx, "compose", "ls", "--all", "--format", "json")
 	if err != nil {
 		return nil, err
 	}
+	trimmed := strings.TrimSpace(out)
+	if trimmed == "" || trimmed == "null" {
+		return []map[string]any{}, nil
+	}
+
 	var items []map[string]any
-	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &items); err != nil {
-		return nil, err
+	if err := json.Unmarshal([]byte(trimmed), &items); err == nil {
+		if items == nil {
+			return []map[string]any{}, nil
+		}
+		return items, nil
+	}
+
+	// Older Compose implementations may emit one JSON object per line instead
+	// of a JSON array. Accept that form as well so an empty or single-project
+	// host does not make the whole Compose tab fail to load.
+	items = make([]map[string]any, 0)
+	scanner := bufio.NewScanner(strings.NewReader(trimmed))
+	scanner.Buffer(make([]byte, 64*1024), 8*1024*1024)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		var item map[string]any
+		if err := json.Unmarshal([]byte(line), &item); err != nil {
+			return nil, fmt.Errorf("Docker Compose 项目列表格式无效: %w", err)
+		}
+		items = append(items, item)
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("Docker Compose 项目列表过长: %w", err)
 	}
 	return items, nil
 }
@@ -2487,6 +2524,10 @@ func (s *Service) linesJSON(ctx context.Context, args ...string) ([]map[string]a
 	}
 	items := make([]map[string]any, 0)
 	scanner := bufio.NewScanner(strings.NewReader(out))
+	// Docker's JSON format includes fields such as labels, mounts, and
+	// networks. A single container can therefore exceed Scanner's 64 KiB
+	// default token limit and make the whole initial resource list fail.
+	scanner.Buffer(make([]byte, 64*1024), 8*1024*1024)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
