@@ -1047,7 +1047,7 @@ func executeOperation(ctx context.Context, operation string, payload json.RawMes
 			recordWebsiteOperationAudit(snapshot.ID, "failed", err.Error(), userID, requestIP)
 			return nil, err
 		}
-		if err := configsnapshot.Default().MarkWithAfter(snapshot.ID, result, "succeeded", ""); err != nil {
+		if err := configsnapshot.Default().MarkWithAfter(snapshot.ID, result.WebServerConfigDocument, "succeeded", ""); err != nil {
 			_ = configsnapshot.Default().Mark(snapshot.ID, "failed", err.Error())
 			return nil, err
 		}
@@ -1370,7 +1370,7 @@ func executeWebServerConfigUpdate(
 		recordWebServerConfigAudit(snapshot.ID, request.Path, "failed", err.Error(), userID, requestIP)
 		return nil, err
 	}
-	if err := snapshotService.MarkWithAfter(snapshot.ID, result, "succeeded", ""); err != nil {
+	if err := snapshotService.MarkWithAfter(snapshot.ID, result.WebServerConfigDocument, "succeeded", ""); err != nil {
 		_ = snapshotService.Mark(snapshot.ID, "failed", err.Error())
 		return nil, err
 	}

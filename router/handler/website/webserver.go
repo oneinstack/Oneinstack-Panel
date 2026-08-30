@@ -94,7 +94,7 @@ func UpdateWebServerConfig(c *gin.Context) {
 		handleWebServerConfigError(c, err, "保存 Web 服务器配置失败")
 		return
 	}
-	if err := configsnapshot.Default().MarkWithAfter(snapshot.ID, result, "succeeded", ""); err != nil {
+	if err := configsnapshot.Default().MarkWithAfter(snapshot.ID, result.WebServerConfigDocument, "succeeded", ""); err != nil {
 		_ = configsnapshot.Default().Mark(snapshot.ID, "failed", err.Error())
 		configsnapshotHandler.RecordAudit(c, snapshot, "failed", "保存 Web 服务器配置快照最终状态失败")
 		handleWebServerConfigError(c, err, "更新 Web 服务器配置快照状态失败")

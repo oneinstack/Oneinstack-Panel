@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"oneinstack/core"
 	"oneinstack/internal/models"
@@ -137,12 +139,12 @@ func RestorePreview(c *gin.Context) {
 		handleSnapshotError(c, err, "读取回滚预览失败")
 		return
 	}
-	current, _, err := currentResource(document.Snapshot.ResourceType, document.Snapshot.ResourceID)
+	current, _, err := currentSnapshotResource(document)
 	if err != nil {
-		handleSnapshotError(c, err, "读取当前配置失败")
+		core.HandleError(c, restoreError(core.ErrConfigReadFailed, document, "读取当前配置", err))
 		return
 	}
-	drift := !configsnapshot.Equal(current, document.After)
+	drift := !configsnapshot.Equal(current, snapshotAfter(document))
 	core.HandleSuccess(c, gin.H{"snapshot": document.Snapshot, "current": current, "target": document.Before, "diff": document.Diff, "hasDrift": drift, "requiresForce": drift})
 }
 
@@ -159,12 +161,12 @@ func Restore(c *gin.Context) {
 		handleSnapshotError(c, err, "读取配置快照失败")
 		return
 	}
-	current, _, err := currentResource(document.Snapshot.ResourceType, document.Snapshot.ResourceID)
+	current, _, err := currentSnapshotResource(document)
 	if err != nil {
-		handleSnapshotError(c, err, "读取当前配置失败")
+		core.HandleError(c, restoreError(core.ErrConfigReadFailed, document, "读取当前配置", err))
 		return
 	}
-	drift := !configsnapshot.Equal(current, document.After)
+	drift := !configsnapshot.Equal(current, snapshotAfter(document))
 	if drift && !request.Force {
 		core.HandleError(c, core.NewError(core.ErrConflict, "检测到配置已被外部修改，请先确认强制回滚"))
 		return
@@ -172,13 +174,13 @@ func Restore(c *gin.Context) {
 	userID := snapshotUser(c)
 	restoreSnapshot, err := configsnapshot.Default().Create(configsnapshot.CreateInput{ResourceType: document.Snapshot.ResourceType, ResourceID: document.Snapshot.ResourceID, Operation: "restore", Before: current, After: document.Before, RequestedBy: userID})
 	if err != nil {
-		core.HandleError(c, core.WrapError(err, core.ErrInternalError, "创建回滚快照失败"))
+		core.HandleError(c, restoreError(core.ErrInternalError, document, "创建回滚快照", err))
 		return
 	}
-	if err := applyResource(document.Snapshot.ResourceType, document.Snapshot.ResourceID, document.Before); err != nil {
+	if err := applyResource(document.Snapshot.ResourceType, document.Snapshot.ResourceID, document.Snapshot.Operation, document.Before, current); err != nil {
 		_ = configsnapshot.Default().Mark(restoreSnapshot.ID, "failed", err.Error())
 		RecordAudit(c, restoreSnapshot, "failed", err.Error())
-		core.HandleError(c, core.WrapError(err, core.ErrConfigError, "执行配置回滚失败"))
+		core.HandleError(c, restoreError(core.ErrConfigError, document, "应用目标配置", err))
 		return
 	}
 	_ = configsnapshot.Default().Mark(restoreSnapshot.ID, "succeeded", "")
@@ -186,7 +188,105 @@ func Restore(c *gin.Context) {
 	c.JSON(http.StatusAccepted, core.SuccessResponseForContext(c, gin.H{"snapshotId": restoreSnapshot.ID, "status": "succeeded", "operation": "restore"}))
 }
 
+func currentSnapshotResource(document configsnapshot.Document) (any, bool, error) {
+	if strings.EqualFold(strings.TrimSpace(document.Snapshot.ResourceType), models.ConfigurationSnapshotResourceWebsite) {
+		id, err := strconv.ParseInt(document.Snapshot.ResourceID, 10, 64)
+		if err != nil {
+			return nil, false, err
+		}
+		service, err := websiteService.DefaultService()
+		if err != nil {
+			return nil, false, err
+		}
+		switch websiteSnapshotKind(document) {
+		case "config":
+			current, err := service.ReadManagedConfig(context.Background(), id)
+			return current, false, err
+		case "model":
+			current, err := service.Get(id)
+			return current, false, err
+		default:
+			current, err := service.GetSettings(id)
+			if err != nil {
+				return nil, false, err
+			}
+			return current.Settings, false, nil
+		}
+	}
+	return currentResource(document.Snapshot.ResourceType, document.Snapshot.ResourceID)
+}
+
+func snapshotAfter(document configsnapshot.Document) any {
+	if strings.EqualFold(strings.TrimSpace(document.Snapshot.ResourceType), models.ConfigurationSnapshotResourcePanelAccess) {
+		return normalizePanelAccessSnapshot(document.After)
+	}
+	if document.Snapshot.ResourceType != models.ConfigurationSnapshotResourceWebsite &&
+		!isWebServerConfigResource(document.Snapshot.ResourceType) {
+		return document.After
+	}
+	if strings.EqualFold(strings.TrimSpace(document.Snapshot.ResourceType), models.ConfigurationSnapshotResourceWebsite) &&
+		websiteSnapshotKind(document) != "config" {
+		return document.After
+	}
+	var result websiteService.WebServerConfigUpdateResult
+	payload, err := json.Marshal(document.After)
+	if err != nil || json.Unmarshal(payload, &result) != nil || strings.TrimSpace(result.Path) == "" {
+		return document.After
+	}
+	return result.WebServerConfigDocument
+}
+
+func websiteSnapshotKind(document configsnapshot.Document) string {
+	switch strings.ToLower(strings.TrimSpace(document.Snapshot.Operation)) {
+	case "config.update":
+		return "config"
+	case "toggle", "website.update":
+		return "model"
+	case "settings.update":
+		return "settings"
+	}
+	if isWebsiteModelValue(document.Before) {
+		return "model"
+	}
+	return "settings"
+}
+
+func isWebsiteModelValue(value any) bool {
+	payload, err := json.Marshal(value)
+	if err != nil {
+		return false
+	}
+	var object map[string]any
+	if err := json.Unmarshal(payload, &object); err != nil {
+		return false
+	}
+	_, hasID := object["id"]
+	return hasID
+}
+
+func normalizePanelAccessSnapshot(value any) any {
+	payload, err := json.Marshal(value)
+	if err != nil {
+		return value
+	}
+	var request systemservice.UpdatePanelNetworkRequest
+	if err := json.Unmarshal(payload, &request); err != nil {
+		return value
+	}
+	return request
+}
+
+func isWebServerConfigResource(resourceType string) bool {
+	switch strings.ToLower(strings.TrimSpace(resourceType)) {
+	case "nginx", "openresty", "tengine", "caddy", "apache", "web-server":
+		return true
+	default:
+		return false
+	}
+}
+
 func currentResource(resourceType, resourceID string) (any, bool, error) {
+	resourceType = strings.ToLower(strings.TrimSpace(resourceType))
 	switch resourceType {
 	case "website":
 		id, err := strconv.ParseInt(resourceID, 10, 64)
@@ -205,7 +305,7 @@ func currentResource(resourceType, resourceID string) (any, bool, error) {
 	case "firewall":
 		rules, err := safeservice.NewDefaultService().ExportRules("")
 		return rules, false, err
-	case "nginx":
+	case "nginx", "openresty", "tengine", "caddy", "apache", "web-server":
 		manager, err := websiteService.NewDefaultWebServerConfigManager()
 		if err != nil {
 			return nil, false, err
@@ -223,12 +323,67 @@ func currentResource(resourceType, resourceID string) (any, bool, error) {
 	}
 }
 
-func applyResource(resourceType, resourceID string, target any) error {
+func applyResource(resourceType, resourceID, operation string, target, current any) error {
+	resourceType = strings.ToLower(strings.TrimSpace(resourceType))
 	switch resourceType {
 	case "website":
 		id, err := strconv.ParseInt(resourceID, 10, 64)
 		if err != nil {
 			return err
+		}
+		if websiteSnapshotKind(configsnapshot.Document{
+			Snapshot: models.ConfigurationSnapshot{ResourceType: resourceType, ResourceID: resourceID, Operation: operation},
+			Before:   target,
+		}) == "config" {
+			payload, err := json.Marshal(target)
+			if err != nil {
+				return err
+			}
+			var document websiteService.WebServerConfigDocument
+			if err := json.Unmarshal(payload, &document); err != nil {
+				return err
+			}
+			currentDocument, ok := current.(websiteService.WebServerConfigDocument)
+			if !ok || strings.TrimSpace(currentDocument.Revision) == "" {
+				return errors.New("当前网站配置版本无效")
+			}
+			service, err := websiteService.DefaultService()
+			if err != nil {
+				return err
+			}
+			_, err = service.UpdateManagedConfig(context.Background(), id, document.Content, currentDocument.Revision)
+			return err
+		}
+		if operation == "toggle" {
+			payload, err := json.Marshal(target)
+			if err != nil {
+				return err
+			}
+			var site models.Website
+			if err := json.Unmarshal(payload, &site); err != nil {
+				return err
+			}
+			service, err := websiteService.DefaultService()
+			if err != nil {
+				return err
+			}
+			_, err = service.SetEnabled(context.Background(), id, site.Enabled)
+			return err
+		}
+		if isWebsiteModelValue(target) {
+			payload, err := json.Marshal(target)
+			if err != nil {
+				return err
+			}
+			var site models.Website
+			if err := json.Unmarshal(payload, &site); err != nil {
+				return err
+			}
+			service, err := websiteService.DefaultService()
+			if err != nil {
+				return err
+			}
+			return service.Update(context.Background(), &site)
 		}
 		payload, err := json.Marshal(target)
 		if err != nil {
@@ -257,7 +412,7 @@ func applyResource(resourceType, resourceID string, target any) error {
 			return errors.New("不能恢复为空的防火墙规则集")
 		}
 		return safeservice.NewDefaultService().ReplaceRules(context.Background(), rules)
-	case "nginx":
+	case "nginx", "openresty", "tengine", "caddy", "apache", "web-server":
 		payload, err := json.Marshal(target)
 		if err != nil {
 			return err
@@ -270,7 +425,13 @@ func applyResource(resourceType, resourceID string, target any) error {
 		if err != nil {
 			return err
 		}
-		_, err = manager.Update(context.Background(), websiteService.WebServerConfigUpdate{Path: document.Path, Content: document.Content, Revision: document.Revision})
+		currentDocument, ok := current.(websiteService.WebServerConfigDocument)
+		if !ok || strings.TrimSpace(currentDocument.Revision) == "" {
+			return errors.New("当前 Web Server 配置版本无效")
+		}
+		// The snapshot revision identifies the historical target, while the
+		// update precondition must match the current live file.
+		_, err = manager.Update(context.Background(), websiteService.WebServerConfigUpdate{Path: document.Path, Content: document.Content, Revision: currentDocument.Revision})
 		return err
 	case "panel_access":
 		payload, err := json.Marshal(target)
@@ -318,6 +479,23 @@ func Delete(c *gin.Context) {
 }
 
 func snapshotUser(c *gin.Context) int64 { id, _ := middleware.AuthenticatedUserID(c); return id }
+
+func restoreError(code core.ErrorCode, document configsnapshot.Document, phase string, err error) *core.AppError {
+	resourceType := strings.TrimSpace(document.Snapshot.ResourceType)
+	if resourceType == "" {
+		resourceType = "unknown"
+	}
+	operation := strings.TrimSpace(document.Snapshot.Operation)
+	if operation == "" {
+		operation = "unknown"
+	}
+	cause := "未返回底层错误"
+	if err != nil && strings.TrimSpace(err.Error()) != "" {
+		cause = strings.TrimSpace(err.Error())
+	}
+	detail := fmt.Sprintf("回滚资源类型=%s、原操作=%s，在%s阶段失败；具体原因：%s", resourceType, operation, phase, cause)
+	return core.NewErrorWithDetail(code, "执行配置回滚失败", detail)
+}
 
 func handleSnapshotError(c *gin.Context, err error, message string) {
 	status := core.ErrInternalError

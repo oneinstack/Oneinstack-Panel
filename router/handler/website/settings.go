@@ -64,7 +64,7 @@ func UpdateWebsiteSettings(c *gin.Context) {
 	}
 	beforeJSON, _ := json.Marshal(before)
 	snapshot, err := configsnapshot.Default().Create(configsnapshot.CreateInput{
-		ResourceType: "website", ResourceID: strconv.FormatInt(id, 10), Operation: "update",
+		ResourceType: "website", ResourceID: strconv.FormatInt(id, 10), Operation: "settings.update",
 		Before: before.Settings, After: request, RequestedBy: userID, Artifact: beforeJSON,
 		ArtifactName: "website-before.json",
 	})
