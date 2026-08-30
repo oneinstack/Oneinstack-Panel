@@ -36,11 +36,13 @@ type BuildTaskRequest struct {
 }
 
 type TaskRequest struct {
-	Operation string                  `json:"operation"`
-	Image     string                  `json:"image,omitempty"`
-	Create    *ContainerCreateRequest `json:"create,omitempty"`
-	Build     *BuildTaskRequest       `json:"build,omitempty"`
-	Compose   *ComposeTaskRequest     `json:"compose,omitempty"`
+	Operation   string                  `json:"operation"`
+	Image       string                  `json:"image,omitempty"`
+	ContainerID string                  `json:"containerId,omitempty"`
+	Network     string                  `json:"network,omitempty"`
+	Create      *ContainerCreateRequest `json:"create,omitempty"`
+	Build       *BuildTaskRequest       `json:"build,omitempty"`
+	Compose     *ComposeTaskRequest     `json:"compose,omitempty"`
 }
 
 type TaskListOptions struct {
@@ -155,12 +157,17 @@ func (m *CreateTaskManager) Submit(request TaskRequest, requestedBy int64) (*mod
 	if request.Compose != nil {
 		name, image = request.Compose.ProjectName, ""
 	}
+	if isNetworkOperation(request.Operation) {
+		name, image = request.ContainerID, request.Network
+	}
 	var active int64
 	query := db.Model(&models.ContainerTask{}).Where("status IN ?", models.ActiveContainerTaskStatuses())
 	if isComposeOperation(request.Operation) {
 		query = query.Where("name = ? AND operation LIKE ?", name, "compose.%")
 	} else if request.Operation == models.ContainerTaskOperationCreate {
 		query = query.Where("name = ?", name)
+	} else if isNetworkOperation(request.Operation) {
+		query = query.Where("name = ? AND operation LIKE ?", name, "network.%")
 	} else {
 		query = query.Where("operation = ? AND image = ?", request.Operation, image)
 	}
@@ -179,7 +186,7 @@ func (m *CreateTaskManager) Submit(request TaskRequest, requestedBy int64) (*mod
 	}
 	now := time.Now().UTC()
 	task := &models.ContainerTask{
-		ID: uuid.NewString(), Operation: request.Operation, Name: name, Image: image,
+		ID: uuid.NewString(), Operation: request.Operation, Name: name, Image: image, ContainerID: request.ContainerID, Network: request.Network,
 		Status: models.ContainerTaskStatusQueued, Phase: models.ContainerTaskStatusQueued,
 		Message: "任务已进入队列", RequestedBy: requestedBy, RequestJSON: string(requestJSON),
 		EventSeq: 1, CreatedAt: now, UpdatedAt: now,
@@ -220,6 +227,15 @@ func (m *CreateTaskManager) validateTaskRequest(request TaskRequest) error {
 		}
 		if err := validateContainerCreateRequest(*request.Create); err != nil {
 			return err
+		}
+	case models.ContainerTaskOperationNetworkConnect,
+		models.ContainerTaskOperationNetworkDisconnect,
+		models.ContainerTaskOperationNetworkReconnect:
+		if _, err := validateReference(request.ContainerID); err != nil {
+			return fmt.Errorf("容器标识无效: %w", err)
+		}
+		if _, err := validateName(request.Network); err != nil {
+			return fmt.Errorf("网络名称无效: %w", err)
 		}
 	case models.ContainerTaskOperationComposeCreate,
 		models.ContainerTaskOperationComposeEdit,
@@ -454,6 +470,7 @@ func (m *CreateTaskManager) run(taskID string) {
 		err = m.service.BuildImageStream(ctx, b.Name, b.Dockerfile, b.ContextPath, b.DockerfilePath, b.Labels, b.LabelsText, emit)
 	case models.ContainerTaskOperationCreate:
 		m.phase(task.ID, models.ContainerTaskStatusResolving, 3, "正在检查镜像")
+		var containerID string
 		available, checkErr := m.service.ImageAvailable(ctx, request.Create.Image)
 		if checkErr != nil {
 			err = checkErr
@@ -464,16 +481,23 @@ func (m *CreateTaskManager) run(taskID string) {
 			}
 			if err == nil {
 				m.phase(task.ID, models.ContainerTaskStatusCreating, 75, "正在创建容器")
-				var id string
-				id, err = m.service.CreateContainer(ctx, *request.Create)
+				containerID, err = m.service.CreateContainer(ctx, *request.Create)
 				if err == nil {
-					m.update(task.ID, map[string]any{"container_id": id})
+					m.update(task.ID, map[string]any{"container_id": containerID})
 				}
 			}
 			if err == nil {
 				m.phase(task.ID, models.ContainerTaskStatusVerifying, 95, "正在验证容器")
+				if len(request.Create.Networks) > 0 {
+					err = m.service.VerifyContainerNetworks(ctx, containerID, request.Create.Networks)
+				}
 			}
 		}
+	case models.ContainerTaskOperationNetworkConnect,
+		models.ContainerTaskOperationNetworkDisconnect,
+		models.ContainerTaskOperationNetworkReconnect:
+		m.phase(task.ID, models.ContainerTaskStatusCreating, 20, "正在调整容器网络")
+		err = m.service.ContainerNetworkAction(ctx, request.ContainerID, request.Network, networkOperationAction(request.Operation))
 	case models.ContainerTaskOperationComposeCreate,
 		models.ContainerTaskOperationComposeEdit,
 		models.ContainerTaskOperationComposeStart,
@@ -514,11 +538,29 @@ func (m *CreateTaskManager) run(taskID string) {
 			code, message := composeTaskFailure(err)
 			m.fail(task.ID, code, message)
 		} else {
-			m.fail(task.ID, "DOCKER_OPERATION_FAILED", err.Error())
+			code := "DOCKER_OPERATION_FAILED"
+			switch {
+			case errors.Is(err, ErrContainerNetworkAttachmentFailed):
+				code = "CONTAINER_NETWORK_ATTACHMENT_FAILED"
+			case errors.Is(err, ErrContainerNetworkAlreadyAttached):
+				code = "CONTAINER_NETWORK_ALREADY_ATTACHED"
+			case errors.Is(err, ErrContainerNetworkNotAttached):
+				code = "CONTAINER_NETWORK_NOT_ATTACHED"
+			case isNetworkOperation(request.Operation):
+				code = "DOCKER_NETWORK_OPERATION_FAILED"
+			}
+			m.fail(task.ID, code, dockerDiagnosticSummary(err.Error()))
 		}
 		return
 	}
-	m.finish(task.ID, models.ContainerTaskStatusSucceeded, "", "容器任务执行成功")
+	switch {
+	case request.Operation == models.ContainerTaskOperationCreate:
+		m.finish(task.ID, models.ContainerTaskStatusSucceeded, "CONTAINER_CREATED", "容器创建成功，尚未启动")
+	case isNetworkOperation(request.Operation):
+		m.finish(task.ID, models.ContainerTaskStatusSucceeded, "CONTAINER_NETWORK_UPDATED", "容器网络调整成功")
+	default:
+		m.finish(task.ID, models.ContainerTaskStatusSucceeded, "", "容器任务执行成功")
+	}
 }
 
 func (m *CreateTaskManager) composeLineEmitter(taskID, operation string) func(string) {
@@ -773,5 +815,29 @@ func messageToStatus(message string) string {
 		return models.ContainerTaskStatusCreating
 	default:
 		return models.ContainerTaskStatusResolving
+	}
+}
+
+func isNetworkOperation(operation string) bool {
+	switch operation {
+	case models.ContainerTaskOperationNetworkConnect,
+		models.ContainerTaskOperationNetworkDisconnect,
+		models.ContainerTaskOperationNetworkReconnect:
+		return true
+	default:
+		return false
+	}
+}
+
+func networkOperationAction(operation string) string {
+	switch operation {
+	case models.ContainerTaskOperationNetworkConnect:
+		return "connect"
+	case models.ContainerTaskOperationNetworkDisconnect:
+		return "disconnect"
+	case models.ContainerTaskOperationNetworkReconnect:
+		return "reconnect"
+	default:
+		return ""
 	}
 }

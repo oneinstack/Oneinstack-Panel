@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -26,21 +27,26 @@ import (
 )
 
 var (
-	ErrRuntimeUnavailable             = errors.New("container runtime unavailable")
-	ErrInvalidContainerConfig         = errors.New("invalid container configuration")
-	ErrInvalidLogOptions              = errors.New("invalid container log options")
-	ErrInvalidRegistryInput           = errors.New("invalid container registry input")
-	ErrRegistryProbeFailed            = errors.New("container registry probe failed")
-	ErrImagePullFailed                = errors.New("container image pull failed")
-	ErrDockerCommandTimeout           = errors.New("docker command timed out")
-	ErrContainerLogsUnavailable       = errors.New("container logs unavailable")
-	ErrProtectedNetwork               = errors.New("protected container network")
-	ErrContainerStatsTimeout          = errors.New("container stats timed out")
-	ErrContainerStatsPermissionDenied = errors.New("container stats permission denied")
-	ErrContainerStatsNotFound         = errors.New("container stats container not found")
-	ErrContainerStatsEmpty            = errors.New("container stats returned no data")
-	ErrContainerStatsInvalidReference = errors.New("invalid container stats reference")
-	ErrContainerInspectUnavailable    = errors.New("container inspect returned no data")
+	ErrRuntimeUnavailable               = errors.New("container runtime unavailable")
+	ErrInvalidContainerConfig           = errors.New("invalid container configuration")
+	ErrInvalidLogOptions                = errors.New("invalid container log options")
+	ErrInvalidRegistryInput             = errors.New("invalid container registry input")
+	ErrRegistryProbeFailed              = errors.New("container registry probe failed")
+	ErrImagePullFailed                  = errors.New("container image pull failed")
+	ErrDockerCommandTimeout             = errors.New("docker command timed out")
+	ErrContainerLogsUnavailable         = errors.New("container logs unavailable")
+	ErrProtectedNetwork                 = errors.New("protected container network")
+	ErrContainerStatsTimeout            = errors.New("container stats timed out")
+	ErrContainerStatsPermissionDenied   = errors.New("container stats permission denied")
+	ErrContainerStatsNotFound           = errors.New("container stats container not found")
+	ErrContainerStatsEmpty              = errors.New("container stats returned no data")
+	ErrContainerStatsInvalidReference   = errors.New("invalid container stats reference")
+	ErrContainerInspectUnavailable      = errors.New("container inspect returned no data")
+	ErrContainerActionFailed            = errors.New("container action failed")
+	ErrContainerActionObserveTimeout    = errors.New("container action observation timed out")
+	ErrContainerNetworkAttachmentFailed = errors.New("container network attachment failed")
+	ErrContainerNetworkAlreadyAttached  = errors.New("container network already attached")
+	ErrContainerNetworkNotAttached      = errors.New("container network is not attached")
 )
 
 const (
@@ -107,11 +113,50 @@ type ActionRequest struct {
 }
 
 type ContainerActionState struct {
-	Status   string
-	Running  bool
-	Paused   bool
-	ExitCode int
-	Error    string
+	Status           string
+	Running          bool
+	Paused           bool
+	ExitCode         int
+	Error            string
+	NetworkMode      string
+	Networks         []string
+	SandboxID        string
+	NetworkExpected  bool
+	NetworkConnected bool
+}
+
+type ContainerActionError struct {
+	Action string
+	Err    error
+}
+
+func (e *ContainerActionError) Error() string {
+	if e == nil || e.Err == nil {
+		return ErrContainerActionFailed.Error()
+	}
+	return fmt.Sprintf("Docker %s 操作失败: %s", e.Action, dockerDiagnosticSummary(e.Err.Error()))
+}
+
+func (e *ContainerActionError) Unwrap() error {
+	if e == nil {
+		return ErrContainerActionFailed
+	}
+	return e.Err
+}
+
+func (e *ContainerActionError) Is(target error) bool {
+	return target == ErrContainerActionFailed
+}
+
+func ContainerActionFailureDetail(err error) string {
+	if err == nil {
+		return ""
+	}
+	var actionErr *ContainerActionError
+	if errors.As(err, &actionErr) && actionErr != nil && actionErr.Err != nil {
+		return dockerDiagnosticSummary(actionErr.Err.Error())
+	}
+	return dockerDiagnosticSummary(err.Error())
 }
 
 type ImagePullRequest struct {
@@ -746,7 +791,10 @@ func (s *Service) ContainerAction(ctx context.Context, id, action string, force,
 		return fmt.Errorf("不支持的容器操作: %s", action)
 	}
 	_, err = s.run(ctx, args...)
-	return err
+	if err != nil {
+		return &ContainerActionError{Action: action, Err: err}
+	}
+	return nil
 }
 
 // ObserveContainerAction waits for the real Docker state after start/restart.
@@ -770,6 +818,12 @@ func (s *Service) ObserveContainerAction(ctx context.Context, id string) (Contai
 		state, inspectErr := s.inspectContainerState(observeCtx, id)
 		if inspectErr == nil {
 			last = state
+			if state.NetworkExpected && !state.NetworkConnected {
+				return state, nil
+			}
+			if state.Status == "restarting" || state.Status == "exited" || state.Status == "dead" || state.Status == "created" {
+				return state, nil
+			}
 			now := time.Now()
 			if state.Running {
 				if runningSince.IsZero() {
@@ -793,32 +847,99 @@ func (s *Service) ObserveContainerAction(ctx context.Context, id string) (Contai
 			if last.Status == "" {
 				return ContainerActionState{}, fmt.Errorf("容器启动状态探测失败: %w", observeCtx.Err())
 			}
-			return last, nil
+			return ContainerActionState{}, fmt.Errorf("%w: 当前状态=%s，NetworkMode=%s，当前网络=[%s]", ErrContainerActionObserveTimeout, last.Status, last.NetworkMode, strings.Join(last.Networks, ", "))
 		case <-ticker.C:
 		}
 	}
 }
 
 func (s *Service) inspectContainerState(ctx context.Context, id string) (ContainerActionState, error) {
-	out, err := s.run(ctx, "inspect", "--format", "{{json .State}}", id)
+	snapshot, err := s.inspectContainerSnapshot(ctx, id)
 	if err != nil {
 		return ContainerActionState{}, err
 	}
-	var state struct {
+	status := strings.ToLower(strings.TrimSpace(snapshot.State.Status))
+	if status == "" {
+		return ContainerActionState{}, errors.New("容器状态响应为空")
+	}
+	networkMode := strings.TrimSpace(snapshot.HostConfig.NetworkMode)
+	expectedNetwork := expectedContainerNetwork(networkMode)
+	networks := sortedNetworkNames(snapshot.NetworkSettings.Networks)
+	_, networkConnected := snapshot.NetworkSettings.Networks[expectedNetwork]
+	if expectedNetwork == "" {
+		networkConnected = true
+	}
+	return ContainerActionState{
+		Status: status, Running: snapshot.State.Running, Paused: snapshot.State.Paused,
+		ExitCode: snapshot.State.ExitCode, Error: strings.TrimSpace(snapshot.State.Error),
+		NetworkMode: networkMode, Networks: networks, SandboxID: strings.TrimSpace(snapshot.NetworkSettings.SandboxID),
+		NetworkExpected: expectedNetwork != "", NetworkConnected: networkConnected,
+	}, nil
+}
+
+type containerInspectSnapshot struct {
+	State struct {
 		Status   string `json:"Status"`
 		Running  bool   `json:"Running"`
 		Paused   bool   `json:"Paused"`
 		ExitCode int    `json:"ExitCode"`
 		Error    string `json:"Error"`
+	} `json:"State"`
+	HostConfig struct {
+		NetworkMode string `json:"NetworkMode"`
+	} `json:"HostConfig"`
+	NetworkSettings struct {
+		SandboxID string                     `json:"SandboxID"`
+		Networks  map[string]json.RawMessage `json:"Networks"`
+	} `json:"NetworkSettings"`
+}
+
+func (s *Service) inspectContainerSnapshot(ctx context.Context, id string) (containerInspectSnapshot, error) {
+	out, err := s.run(ctx, "inspect", "--format", "{{json .}}", id)
+	if err != nil {
+		return containerInspectSnapshot{}, err
 	}
-	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &state); err != nil {
-		return ContainerActionState{}, fmt.Errorf("容器状态响应无效: %w", err)
+	if strings.TrimSpace(out) == "" {
+		return containerInspectSnapshot{}, ErrContainerInspectUnavailable
 	}
-	status := strings.ToLower(strings.TrimSpace(state.Status))
-	if status == "" {
-		return ContainerActionState{}, errors.New("容器状态响应为空")
+	var item containerInspectSnapshot
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &item); err != nil {
+		return containerInspectSnapshot{}, fmt.Errorf("容器详情响应无效: %w", err)
 	}
-	return ContainerActionState{Status: status, Running: state.Running, Paused: state.Paused, ExitCode: state.ExitCode, Error: strings.TrimSpace(state.Error)}, nil
+	if item.NetworkSettings.Networks == nil {
+		item.NetworkSettings.Networks = map[string]json.RawMessage{}
+	}
+	return item, nil
+}
+
+func expectedContainerNetwork(networkMode string) string {
+	networkMode = strings.TrimSpace(networkMode)
+	switch strings.ToLower(networkMode) {
+	case "", "default", "bridge", "host", "none":
+		return ""
+	}
+	if strings.HasPrefix(strings.ToLower(networkMode), "container:") {
+		return ""
+	}
+	return networkMode
+}
+
+func sortedNetworkNames(networks map[string]json.RawMessage) []string {
+	names := make([]string, 0, len(networks))
+	for name := range networks {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func dockerDiagnosticSummary(message string) string {
+	message = redactContainerLogLine(strings.TrimSpace(message))
+	const maxDiagnosticLength = 4096
+	if len(message) > maxDiagnosticLength {
+		return message[:maxDiagnosticLength] + "..."
+	}
+	return message
 }
 
 func (s *Service) Logs(ctx context.Context, id string, options LogOptions) (string, error) {
@@ -892,12 +1013,18 @@ func (s *Service) containerLogDiagnostic(ctx context.Context, id string, logErr 
 	if state.Error != "" {
 		return fmt.Sprintf("容器启动错误：%s\n", redactContainerLogLine(state.Error)), nil
 	}
+	if state.NetworkExpected && !state.NetworkConnected {
+		return fmt.Sprintf("容器网络端点未连接，NetworkSettings.Networks 中没有目标网络。当前状态：%s，NetworkMode：%s，当前网络：[%s]，日志为空是因为进程尚未完成启动。\n", state.Status, state.NetworkMode, strings.Join(state.Networks, ", ")), nil
+	}
 	if errors.Is(logErr, ErrContainerLogsUnavailable) {
 		status := state.Status
 		if status == "" {
 			status = "未知"
 		}
 		return fmt.Sprintf("Docker 当前日志驱动不支持读取该容器日志。容器状态：%s，退出码：%d。请检查 Docker 日志驱动配置或主机日志。\n", status, state.ExitCode), nil
+	}
+	if state.Status == "created" || state.Status == "restarting" || state.Status == "exited" || state.Status == "dead" {
+		return fmt.Sprintf("容器在主进程产生标准输出前已结束，当前状态：%s，退出码：%d。日志为空不代表启动成功，请查看启动错误和 Docker 事件。\n", state.Status, state.ExitCode), nil
 	}
 	return "", nil
 }
@@ -1323,6 +1450,11 @@ func (s *Service) ListNetworks(ctx context.Context) ([]map[string]any, error) {
 		}
 		if details, inspectErr := s.inspectResource(ctx, "network", name); inspectErr == nil {
 			items[index] = networkSummary(items[index], details)
+		} else {
+			items[index]["health"] = "unhealthy"
+			items[index]["healthCode"] = "NETWORK_INSPECT_FAILED"
+			items[index]["healthMessage"] = "Docker 网络列表中存在该对象，但网络详情读取失败，无法确认其端点和 IPAM 状态"
+			items[index]["connectivityVerified"] = false
 		}
 		markNetworkDeleteCapability(items[index])
 	}
@@ -1330,7 +1462,114 @@ func (s *Service) ListNetworks(ctx context.Context) ([]map[string]any, error) {
 }
 
 func (s *Service) InspectNetwork(ctx context.Context, id string) (map[string]any, error) {
-	return s.inspectResource(ctx, "network", id)
+	details, err := s.inspectResource(ctx, "network", id)
+	if err != nil {
+		return nil, err
+	}
+	return addNetworkHealth(details), nil
+}
+
+func (s *Service) VerifyContainerNetworks(ctx context.Context, id string, expected []string) error {
+	if _, err := validateReference(id); err != nil {
+		return err
+	}
+	snapshot, err := s.inspectContainerSnapshot(ctx, id)
+	if err != nil {
+		return fmt.Errorf("创建后校验容器网络失败: %w", err)
+	}
+	missing := make([]string, 0, len(expected))
+	for _, network := range expected {
+		network, validateErr := validateName(network)
+		if validateErr != nil {
+			return fmt.Errorf("网络名称无效: %w", validateErr)
+		}
+		if _, ok := snapshot.NetworkSettings.Networks[network]; !ok {
+			missing = append(missing, network)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("%w: Docker 已创建容器，但 NetworkSettings.Networks 未发现目标网络 [%s]，当前网络 [%s]，NetworkMode=%s，SandboxID=%s", ErrContainerNetworkAttachmentFailed, strings.Join(missing, ", "), strings.Join(sortedNetworkNames(snapshot.NetworkSettings.Networks), ", "), strings.TrimSpace(snapshot.HostConfig.NetworkMode), strings.TrimSpace(snapshot.NetworkSettings.SandboxID))
+	}
+	return nil
+}
+
+func (s *Service) ContainerNetworkAction(ctx context.Context, id, network, action string) error {
+	if _, err := validateReference(id); err != nil {
+		return err
+	}
+	network, err := validateName(network)
+	if err != nil {
+		return fmt.Errorf("网络名称无效: %w", err)
+	}
+	action = strings.ToLower(strings.TrimSpace(action))
+	if action != "connect" && action != "disconnect" && action != "reconnect" {
+		return fmt.Errorf("不支持的容器网络操作: %s", action)
+	}
+
+	attached, err := s.containerNetworkAttached(ctx, id, network)
+	if err != nil {
+		return fmt.Errorf("读取容器网络状态失败: %w", err)
+	}
+	if action == "connect" {
+		if attached {
+			return fmt.Errorf("%w: 容器已连接网络 %s", ErrContainerNetworkAlreadyAttached, network)
+		}
+		if err := s.runContainerNetworkCommand(ctx, "connect", network, id); err != nil {
+			return err
+		}
+		return s.VerifyContainerNetworks(ctx, id, []string{network})
+	}
+	if action == "disconnect" {
+		if !attached {
+			return fmt.Errorf("%w: 容器未连接网络 %s", ErrContainerNetworkNotAttached, network)
+		}
+		if err := s.runContainerNetworkCommand(ctx, "disconnect", network, id); err != nil {
+			return err
+		}
+		return s.verifyContainerNetwork(ctx, id, network, false)
+	}
+
+	if attached {
+		if err := s.runContainerNetworkCommand(ctx, "disconnect", network, id); err != nil {
+			return err
+		}
+	}
+	if err := s.runContainerNetworkCommand(ctx, "connect", network, id); err != nil {
+		return err
+	}
+	return s.VerifyContainerNetworks(ctx, id, []string{network})
+}
+
+func (s *Service) containerNetworkAttached(ctx context.Context, id, network string) (bool, error) {
+	snapshot, err := s.inspectContainerSnapshot(ctx, id)
+	if err != nil {
+		return false, err
+	}
+	_, ok := snapshot.NetworkSettings.Networks[network]
+	return ok, nil
+}
+
+func (s *Service) verifyContainerNetwork(ctx context.Context, id, network string, expectedAttached bool) error {
+	attached, err := s.containerNetworkAttached(ctx, id, network)
+	if err != nil {
+		return fmt.Errorf("断开后校验容器网络失败: %w", err)
+	}
+	if attached != expectedAttached {
+		return fmt.Errorf("%w: 网络 %s 当前仍%s在 NetworkSettings.Networks 中", ErrContainerNetworkAttachmentFailed, network, map[bool]string{true: "不在", false: "存在"}[expectedAttached])
+	}
+	return nil
+}
+
+func (s *Service) runContainerNetworkCommand(ctx context.Context, action, network, id string) error {
+	args := []string{"network", action}
+	if action == "disconnect" {
+		args = append(args, "-f")
+	}
+	args = append(args, network, id)
+	if _, err := s.run(ctx, args...); err != nil {
+		return fmt.Errorf("Docker 网络%s失败: %w", map[string]string{"connect": "连接", "disconnect": "断开"}[action], err)
+	}
+	return nil
 }
 
 func (s *Service) CreateNetwork(ctx context.Context, request NetworkCreateRequest) error {
@@ -1566,7 +1805,67 @@ func networkSummary(item, details map[string]any) map[string]any {
 			}
 		}
 	}
+	for key, value := range networkHealthFields(details) {
+		item[key] = value
+	}
 	return item
+}
+
+func addNetworkHealth(details map[string]any) map[string]any {
+	for key, value := range networkHealthFields(details) {
+		details[key] = value
+	}
+	return details
+}
+
+func networkHealthFields(details map[string]any) map[string]any {
+	fields := map[string]any{"connectivityVerified": false, "ipamVerified": false}
+	if details == nil {
+		fields["health"] = "unhealthy"
+		fields["healthCode"] = "NETWORK_DETAILS_EMPTY"
+		fields["healthMessage"] = "Docker 未返回网络详情"
+		return fields
+	}
+	if strings.TrimSpace(stringValue(details, "Id")) == "" ||
+		strings.TrimSpace(stringValue(details, "Name")) == "" ||
+		strings.TrimSpace(stringValue(details, "Driver")) == "" {
+		fields["health"] = "unhealthy"
+		fields["healthCode"] = "NETWORK_METADATA_INCOMPLETE"
+		fields["healthMessage"] = "网络对象缺少 ID、名称或驱动信息，不能认为网络可用"
+		return fields
+	}
+	driver := strings.ToLower(strings.TrimSpace(stringValue(details, "Driver")))
+	if driver != "host" && driver != "null" && driver != "none" {
+		ipam, ipamOK := details["IPAM"].(map[string]any)
+		_, configOK := ipam["Config"].([]any)
+		if !ipamOK || !configOK {
+			fields["health"] = "unhealthy"
+			fields["healthCode"] = "NETWORK_IPAM_INCOMPLETE"
+			fields["healthMessage"] = "网络对象缺少可解析的 IPAM 配置，不能确认地址分配状态"
+			return fields
+		}
+		fields["ipamVerified"] = true
+	}
+	containers, ok := details["Containers"].(map[string]any)
+	if !ok || len(containers) == 0 {
+		fields["health"] = "unknown"
+		fields["healthCode"] = "NETWORK_CONNECTIVITY_UNVERIFIED"
+		fields["healthMessage"] = "网络对象存在，但当前没有可用于验证连通性的容器端点"
+		return fields
+	}
+	for containerID, raw := range containers {
+		endpoint, ok := raw.(map[string]any)
+		if !ok || strings.TrimSpace(stringValue(endpoint, "EndpointID")) == "" {
+			fields["health"] = "unhealthy"
+			fields["healthCode"] = "NETWORK_ENDPOINT_INCOMPLETE"
+			fields["healthMessage"] = fmt.Sprintf("容器端点 %s 缺少 EndpointID，网络对象与 Docker 端点状态可能不一致", containerID)
+			return fields
+		}
+	}
+	fields["health"] = "healthy"
+	fields["healthCode"] = "NETWORK_ENDPOINTS_PRESENT"
+	fields["healthMessage"] = "网络对象和已连接容器端点信息完整；实际业务连通性仍需在容器内验证"
+	return fields
 }
 
 func markNetworkDeleteCapability(item map[string]any) {

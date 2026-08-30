@@ -389,6 +389,45 @@ func CreateContainer(c *gin.Context) {
 	c.JSON(http.StatusAccepted, core.SuccessResponseForContext(c, containerTaskResponse(task)))
 }
 
+func ContainerNetworkAction(c *gin.Context) {
+	var request input.ContainerNetworkActionRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		badRequest(c, err)
+		return
+	}
+	action := strings.ToLower(strings.TrimSpace(request.Action))
+	var operation string
+	switch action {
+	case "connect":
+		operation = models.ContainerTaskOperationNetworkConnect
+	case "disconnect":
+		operation = models.ContainerTaskOperationNetworkDisconnect
+	case "reconnect":
+		operation = models.ContainerTaskOperationNetworkReconnect
+	default:
+		badRequest(c, fmt.Errorf("不支持的容器网络操作: %s", action))
+		return
+	}
+	if (action == "disconnect" || action == "reconnect") && !request.Confirm {
+		badRequest(c, errors.New("断开或重新连接容器网络需要 confirm=true"))
+		return
+	}
+	userID, _ := middleware.AuthenticatedUserID(c)
+	task, err := createTaskManager.Submit(containerService.TaskRequest{
+		Operation: operation, ContainerID: c.Param("id"), Network: strings.TrimSpace(request.Network),
+	}, userID)
+	if err != nil {
+		recordAction(c, "container.network.change", http.StatusBadRequest, err)
+		operationError(c, err)
+		return
+	}
+	recordAction(c, "container.network.change", http.StatusAccepted, nil)
+	response := containerTaskResponse(task)
+	response["action"] = action
+	response["network"] = strings.TrimSpace(request.Network)
+	c.JSON(http.StatusAccepted, core.SuccessResponseForContext(c, response))
+}
+
 func GetContainerCreateTask(c *gin.Context) {
 	userID, _ := middleware.AuthenticatedUserID(c)
 	access, _ := middleware.UserAccess(c)
@@ -401,8 +440,15 @@ func GetContainerCreateTask(c *gin.Context) {
 }
 
 func containerTaskResponse(task *models.ContainerTask) gin.H {
-	return gin.H{"taskId": task.ID, "operation": task.Operation, "status": task.Status, "progress": task.Progress,
+	result := gin.H{"taskId": task.ID, "operation": task.Operation, "status": task.Status, "progress": task.Progress,
 		"statusUrl": "/v1/containers/tasks/" + task.ID, "streamUrl": "/v1/containers/tasks/" + task.ID + "/events"}
+	if task.ContainerID != "" {
+		result["containerId"] = task.ContainerID
+	}
+	if task.Network != "" {
+		result["network"] = task.Network
+	}
+	return result
 }
 
 func ListContainerTasks(c *gin.Context) {
@@ -635,9 +681,22 @@ func BatchAction(c *gin.Context) {
 		item := gin.H{"id": id, "action": request.Action}
 		if err := service.ContainerAction(ctx, id, request.Action, request.Force, request.Confirm); err != nil {
 			item["success"] = false
-			item["error"] = containerBatchError(c, err)
-			item["errorCode"] = core.ErrInternalError
-			recordAction(c, "container.batch."+strings.ToLower(request.Action), http.StatusInternalServerError, err)
+			if errors.Is(err, containerService.ErrContainerActionFailed) &&
+				!errors.Is(err, containerService.ErrRuntimeUnavailable) &&
+				!errors.Is(err, containerService.ErrDockerCommandTimeout) {
+				item["error"] = containerService.ContainerActionFailureDetail(err)
+				item["errorCode"] = core.ErrOperationFailed
+			} else {
+				item["error"] = containerBatchError(c, err)
+				item["errorCode"] = core.ErrInternalError
+			}
+			status := http.StatusInternalServerError
+			if errors.Is(err, containerService.ErrContainerActionFailed) &&
+				!errors.Is(err, containerService.ErrRuntimeUnavailable) &&
+				!errors.Is(err, containerService.ErrDockerCommandTimeout) {
+				status = http.StatusConflict
+			}
+			recordAction(c, "container.batch."+strings.ToLower(request.Action), status, err)
 		} else {
 			item["success"] = true
 			if state, failed, err := observeContainerActionState(ctx, c, id, request.Action); err != nil {
@@ -694,6 +753,13 @@ func Action(c *gin.Context) {
 	ctx, cancel := requestContext(c)
 	defer cancel()
 	if err := service.ContainerAction(ctx, c.Param("id"), request.Action, request.Force, request.Confirm); err != nil {
+		if errors.Is(err, containerService.ErrContainerActionFailed) &&
+			!errors.Is(err, containerService.ErrRuntimeUnavailable) &&
+			!errors.Is(err, containerService.ErrDockerCommandTimeout) {
+			recordAction(c, "container."+strings.ToLower(request.Action), http.StatusConflict, err)
+			containerActionCommandError(c, request.Action, err)
+			return
+		}
 		recordAction(c, "container."+strings.ToLower(request.Action), http.StatusInternalServerError, err)
 		operationError(c, err)
 		return
@@ -706,6 +772,8 @@ func Action(c *gin.Context) {
 	}
 	if failed {
 		recordAction(c, "container."+strings.ToLower(request.Action), http.StatusConflict, errors.New(state["stateMessage"].(string)))
+		containerActionStateError(c, request.Action, state)
+		return
 	} else {
 		recordAction(c, "container."+strings.ToLower(request.Action), http.StatusOK, nil)
 	}
@@ -713,6 +781,7 @@ func Action(c *gin.Context) {
 	for key, value := range state {
 		result[key] = value
 	}
+	result["actionSucceeded"] = true
 	core.HandleSuccess(c, result)
 }
 
@@ -725,27 +794,105 @@ func observeContainerActionState(ctx context.Context, c *gin.Context, id, action
 	if err != nil {
 		return nil, false, err
 	}
-	failed := !observed.Running && (observed.Status == "exited" || observed.Status == "dead" || observed.Status == "created")
+	failed := !observed.Running && (observed.Status == "exited" || observed.Status == "dead" || observed.Status == "created" || observed.Status == "restarting")
+	if observed.NetworkExpected && !observed.NetworkConnected {
+		failed = true
+	}
 	result := gin.H{
-		"status":        observed.Status,
-		"running":       observed.Running,
-		"paused":        observed.Paused,
-		"exitCode":      observed.ExitCode,
-		"stateObserved": true,
-		"stateFailed":   failed,
+		"status":           observed.Status,
+		"running":          observed.Running,
+		"paused":           observed.Paused,
+		"exitCode":         observed.ExitCode,
+		"networkMode":      observed.NetworkMode,
+		"networks":         observed.Networks,
+		"sandboxId":        observed.SandboxID,
+		"networkExpected":  observed.NetworkExpected,
+		"networkConnected": observed.NetworkConnected,
+		"stateObserved":    true,
+		"stateFailed":      failed,
+		"actionSucceeded":  !failed,
+	}
+	if observed.Error != "" {
+		result["dockerError"] = containerService.ContainerActionFailureDetail(errors.New(observed.Error))
 	}
 	if failed {
-		result["stateCode"] = "CONTAINER_STARTUP_EXITED"
-		result["stateMessage"] = containerStartupFailureMessage(c)
+		result["stateCode"] = "CONTAINER_STARTUP_FAILED"
+		if observed.NetworkExpected && !observed.NetworkConnected {
+			result["stateCode"] = "CONTAINER_NETWORK_MISSING"
+		}
+		result["stateMessage"] = containerStartupFailureMessage(c, observed)
 	}
 	return result, failed, nil
 }
 
-func containerStartupFailureMessage(c *gin.Context) string {
+func containerStartupFailureMessage(c *gin.Context, state containerService.ContainerActionState) string {
+	message := "容器启动失败"
 	if i18n.Canonical(c.GetString("locale")) == i18n.LocaleEnUS {
-		return "The container exited after startup; check the container logs and startup configuration."
+		message = "Container startup failed"
 	}
-	return "容器启动后进程已退出，请检查容器日志和启动配置。"
+	if state.NetworkExpected && !state.NetworkConnected {
+		if i18n.Canonical(c.GetString("locale")) == i18n.LocaleEnUS {
+			message += fmt.Sprintf(": the configured network is missing from NetworkSettings.Networks (NetworkMode=%s; current networks=[%s])", state.NetworkMode, strings.Join(state.Networks, ", "))
+		} else {
+			message += fmt.Sprintf("：目标网络未出现在 NetworkSettings.Networks（NetworkMode=%s；当前网络=[%s]）", state.NetworkMode, strings.Join(state.Networks, ", "))
+		}
+	} else if i18n.Canonical(c.GetString("locale")) == i18n.LocaleEnUS {
+		message += ": the container is not running after the start request"
+	} else {
+		message += "：容器在启动请求后未保持运行"
+	}
+	if state.Error != "" {
+		message += "; Docker: " + containerService.ContainerActionFailureDetail(errors.New(state.Error))
+	}
+	if state.ExitCode != 0 {
+		message += fmt.Sprintf(" (exit code %d)", state.ExitCode)
+	}
+	return message
+}
+
+func containerActionCommandError(c *gin.Context, action string, err error) {
+	title := "容器操作失败"
+	if i18n.Canonical(c.GetString("locale")) == i18n.LocaleEnUS {
+		title = "Container action failed"
+	}
+	if strings.EqualFold(strings.TrimSpace(action), "start") || strings.EqualFold(strings.TrimSpace(action), "restart") {
+		if i18n.Canonical(c.GetString("locale")) == i18n.LocaleEnUS {
+			title = "Container startup request failed"
+		} else {
+			title = "容器启动请求失败"
+		}
+	}
+	detail := containerService.ContainerActionFailureDetail(err)
+	if detail == "" {
+		detail = "Docker 未返回可用的错误摘要，请结合请求时间查看 Docker daemon 日志。"
+	}
+	appError := core.NewErrorWithDetail(core.ErrOperationFailed, title, detail)
+	c.JSON(http.StatusConflict, core.ErrorResponse(appError))
+}
+
+func containerActionStateError(c *gin.Context, action string, state gin.H) {
+	title := "容器启动失败"
+	if i18n.Canonical(c.GetString("locale")) == i18n.LocaleEnUS {
+		title = "Container startup failed"
+	}
+	if strings.EqualFold(strings.TrimSpace(action), "restart") {
+		if i18n.Canonical(c.GetString("locale")) == i18n.LocaleEnUS {
+			title = "Container restart failed"
+		} else {
+			title = "容器重启失败"
+		}
+	}
+	detail, _ := state["stateMessage"].(string)
+	if dockerError, ok := state["dockerError"].(string); ok && strings.TrimSpace(dockerError) != "" {
+		detail += "\nDocker error: " + dockerError
+	}
+	if detail == "" {
+		detail = "Docker 未返回可用的容器启动错误摘要，请结合容器状态和 Docker daemon 日志继续诊断。"
+	}
+	appError := core.NewErrorWithDetail(core.ErrOperationFailed, title, detail)
+	response := core.ErrorResponse(appError)
+	response.Data = state
+	c.JSON(http.StatusConflict, response)
 }
 
 func Logs(c *gin.Context) {
@@ -1401,6 +1548,20 @@ func operationError(c *gin.Context, err error) {
 		core.HandleError(c, protectedNetworkError())
 		return
 	}
+	if errors.Is(err, containerService.ErrContainerActionFailed) &&
+		!errors.Is(err, containerService.ErrRuntimeUnavailable) &&
+		!errors.Is(err, containerService.ErrDockerCommandTimeout) {
+		containerActionCommandError(c, "", err)
+		return
+	}
+	if errors.Is(err, containerService.ErrContainerActionObserveTimeout) {
+		core.HandleError(c, core.NewErrorWithDetail(
+			core.ErrTaskTimeout,
+			"容器启动状态探测超时",
+			containerService.ContainerActionFailureDetail(err),
+		))
+		return
+	}
 	if errors.Is(err, containerService.ErrContainerInspectUnavailable) {
 		core.HandleError(c, core.NewErrorWithDetail(
 			core.ErrResourceStateInvalid,
@@ -1609,6 +1770,8 @@ func containerOperationMessage(c *gin.Context) string {
 		return "读取容器实时指标失败"
 	case "/v1/containers/:id/actions":
 		return "执行容器状态操作失败"
+	case "/v1/containers/:id/networks":
+		return "调整容器网络失败"
 	case "/v1/containers/batch/actions":
 		return "执行容器批量操作失败"
 	case "/v1/containers/:id/logs":

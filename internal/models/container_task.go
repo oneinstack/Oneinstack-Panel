@@ -3,34 +3,38 @@ package models
 import "time"
 
 const (
-	ContainerTaskOperationPull           = "pull"
-	ContainerTaskOperationBuild          = "build"
-	ContainerTaskOperationCreate         = "create"
-	ContainerTaskOperationComposeCreate  = "compose.create"
-	ContainerTaskOperationComposeEdit    = "compose.edit"
-	ContainerTaskOperationComposeStart   = "compose.start"
-	ContainerTaskOperationComposeStop    = "compose.stop"
-	ContainerTaskOperationComposeRestart = "compose.restart"
-	ContainerTaskOperationComposeUpdate  = "compose.update"
-	ContainerTaskOperationComposeDelete  = "compose.delete"
-	ContainerTaskStatusQueued            = "queued"
-	ContainerTaskStatusResolving         = "resolving"
-	ContainerTaskStatusPulling           = "pulling"
-	ContainerTaskStatusBuilding          = "building"
-	ContainerTaskStatusCreating          = "creating"
-	ContainerTaskStatusVerifying         = "verifying"
-	ContainerTaskStatusCanceling         = "canceling"
-	ContainerTaskStatusSucceeded         = "succeeded"
-	ContainerTaskStatusFailed            = "failed"
-	ContainerTaskStatusCanceled          = "canceled"
-	ContainerTaskStatusInterrupted       = "interrupted"
+	ContainerTaskOperationPull              = "pull"
+	ContainerTaskOperationBuild             = "build"
+	ContainerTaskOperationCreate            = "create"
+	ContainerTaskOperationNetworkConnect    = "network.connect"
+	ContainerTaskOperationNetworkDisconnect = "network.disconnect"
+	ContainerTaskOperationNetworkReconnect  = "network.reconnect"
+	ContainerTaskOperationComposeCreate     = "compose.create"
+	ContainerTaskOperationComposeEdit       = "compose.edit"
+	ContainerTaskOperationComposeStart      = "compose.start"
+	ContainerTaskOperationComposeStop       = "compose.stop"
+	ContainerTaskOperationComposeRestart    = "compose.restart"
+	ContainerTaskOperationComposeUpdate     = "compose.update"
+	ContainerTaskOperationComposeDelete     = "compose.delete"
+	ContainerTaskStatusQueued               = "queued"
+	ContainerTaskStatusResolving            = "resolving"
+	ContainerTaskStatusPulling              = "pulling"
+	ContainerTaskStatusBuilding             = "building"
+	ContainerTaskStatusCreating             = "creating"
+	ContainerTaskStatusVerifying            = "verifying"
+	ContainerTaskStatusCanceling            = "canceling"
+	ContainerTaskStatusSucceeded            = "succeeded"
+	ContainerTaskStatusFailed               = "failed"
+	ContainerTaskStatusCanceled             = "canceled"
+	ContainerTaskStatusInterrupted          = "interrupted"
 )
 
 type ContainerTask struct {
 	ID              string     `json:"id" gorm:"primaryKey;size:36"`
-	Operation       string     `json:"operation" gorm:"size:16;not null;default:create;index"`
+	Operation       string     `json:"operation" gorm:"size:32;not null;default:create;index"`
 	Name            string     `json:"name" gorm:"size:128;not null;index:idx_container_task_name_status"`
 	Image           string     `json:"image" gorm:"size:256;not null"`
+	Network         string     `json:"network,omitempty" gorm:"size:256"`
 	Status          string     `json:"status" gorm:"size:32;not null;index:idx_container_task_status_created"`
 	Phase           string     `json:"phase" gorm:"size:32;not null;default:queued"`
 	PhaseProgress   *int       `json:"phaseProgress,omitempty"`

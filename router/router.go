@@ -496,6 +496,7 @@ func SetupRouter() *gin.Engine {
 		containerg.GET("/:id", middleware.RequirePermission(accessservice.PermissionContainerRead), containerHandler.GetContainer)
 		containerg.GET("/:id/stats", middleware.RequirePermission(accessservice.PermissionContainerRead), containerHandler.ContainerStats)
 		containerg.POST("/:id/actions", middleware.RequirePermission(accessservice.PermissionContainerWrite), containerHandler.Action)
+		containerg.POST("/:id/networks", middleware.RequirePermission(accessservice.PermissionContainerNetworkWrite), containerHandler.ContainerNetworkAction)
 		containerg.POST("/batch/actions", middleware.RequirePermission(accessservice.PermissionContainerWrite), containerHandler.BatchAction)
 		containerg.GET("/:id/terminal/status", middleware.RequirePermission(accessservice.PermissionContainerTerminal), containerHandler.TerminalStatus)
 		containerg.POST("/:id/terminal/ticket", middleware.RequirePermission(accessservice.PermissionContainerTerminal), containerHandler.CreateTerminalTicket)

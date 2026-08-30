@@ -52,6 +52,12 @@ type ContainerActionRequest struct {
 	Force   bool   `json:"force"`
 }
 
+type ContainerNetworkActionRequest struct {
+	Action  string `json:"action" binding:"required"`
+	Network string `json:"network" binding:"required"`
+	Confirm bool   `json:"confirm"`
+}
+
 type ContainerTerminalTicketRequest struct {
 	Password        string `json:"password" binding:"required"`
 	ConfirmHighRisk bool   `json:"confirmHighRisk"`
