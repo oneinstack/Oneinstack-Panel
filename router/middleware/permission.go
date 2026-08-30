@@ -100,7 +100,7 @@ var authorizationMenuRules = []menuVisibilityRule{
 	{
 		key: "container",
 		visible: func(has func(string) bool, access *accessservice.UserAccess) bool {
-			return has(accessservice.PermissionContainerRead) || has(accessservice.PermissionContainerWrite)
+			return has(accessservice.PermissionContainerRead) || has(accessservice.PermissionContainerWrite) || has(accessservice.PermissionContainerComposeWrite)
 		},
 	},
 	{

@@ -23,8 +23,6 @@ import (
 	"oneinstack/app"
 	"oneinstack/internal/models"
 	"oneinstack/utils"
-
-	"gopkg.in/yaml.v3"
 )
 
 var (
@@ -1637,55 +1635,6 @@ func (s *Service) DeleteVolume(ctx context.Context, name string, confirm bool) e
 	return err
 }
 
-func (s *Service) ListComposeProjects(ctx context.Context) ([]map[string]any, error) {
-	// Keep this check aligned with Runtime: a healthy Docker Engine does not
-	// imply that the optional Compose CLI plugin is installed. Checking the
-	// capability first also avoids depending on the exact stderr wording of
-	// different Docker CLI versions.
-	if out, err := s.run(ctx, "compose", "version", "--short"); err != nil || strings.TrimSpace(out) == "" {
-		return []map[string]any{}, nil
-	}
-
-	out, err := s.run(ctx, "compose", "ls", "--all", "--format", "json")
-	if err != nil {
-		return nil, err
-	}
-	trimmed := strings.TrimSpace(out)
-	if trimmed == "" || trimmed == "null" {
-		return []map[string]any{}, nil
-	}
-
-	var items []map[string]any
-	if err := json.Unmarshal([]byte(trimmed), &items); err == nil {
-		if items == nil {
-			return []map[string]any{}, nil
-		}
-		return items, nil
-	}
-
-	// Older Compose implementations may emit one JSON object per line instead
-	// of a JSON array. Accept that form as well so an empty or single-project
-	// host does not make the whole Compose tab fail to load.
-	items = make([]map[string]any, 0)
-	scanner := bufio.NewScanner(strings.NewReader(trimmed))
-	scanner.Buffer(make([]byte, 64*1024), 8*1024*1024)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
-		var item map[string]any
-		if err := json.Unmarshal([]byte(line), &item); err != nil {
-			return nil, fmt.Errorf("Docker Compose 项目列表格式无效: %w", err)
-		}
-		items = append(items, item)
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("Docker Compose 项目列表过长: %w", err)
-	}
-	return items, nil
-}
-
 type ComposeTemplateSummary struct {
 	ID          uint      `json:"id"`
 	Name        string    `json:"name"`
@@ -1805,20 +1754,19 @@ func validateTemplateInput(name, description, content *string) error {
 	*description = strings.TrimSpace(*description)
 	*content = strings.TrimSpace(*content)
 	if *name == "" || len(*name) > 120 {
-		return errors.New("编排模板名称无效")
+		return composeError(ErrComposeConfigInvalid, "编排模板名称无效")
 	}
 	if len(*description) > 255 {
-		return errors.New("编排模板描述不能超过 255 个字符")
+		return composeError(ErrComposeConfigInvalid, "编排模板描述不能超过 255 个字符")
 	}
 	if *content == "" {
-		return errors.New("编排模板内容不能为空")
+		return composeError(ErrComposeConfigInvalid, "编排模板内容不能为空")
 	}
 	if len(*content) > 2<<20 {
-		return errors.New("编排模板内容不能超过 2 MiB")
+		return composeError(ErrComposeConfigInvalid, "编排模板内容不能超过 2 MiB")
 	}
-	var document any
-	if err := yaml.Unmarshal([]byte(*content), &document); err != nil {
-		return fmt.Errorf("编排模板 YAML 无效: %w", err)
+	if _, err := validateComposeContent(*content, ""); err != nil {
+		return err
 	}
 	return nil
 }

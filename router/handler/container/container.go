@@ -203,8 +203,6 @@ func ListVolumes(c *gin.Context) {
 	}
 	core.HandleSuccess(c, gin.H{"items": filtered[start:end], "total": len(filtered), "page": page, "pageSize": pageSize})
 }
-func ListCompose(c *gin.Context) { list(c, service.ListComposeProjects) }
-
 func InspectImage(c *gin.Context)   { inspectResource(c, service.InspectImage) }
 func InspectNetwork(c *gin.Context) { inspectResource(c, service.InspectNetwork) }
 func InspectVolume(c *gin.Context)  { inspectResource(c, service.InspectVolume) }
@@ -414,9 +412,11 @@ func ListContainerTasks(c *gin.Context) {
 		return
 	}
 	access, _ := middleware.UserAccess(c)
+	composeOnly := access != nil && access.HasPermission(accessservice.PermissionContainerComposeWrite) &&
+		!access.HasPermission(accessservice.PermissionTaskReadSelf) && !access.HasPermission(accessservice.PermissionTaskReadAll)
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("pageSize", "20"))
-	result, err := createTaskManager.List(containerService.TaskListOptions{RequestedBy: userID, IncludeAll: canReadAllContainerTasks(access), ActiveOnly: strings.EqualFold(c.Query("active"), "true"), Operation: c.Query("operation"), Status: c.Query("status"), Page: page, PageSize: pageSize})
+	result, err := createTaskManager.List(containerService.TaskListOptions{RequestedBy: userID, IncludeAll: canReadAllContainerTasks(access), ComposeOnly: composeOnly, ActiveOnly: strings.EqualFold(c.Query("active"), "true"), Operation: c.Query("operation"), Status: c.Query("status"), Page: page, PageSize: pageSize})
 	if err != nil {
 		core.HandleError(c, core.WrapError(err, core.ErrInternalError, "读取容器任务失败"))
 		return
@@ -432,6 +432,10 @@ func GetContainerTask(c *gin.Context) {
 		core.HandleError(c, core.WrapError(err, core.ErrNotFound, "容器任务不存在"))
 		return
 	}
+	if !canReadContainerTask(task, userID, access) {
+		core.HandleError(c, core.NewError(core.ErrNotFound, "容器任务不存在"))
+		return
+	}
 	core.HandleSuccess(c, task)
 }
 
@@ -441,6 +445,10 @@ func StreamContainerTaskEvents(c *gin.Context) {
 	task, err := createTaskManager.Get(c.Param("id"), userID, canReadAllContainerTasks(access))
 	if err != nil {
 		core.HandleError(c, core.WrapError(err, core.ErrNotFound, "容器任务不存在"))
+		return
+	}
+	if !canReadContainerTask(task, userID, access) {
+		core.HandleError(c, core.NewError(core.ErrNotFound, "容器任务不存在"))
 		return
 	}
 	after, _ := strconv.ParseInt(c.DefaultQuery("after", "0"), 10, 64)
@@ -523,6 +531,15 @@ func GetContainerTaskLog(c *gin.Context) {
 	access, _ := middleware.UserAccess(c)
 	cursor, _ := strconv.ParseInt(c.DefaultQuery("cursor", "0"), 10, 64)
 	limit, _ := strconv.ParseInt(c.DefaultQuery("limit", "65536"), 10, 64)
+	task, taskErr := createTaskManager.Get(c.Param("id"), userID, canReadAllContainerTasks(access))
+	if taskErr != nil {
+		core.HandleError(c, core.WrapError(taskErr, core.ErrNotFound, "容器任务不存在"))
+		return
+	}
+	if !canReadContainerTask(task, userID, access) {
+		core.HandleError(c, core.NewError(core.ErrNotFound, "容器任务不存在"))
+		return
+	}
 	chunk, err := createTaskManager.ReadLog(c.Param("id"), cursor, limit, userID, canReadAllContainerTasks(access))
 	if err != nil {
 		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "读取容器任务日志失败"))
@@ -534,6 +551,15 @@ func GetContainerTaskLog(c *gin.Context) {
 func DownloadContainerTaskLog(c *gin.Context) {
 	userID, _ := middleware.AuthenticatedUserID(c)
 	access, _ := middleware.UserAccess(c)
+	task, taskErr := createTaskManager.Get(c.Param("id"), userID, canReadAllContainerTasks(access))
+	if taskErr != nil {
+		core.HandleError(c, core.WrapError(taskErr, core.ErrNotFound, "容器任务日志不存在"))
+		return
+	}
+	if !canReadContainerTask(task, userID, access) {
+		core.HandleError(c, core.NewError(core.ErrNotFound, "容器任务日志不存在"))
+		return
+	}
 	file, info, err := createTaskManager.OpenLog(c.Param("id"), userID, canReadAllContainerTasks(access))
 	if err != nil {
 		core.HandleError(c, core.WrapError(err, core.ErrNotFound, "容器任务日志不存在"))
@@ -549,11 +575,23 @@ func DownloadContainerTaskLog(c *gin.Context) {
 func CancelContainerTask(c *gin.Context) {
 	userID, _ := middleware.AuthenticatedUserID(c)
 	access, _ := middleware.UserAccess(c)
-	if access == nil || (!access.HasPermission(accessservice.PermissionContainerWrite) && !access.HasPermission(accessservice.PermissionContainerImageWrite)) {
+	if access == nil || (!access.HasPermission(accessservice.PermissionContainerWrite) && !access.HasPermission(accessservice.PermissionContainerImageWrite) && !access.HasPermission(accessservice.PermissionContainerComposeWrite)) {
 		core.HandleError(c, core.NewError(core.ErrForbidden, "无权取消该容器任务"))
 		return
 	}
-	task, err := createTaskManager.Cancel(c.Param("id"), userID, canReadAllContainerTasks(access))
+	task, err := createTaskManager.Get(c.Param("id"), userID, canReadAllContainerTasks(access))
+	if err != nil {
+		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "取消容器任务失败"))
+		return
+	}
+	if access.HasPermission(accessservice.PermissionContainerComposeWrite) &&
+		!access.HasPermission(accessservice.PermissionContainerWrite) &&
+		!access.HasPermission(accessservice.PermissionContainerImageWrite) &&
+		!isComposeTaskOperation(task.Operation) {
+		core.HandleError(c, core.NewError(core.ErrForbidden, "编排管理权限只能取消 Compose 任务"))
+		return
+	}
+	task, err = createTaskManager.Cancel(c.Param("id"), userID, canReadAllContainerTasks(access))
 	if err != nil {
 		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "取消容器任务失败"))
 		return
@@ -564,6 +602,24 @@ func CancelContainerTask(c *gin.Context) {
 
 func canReadAllContainerTasks(access *accessservice.UserAccess) bool {
 	return access != nil && (access.IsSuperAdmin || access.HasPermission(accessservice.PermissionTaskReadAll))
+}
+
+func canReadContainerTask(task *models.ContainerTask, userID int64, access *accessservice.UserAccess) bool {
+	if task == nil || access == nil {
+		return false
+	}
+	if canReadAllContainerTasks(access) {
+		return true
+	}
+	if access.HasPermission(accessservice.PermissionTaskReadSelf) {
+		return task.RequestedBy == userID
+	}
+	return access.HasPermission(accessservice.PermissionContainerComposeWrite) &&
+		isComposeTaskOperation(task.Operation) && task.RequestedBy == userID
+}
+
+func isComposeTaskOperation(operation string) bool {
+	return strings.HasPrefix(strings.TrimSpace(operation), "compose.")
 }
 
 func BatchAction(c *gin.Context) {
@@ -1207,7 +1263,7 @@ func GetTemplate(c *gin.Context) {
 	defer cancel()
 	result, err := service.GetTemplate(ctx, id)
 	if err != nil {
-		operationError(c, err)
+		composeOperationError(c, err)
 		return
 	}
 	core.HandleSuccess(c, result)
@@ -1224,7 +1280,7 @@ func CreateTemplate(c *gin.Context) {
 	result, err := service.CreateTemplate(ctx, request.Name, request.Description, request.Content)
 	if err != nil {
 		recordAction(c, "container.compose.template.create", http.StatusInternalServerError, err)
-		operationError(c, err)
+		composeOperationError(c, err)
 		return
 	}
 	recordAction(c, "container.compose.template.create", http.StatusOK, nil)
@@ -1247,7 +1303,7 @@ func UpdateTemplate(c *gin.Context) {
 	result, err := service.UpdateTemplate(ctx, id, request.Name, request.Description, request.Content)
 	if err != nil {
 		recordAction(c, "container.compose.template.update", http.StatusInternalServerError, err)
-		operationError(c, err)
+		composeOperationError(c, err)
 		return
 	}
 	recordAction(c, "container.compose.template.update", http.StatusOK, nil)
@@ -1265,7 +1321,7 @@ func DeleteTemplate(c *gin.Context) {
 	defer cancel()
 	if err := service.DeleteTemplate(ctx, id, confirm); err != nil {
 		recordAction(c, "container.compose.template.delete", http.StatusInternalServerError, err)
-		operationError(c, err)
+		composeOperationError(c, err)
 		return
 	}
 	recordAction(c, "container.compose.template.delete", http.StatusOK, nil)

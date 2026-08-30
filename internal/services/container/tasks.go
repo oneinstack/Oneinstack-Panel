@@ -40,11 +40,13 @@ type TaskRequest struct {
 	Image     string                  `json:"image,omitempty"`
 	Create    *ContainerCreateRequest `json:"create,omitempty"`
 	Build     *BuildTaskRequest       `json:"build,omitempty"`
+	Compose   *ComposeTaskRequest     `json:"compose,omitempty"`
 }
 
 type TaskListOptions struct {
 	RequestedBy int64
 	IncludeAll  bool
+	ComposeOnly bool
 	ActiveOnly  bool
 	Operation   string
 	Status      string
@@ -113,6 +115,10 @@ func (m *CreateTaskManager) Start() error {
 		if err := db.Save(task).Error; err != nil {
 			return fmt.Errorf("interrupt container task: %w", err)
 		}
+		var request TaskRequest
+		if json.Unmarshal([]byte(task.RequestJSON), &request) == nil {
+			cleanupComposeTask(request.Compose)
+		}
 		appendTaskAudit(task, "interrupted", task.ErrorMessage)
 		_ = m.appendEvent(task.ID, "terminal", "error", task.Status, task.Phase, task.Progress, task.Message, nil, "", task.ErrorCode)
 	}
@@ -133,6 +139,9 @@ func (m *CreateTaskManager) Submit(request TaskRequest, requestedBy int64) (*mod
 	if err := m.validateTaskRequest(request); err != nil {
 		return nil, err
 	}
+	if request.Compose != nil && request.Compose.Target.ProjectName == "" {
+		request.Compose.Target.ProjectName = request.Compose.ProjectName
+	}
 	if err := m.Start(); err != nil {
 		return nil, err
 	}
@@ -143,9 +152,14 @@ func (m *CreateTaskManager) Submit(request TaskRequest, requestedBy int64) (*mod
 	if request.Create != nil {
 		name, image = request.Create.Name, request.Create.Image
 	}
+	if request.Compose != nil {
+		name, image = request.Compose.ProjectName, ""
+	}
 	var active int64
 	query := db.Model(&models.ContainerTask{}).Where("status IN ?", models.ActiveContainerTaskStatuses())
-	if request.Operation == models.ContainerTaskOperationCreate {
+	if isComposeOperation(request.Operation) {
+		query = query.Where("name = ? AND operation LIKE ?", name, "compose.%")
+	} else if request.Operation == models.ContainerTaskOperationCreate {
 		query = query.Where("name = ?", name)
 	} else {
 		query = query.Where("operation = ? AND image = ?", request.Operation, image)
@@ -154,6 +168,9 @@ func (m *CreateTaskManager) Submit(request TaskRequest, requestedBy int64) (*mod
 		return nil, fmt.Errorf("check active container task: %w", err)
 	}
 	if active > 0 {
+		if isComposeOperation(request.Operation) {
+			return nil, composeError(ErrComposeProjectBusy, "Compose 项目已有进行中的任务")
+		}
 		return nil, errors.New("相同资源已有进行中的容器任务")
 	}
 	requestJSON, err := json.Marshal(request)
@@ -179,6 +196,7 @@ func (m *CreateTaskManager) Submit(request TaskRequest, requestedBy int64) (*mod
 		return task, nil
 	default:
 		_ = m.finish(task.ID, models.ContainerTaskStatusFailed, "QUEUE_FULL", "容器任务队列已满，请稍后重试")
+		cleanupComposeTask(request.Compose)
 		return nil, errors.New("container task queue is full")
 	}
 }
@@ -202,6 +220,25 @@ func (m *CreateTaskManager) validateTaskRequest(request TaskRequest) error {
 		}
 		if err := validateContainerCreateRequest(*request.Create); err != nil {
 			return err
+		}
+	case models.ContainerTaskOperationComposeCreate,
+		models.ContainerTaskOperationComposeEdit,
+		models.ContainerTaskOperationComposeStart,
+		models.ContainerTaskOperationComposeStop,
+		models.ContainerTaskOperationComposeRestart,
+		models.ContainerTaskOperationComposeUpdate,
+		models.ContainerTaskOperationComposeDelete:
+		if request.Compose == nil {
+			return composeError(ErrComposeConfigInvalid, "Compose 任务参数不能为空")
+		}
+		if _, err := validateComposeProjectName(request.Compose.ProjectName); err != nil {
+			return err
+		}
+		if request.Compose.Target.ProjectName != "" && request.Compose.Target.ProjectName != request.Compose.ProjectName {
+			return composeError(ErrComposeConfigInvalid, "Compose 任务目标与项目名称不一致")
+		}
+		if (request.Operation == models.ContainerTaskOperationComposeCreate || request.Operation == models.ContainerTaskOperationComposeEdit) && request.Compose.ContentPath == "" {
+			return composeError(ErrComposeConfigInvalid, "Compose 任务配置内容缺失")
 		}
 	default:
 		return fmt.Errorf("不支持的容器任务操作: %s", request.Operation)
@@ -239,6 +276,9 @@ func (m *CreateTaskManager) List(options TaskListOptions) (*TaskList, error) {
 	query := db.Model(&models.ContainerTask{})
 	if !options.IncludeAll {
 		query = query.Where("requested_by = ?", options.RequestedBy)
+	}
+	if options.ComposeOnly {
+		query = query.Where("operation LIKE ?", "compose.%")
 	}
 	if options.ActiveOnly {
 		query = query.Where("status IN ?", models.ActiveContainerTaskStatuses())
@@ -397,7 +437,13 @@ func (m *CreateTaskManager) run(taskID string) {
 	started := time.Now().UTC()
 	m.update(task.ID, map[string]any{"started_at": started, "heartbeat_at": started})
 	emit := m.lineEmitter(task.ID, request.Operation)
+	if isComposeOperation(request.Operation) {
+		emit = m.composeLineEmitter(task.ID, request.Operation)
+	}
 	var err error
+	if isComposeOperation(request.Operation) && request.Compose != nil {
+		err = m.service.ValidateComposeTaskPreview(ctx, request.Operation, *request.Compose)
+	}
 	switch request.Operation {
 	case models.ContainerTaskOperationPull:
 		m.phase(task.ID, models.ContainerTaskStatusPulling, 5, "正在拉取镜像")
@@ -428,18 +474,82 @@ func (m *CreateTaskManager) run(taskID string) {
 				m.phase(task.ID, models.ContainerTaskStatusVerifying, 95, "正在验证容器")
 			}
 		}
+	case models.ContainerTaskOperationComposeCreate,
+		models.ContainerTaskOperationComposeEdit,
+		models.ContainerTaskOperationComposeStart,
+		models.ContainerTaskOperationComposeStop,
+		models.ContainerTaskOperationComposeRestart,
+		models.ContainerTaskOperationComposeUpdate,
+		models.ContainerTaskOperationComposeDelete:
+		m.phase(task.ID, models.ContainerTaskStatusResolving, 5, "正在准备 Compose 项目")
+		if err == nil {
+			switch request.Operation {
+			case models.ContainerTaskOperationComposeCreate:
+				m.phase(task.ID, models.ContainerTaskStatusCreating, 20, "正在创建 Compose 项目")
+			case models.ContainerTaskOperationComposeEdit:
+				m.phase(task.ID, models.ContainerTaskStatusCreating, 50, "正在保存 Compose 配置")
+			case models.ContainerTaskOperationComposeUpdate:
+				m.phase(task.ID, models.ContainerTaskStatusPulling, 20, "正在拉取 Compose 镜像")
+			case models.ContainerTaskOperationComposeStart, models.ContainerTaskOperationComposeRestart:
+				m.phase(task.ID, models.ContainerTaskStatusCreating, 20, "正在启动 Compose 服务")
+			case models.ContainerTaskOperationComposeStop:
+				m.phase(task.ID, models.ContainerTaskStatusCreating, 20, "正在停止 Compose 服务")
+			case models.ContainerTaskOperationComposeDelete:
+				m.phase(task.ID, models.ContainerTaskStatusCreating, 20, "正在删除 Compose 资源")
+			}
+		}
+		if err == nil && request.Compose == nil {
+			err = composeError(ErrComposeConfigInvalid, "Compose 任务参数缺失")
+		} else if err == nil {
+			err = m.service.RunComposeTask(ctx, request.Operation, *request.Compose, emit)
+		}
 	}
+	cleanupComposeTask(request.Compose)
 	if err != nil {
 		if m.isCancelRequested(task.ID) || errors.Is(ctx.Err(), context.Canceled) {
 			m.finish(task.ID, models.ContainerTaskStatusCanceled, "ACTION_CANCELED", "容器任务已取消")
 		} else if errors.Is(err, ErrDockerCommandTimeout) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			m.fail(task.ID, "DOCKER_OPERATION_TIMEOUT", "Docker 操作超时，请检查测试环境 Docker daemon 的 DNS、代理或镜像加速配置后重试")
+		} else if isComposeOperation(request.Operation) {
+			code, message := composeTaskFailure(err)
+			m.fail(task.ID, code, message)
 		} else {
 			m.fail(task.ID, "DOCKER_OPERATION_FAILED", err.Error())
 		}
 		return
 	}
 	m.finish(task.ID, models.ContainerTaskStatusSucceeded, "", "容器任务执行成功")
+}
+
+func (m *CreateTaskManager) composeLineEmitter(taskID, operation string) func(string) {
+	return func(line string) {
+		m.lineEmitter(taskID, operation)(redactContainerLogLine(line))
+	}
+}
+
+func composeTaskFailure(err error) (string, string) {
+	switch {
+	case errors.Is(err, ErrComposeConfigInvalid):
+		return "COMPOSE_CONFIG_INVALID", "Compose 配置校验失败"
+	case errors.Is(err, ErrComposeProjectNotFound):
+		return "COMPOSE_PROJECT_NOT_FOUND", "Compose 项目不存在"
+	case errors.Is(err, ErrComposeProjectConflict):
+		return "COMPOSE_PROJECT_CONFLICT", "Compose 项目已存在或状态冲突"
+	case errors.Is(err, ErrComposeProjectBusy):
+		return "COMPOSE_PROJECT_BUSY", "Compose 项目已有进行中的任务"
+	case errors.Is(err, ErrComposePreviewStale):
+		return "COMPOSE_PREVIEW_STALE", "Compose 预览已失效，请重新预览"
+	case errors.Is(err, ErrComposeMultiFile):
+		return "COMPOSE_MULTI_FILE_EDIT_UNSUPPORTED", "当前 Compose 项目使用多个配置文件，暂不支持编辑"
+	case errors.Is(err, ErrComposeOperationTimeout):
+		return "COMPOSE_OPERATION_TIMEOUT", "Docker Compose 操作超时"
+	case errors.Is(err, ErrComposeUnavailable):
+		return "COMPOSE_UNAVAILABLE", "Docker Compose 插件不可用"
+	case errors.Is(err, ErrRuntimeUnavailable):
+		return "DOCKER_RUNTIME_UNAVAILABLE", "Docker 运行时不可用"
+	default:
+		return "COMPOSE_OPERATION_FAILED", "Docker Compose 操作失败，请查看任务日志中的脱敏输出"
+	}
 }
 
 func (m *CreateTaskManager) lineEmitter(taskID, operation string) func(string) {
@@ -452,6 +562,12 @@ func (m *CreateTaskManager) lineEmitter(taskID, operation string) func(string) {
 		progress, phaseProgress, message, details := parseDockerProgress(line, operation)
 		if message == "" {
 			message = line
+		}
+		if progress == 0 {
+			var task models.ContainerTask
+			if app.DB().Select("progress").First(&task, "id = ?", taskID).Error == nil && task.Progress > 0 {
+				progress = task.Progress
+			}
 		}
 		m.updateEvent(taskID, "progress", "info", progress, phaseProgress, message, details, line, "")
 	}
@@ -653,6 +769,8 @@ func messageToStatus(message string) string {
 		return models.ContainerTaskStatusCreating
 	case strings.Contains(message, "验证"):
 		return models.ContainerTaskStatusVerifying
+	case strings.Contains(message, "启动"), strings.Contains(message, "停止"), strings.Contains(message, "保存"), strings.Contains(message, "删除"):
+		return models.ContainerTaskStatusCreating
 	default:
 		return models.ContainerTaskStatusResolving
 	}

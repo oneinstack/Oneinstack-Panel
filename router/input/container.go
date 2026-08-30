@@ -146,3 +146,26 @@ type ContainerComposeTemplateRequest struct {
 	Description string `json:"description,omitempty"`
 	Content     string `json:"content"`
 }
+
+type ContainerComposeRequest struct {
+	Name               string `json:"name"`
+	Content            string `json:"content,omitempty"`
+	TemplateID         uint   `json:"templateId,omitempty"`
+	PreviewFingerprint string `json:"previewFingerprint,omitempty"`
+	Confirm            bool   `json:"confirm"`
+}
+
+type ContainerComposePreviewRequest struct {
+	Action        string `json:"action"`
+	Name          string `json:"name"`
+	Content       string `json:"content,omitempty"`
+	TemplateID    uint   `json:"templateId,omitempty"`
+	RemoveVolumes bool   `json:"removeVolumes"`
+}
+
+type ContainerComposeActionRequest struct {
+	Action             string `json:"action"`
+	PreviewFingerprint string `json:"previewFingerprint,omitempty"`
+	Confirm            bool   `json:"confirm"`
+	RemoveVolumes      bool   `json:"removeVolumes"`
+}
