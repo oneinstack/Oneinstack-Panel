@@ -32,6 +32,39 @@ const (
 	BindingStatusDisabled = "disabled"
 )
 
+const (
+	certificateBindStageLookup      = "lookup"
+	certificateBindStageValidation  = "validation"
+	certificateBindStageDeployment  = "deployment"
+	certificateBindStagePersistence = "persistence"
+)
+
+type certificateBindStageError struct {
+	stage string
+	err   error
+}
+
+func (err *certificateBindStageError) Error() string {
+	if err == nil || err.err == nil {
+		return "certificate bind failed"
+	}
+	return fmt.Sprintf("certificate bind %s failed: %v", err.stage, err.err)
+}
+
+func (err *certificateBindStageError) Unwrap() error {
+	if err == nil {
+		return nil
+	}
+	return err.err
+}
+
+func wrapCertificateBindStage(stage string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return &certificateBindStageError{stage: stage, err: err}
+}
+
 type Catalog struct {
 	db       *gorm.DB
 	root     string
@@ -536,42 +569,74 @@ func (catalog *Catalog) Delete(id string) error {
 }
 
 func (catalog *Catalog) Bind(ctx context.Context, id string, websiteID int64, forceHTTPS bool) (*BindingResult, error) {
+	return catalog.bind(ctx, id, websiteID, forceHTTPS, nil)
+}
+
+func (catalog *Catalog) bind(ctx context.Context, id string, websiteID int64, forceHTTPS bool, report ProgressReporter) (*BindingResult, error) {
+	reportProgress := func(progress int, message string) {
+		if report != nil {
+			report(progress, message)
+		}
+	}
+	reportProgress(15, "正在读取证书资源和网站配置")
 	if catalog.deployer == nil {
-		return nil, errors.New("certificate deployer is not configured")
+		return nil, wrapCertificateBindStage(certificateBindStageDeployment, errors.New("certificate deployer is not configured"))
 	}
 	record, err := catalog.Get(id)
 	if err != nil {
-		return nil, err
+		return nil, wrapCertificateBindStage(certificateBindStageLookup, fmt.Errorf("certificate resource lookup failed: %w", err))
 	}
 	var website models.Website
 	if err := catalog.db.First(&website, "id = ?", websiteID).Error; err != nil {
-		return nil, err
+		return nil, wrapCertificateBindStage(certificateBindStageLookup, fmt.Errorf("website lookup failed: %w", err))
 	}
 	if !website.Enabled {
-		return nil, errors.New("website is disabled")
+		return nil, wrapCertificateBindStage(certificateBindStageValidation, errors.New("website is disabled"))
 	}
+	var activeBindings []models.CertificateBinding
+	if err := catalog.db.Where("website_id = ? AND status = ?", websiteID, BindingStatusActive).Find(&activeBindings).Error; err != nil {
+		return nil, wrapCertificateBindStage(certificateBindStageLookup, fmt.Errorf("certificate binding lookup failed: %w", err))
+	}
+	hasCurrentBinding := false
+	for _, binding := range activeBindings {
+		if binding.ManagedCertificateID == record.ID {
+			hasCurrentBinding = true
+			break
+		}
+	}
+	switch {
+	case len(activeBindings) == 0:
+		reportProgress(20, "目标网站当前未发现有效证书绑定")
+	case hasCurrentBinding:
+		reportProgress(20, "目标网站已绑定当前证书，本次操作为重新部署")
+	default:
+		reportProgress(20, fmt.Sprintf("目标网站已有 %d 个有效证书绑定，本次将更新网站当前证书配置", len(activeBindings)))
+	}
+	reportProgress(30, "正在校验证书材料、私钥匹配关系和网站域名")
 	domains, err := certificateDomains(website.Domain)
 	if err != nil {
-		return nil, err
+		return nil, wrapCertificateBindStage(certificateBindStageValidation, err)
 	}
 	if !isWithin(catalog.root, record.CertificatePath) || !isWithin(catalog.root, record.PrivateKeyPath) {
-		return nil, errors.New("certificate material path is outside the managed directory")
+		return nil, wrapCertificateBindStage(certificateBindStageValidation, errors.New("certificate material path is outside the managed directory"))
 	}
 	certificatePEM, err := os.ReadFile(record.CertificatePath)
 	if err != nil {
-		return nil, fmt.Errorf("read certificate material: %w", err)
+		return nil, wrapCertificateBindStage(certificateBindStageValidation, fmt.Errorf("read certificate material: %w", err))
 	}
 	privateKeyPEM, err := os.ReadFile(record.PrivateKeyPath)
 	if err != nil {
-		return nil, fmt.Errorf("read certificate material: %w", err)
+		return nil, wrapCertificateBindStage(certificateBindStageValidation, fmt.Errorf("read certificate material: %w", err))
 	}
 	if _, _, err := validateCertificateMaterial(certificatePEM, privateKeyPEM, domains); err != nil {
-		return nil, fmt.Errorf("certificate bind validation failed: %w", err)
+		return nil, wrapCertificateBindStage(certificateBindStageValidation, fmt.Errorf("certificate bind validation failed: %w", err))
 	}
+	reportProgress(55, "正在部署证书并校验 Web Server 配置")
 	rollback, err := catalog.deployer.Deploy(ctx, websiteID, record.CertificatePath, record.PrivateKeyPath, forceHTTPS)
 	if err != nil {
-		return nil, err
+		return nil, wrapCertificateBindStage(certificateBindStageDeployment, err)
 	}
+	reportProgress(85, "Web Server 部署成功，正在保存证书绑定关系")
 	now := time.Now().UTC()
 	binding := &models.CertificateBinding{ID: uuid.NewString(), ManagedCertificateID: record.ID, WebsiteID: websiteID, Status: BindingStatusActive, ForceHTTPS: forceHTTPS, DeployedAt: &now, CreatedAt: now, UpdatedAt: now}
 	persistErr := catalog.db.Transaction(func(tx *gorm.DB) error {
@@ -603,8 +668,11 @@ func (catalog *Catalog) Bind(ctx context.Context, id string, websiteID int64, fo
 		return tx.Create(legacy).Error
 	})
 	if persistErr != nil {
-		_ = rollback(context.Background())
-		return nil, persistErr
+		rollbackErr := rollback(context.Background())
+		if rollbackErr != nil {
+			persistErr = errors.Join(persistErr, fmt.Errorf("certificate deployment rollback failed: %w", rollbackErr))
+		}
+		return nil, wrapCertificateBindStage(certificateBindStagePersistence, persistErr)
 	}
 	return &BindingResult{Certificate: *record, Binding: *binding}, nil
 }

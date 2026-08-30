@@ -1000,8 +1000,7 @@ func (manager *Manager) runManagedTask(ctx context.Context, task *models.Certifi
 			Remark: task.Remark, AutoRenew: task.AutoRenew, RenewBeforeDays: task.RenewBeforeDays,
 		})
 	case models.CertificateTaskOperationBind:
-		report(30, "正在校验证书域名覆盖范围")
-		_, err = catalog.Bind(ctx, task.ManagedID, task.WebsiteID, task.ForceHTTPS)
+		_, err = catalog.bind(ctx, task.ManagedID, task.WebsiteID, task.ForceHTTPS, report)
 	default:
 		err = errors.New("unsupported managed certificate task")
 	}
@@ -1010,7 +1009,11 @@ func (manager *Manager) runManagedTask(ctx context.Context, task *models.Certifi
 		_ = manager.db.Model(&models.CertificateTask{}).Where("id = ?", task.ID).Updates(map[string]any{"input_cert_path": "", "input_key_path": ""}).Error
 	}
 	if err != nil {
-		manager.failTask(task, "CERTIFICATE_RESOURCE_FAILED", err)
+		code := "CERTIFICATE_RESOURCE_FAILED"
+		if task.Operation == models.CertificateTaskOperationBind {
+			code = certificateBindTaskErrorCode(err)
+		}
+		manager.failTask(task, code, err)
 		return
 	}
 	if record != nil {
@@ -1051,7 +1054,7 @@ func (manager *Manager) failTask(task *models.CertificateTask, code string, err 
 	} else if task.Operation == models.CertificateTaskOperationSelfSigned {
 		message = SafeCertificateErrorDetail(err)
 	}
-	manager.appendLog(task.ID, "任务失败："+message)
+	manager.appendLog(task.ID, fmt.Sprintf("任务失败[%s]：%s", code, message))
 	_ = manager.finish(task.ID, status, code, message)
 	if task.CertificateID != "" {
 		retryAt := time.Now().UTC().Add(24 * time.Hour)
@@ -1084,12 +1087,74 @@ func isManagedCertificateTask(operation string) bool {
 	}
 }
 
+func certificateBindTaskErrorCode(err error) string {
+	var staged *certificateBindStageError
+	if !errors.As(err, &staged) {
+		return "CERTIFICATE_BIND_FAILED"
+	}
+	switch staged.stage {
+	case certificateBindStageLookup:
+		return "CERTIFICATE_BIND_RESOURCE_LOOKUP_FAILED"
+	case certificateBindStageValidation:
+		return "CERTIFICATE_BIND_VALIDATION_FAILED"
+	case certificateBindStageDeployment:
+		lower := strings.ToLower(staged.err.Error())
+		if strings.Contains(lower, "web server config validation failed") {
+			return "CERTIFICATE_BIND_WEBSERVER_CONFIG_FAILED"
+		}
+		if strings.Contains(lower, "web server reload failed") {
+			return "CERTIFICATE_BIND_WEBSERVER_RELOAD_FAILED"
+		}
+		return "CERTIFICATE_BIND_DEPLOY_FAILED"
+	case certificateBindStagePersistence:
+		return "CERTIFICATE_BIND_PERSIST_FAILED"
+	default:
+		return "CERTIFICATE_BIND_FAILED"
+	}
+}
+
+func certificateBindStageErrorDetail(err *certificateBindStageError) string {
+	if err == nil {
+		return "证书绑定失败，请查看任务日志。"
+	}
+	detail := SafeCertificateErrorDetail(err.err)
+	const generic = "证书资源创建失败，请查看证书任务详情或任务日志获取具体原因。"
+	switch err.stage {
+	case certificateBindStageLookup:
+		if errors.Is(err.err, gorm.ErrRecordNotFound) {
+			return "证书资源或目标网站不存在，请刷新资源列表后重试。"
+		}
+		if detail != generic {
+			return "证书绑定资源读取失败：" + detail
+		}
+		return "证书绑定资源读取失败，请检查证书资源和目标网站是否仍然存在。"
+	case certificateBindStageValidation:
+		if detail != generic {
+			return "证书绑定校验失败：" + detail
+		}
+		return "证书绑定校验失败，请检查证书格式、私钥匹配关系、有效期和网站域名范围。"
+	case certificateBindStageDeployment:
+		if detail != generic {
+			return "证书绑定部署失败：" + detail
+		}
+		return "证书材料校验已通过，但 Web Server 部署失败，请检查 Web Server 错误日志。"
+	case certificateBindStagePersistence:
+		return "Web Server 已完成证书部署，但绑定关系保存失败，系统已回滚部署，请检查数据库状态后重试。"
+	default:
+		return "证书绑定失败，请查看任务日志。"
+	}
+}
+
 // SafeCertificateErrorDetail turns expected certificate environment failures
 // into actionable text without exposing absolute paths or raw lower-level
 // errors through task APIs.
 func SafeCertificateErrorDetail(err error) string {
 	if err == nil {
 		return "证书操作失败，请查看任务日志。"
+	}
+	var staged *certificateBindStageError
+	if errors.As(err, &staged) {
+		return certificateBindStageErrorDetail(staged)
 	}
 	lower := strings.ToLower(err.Error())
 	switch {
