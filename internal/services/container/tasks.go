@@ -201,7 +201,7 @@ func (m *CreateTaskManager) validateTaskRequest(request TaskRequest) error {
 			return errors.New("容器创建参数不能为空")
 		}
 		if err := validateContainerCreateRequest(*request.Create); err != nil {
-			return fmt.Errorf("%w: %v", ErrInvalidContainerConfig, err)
+			return err
 		}
 	default:
 		return fmt.Errorf("不支持的容器任务操作: %s", request.Operation)

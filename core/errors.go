@@ -87,12 +87,14 @@ const (
 
 // AppError 应用错误结构
 type AppError struct {
-	Code         ErrorCode `json:"code"`
-	Message      string    `json:"message"`
-	MessageKey   string    `json:"messageKey,omitempty"`
-	Detail       string    `json:"-"`
-	Field        string    `json:"-"`
-	PublicDetail bool      `json:"-"`
+	Code             ErrorCode        `json:"code"`
+	Message          string           `json:"message"`
+	MessageKey       string           `json:"messageKey,omitempty"`
+	Detail           string           `json:"-"`
+	Field            string           `json:"-"`
+	ValidationErrors ValidationErrors `json:"-"`
+	ValidationDetail bool             `json:"-"`
+	PublicDetail     bool             `json:"-"`
 }
 
 // Error 实现error接口
@@ -125,6 +127,14 @@ func NewErrorWithDetail(code ErrorCode, message, detail string) *AppError {
 		Detail:       detail,
 		PublicDetail: true,
 	}
+}
+
+// NewErrorWithValidationErrors 创建带详细信息和字段验证错误列表的应用错误。
+func NewErrorWithValidationErrors(code ErrorCode, message, detail string, validationErrors ValidationErrors) *AppError {
+	err := NewErrorWithDetail(code, message, detail)
+	err.ValidationErrors = append(ValidationErrors(nil), validationErrors...)
+	err.ValidationDetail = true
+	return err
 }
 
 // NewFieldError 创建字段验证错误
@@ -190,7 +200,9 @@ func ErrorResponse(err *AppError) *APIResponse {
 			Field:   err.Field,
 		},
 	}
-	if err.Field != "" {
+	if len(err.ValidationErrors) > 0 {
+		response.Errors = append(ValidationErrors(nil), err.ValidationErrors...)
+	} else if err.Field != "" {
 		response.Errors = ValidationErrors{{
 			Field:   err.Field,
 			Code:    err.Code,
@@ -209,7 +221,7 @@ func safeErrorDetail(err *AppError) string {
 	if classified := classifyErrorDetail(detail); classified != "" {
 		return classified
 	}
-	if err.PublicDetail && !containsSensitiveErrorDetail(detail) {
+	if err.PublicDetail && (err.ValidationDetail || !containsSensitiveErrorDetail(detail)) {
 		return detail
 	}
 	// WrapError keeps the underlying error for server-side diagnostics, but

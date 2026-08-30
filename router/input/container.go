@@ -1,8 +1,8 @@
 package input
 
 type ContainerCreateRequest struct {
-	Name          string                 `json:"name" binding:"required"`
-	Image         string                 `json:"image" binding:"required"`
+	Name          string                 `json:"name"`
+	Image         string                 `json:"image"`
 	Ports         []ContainerPortMapping `json:"ports,omitempty"`
 	Networks      []string               `json:"networks,omitempty"`
 	IPv4          string                 `json:"ipv4,omitempty"`
@@ -24,7 +24,7 @@ type ContainerCreateRequest struct {
 
 type ContainerPortMapping struct {
 	HostPort      int    `json:"hostPort"`
-	ContainerPort int    `json:"containerPort" binding:"required"`
+	ContainerPort int    `json:"containerPort"`
 	Protocol      string `json:"protocol,omitempty"`
 }
 
@@ -34,8 +34,8 @@ type ContainerMount struct {
 	// clients may omit both type and mode; the service infers that case from
 	// whether source is an absolute path or a volume name.
 	Mode     string `json:"mode,omitempty"`
-	Source   string `json:"source" binding:"required"`
-	Target   string `json:"target" binding:"required"`
+	Source   string `json:"source"`
+	Target   string `json:"target"`
 	ReadOnly bool   `json:"readOnly"`
 }
 

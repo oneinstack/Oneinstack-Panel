@@ -1379,10 +1379,40 @@ func operationError(c *gin.Context, err error) {
 		return
 	}
 	if errors.Is(err, containerService.ErrInvalidContainerConfig) {
+		var validationErrors *containerService.ContainerValidationErrors
+		if errors.As(err, &validationErrors) {
+			items := make(core.ValidationErrors, 0, len(validationErrors.Items))
+			details := make([]string, 0, len(validationErrors.Items))
+			for _, item := range validationErrors.Items {
+				field := strings.TrimSpace(item.Field)
+				message := strings.TrimSpace(item.Message)
+				if message == "" {
+					continue
+				}
+				items = append(items, core.ValidationError{Field: field, Code: core.ErrBadRequest, Message: message})
+				if field == "" {
+					details = append(details, message)
+				} else {
+					details = append(details, field+"："+message)
+				}
+			}
+			detail := strings.Join(details, "；")
+			message := "容器配置无效"
+			if detail != "" {
+				message += "：" + detail
+			}
+			core.HandleError(c, core.NewErrorWithValidationErrors(core.ErrBadRequest, message, detail, items))
+			return
+		}
+		detail := strings.TrimSpace(strings.TrimPrefix(err.Error(), containerService.ErrInvalidContainerConfig.Error()+": "))
+		message := "容器配置无效"
+		if detail != "" {
+			message += "：" + detail
+		}
 		core.HandleError(c, core.NewErrorWithDetail(
 			core.ErrBadRequest,
-			"容器配置无效",
-			strings.TrimPrefix(err.Error(), containerService.ErrInvalidContainerConfig.Error()+": "),
+			message,
+			detail,
 		))
 		return
 	}

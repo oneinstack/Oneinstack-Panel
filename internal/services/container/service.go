@@ -181,6 +181,47 @@ type Mount struct {
 	ReadOnly       bool
 }
 
+// ContainerValidationError is one actionable container-create validation
+// failure. Field uses the JSON request path so callers can focus the matching
+// form control without exposing submitted secret values.
+type ContainerValidationError struct {
+	Field   string
+	Message string
+}
+
+// ContainerValidationErrors preserves the invalid-container sentinel while
+// carrying every independent validation failure found in one request.
+type ContainerValidationErrors struct {
+	Items []ContainerValidationError
+}
+
+func (e *ContainerValidationErrors) Error() string {
+	if e == nil || len(e.Items) == 0 {
+		return ErrInvalidContainerConfig.Error()
+	}
+	details := make([]string, 0, len(e.Items))
+	for _, item := range e.Items {
+		field := strings.TrimSpace(item.Field)
+		message := strings.TrimSpace(item.Message)
+		if message == "" {
+			continue
+		}
+		if field == "" {
+			details = append(details, message)
+			continue
+		}
+		details = append(details, field+"："+message)
+	}
+	if len(details) == 0 {
+		return ErrInvalidContainerConfig.Error()
+	}
+	return ErrInvalidContainerConfig.Error() + ": " + strings.Join(details, "；")
+}
+
+func (e *ContainerValidationErrors) Unwrap() error {
+	return ErrInvalidContainerConfig
+}
+
 const (
 	MountTypeBind   = "bind"
 	MountTypeVolume = "volume"
@@ -391,7 +432,7 @@ func classifyStatsError(err error) error {
 
 func (s *Service) CreateContainer(ctx context.Context, request ContainerCreateRequest) (string, error) {
 	if err := validateContainerCreateRequest(request); err != nil {
-		return "", fmt.Errorf("%w: %v", ErrInvalidContainerConfig, err)
+		return "", err
 	}
 	name, err := validateName(request.Name)
 	if err != nil {
@@ -518,103 +559,129 @@ func (s *Service) CreateContainer(ctx context.Context, request ContainerCreateRe
 }
 
 func validateContainerCreateRequest(request ContainerCreateRequest) error {
+	validationErrors := &ContainerValidationErrors{}
+	addError := func(field, message string) {
+		message = strings.TrimSpace(message)
+		if message == "" {
+			return
+		}
+		validationErrors.Items = append(validationErrors.Items, ContainerValidationError{Field: field, Message: message})
+	}
+
 	if _, err := validateName(request.Name); err != nil {
-		return fmt.Errorf("容器名称无效: %w", err)
+		addError("name", "容器名称无效："+err.Error())
 	}
 	if _, err := validateReference(request.Image); err != nil {
-		return fmt.Errorf("镜像名称无效: %w", err)
+		addError("image", "镜像名称无效："+err.Error())
 	}
 	if err := validateOfficialPostgresEnvironment(request.Image, request.Environment); err != nil {
-		return err
+		addError("environment", err.Error())
 	}
 	if request.AutoRemove && request.Restart != "" && request.Restart != "no" {
-		return errors.New("autoRemove=true 不能与 restart 同时使用；请关闭 autoRemove，或将 restart 设置为 no")
+		addError("autoRemove", "退出后自动删除不能与重启策略同时使用；请关闭自动删除，或将重启策略设置为不重启")
 	}
 	if request.Restart != "" {
 		if err := validateRestart(request.Restart); err != nil {
-			return fmt.Errorf("重启策略无效: %w", err)
+			addError("restart", "重启策略无效："+err.Error())
 		}
 	}
 	if request.CPUWeight != 0 && (request.CPUWeight < 10 || request.CPUWeight > 1000) {
-		return errors.New("CPU权重必须在10到1000之间，0表示不设置")
+		addError("cpuWeight", "CPU权重必须在10到1000之间，0表示不设置")
 	}
 	if request.CPULimit < 0 || request.CPULimit > 256 {
-		return errors.New("CPU限制必须在0到256之间，0表示不设置")
+		addError("cpuLimit", "CPU限制必须在0到256之间，0表示不设置")
 	}
 	if request.MemoryLimitMB < 0 || request.MemoryLimitMB > 1024*1024 {
-		return errors.New("内存限制必须在0到1048576 MB之间，0表示不设置")
+		addError("memoryLimitMB", "内存限制必须在0到1048576 MB之间，0表示不设置")
 	}
 
 	networks := make(map[string]struct{}, len(request.Networks))
-	for _, value := range request.Networks {
+	for index, value := range request.Networks {
 		network, err := validateName(value)
 		if err != nil {
-			return fmt.Errorf("网络名称无效: %w", err)
+			addError(fmt.Sprintf("networks[%d]", index), "网络名称无效："+err.Error())
+			continue
 		}
 		if _, exists := networks[network]; exists {
-			return fmt.Errorf("网络 %q 重复配置", network)
+			addError(fmt.Sprintf("networks[%d]", index), "网络重复配置")
+			continue
 		}
 		networks[network] = struct{}{}
 	}
-	if request.IPv4 != "" && !validIP(request.IPv4) {
-		return errors.New("IPv4地址无效，请填写合法的IPv4地址")
+	if request.IPv4 != "" && !validIPv4(request.IPv4) {
+		addError("ipv4", "IPv4地址无效，请填写合法的IPv4地址")
 	}
-	if request.IPv6 != "" && !validIP(request.IPv6) {
-		return errors.New("IPv6地址无效，请填写合法的IPv6地址")
+	if request.IPv6 != "" && !validIPv6(request.IPv6) {
+		addError("ipv6", "IPv6地址无效，请填写合法的IPv6地址")
 	}
 
 	ports := make(map[string]struct{}, len(request.Ports))
-	for _, port := range request.Ports {
+	for index, port := range request.Ports {
 		if port.ContainerPort < 1 || port.ContainerPort > 65535 {
-			return fmt.Errorf("容器端口 %d 无效，必须在1到65535之间", port.ContainerPort)
+			addError(fmt.Sprintf("ports[%d].containerPort", index), "容器端口无效，必须在1到65535之间")
 		}
 		if port.HostPort < 0 || port.HostPort > 65535 {
-			return fmt.Errorf("主机端口 %d 无效，必须在0到65535之间", port.HostPort)
+			addError(fmt.Sprintf("ports[%d].hostPort", index), "主机端口无效，必须在0到65535之间")
 		}
 		protocol := strings.ToLower(strings.TrimSpace(port.Protocol))
 		if protocol == "" {
 			protocol = "tcp"
 		}
 		if protocol != "tcp" && protocol != "udp" {
-			return fmt.Errorf("端口协议 %q 无效，只支持 tcp 或 udp", port.Protocol)
+			addError(fmt.Sprintf("ports[%d].protocol", index), "端口协议无效，只支持 tcp 或 udp")
 		}
-		if port.HostPort != 0 {
+		if port.HostPort != 0 && (protocol == "tcp" || protocol == "udp") {
 			key := fmt.Sprintf("%d/%s", port.HostPort, protocol)
 			if _, exists := ports[key]; exists {
-				return fmt.Errorf("主机端口 %d/%s 重复映射", port.HostPort, protocol)
+				addError(fmt.Sprintf("ports[%d].hostPort", index), "主机端口和协议重复映射")
+				continue
 			}
 			ports[key] = struct{}{}
 		}
 	}
 
 	targets := make(map[string]struct{}, len(request.Mounts))
-	for _, mount := range request.Mounts {
+	for index, mount := range request.Mounts {
 		if _, _, err := validateMountSource(mount); err != nil {
-			return err
+			field := fmt.Sprintf("mounts[%d].source", index)
+			if strings.Contains(err.Error(), "挂载类型") {
+				field = fmt.Sprintf("mounts[%d].type", index)
+			}
+			addError(field, err.Error())
 		}
 		target, err := validateMountTarget(mount.Target)
 		if err != nil {
-			return fmt.Errorf("挂载目标 %q 无效: %w", mount.Target, err)
+			addError(fmt.Sprintf("mounts[%d].target", index), "挂载目标无效："+err.Error())
+			continue
 		}
 		if _, exists := targets[target]; exists {
-			return fmt.Errorf("容器目录 %q 重复挂载", target)
+			addError(fmt.Sprintf("mounts[%d].target", index), "容器目录重复挂载")
+			continue
 		}
 		targets[target] = struct{}{}
 	}
 	for key := range request.Labels {
 		if _, err := validateLabel(key); err != nil {
-			return fmt.Errorf("Label 名称无效: %w", err)
+			addError("labels", "Label名称无效："+err.Error())
 		}
 	}
 	for key := range request.Environment {
 		if _, err := validateEnvKey(key); err != nil {
-			return fmt.Errorf("环境变量名称无效: %w", err)
+			addError("environment", "环境变量名称无效："+err.Error())
 		}
 	}
-	for _, value := range append(append([]string{}, request.Entrypoint...), request.Command...) {
+	for index, value := range request.Entrypoint {
 		if strings.ContainsAny(value, "\r\n") {
-			return errors.New("入口命令和启动参数不能包含换行符")
+			addError(fmt.Sprintf("entrypoint[%d]", index), "入口命令不能包含换行符")
 		}
+	}
+	for index, value := range request.Command {
+		if strings.ContainsAny(value, "\r\n") {
+			addError(fmt.Sprintf("command[%d]", index), "启动参数不能包含换行符")
+		}
+	}
+	if len(validationErrors.Items) > 0 {
+		return validationErrors
 	}
 	return nil
 }
@@ -2526,11 +2593,11 @@ func validateMountSource(mount Mount) (string, string, error) {
 	switch mountType {
 	case MountTypeBind:
 		if !filepath.IsAbs(source) {
-			return "", "", fmt.Errorf("挂载源路径 %q 无效，type=bind 时必须是 Docker 主机上的绝对路径", mount.Source)
+			return "", "", errors.New("type=bind 时挂载源必须是 Docker 主机上的绝对路径")
 		}
 	case MountTypeVolume:
 		if _, err := validateName(source); err != nil {
-			return "", "", fmt.Errorf("命名卷名称 %q 无效: %w", mount.Source, err)
+			return "", "", fmt.Errorf("命名卷名称无效：%w", err)
 		}
 	default:
 		return "", "", fmt.Errorf("挂载类型 %q 无效，只支持 bind 或 volume", mount.Type)
@@ -2563,7 +2630,19 @@ func validateEnvKey(value string) (string, error) {
 	return value, nil
 }
 
-func validIP(value string) bool { return net.ParseIP(strings.TrimSpace(value)) != nil }
+func validIPv4(value string) bool {
+	ip := net.ParseIP(strings.TrimSpace(value))
+	return ip != nil && ip.To4() != nil
+}
+
+func validIPv6(value string) bool {
+	ip := net.ParseIP(strings.TrimSpace(value))
+	return ip != nil && ip.To4() == nil
+}
+
+func validIP(value string) bool {
+	return net.ParseIP(strings.TrimSpace(value)) != nil
+}
 
 func stringValue(item map[string]any, key string) string {
 	value, _ := item[key].(string)
