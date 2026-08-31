@@ -49,6 +49,30 @@ func translateContainerErrorText(text string) string {
 		return "Built-in Docker networks cannot be deleted"
 	case "bridge、host 和 none 是 Docker 创建的内置网络，不能删除。请删除自定义网络，或使用“清理无用网络”清理未使用的自定义网络。":
 		return "bridge, host, and none are built-in Docker networks and cannot be deleted. Delete a custom network instead, or use Prune unused networks to remove unused custom networks."
+	case "Docker运行时不可用，无法推送镜像":
+		return "The Docker runtime is unavailable, so the image cannot be pushed"
+	case "Docker镜像推送失败":
+		return "Failed to push the Docker image"
+	case "Docker镜像推送超时":
+		return "Docker image push timed out"
+	case "镜像引用格式无效，请检查仓库地址、命名空间、镜像名称和标签。":
+		return "The image reference is invalid. Check the registry address, namespace, image name, and tag."
+	case "本地不存在要推送的镜像，请先确认镜像名称和标签。":
+		return "The local image to push does not exist. Verify the image name and tag before retrying."
+	case "镜像仓库认证失败或当前账号没有推送权限，请检查 Registry 凭据、目标仓库名称以及账号的 push 权限。":
+		return "The image registry authentication failed or the account cannot push to the target repository. Check the Registry credentials, repository name, and account push permission."
+	case "目标镜像仓库或仓库内镜像不存在，请检查 Registry 地址、命名空间和镜像名称。":
+		return "The target image registry or repository image does not exist. Check the Registry address, namespace, and image name."
+	case "无法连接目标镜像仓库，请检查仓库地址、面板服务器网络、DNS 和防火墙配置。":
+		return "The target image registry could not be reached. Check the registry address, the Panel server network, DNS, and firewall configuration."
+	case "目标镜像仓库的 TLS 证书校验失败，请检查证书有效期、域名匹配和信任链。":
+		return "The target image registry TLS certificate could not be verified. Check the certificate validity, domain match, and trust chain."
+	case "Docker 镜像推送未在限定时间内完成，请检查仓库服务和网络连通性后重试。":
+		return "The Docker image push did not finish within the allowed time. Check the registry service and network connectivity, then retry."
+	case "已保存的镜像仓库凭据无法读取，请重新保存 Registry 凭据后重试。":
+		return "The saved image registry credentials could not be read. Save the Registry credentials again and retry."
+	case "Docker 未返回可分类的推送错误，请结合请求时间查看面板日志。":
+		return "Docker did not return a classifiable push error. Check the Panel logs using the request time."
 	default:
 		return ""
 	}

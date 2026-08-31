@@ -1184,15 +1184,21 @@ func PushImage(c *gin.Context) {
 		badRequest(c, err)
 		return
 	}
-	ctx, cancel := requestContext(c)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 35*time.Minute)
 	defer cancel()
 	reference, err := service.RegistryImageReference(request.RegistryID, request.ImageName, request.Reference)
 	if err != nil {
 		badRequest(c, err)
 		return
 	}
-	if err := service.PushImage(ctx, reference); err != nil {
-		recordAction(c, "container.image.push", http.StatusInternalServerError, err)
+	if err := service.PushImage(ctx, request.RegistryID, reference); err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, containerService.ErrRuntimeUnavailable) {
+			status = http.StatusServiceUnavailable
+		} else if errors.Is(err, containerService.ErrDockerCommandTimeout) {
+			status = http.StatusGatewayTimeout
+		}
+		recordAction(c, "container.image.push", status, err)
 		operationError(c, err)
 		return
 	}
@@ -1544,6 +1550,10 @@ func badRequest(c *gin.Context, err error) {
 }
 
 func operationError(c *gin.Context, err error) {
+	if errors.Is(err, containerService.ErrImagePushFailed) {
+		imagePushError(c, err)
+		return
+	}
 	if errors.Is(err, containerService.ErrProtectedNetwork) {
 		core.HandleError(c, protectedNetworkError())
 		return
@@ -1736,6 +1746,29 @@ func registryProbeError(err error) *core.AppError {
 		return core.NewErrorWithDetail(core.ErrServiceUnavailable, "容器镜像仓库接口响应异常", "目标地址未返回可接受的 Registry V2 响应，请确认地址和仓库服务配置。")
 	default:
 		return core.NewErrorWithDetail(core.ErrServiceUnavailable, "容器镜像仓库连接测试失败", "请检查仓库地址、网络连通性和仓库服务状态后重试。")
+	}
+}
+
+func imagePushError(c *gin.Context, err error) {
+	switch {
+	case errors.Is(err, containerService.ErrRuntimeUnavailable):
+		core.HandleError(c, core.NewErrorWithDetail(
+			core.ErrContainerRuntimeUnavailable,
+			"Docker运行时不可用，无法推送镜像",
+			"Docker daemon 当前不可用，请确认 Docker 服务已启动，并检查面板运行用户是否有访问 Docker socket 的权限。",
+		))
+	case errors.Is(err, containerService.ErrDockerCommandTimeout):
+		core.HandleError(c, core.NewErrorWithDetail(
+			core.ErrTaskTimeout,
+			"Docker镜像推送超时",
+			"镜像推送未在限定时间内完成，请检查目标 Registry 服务、网络连通性和镜像大小后重试。",
+		))
+	default:
+		core.HandleError(c, core.NewErrorWithDetail(
+			core.ErrOperationFailed,
+			"Docker镜像推送失败",
+			containerService.ImagePushFailureDetail(err),
+		))
 	}
 }
 

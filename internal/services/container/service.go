@@ -33,6 +33,8 @@ var (
 	ErrInvalidRegistryInput             = errors.New("invalid container registry input")
 	ErrRegistryProbeFailed              = errors.New("container registry probe failed")
 	ErrImagePullFailed                  = errors.New("container image pull failed")
+	ErrImagePushFailed                  = errors.New("container image push failed")
+	ErrRegistryCredentialUnavailable    = errors.New("container registry credential unavailable")
 	ErrDockerCommandTimeout             = errors.New("docker command timed out")
 	ErrContainerLogsUnavailable         = errors.New("container logs unavailable")
 	ErrProtectedNetwork                 = errors.New("protected container network")
@@ -128,6 +130,67 @@ type ContainerActionState struct {
 type ContainerActionError struct {
 	Action string
 	Err    error
+}
+
+type ImagePushError struct {
+	Err error
+}
+
+func (e *ImagePushError) Error() string {
+	if e == nil || e.Err == nil {
+		return ErrImagePushFailed.Error()
+	}
+	return fmt.Sprintf("Docker 镜像推送失败：%s", dockerDiagnosticSummary(e.Err.Error()))
+}
+
+func (e *ImagePushError) Unwrap() error {
+	if e == nil {
+		return ErrImagePushFailed
+	}
+	return e.Err
+}
+
+func (e *ImagePushError) Is(target error) bool {
+	return target == ErrImagePushFailed
+}
+
+// ImagePushFailureDetail converts Docker push output into an actionable,
+// secret-safe detail for the API error envelope. The raw Docker output is
+// retained in the error for server-side audit diagnostics, but is not exposed
+// by the handler unless it passes the bounded redaction path below.
+func ImagePushFailureDetail(err error) string {
+	if err == nil {
+		return "Docker 未返回可用的推送错误，请结合请求时间查看面板日志。"
+	}
+	var pushErr *ImagePushError
+	cause := err
+	if errors.As(err, &pushErr) && pushErr != nil && pushErr.Err != nil {
+		cause = pushErr.Err
+	}
+	lower := strings.ToLower(cause.Error())
+	switch {
+	case errors.Is(cause, ErrRegistryCredentialUnavailable):
+		return "已保存的镜像仓库凭据无法读取，请重新保存 Registry 凭据后重试。"
+	case strings.Contains(lower, "invalid reference format"), strings.Contains(lower, "tag is missing"):
+		return "镜像引用格式无效，请检查仓库地址、命名空间、镜像名称和标签。"
+	case strings.Contains(lower, "no such image"), strings.Contains(lower, "unable to find image"), strings.Contains(lower, "reference does not exist"), strings.Contains(lower, "tag does not exist"):
+		return "本地不存在要推送的镜像，请先确认镜像名称和标签。"
+	case strings.Contains(lower, "unauthorized"), strings.Contains(lower, "authentication required"), strings.Contains(lower, "insufficient_scope"), strings.Contains(lower, "http 401"), strings.Contains(lower, "401 unauthorized"), strings.Contains(lower, "requested access to the resource is denied"), strings.Contains(lower, "access denied"), strings.Contains(lower, "forbidden"), strings.Contains(lower, "denied"):
+		return "镜像仓库认证失败或当前账号没有推送权限，请检查 Registry 凭据、目标仓库名称以及账号的 push 权限。"
+	case strings.Contains(lower, "manifest unknown"), strings.Contains(lower, "name unknown"), strings.Contains(lower, "repository does not exist"), strings.Contains(lower, "not found"):
+		return "目标镜像仓库或仓库内镜像不存在，请检查 Registry 地址、命名空间和镜像名称。"
+	case strings.Contains(lower, "no such host"), strings.Contains(lower, "temporary failure in name resolution"), strings.Contains(lower, "server misbehaving"), strings.Contains(lower, "connection refused"), strings.Contains(lower, "network is unreachable"), strings.Contains(lower, "no route to host"), strings.Contains(lower, "dial tcp"), strings.Contains(lower, "lookup "):
+		return "无法连接目标镜像仓库，请检查仓库地址、面板服务器网络、DNS 和防火墙配置。"
+	case strings.Contains(lower, "x509"), strings.Contains(lower, "certificate"), strings.Contains(lower, "tls"), strings.Contains(lower, "server gave http response to https client"):
+		return "目标镜像仓库的 TLS 证书校验失败，请检查证书有效期、域名匹配和信任链。"
+	case strings.Contains(lower, "timeout"), strings.Contains(lower, "timed out"), strings.Contains(lower, "deadline exceeded"):
+		return "Docker 镜像推送未在限定时间内完成，请检查仓库服务和网络连通性后重试。"
+	}
+	detail := dockerDiagnosticSummary(cause.Error())
+	if detail == "" {
+		return "Docker 未返回可分类的推送错误，请结合请求时间查看面板日志。"
+	}
+	return "Docker 返回错误：" + detail
 }
 
 func (e *ContainerActionError) Error() string {
@@ -935,11 +998,24 @@ func sortedNetworkNames(networks map[string]json.RawMessage) []string {
 
 func dockerDiagnosticSummary(message string) string {
 	message = redactContainerLogLine(strings.TrimSpace(message))
+	message = redactContainerCredentialURL(message)
+	message = redactContainerBearerToken(message)
 	const maxDiagnosticLength = 4096
 	if len(message) > maxDiagnosticLength {
 		return message[:maxDiagnosticLength] + "..."
 	}
 	return message
+}
+
+var containerCredentialURLPattern = regexp.MustCompile(`(?i)(https?://)([^/@\s]+):([^/@\s]+)@`)
+var containerBearerTokenPattern = regexp.MustCompile(`(?i)(bearer\s+)[^\s,;]+`)
+
+func redactContainerCredentialURL(message string) string {
+	return containerCredentialURLPattern.ReplaceAllString(message, "$1[REDACTED]@")
+}
+
+func redactContainerBearerToken(message string) string {
+	return containerBearerTokenPattern.ReplaceAllString(message, "$1[REDACTED]")
 }
 
 func (s *Service) Logs(ctx context.Context, id string, options LogOptions) (string, error) {
@@ -1306,13 +1382,44 @@ func (s *Service) TagImage(ctx context.Context, id, reference string, removeOthe
 	return nil
 }
 
-func (s *Service) PushImage(ctx context.Context, reference string) error {
+func (s *Service) PushImage(ctx context.Context, registryID uint, reference string) error {
 	reference, err := validateReference(reference)
 	if err != nil {
 		return err
 	}
-	_, err = s.run(ctx, "push", reference)
-	return err
+	args := []string{"push", reference}
+	if registryID != 0 {
+		db := app.DB()
+		if db == nil {
+			return errors.New("database is not initialized")
+		}
+		var registry models.ContainerRegistry
+		if err := db.First(&registry, registryID).Error; err != nil {
+			return fmt.Errorf("镜像仓库不存在: %w", err)
+		}
+		if registry.AuthEnabled {
+			if strings.TrimSpace(registry.Username) == "" || strings.TrimSpace(registry.PasswordEnc) == "" {
+				return &ImagePushError{Err: ErrRegistryCredentialUnavailable}
+			}
+			password, decryptErr := utils.DecryptCredential(registry.PasswordEnc, utils.CredentialPurposeRegistryPassword)
+			if decryptErr != nil {
+				return &ImagePushError{Err: fmt.Errorf("%w: %v", ErrRegistryCredentialUnavailable, decryptErr)}
+			}
+			configDir, configErr := os.MkdirTemp("", "oneinstack-docker-config-")
+			if configErr != nil {
+				return &ImagePushError{Err: fmt.Errorf("创建临时 Docker 配置失败: %w", configErr)}
+			}
+			defer os.RemoveAll(configDir)
+			if _, loginErr := s.runWithInput(ctx, time.Minute, password+"\n", "--config", configDir, "login", "--username", registry.Username, "--password-stdin", registry.Address); loginErr != nil {
+				return &ImagePushError{Err: fmt.Errorf("镜像仓库登录失败: %w", loginErr)}
+			}
+			args = []string{"--config", configDir, "push", reference}
+		}
+	}
+	if err := s.runStreaming(ctx, 30*time.Minute, args, nil); err != nil {
+		return &ImagePushError{Err: err}
+	}
+	return nil
 }
 
 func (s *Service) LoadImage(ctx context.Context, path string) error {
@@ -2666,12 +2773,23 @@ func (s *Service) run(ctx context.Context, args ...string) (string, error) {
 }
 
 func (s *Service) runWithTimeout(ctx context.Context, timeout time.Duration, args ...string) (string, error) {
+	return s.runCommand(ctx, timeout, nil, args...)
+}
+
+func (s *Service) runWithInput(ctx context.Context, timeout time.Duration, input string, args ...string) (string, error) {
+	return s.runCommand(ctx, timeout, strings.NewReader(input), args...)
+}
+
+func (s *Service) runCommand(ctx context.Context, timeout time.Duration, input io.Reader, args ...string) (string, error) {
 	if _, err := exec.LookPath(s.binary); err != nil {
 		return "", fmt.Errorf("%w: %s executable file not found in PATH", ErrRuntimeUnavailable, s.binary)
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	command := exec.CommandContext(ctx, s.binary, args...)
+	if input != nil {
+		command.Stdin = input
+	}
 	var stdout, stderr bytes.Buffer
 	command.Stdout = &stdout
 	command.Stderr = &stderr
