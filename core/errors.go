@@ -261,6 +261,9 @@ func classifyErrorDetail(detail string) string {
 		return "图片超过在线预览大小限制，请选择较小的图片后重试。"
 	case strings.Contains(lower, "download size limit exceeded"):
 		return "远程文件超过允许大小，请选择较小的文件后重试。"
+	case strings.HasPrefix(lower, "copy source "),
+		strings.HasPrefix(lower, "copy target "):
+		return classifyCopyErrorDetail(lower)
 	case strings.Contains(lower, "record not found"),
 		strings.Contains(lower, "no longer available"):
 		return "目标资源不存在、已被删除或状态已变化，请刷新列表并确认资源标识后重试。"
@@ -390,6 +393,38 @@ func formatWebServerConfigPreflightDetail(detail string) string {
 	default:
 		return ""
 	}
+}
+
+func classifyCopyErrorDetail(detail string) string {
+	target := strings.HasPrefix(detail, "copy target ")
+	if strings.Contains(detail, "permission denied") {
+		if target {
+			return "复制目标没有写入权限，请检查目标目录权限、所属用户以及文件系统挂载权限。"
+		}
+		return "复制源没有读取权限，请检查源目录权限、所属用户以及受保护目录限制。"
+	}
+	if strings.Contains(detail, "no such file") || strings.Contains(detail, "file does not exist") {
+		if target {
+			return "复制目标目录或路径在操作期间不存在，可能已被其他文件操作移除，请刷新后重试。"
+		}
+		return "复制源不存在，或源内容在读取期间发生变化，请刷新后重试。"
+	}
+	if strings.Contains(detail, "unsupported file type") {
+		return "复制源包含不支持的文件类型，或符号链接指向复制范围外；普通目录内部的符号链接只能指向该目录内部。"
+	}
+	if strings.Contains(detail, "reserved") || strings.Contains(detail, "protected") {
+		return "复制路径命中面板内部目录或受保护目录，不能通过复制或符号链接间接访问。"
+	}
+	if strings.Contains(detail, "no space") || strings.Contains(detail, "quota") {
+		return "复制目标所在文件系统空间或用户配额不足，请清理空间后重试。"
+	}
+	if strings.Contains(detail, "read-only") {
+		return "复制目标所在文件系统为只读，请检查挂载状态后重试。"
+	}
+	if target {
+		return "复制目标写入或提交失败；复制使用临时副本，未完成时不会主动删除原目标。"
+	}
+	return "复制源读取、遍历或安全校验失败，请根据接口 message 中的失败路径检查权限、文件类型和符号链接目标。"
 }
 
 func containsSensitiveErrorDetail(detail string) bool {

@@ -12,9 +12,53 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+
+	"github.com/google/uuid"
 )
 
 var ErrUnsupportedType = errors.New("unsupported file type")
+
+// CopyPathError keeps the virtual path and phase of a copy failure while
+// retaining the underlying error for classification. The path is virtual and
+// never exposes the configured physical file-manager root.
+type CopyPathError struct {
+	Phase string
+	Path  string
+	Cause error
+}
+
+type copyCommitError struct {
+	Cause          error
+	PreserveStaged bool
+}
+
+func (e *copyCommitError) Error() string {
+	if e == nil {
+		return "copy commit error"
+	}
+	return e.Cause.Error()
+}
+
+func (e *copyCommitError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Cause
+}
+
+func (e *CopyPathError) Error() string {
+	if e == nil {
+		return "copy path error"
+	}
+	return fmt.Sprintf("copy %s %s: %v", e.Phase, e.Path, e.Cause)
+}
+
+func (e *CopyPathError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Cause
+}
 
 type OperationResult struct {
 	Path    string `json:"path"`
@@ -36,8 +80,8 @@ type ArchiveProgressFunc func(ArchiveProgress)
 
 // Measure returns the regular-file bytes and entry count for a file tree.
 // Directory symbolic links supplied as the source are counted as one link
-// entry; links encountered inside a real directory are rejected so copy never
-// follows a link outside the managed root.
+// entry; links encountered inside a real directory are validated without being
+// followed so copy never leaves the copied directory.
 func (m *Manager) Measure(virtualPath string) (OperationResult, error) {
 	return m.measure(virtualPath, false)
 }
@@ -116,39 +160,39 @@ func (m *Manager) measure(virtualPath string, allowSymbolicLinks bool) (Operatio
 	}
 	rootInfo, err := m.root.Lstat(relative)
 	if err != nil {
-		return OperationResult{}, err
+		return OperationResult{}, m.copyPathError("source", relative, err)
 	}
 	if rootInfo.Mode()&os.ModeSymlink != 0 {
 		if allowSymbolicLinks {
 			result := OperationResult{Path: m.VirtualPath(relative), Entries: 1}
 			return result, nil
 		}
-		targetInfo, err := m.statDirectorySymlinkTarget(relative)
+		targetInfo, err := m.statSymlinkTarget(relative)
 		if err != nil {
-			return OperationResult{}, err
+			return OperationResult{}, m.copyPathError("source", relative, err)
 		}
-		if !targetInfo.IsDir() {
-			return OperationResult{}, fmt.Errorf("%w: symbolic link target is not a directory", ErrUnsupportedType)
+		if !targetInfo.IsDir() && !targetInfo.Mode().IsRegular() {
+			return OperationResult{}, m.copyPathError("source", relative, fmt.Errorf("%w: symbolic link target is not a regular file or directory", ErrUnsupportedType))
 		}
 		return OperationResult{Path: m.VirtualPath(relative), Entries: 1}, nil
 	}
 	result := OperationResult{Path: m.VirtualPath(relative)}
-	err = fs.WalkDir(m.root.FS(), relative, func(current string, entry fs.DirEntry, walkErr error) error {
+	err = m.Walk(m.VirtualPath(relative), func(current string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
-			return walkErr
+			return m.copyPathError("source", current, walkErr)
 		}
 		info, err := entry.Info()
 		if err != nil {
-			return err
+			return m.copyPathError("source", current, err)
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
 			if !allowSymbolicLinks {
 				if err := m.validateInternalCopySymlink(relative, current); err != nil {
-					return err
+					return m.copyPathError("source", current, err)
 				}
 			}
 		} else if !info.IsDir() && !info.Mode().IsRegular() {
-			return fmt.Errorf("%w: %s", ErrUnsupportedType, info.Mode().Type())
+			return m.copyPathError("source", current, fmt.Errorf("%w: %s", ErrUnsupportedType, info.Mode().Type()))
 		}
 		result.Entries++
 		if info.Mode().IsRegular() {
@@ -156,7 +200,7 @@ func (m *Manager) measure(virtualPath string, allowSymbolicLinks bool) (Operatio
 		}
 		return nil
 	})
-	return result, err
+	return result, m.copyPathError("source", relative, err)
 }
 
 // Copy copies source into targetDir using targetName. Existing targets are
@@ -172,51 +216,122 @@ func (m *Manager) Copy(source, targetDir, targetName string, overwrite bool) (re
 	}
 	if _, err := m.root.Lstat(targetRelative); err == nil {
 		if !overwrite {
-			return OperationResult{}, fs.ErrExist
-		}
-		if err := m.removeAllRelative(targetRelative); err != nil {
-			return OperationResult{}, err
+			return OperationResult{}, m.copyPathError("target", targetRelative, fs.ErrExist)
 		}
 	} else if !errors.Is(err, fs.ErrNotExist) {
-		return OperationResult{}, err
+		return OperationResult{}, m.copyPathError("target", targetRelative, err)
 	}
 
-	keepTarget := false
+	stagedTarget, err := m.newTemporaryCopyPath(pathpkg.Dir(targetRelative), ".file-copy-")
+	if err != nil {
+		return OperationResult{}, m.copyPathError("target", targetRelative, err)
+	}
+	committed := false
+	stagedKept := false
 	defer func() {
-		if !keepTarget {
-			_ = m.removeAllRelative(targetRelative)
+		if !committed && !stagedKept {
+			_ = m.removeAllRelative(stagedTarget)
 		}
 	}()
 
 	sourceInfo, err := m.root.Lstat(sourceRelative)
 	if err != nil {
-		return OperationResult{}, err
+		return OperationResult{}, m.copyPathError("source", sourceRelative, err)
 	}
 	if sourceInfo.Mode()&os.ModeSymlink != 0 {
-		targetInfo, err := m.statDirectorySymlinkTarget(sourceRelative)
+		targetInfo, err := m.statSymlinkTarget(sourceRelative)
 		if err != nil {
-			return OperationResult{}, err
+			return OperationResult{}, m.copyPathError("source", sourceRelative, err)
 		}
-		if !targetInfo.IsDir() {
-			return OperationResult{}, fmt.Errorf("%w: symbolic link target is not a directory", ErrUnsupportedType)
+		if !targetInfo.IsDir() && !targetInfo.Mode().IsRegular() {
+			return OperationResult{}, m.copyPathError("source", sourceRelative, fmt.Errorf("%w: symbolic link target is not a regular file or directory", ErrUnsupportedType))
 		}
-		linkTarget, err := m.copySymlinkTarget(sourceRelative, targetRelative)
+		linkTarget, err := m.copySymlinkTarget(sourceRelative, stagedTarget)
 		if err != nil {
-			return OperationResult{}, err
+			return OperationResult{}, m.copyPathError("source", sourceRelative, err)
 		}
-		if err := m.root.Symlink(linkTarget, targetRelative); err != nil {
-			return OperationResult{}, err
+		if err := m.root.Symlink(linkTarget, stagedTarget); err != nil {
+			return OperationResult{}, m.copyPathError("target", targetRelative, err)
 		}
 		result = OperationResult{Path: m.VirtualPath(targetRelative), Entries: 1}
-		keepTarget = true
-		return result, nil
+	} else {
+		result = OperationResult{Path: m.VirtualPath(targetRelative)}
+		if err := m.copyRelative(sourceRelative, stagedTarget, targetRelative, &result); err != nil {
+			return OperationResult{}, m.copyPathError("target", targetRelative, err)
+		}
 	}
-	result = OperationResult{Path: m.VirtualPath(targetRelative)}
-	if err := m.copyRelative(sourceRelative, targetRelative, &result); err != nil {
-		return OperationResult{}, err
+	if err := m.commitCopiedTarget(stagedTarget, targetRelative, overwrite); err != nil {
+		var commitErr *copyCommitError
+		if errors.As(err, &commitErr) && commitErr.PreserveStaged {
+			stagedKept = true
+		}
+		return OperationResult{}, m.copyPathError("target", targetRelative, err)
 	}
-	keepTarget = true
+	committed = true
 	return result, nil
+}
+
+func (m *Manager) copyPathError(phase, relative string, err error) error {
+	if err == nil {
+		return nil
+	}
+	var pathErr *CopyPathError
+	if errors.As(err, &pathErr) {
+		return err
+	}
+	return &CopyPathError{
+		Phase: phase,
+		Path:  m.VirtualPath(relative),
+		Cause: err,
+	}
+}
+
+func (m *Manager) newTemporaryCopyPath(parent, prefix string) (string, error) {
+	for attempt := 0; attempt < 8; attempt++ {
+		candidate := pathpkg.Join(parent, prefix+uuid.NewString()+".partial")
+		if _, err := m.root.Lstat(candidate); errors.Is(err, fs.ErrNotExist) {
+			return candidate, nil
+		} else if err != nil {
+			return "", err
+		}
+	}
+	return "", fmt.Errorf("create temporary copy path: %w", fs.ErrExist)
+}
+
+// commitCopiedTarget publishes a fully copied sibling. When overwriting, the
+// old target is first moved to a sibling backup, so a failed copy or commit
+// never removes the only complete copy of the target.
+func (m *Manager) commitCopiedTarget(staged, target string, overwrite bool) error {
+	if !overwrite {
+		return m.renameRelativeExclusive(staged, target)
+	}
+
+	if _, err := m.root.Lstat(target); errors.Is(err, fs.ErrNotExist) {
+		return m.renameRelativeExclusive(staged, target)
+	} else if err != nil {
+		return err
+	}
+
+	backup, err := m.newTemporaryCopyPath(pathpkg.Dir(target), ".file-copy-backup-")
+	if err != nil {
+		return err
+	}
+	if err := m.renameRelativeExclusive(target, backup); err != nil {
+		return fmt.Errorf("preserve existing target: %w", err)
+	}
+	if err := m.renameRelativeExclusive(staged, target); err != nil {
+		if restoreErr := m.renameRelativeExclusive(backup, target); restoreErr != nil {
+			return &copyCommitError{
+				Cause:          fmt.Errorf("commit copied target failed: %w; restore original target failed: %v; staged copy retained at %s", err, restoreErr, m.VirtualPath(staged)),
+				PreserveStaged: true,
+			}
+		}
+		return fmt.Errorf("commit copied target: %w", err)
+	}
+	// A cleanup failure leaves the old complete target in the uniquely named
+	// backup, but must not turn an already committed copy into a false failure.
+	_ = m.removeAllRelative(backup)
+	return nil
 }
 
 // Move moves source into targetDir using targetName without replacing an
@@ -248,7 +363,9 @@ func (m *Manager) Move(source, targetDir, targetName string) (OperationResult, e
 		return OperationResult{}, err
 	}
 	if err := m.removeAllRelative(sourceRelative); err != nil {
-		_ = m.removeAllRelative(targetRelative)
+		// Keep the complete copy when source cleanup fails. Removing it here
+		// could turn a recoverable cleanup error into data loss, especially when
+		// a cross-filesystem source directory was only partially removed.
 		return OperationResult{}, fmt.Errorf("remove source after cross-filesystem copy: %w", err)
 	}
 	return copied, nil
@@ -316,7 +433,7 @@ func (m *Manager) ArchiveWithProgress(source, targetDir, archiveName string, rep
 	baseName := pathpkg.Base(sourceRelative)
 	result.Path = m.VirtualPath(targetRelative)
 
-	walkErr := fs.WalkDir(m.root.FS(), resolvedSourceRelative, func(current string, entry fs.DirEntry, walkErr error) error {
+	walkErr := m.Walk(m.VirtualPath(resolvedSourceRelative), func(current string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -451,7 +568,7 @@ func (m *Manager) resolveOperationTarget(source, targetDir, targetName string) (
 	return sourceRelative, targetRelative, nil
 }
 
-func (m *Manager) statDirectorySymlinkTarget(relative string) (os.FileInfo, error) {
+func (m *Manager) statSymlinkTarget(relative string) (os.FileInfo, error) {
 	target, err := m.root.Readlink(relative)
 	if err != nil {
 		return nil, err
@@ -505,22 +622,23 @@ func (m *Manager) resolveSymlinkTarget(source, target string) (string, error) {
 	return resolved, nil
 }
 
-func (m *Manager) copyRelative(source, target string, result *OperationResult) error {
-	return m.copyRelativeTree(source, target, source, target, result)
+func (m *Manager) copyRelative(source, target, displayTarget string, result *OperationResult) error {
+	return m.copyRelativeTree(source, target, source, target, displayTarget, result)
 }
 
-func (m *Manager) copyRelativeTree(source, target, sourceRoot, targetRoot string, result *OperationResult) error {
+func (m *Manager) copyRelativeTree(source, target, sourceRoot, targetRoot, displayTargetRoot string, result *OperationResult) error {
+	displayTarget := pathpkg.Join(displayTargetRoot, strings.TrimPrefix(target, targetRoot))
 	info, err := m.root.Lstat(source)
 	if err != nil {
-		return err
+		return m.copyPathError("source", source, err)
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
 		linkTarget, err := m.copyInternalSymlinkTarget(sourceRoot, source, targetRoot, target)
 		if err != nil {
-			return err
+			return m.copyPathError("source", source, err)
 		}
 		if err := m.root.Symlink(linkTarget, target); err != nil {
-			return err
+			return m.copyPathError("target", displayTarget, err)
 		}
 		result.Entries++
 		return nil
@@ -528,19 +646,11 @@ func (m *Manager) copyRelativeTree(source, target, sourceRoot, targetRoot string
 	result.Entries++
 	if info.IsDir() {
 		if err := m.root.Mkdir(target, info.Mode().Perm()); err != nil {
-			return err
+			return m.copyPathError("target", displayTarget, err)
 		}
-		directory, err := m.root.Open(source)
+		entries, err := m.readCopyDirectory(source)
 		if err != nil {
-			return err
-		}
-		entries, readErr := directory.ReadDir(-1)
-		closeErr := directory.Close()
-		if readErr != nil {
-			return readErr
-		}
-		if closeErr != nil {
-			return closeErr
+			return m.copyPathError("source", source, err)
 		}
 		for _, entry := range entries {
 			if err := m.copyRelativeTree(
@@ -548,6 +658,7 @@ func (m *Manager) copyRelativeTree(source, target, sourceRoot, targetRoot string
 				pathpkg.Join(target, entry.Name()),
 				sourceRoot,
 				targetRoot,
+				displayTargetRoot,
 				result,
 			); err != nil {
 				return err
@@ -556,16 +667,16 @@ func (m *Manager) copyRelativeTree(source, target, sourceRoot, targetRoot string
 		return nil
 	}
 	if !info.Mode().IsRegular() {
-		return ErrUnsupportedType
+		return m.copyPathError("source", source, ErrUnsupportedType)
 	}
 	input, err := m.root.Open(source)
 	if err != nil {
-		return err
+		return m.copyPathError("source", source, err)
 	}
 	defer input.Close()
 	output, err := m.root.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, info.Mode().Perm())
 	if err != nil {
-		return err
+		return m.copyPathError("target", displayTarget, err)
 	}
 	written, copyErr := io.Copy(output, input)
 	if copyErr == nil {
@@ -573,13 +684,38 @@ func (m *Manager) copyRelativeTree(source, target, sourceRoot, targetRoot string
 	}
 	closeErr := output.Close()
 	if copyErr != nil {
-		return copyErr
+		return m.copyPathError("target", displayTarget, copyErr)
 	}
 	if closeErr != nil {
-		return closeErr
+		return m.copyPathError("target", displayTarget, closeErr)
 	}
 	result.Bytes += written
 	return nil
+}
+
+func (m *Manager) readCopyDirectory(relative string) ([]os.DirEntry, error) {
+	directory, err := m.root.Open(relative)
+	if err != nil {
+		return nil, err
+	}
+	entries, readErr := directory.ReadDir(-1)
+	closeErr := directory.Close()
+	if readErr != nil {
+		return nil, readErr
+	}
+	if closeErr != nil {
+		return nil, closeErr
+	}
+
+	visible := entries[:0]
+	for _, entry := range entries {
+		child := pathpkg.Join(relative, entry.Name())
+		if isInternalPath(child) || m.isProtectedRelative(child) {
+			continue
+		}
+		visible = append(visible, entry)
+	}
+	return visible, nil
 }
 
 func (m *Manager) validateInternalCopySymlink(sourceRoot, source string) error {
@@ -593,6 +729,9 @@ func (m *Manager) validateInternalCopySymlink(sourceRoot, source string) error {
 	}
 	if !isPathWithin(resolved, sourceRoot) {
 		return fmt.Errorf("%w: symbolic link target is outside copied directory", ErrUnsupportedType)
+	}
+	if isInternalPath(resolved) || m.isProtectedRelative(resolved) {
+		return fmt.Errorf("%w: symbolic link target is protected", ErrReservedPath)
 	}
 	return nil
 }
@@ -608,6 +747,9 @@ func (m *Manager) copyInternalSymlinkTarget(sourceRoot, source, targetRoot, targ
 	}
 	if !isPathWithin(resolved, sourceRoot) {
 		return "", fmt.Errorf("%w: symbolic link target is outside copied directory", ErrUnsupportedType)
+	}
+	if isInternalPath(resolved) || m.isProtectedRelative(resolved) {
+		return "", fmt.Errorf("%w: symbolic link target is protected", ErrReservedPath)
 	}
 	mappedTarget := targetRoot + strings.TrimPrefix(resolved, sourceRoot)
 	relativeTarget, err := filepath.Rel(filepath.FromSlash(pathpkg.Dir(target)), filepath.FromSlash(mappedTarget))

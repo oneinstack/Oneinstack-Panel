@@ -1,12 +1,15 @@
 package ftp
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"mime"
 	"net/http"
 	"os"
 	pathpkg "path"
 	"strings"
+	"syscall"
 	"time"
 
 	"oneinstack/core"
@@ -39,7 +42,7 @@ func CopyFileOrDir(c *gin.Context) {
 
 	measured, err := manager.Measure(input.SourcePath)
 	if err != nil {
-		handleFileError(c, err, "读取复制源失败")
+		handleFileError(c, err, copyFailureMessage("source", input, err))
 		return
 	}
 	settings := currentFileSettings()
@@ -51,11 +54,73 @@ func CopyFileOrDir(c *gin.Context) {
 	defer reservation.Release()
 	result, err := manager.Copy(input.SourcePath, targetDir, targetName, input.Overwrite)
 	if err != nil {
-		handleFileError(c, err, "复制失败")
+		handleFileError(c, err, copyFailureMessage("target", input, err))
 		return
 	}
 	core.HandleSuccess(c, result)
 	finishFileOperation(c, "success", fmt.Sprintf("复制 %d 项，共 %d 字节", result.Entries, result.Bytes))
+}
+
+func copyFailureMessage(defaultPhase string, input transferInput, err error) string {
+	phase := defaultPhase
+	failedPath := strings.TrimSpace(input.SourcePath)
+	cause := err
+	var pathErr *filemanager.CopyPathError
+	if errors.As(err, &pathErr) {
+		if pathErr.Phase != "" {
+			phase = pathErr.Phase
+		}
+		if pathErr.Path != "" {
+			failedPath = pathErr.Path
+		}
+		if pathErr.Cause != nil {
+			cause = pathErr.Cause
+		}
+	}
+
+	source := strings.TrimSpace(input.SourcePath)
+	target := strings.TrimSpace(input.TargetPath)
+	context := fmt.Sprintf("源：%s；目标：%s；失败路径：%s", source, target, failedPath)
+	if errors.Is(cause, fs.ErrExist) {
+		return fmt.Sprintf("复制目标已存在且未开启覆盖，请开启覆盖或更换目标名称（%s）", context)
+	}
+	if errors.Is(cause, fs.ErrNotExist) {
+		if phase == "target" {
+			return fmt.Sprintf("写入复制目标失败：目标目录或目标路径在复制期间不存在，可能已被其他操作移除（%s）", context)
+		}
+		return fmt.Sprintf("读取复制源失败：源路径不存在，或源内容在复制期间发生变化（%s）", context)
+	}
+	if errors.Is(cause, fs.ErrPermission) {
+		if phase == "target" {
+			return fmt.Sprintf("写入复制目标失败：目标目录或文件没有写入权限（%s）", context)
+		}
+		return fmt.Sprintf("读取复制源失败：源目录或文件没有读取权限（%s）", context)
+	}
+	if errors.Is(cause, filemanager.ErrReservedPath) {
+		return fmt.Sprintf("复制被拒绝：路径属于面板内部目录或受保护目录，不能读取、写入或通过符号链接间接访问（%s）", context)
+	}
+	if errors.Is(cause, filemanager.ErrUnsupportedType) {
+		return fmt.Sprintf("读取复制源失败：源目录包含不支持的文件类型，或包含指向复制范围外的符号链接；当前安全边界仅允许普通文件、目录，以及目标仍在源目录内部的符号链接（%s）", context)
+	}
+	if errors.Is(cause, filemanager.ErrInvalidPath) {
+		return fmt.Sprintf("复制路径无效：目标不能是源本身或源目录的子路径，且符号链接不能逃出授权根目录（%s）", context)
+	}
+	if errors.Is(cause, syscall.ENOSPC) || errors.Is(cause, syscall.EDQUOT) || errors.Is(cause, filemanager.ErrInsufficientSpace) || errors.Is(cause, filemanager.ErrQuotaExceeded) {
+		return fmt.Sprintf("写入复制目标失败：磁盘空间或用户配额不足，源文件未直接覆盖目标（%s）", context)
+	}
+	if errors.Is(cause, syscall.EROFS) {
+		return fmt.Sprintf("写入复制目标失败：目标文件系统为只读，源文件未直接覆盖目标（%s）", context)
+	}
+	if errors.Is(cause, syscall.EBUSY) {
+		return fmt.Sprintf("写入复制目标失败：目标或所在文件系统正忙，请确认没有其他任务正在操作该路径（%s）", context)
+	}
+	if errors.Is(cause, syscall.EXDEV) {
+		return fmt.Sprintf("提交复制结果失败：目标目录不支持与临时副本进行同文件系统原子切换，源文件和原目标应仍保留（%s）", context)
+	}
+	if phase == "target" {
+		return fmt.Sprintf("复制失败：写入临时副本或提交目标时发生文件系统错误，原目标不会在复制未完成时主动删除（%s）", context)
+	}
+	return fmt.Sprintf("读取复制源失败：读取、遍历或校验源内容时发生文件系统错误（%s）", context)
 }
 
 func MoveFileOrDir(c *gin.Context) {
