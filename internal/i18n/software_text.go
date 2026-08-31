@@ -50,23 +50,73 @@ func SoftwareDescriptionTranslation(softwareKey, value string) string {
 	return englishSoftwareDescriptions[value]
 }
 
-// softwareDescriptionTranslations is the extensible part of the local
-// language pack. Add a software key here when a new catalog application needs
-// an English description.
+// softwareDescriptionTranslations mirrors the current Center software
+// catalog. Keep these translations keyed by the stable product key rather
+// than the persisted Chinese description: Center descriptions can change and
+// the same product may have multiple cached versions in the Panel database.
 var softwareDescriptionTranslations = map[string]string{
-	"webserver": "High-performance web server and reverse proxy",
-	"tengine":   "Alibaba's open-source high-performance Nginx fork",
-	"openresty": "High-performance web platform with integrated Lua support",
-	"caddy":     "Modern web server with automatic HTTPS",
-	"apache":    "Mature and stable Apache HTTP web server",
-	"php":       "OneinStack PHP-FPM runtime environment",
-	"db":        "MySQL database, using port 3306 by default; the Panel generates a random root password",
-	"mariadb":   "Open-source MariaDB relational database",
-	"mongodb":   "MongoDB document database",
-	"mysql":     "MySQL database",
-	"redis":     "Redis cache",
-	"nginx":     "Nginx reverse proxy service",
-	"firewall":  "Linux dynamic firewall management service",
+	"webserver":      "High-performance web server and reverse proxy",
+	"tengine":        "Alibaba's open-source high-performance Nginx fork",
+	"openresty":      "High-performance web platform with integrated Lua support",
+	"caddy":          "Modern web server with automatic HTTPS",
+	"apache":         "Mature and stable Apache HTTP web server",
+	"php":            "OneinStack PHP-FPM runtime environment",
+	"java":           "OpenJDK Java runtime and development environment",
+	"tomcat":         "Java web application server",
+	"db":             "MySQL database, using port 3306 by default; the Panel generates a random root password",
+	"mariadb":        "Open-source MariaDB relational database",
+	"percona":        "High-performance MySQL-compatible Percona Server database",
+	"postgresql":     "Open-source PostgreSQL relational database",
+	"mongodb":        "MongoDB document database",
+	"nodejs":         "Node.js JavaScript runtime environment",
+	"pureftpd":       "Lightweight and secure FTP service",
+	"phpmyadmin":     "Manage MySQL and MariaDB through a web browser",
+	"memcached":      "High-performance distributed in-memory cache",
+	"redis":          "High-performance in-memory cache and data service",
+	"firewalld":      "Linux dynamic firewall management service",
+	"docker":         "Container runtime and Docker service management",
+	"docker-compose": "Docker Compose CLI plugin for multi-container orchestration",
+	"fail2ban":       "Controlled login and web intrusion detection and banning service",
+	"halo":           "Modern open-source website building and content management platform",
+	"typecho":        "Lightweight blog and content publishing system",
+	"adminer":        "Lightweight web database management tool",
+	"pgadmin":        "PostgreSQL web management tool",
+	"mongo-express":  "MongoDB web management tool",
+	"minio":          "S3-compatible object storage service",
+	"rclone":         "Multi-cloud storage synchronization and mounting tool",
+	"webdav":         "Standard WebDAV file service adapter",
+	"backup-s3":      "S3-compatible object storage backup target adapter",
+	"backup-oss":     "Alibaba Cloud OSS backup target adapter",
+	"backup-cos":     "Tencent Cloud COS backup target adapter",
+	"uptime-kuma":    "Service availability monitoring and alerting",
+	"prometheus":     "Metrics collection and time-series data storage",
+	"grafana":        "Metrics and log visualization platform",
+	"loki":           "Lightweight log aggregation system",
+	"waf":            "ModSecurity-based web application firewall adapter",
+	"website-tamper": "Website file integrity monitoring and tamper protection adapter",
+	"clamav":         "Open-source virus scanning service",
+	"host-hardening": "Host account, SSH, permission, and audit baseline hardening adapter",
+	"rabbitmq":       "Reliable message queue and management service",
+	"opensearch":     "Full-text search and log analytics service",
+	"gitea":          "Lightweight Git hosting platform",
+	"jenkins":        "Continuous integration and automation platform",
+	"woodpecker":     "Lightweight continuous integration platform",
+	"harbor":         "Enterprise OCI container image registry",
+	"ollama":         "Local large language model runtime service",
+	"open-webui":     "Large language model web interface",
+	"dify":           "Large language model application development and orchestration platform",
+	"n8n":            "Visual workflow automation platform",
+	"nextcloud":      "Self-hosted file collaboration and office platform",
+	"vaultwarden":    "Lightweight self-hosted password management service",
+	"nocobase":       "Extensible no-code/low-code platform",
+	"umami":          "Privacy-friendly website analytics platform",
+	"wordpress":      "Popular PHP content management and website building platform",
+
+	// Legacy aliases kept for locally cached rows that predate the Center
+	// catalog's webserver/db component mapping.
+	"mysql":    "MySQL database",
+	"nginx":    "Nginx reverse proxy service",
+	"firewall": "Linux dynamic firewall management service",
 }
 
 var englishSoftwareDescriptions = map[string]string{
