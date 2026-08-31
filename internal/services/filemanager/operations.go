@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	pathpkg "path"
+	"path/filepath"
 	"strings"
 	"syscall"
 )
@@ -34,8 +35,9 @@ type ArchiveProgress struct {
 type ArchiveProgressFunc func(ArchiveProgress)
 
 // Measure returns the regular-file bytes and entry count for a file tree.
-// Symbolic links and special files are rejected so copy never follows a link
-// outside the managed root.
+// Directory symbolic links supplied as the source are counted as one link
+// entry; links encountered inside a real directory are rejected so copy never
+// follows a link outside the managed root.
 func (m *Manager) Measure(virtualPath string) (OperationResult, error) {
 	return m.measure(virtualPath, false)
 }
@@ -102,8 +104,8 @@ func (m *Manager) resolveArchiveSource(relative string) (string, os.FileInfo, er
 }
 
 // measure calculates the source size without following symbolic links. Archive
-// creation preserves symbolic links as tar entries, while copy operations keep
-// rejecting them.
+// creation preserves symbolic links as tar entries, while copy preserves links
+// only when their targets remain within the copied directory.
 func (m *Manager) measure(virtualPath string, allowSymbolicLinks bool) (OperationResult, error) {
 	relative, err := m.Relative(virtualPath)
 	if err != nil {
@@ -116,15 +118,22 @@ func (m *Manager) measure(virtualPath string, allowSymbolicLinks bool) (Operatio
 	if err != nil {
 		return OperationResult{}, err
 	}
-	if !allowSymbolicLinks && rootInfo.Mode()&os.ModeSymlink != 0 {
-		return OperationResult{}, fmt.Errorf("%w: symbolic links cannot be copied or archived", ErrUnsupportedType)
+	if rootInfo.Mode()&os.ModeSymlink != 0 {
+		if allowSymbolicLinks {
+			result := OperationResult{Path: m.VirtualPath(relative), Entries: 1}
+			return result, nil
+		}
+		targetInfo, err := m.statDirectorySymlinkTarget(relative)
+		if err != nil {
+			return OperationResult{}, err
+		}
+		if !targetInfo.IsDir() {
+			return OperationResult{}, fmt.Errorf("%w: symbolic link target is not a directory", ErrUnsupportedType)
+		}
+		return OperationResult{Path: m.VirtualPath(relative), Entries: 1}, nil
 	}
 	result := OperationResult{Path: m.VirtualPath(relative)}
-	if allowSymbolicLinks && rootInfo.Mode()&os.ModeSymlink != 0 {
-		result.Entries = 1
-		return result, nil
-	}
-	err = fs.WalkDir(m.root.FS(), relative, func(_ string, entry fs.DirEntry, walkErr error) error {
+	err = fs.WalkDir(m.root.FS(), relative, func(current string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -132,10 +141,13 @@ func (m *Manager) measure(virtualPath string, allowSymbolicLinks bool) (Operatio
 		if err != nil {
 			return err
 		}
-		if !allowSymbolicLinks && info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("%w: symbolic links cannot be copied or archived", ErrUnsupportedType)
-		}
-		if !info.IsDir() && !info.Mode().IsRegular() && !(allowSymbolicLinks && info.Mode()&os.ModeSymlink != 0) {
+		if info.Mode()&os.ModeSymlink != 0 {
+			if !allowSymbolicLinks {
+				if err := m.validateInternalCopySymlink(relative, current); err != nil {
+					return err
+				}
+			}
+		} else if !info.IsDir() && !info.Mode().IsRegular() {
 			return fmt.Errorf("%w: %s", ErrUnsupportedType, info.Mode().Type())
 		}
 		result.Entries++
@@ -169,19 +181,36 @@ func (m *Manager) Copy(source, targetDir, targetName string, overwrite bool) (re
 		return OperationResult{}, err
 	}
 
-	sourceInfo, err := m.root.Lstat(sourceRelative)
-	if err != nil {
-		return OperationResult{}, err
-	}
-	if sourceInfo.Mode()&os.ModeSymlink != 0 {
-		return OperationResult{}, ErrUnsupportedType
-	}
 	keepTarget := false
 	defer func() {
 		if !keepTarget {
 			_ = m.removeAllRelative(targetRelative)
 		}
 	}()
+
+	sourceInfo, err := m.root.Lstat(sourceRelative)
+	if err != nil {
+		return OperationResult{}, err
+	}
+	if sourceInfo.Mode()&os.ModeSymlink != 0 {
+		targetInfo, err := m.statDirectorySymlinkTarget(sourceRelative)
+		if err != nil {
+			return OperationResult{}, err
+		}
+		if !targetInfo.IsDir() {
+			return OperationResult{}, fmt.Errorf("%w: symbolic link target is not a directory", ErrUnsupportedType)
+		}
+		linkTarget, err := m.copySymlinkTarget(sourceRelative, targetRelative)
+		if err != nil {
+			return OperationResult{}, err
+		}
+		if err := m.root.Symlink(linkTarget, targetRelative); err != nil {
+			return OperationResult{}, err
+		}
+		result = OperationResult{Path: m.VirtualPath(targetRelative), Entries: 1}
+		keepTarget = true
+		return result, nil
+	}
 	result = OperationResult{Path: m.VirtualPath(targetRelative)}
 	if err := m.copyRelative(sourceRelative, targetRelative, &result); err != nil {
 		return OperationResult{}, err
@@ -422,13 +451,79 @@ func (m *Manager) resolveOperationTarget(source, targetDir, targetName string) (
 	return sourceRelative, targetRelative, nil
 }
 
+func (m *Manager) statDirectorySymlinkTarget(relative string) (os.FileInfo, error) {
+	target, err := m.root.Readlink(relative)
+	if err != nil {
+		return nil, err
+	}
+	resolved, err := m.resolveSymlinkTarget(relative, target)
+	if err != nil {
+		return nil, err
+	}
+	info, err := m.root.Stat(resolved)
+	if err != nil {
+		return nil, err
+	}
+	return info, nil
+}
+
+func (m *Manager) copySymlinkTarget(source, target string) (string, error) {
+	linkTarget, err := m.root.Readlink(source)
+	if err != nil {
+		return "", err
+	}
+	resolved, err := m.resolveSymlinkTarget(source, linkTarget)
+	if err != nil {
+		return "", err
+	}
+	relativeTarget, err := filepath.Rel(filepath.FromSlash(pathpkg.Dir(target)), filepath.FromSlash(resolved))
+	if err != nil {
+		return "", fmt.Errorf("%w: resolve copied symbolic link", ErrInvalidPath)
+	}
+	if relativeTarget == "." || filepath.IsAbs(relativeTarget) {
+		return "", fmt.Errorf("%w: copied symbolic link target is invalid", ErrInvalidPath)
+	}
+	return filepath.ToSlash(relativeTarget), nil
+}
+
+func (m *Manager) resolveSymlinkTarget(source, target string) (string, error) {
+	var resolved string
+	if pathpkg.IsAbs(target) {
+		if m.rootPath != string(filepath.Separator) {
+			return "", fmt.Errorf("%w: absolute symbolic link target is outside managed root", ErrInvalidPath)
+		}
+		resolved = strings.TrimPrefix(pathpkg.Clean(target), "/")
+	} else {
+		resolved = pathpkg.Clean(pathpkg.Join(pathpkg.Dir(source), target))
+	}
+	if resolved == "." || !fs.ValidPath(resolved) {
+		return "", ErrInvalidPath
+	}
+	if _, err := m.Relative(m.VirtualPath(resolved)); err != nil {
+		return "", err
+	}
+	return resolved, nil
+}
+
 func (m *Manager) copyRelative(source, target string, result *OperationResult) error {
+	return m.copyRelativeTree(source, target, source, target, result)
+}
+
+func (m *Manager) copyRelativeTree(source, target, sourceRoot, targetRoot string, result *OperationResult) error {
 	info, err := m.root.Lstat(source)
 	if err != nil {
 		return err
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
-		return ErrUnsupportedType
+		linkTarget, err := m.copyInternalSymlinkTarget(sourceRoot, source, targetRoot, target)
+		if err != nil {
+			return err
+		}
+		if err := m.root.Symlink(linkTarget, target); err != nil {
+			return err
+		}
+		result.Entries++
+		return nil
 	}
 	result.Entries++
 	if info.IsDir() {
@@ -448,9 +543,11 @@ func (m *Manager) copyRelative(source, target string, result *OperationResult) e
 			return closeErr
 		}
 		for _, entry := range entries {
-			if err := m.copyRelative(
+			if err := m.copyRelativeTree(
 				pathpkg.Join(source, entry.Name()),
 				pathpkg.Join(target, entry.Name()),
+				sourceRoot,
+				targetRoot,
 				result,
 			); err != nil {
 				return err
@@ -483,4 +580,46 @@ func (m *Manager) copyRelative(source, target string, result *OperationResult) e
 	}
 	result.Bytes += written
 	return nil
+}
+
+func (m *Manager) validateInternalCopySymlink(sourceRoot, source string) error {
+	linkTarget, err := m.root.Readlink(source)
+	if err != nil {
+		return err
+	}
+	resolved, err := m.resolveSymlinkTarget(source, linkTarget)
+	if err != nil {
+		return err
+	}
+	if !isPathWithin(resolved, sourceRoot) {
+		return fmt.Errorf("%w: symbolic link target is outside copied directory", ErrUnsupportedType)
+	}
+	return nil
+}
+
+func (m *Manager) copyInternalSymlinkTarget(sourceRoot, source, targetRoot, target string) (string, error) {
+	linkTarget, err := m.root.Readlink(source)
+	if err != nil {
+		return "", err
+	}
+	resolved, err := m.resolveSymlinkTarget(source, linkTarget)
+	if err != nil {
+		return "", err
+	}
+	if !isPathWithin(resolved, sourceRoot) {
+		return "", fmt.Errorf("%w: symbolic link target is outside copied directory", ErrUnsupportedType)
+	}
+	mappedTarget := targetRoot + strings.TrimPrefix(resolved, sourceRoot)
+	relativeTarget, err := filepath.Rel(filepath.FromSlash(pathpkg.Dir(target)), filepath.FromSlash(mappedTarget))
+	if err != nil {
+		return "", fmt.Errorf("%w: resolve copied symbolic link", ErrInvalidPath)
+	}
+	if relativeTarget == "." || filepath.IsAbs(relativeTarget) {
+		return "", fmt.Errorf("%w: copied symbolic link target is invalid", ErrInvalidPath)
+	}
+	return filepath.ToSlash(relativeTarget), nil
+}
+
+func isPathWithin(path, root string) bool {
+	return path == root || strings.HasPrefix(path, root+"/")
 }
