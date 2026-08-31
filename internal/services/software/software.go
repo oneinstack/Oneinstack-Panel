@@ -342,9 +342,16 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 		// Do not expose a stale Center recommendation as an upgrade target.
 		// The catalog may temporarily recommend an older version than the
 		// version already installed on the host.
+		packageUpdate := strings.TrimSpace(groupedResults[i].InstalledPackageVersion) != "" &&
+			strings.TrimSpace(groupedResults[i].LatestPackageVersion) != "" &&
+			scriptregistry.ComparePackageVersions(
+				groupedResults[i].LatestPackageVersion,
+				groupedResults[i].InstalledPackageVersion,
+			) > 0
 		if groupedResults[i].Installed &&
 			strings.TrimSpace(groupedResults[i].InstallVersion) != "" &&
 			strings.TrimSpace(groupedResults[i].RecommendedVersion) != "" &&
+			!packageUpdate &&
 			scriptregistry.ComparePackageVersions(
 				groupedResults[i].RecommendedVersion,
 				groupedResults[i].InstallVersion,

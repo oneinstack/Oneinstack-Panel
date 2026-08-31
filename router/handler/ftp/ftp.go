@@ -1015,6 +1015,8 @@ func handleFileError(c *gin.Context, err error, message string) {
 		core.HandleError(c, core.WrapError(err, core.ErrInsufficientStorage, message))
 	case errors.Is(err, syscall.EBUSY):
 		core.HandleError(c, core.WrapError(err, core.ErrConflict, message))
+	case errors.Is(err, syscall.ETXTBSY):
+		core.HandleError(c, core.WrapError(err, core.ErrConflict, message))
 	case errors.Is(err, syscall.EROFS):
 		core.HandleError(c, core.WrapError(err, core.ErrPermissionDenied, message))
 	case errors.Is(err, filemanager.ErrRootOperation):
@@ -1044,6 +1046,8 @@ func fileErrorCategory(err error) string {
 		return "存储空间不足"
 	case errors.Is(err, syscall.EBUSY):
 		return "文件正在使用"
+	case errors.Is(err, syscall.ETXTBSY):
+		return "活动 swap 文件正在使用"
 	case errors.Is(err, syscall.EROFS):
 		return "文件系统只读"
 	case errors.Is(err, fs.ErrPermission):

@@ -421,6 +421,9 @@ func classifyCopyErrorDetail(detail string) string {
 	if strings.Contains(detail, "read-only") {
 		return "复制目标所在文件系统为只读，请检查挂载状态后重试。"
 	}
+	if strings.Contains(detail, "text file busy") || strings.Contains(detail, "active swap") || strings.Contains(detail, "swap file") {
+		return "源文件或目标文件是正在使用的活动 swap 文件，当前文件操作不被系统支持；请先停用 swap 或使用系统备份方式处理。"
+	}
 	if target {
 		return "复制目标写入或提交失败；复制使用临时副本，未完成时不会主动删除原目标。"
 	}

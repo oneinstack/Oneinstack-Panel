@@ -678,7 +678,10 @@ func (m *Manager) copyRelativeTree(source, target, sourceRoot, targetRoot, displ
 	if err != nil {
 		return m.copyPathError("target", displayTarget, err)
 	}
-	written, copyErr := io.Copy(output, input)
+	// Do not use io.Copy here. When both handles are regular files, Go may
+	// select Linux copy_file_range(2), which returns ETXTBSY for an active
+	// swap file even though ordinary read/write can read it successfully.
+	written, copyErr := copyRegularFileContents(output, input)
 	if copyErr == nil {
 		copyErr = output.Sync()
 	}
@@ -691,6 +694,40 @@ func (m *Manager) copyRelativeTree(source, target, sourceRoot, targetRoot, displ
 	}
 	result.Bytes += written
 	return nil
+}
+
+const regularFileCopyBufferSize = 1 << 20
+
+// copyRegularFileContents deliberately uses explicit buffered reads and
+// writes. This keeps file-manager copies compatible with active swap files
+// and other regular files that reject zero-copy range operations.
+func copyRegularFileContents(output, input *os.File) (int64, error) {
+	buffer := make([]byte, regularFileCopyBufferSize)
+	var written int64
+	for {
+		read, readErr := input.Read(buffer)
+		if read > 0 {
+			for offset := 0; offset < read; {
+				writtenCount, writeErr := output.Write(buffer[offset:read])
+				if writtenCount > 0 {
+					written += int64(writtenCount)
+					offset += writtenCount
+				}
+				if writeErr != nil {
+					return written, writeErr
+				}
+				if writtenCount == 0 {
+					return written, io.ErrShortWrite
+				}
+			}
+		}
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				return written, nil
+			}
+			return written, readErr
+		}
+	}
 }
 
 func (m *Manager) readCopyDirectory(relative string) ([]os.DirEntry, error) {

@@ -111,6 +111,9 @@ func copyFailureMessage(defaultPhase string, input transferInput, err error) str
 	if errors.Is(cause, syscall.EROFS) {
 		return fmt.Sprintf("写入复制目标失败：目标文件系统为只读，源文件未直接覆盖目标（%s）", context)
 	}
+	if errors.Is(cause, syscall.ETXTBSY) {
+		return fmt.Sprintf("复制失败：源文件或目标文件是正在使用的活动 swap 文件，系统不支持当前文件操作；请勿直接复制活动 swap，必要时先停用 swap 后重试（%s）", context)
+	}
 	if errors.Is(cause, syscall.EBUSY) {
 		return fmt.Sprintf("写入复制目标失败：目标或所在文件系统正忙，请确认没有其他任务正在操作该路径（%s）", context)
 	}
