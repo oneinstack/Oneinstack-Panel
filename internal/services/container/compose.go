@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -85,7 +86,8 @@ type ComposePreview struct {
 	PreviewFingerprint string               `json:"previewFingerprint"`
 	Summary            ComposeConfigSummary `json:"summary"`
 	Target             ComposeProjectTarget `json:"-"`
-	Impact             map[string]bool      `json:"impact"`
+	EffectiveContent   string               `json:"-"`
+	Impact             string               `json:"impact"`
 }
 
 type ComposeProjectDetail struct {
@@ -96,6 +98,29 @@ type ComposeProjectDetail struct {
 	ConfigSummary  *ComposeConfigSummary `json:"configSummary,omitempty"`
 	EditReason     string                `json:"editReason,omitempty"`
 	SafetyTips     []string              `json:"safetyTips,omitempty"`
+}
+
+// ComposeSensitiveField identifies a sensitive YAML field without returning
+// its value. Paths are informational only; the server must never trust them
+// as file locations or update targets.
+type ComposeSensitiveField struct {
+	Path string `json:"path"`
+	Kind string `json:"kind"`
+}
+
+// ComposeConfigView is the contract used by the config editor. The default
+// view is redacted; plaintext is returned only by the explicit reveal path
+// after the handler has re-authenticated the operator.
+type ComposeConfigView struct {
+	ProjectName        string                  `json:"projectName"`
+	ConfigFile         string                  `json:"configFile"`
+	Content            string                  `json:"content"`
+	ContentMode        string                  `json:"contentMode"`
+	ContainsSensitive  bool                    `json:"containsSensitiveConfig"`
+	SensitiveFields    []ComposeSensitiveField `json:"sensitiveFields,omitempty"`
+	ConfigRevision     string                  `json:"configRevision"`
+	RedactionAvailable bool                    `json:"redactionAvailable"`
+	RedactionReason    string                  `json:"redactionReason,omitempty"`
 }
 
 type ComposeLogOptions struct {
@@ -110,6 +135,14 @@ type ComposeError struct {
 	Kind    error
 	Message string
 }
+
+const composeRedactedSecretMarker = "[已隐藏]"
+
+var (
+	composeSensitiveKeyPattern = regexp.MustCompile(`(?i)(^|[_.-])(?:password|passwd|pwd|pass|passphrase|secret|token|cookie|auth|authorization|api[-_]?keys?|access[-_]?keys?|private[-_]?keys?|encryption[-_]?key|signing[-_]?key|ssh[-_]?key|master[-_]?key|client[-_]?secrets?|credentials?|auth[-_]?tokens?|session[-_]?tokens?|dsn|connection[-_]?strings?|database[-_]?url|jdbc[-_]?url|redis[-_]?url|mongodb[-_]?uri)(?:$|[_.-])`)
+	composeSecretURLPattern    = regexp.MustCompile(`(?i)([a-z][a-z0-9+.-]*://)([^/@[:space:]:]+):([^/@[:space:]]+)(@)`)
+	composeSecretFlagPattern   = regexp.MustCompile(`(?i)(--?(?:password|passwd|pwd|passphrase|secret|token|cookie|authorization|api[-_]?keys?|access[-_]?keys?|private[-_]?keys?|client[-_]?secrets?|credentials?|auth[-_]?tokens?|session[-_]?tokens?|requirepass)(?:=|[[:space:]]+))("[^"\r\n]*"|'[^'\r\n]*'|[^[:space:],;}\]]+)`)
+)
 
 func (e *ComposeError) Error() string { return e.Message }
 func (e *ComposeError) Unwrap() error { return e.Kind }
@@ -567,9 +600,17 @@ func validateComposeContent(content, workingDir string) (ComposeConfigSummary, e
 		}
 		if ports, ok := service["ports"].([]any); ok {
 			for _, port := range ports {
-				if text, ok := port.(string); ok && composePortPattern.MatchString(strings.TrimSpace(text)) {
-					summary.Ports = append(summary.Ports, strings.TrimSpace(text))
+				if text, ok := composePortSummary(port); ok {
+					summary.Ports = append(summary.Ports, text)
 				}
+			}
+		}
+		if composeIsRedisService(name, service) {
+			if !composeRedisAuthenticationConfigured(service) {
+				summary.Warnings = append(summary.Warnings, "服务 "+name+" 未检测到 Redis 认证配置，可能无需密码即可访问；请设置 requirepass 或 ACL 认证")
+			}
+			if composeRedisNetworkExposed(service) {
+				summary.Warnings = append(summary.Warnings, "服务 "+name+" 发布了 Redis 端口且未限制为本机回环地址，存在网络暴露风险；请绑定 127.0.0.1/::1，或配置受控网络和防火墙")
 			}
 		}
 	}
@@ -585,7 +626,157 @@ func validateComposeContent(content, workingDir string) (ComposeConfigSummary, e
 	return summary, nil
 }
 
-var composePortPattern = regexp.MustCompile(`^[0-9]+(?::[0-9]+)?(?:/[A-Za-z]+)?$`)
+func composeIsRedisService(name string, service map[string]any) bool {
+	image := strings.ToLower(strings.TrimSpace(composeScalarString(service["image"])))
+	if image != "" {
+		if at := strings.IndexByte(image, '@'); at >= 0 {
+			image = image[:at]
+		}
+		if slash := strings.LastIndexByte(image, '/'); slash >= 0 {
+			image = image[slash+1:]
+		}
+		if colon := strings.LastIndexByte(image, ':'); colon >= 0 {
+			image = image[:colon]
+		}
+		if image == "redis" || strings.HasPrefix(image, "redis-") || image == "redisgraph" {
+			return true
+		}
+	}
+
+	name = strings.ToLower(strings.TrimSpace(name))
+	name = strings.ReplaceAll(name, "_", "-")
+	return name == "redis" || strings.HasPrefix(name, "redis-") || strings.HasSuffix(name, "-redis")
+}
+
+func composeRedisAuthenticationConfigured(service map[string]any) bool {
+	if composeRedisEnvironmentAuthenticationConfigured(service["environment"]) {
+		return true
+	}
+	return composeRedisCommandAuthenticationConfigured(service["command"]) || composeRedisCommandAuthenticationConfigured(service["entrypoint"])
+}
+
+func composeRedisEnvironmentAuthenticationConfigured(value any) bool {
+	switch environment := value.(type) {
+	case map[string]any:
+		for key, rawValue := range environment {
+			key = strings.ToUpper(strings.TrimSpace(key))
+			switch key {
+			case "REDIS_PASSWORD", "REDIS_PASSWORD_FILE", "REDIS_ACLFILE":
+				if composeScalarString(rawValue) != "" {
+					return true
+				}
+			case "REDIS_ARGS":
+				if composeRedisCommandAuthenticationConfigured(rawValue) {
+					return true
+				}
+			}
+		}
+	case []any:
+		for _, item := range environment {
+			if composeRedisEnvironmentEntryAuthenticationConfigured(composeScalarString(item)) {
+				return true
+			}
+		}
+	case []string:
+		for _, item := range environment {
+			if composeRedisEnvironmentEntryAuthenticationConfigured(item) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func composeRedisEnvironmentEntryAuthenticationConfigured(value string) bool {
+	key, rawValue, hasValue := strings.Cut(strings.TrimSpace(value), "=")
+	key = strings.ToUpper(strings.TrimSpace(key))
+	if key == "REDIS_ARGS" {
+		return hasValue && composeRedisCommandAuthenticationConfigured(rawValue)
+	}
+	if key != "REDIS_PASSWORD" && key != "REDIS_PASSWORD_FILE" && key != "REDIS_ACLFILE" {
+		return false
+	}
+	return hasValue && strings.TrimSpace(rawValue) != ""
+}
+
+func composeRedisCommandAuthenticationConfigured(value any) bool {
+	var parts []string
+	switch command := value.(type) {
+	case string:
+		parts = []string{command}
+	case []any:
+		for _, item := range command {
+			parts = append(parts, composeScalarString(item))
+		}
+	case []string:
+		parts = append(parts, command...)
+	default:
+		return false
+	}
+
+	fields := strings.Fields(strings.Join(parts, " "))
+	for index, field := range fields {
+		field = strings.Trim(field, "\"'")
+		for _, option := range []string{"--requirepass", "--aclfile"} {
+			if field == option {
+				return index+1 < len(fields) && strings.Trim(fields[index+1], "\"'") != ""
+			}
+			if strings.HasPrefix(field, option+"=") {
+				return strings.Trim(strings.TrimPrefix(field, option+"="), "\"'") != ""
+			}
+		}
+		if field == "--user" || strings.HasPrefix(field, "--user=") {
+			return true
+		}
+	}
+	return false
+}
+
+func composeRedisNetworkExposed(service map[string]any) bool {
+	if networkMode, ok := service["network_mode"].(string); ok && strings.EqualFold(strings.TrimSpace(networkMode), "host") {
+		return true
+	}
+
+	ports, ok := service["ports"].([]any)
+	if !ok {
+		if values, ok := service["ports"].([]string); ok {
+			for _, port := range values {
+				if !composePortHostLoopback(port) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	for _, port := range ports {
+		if !composePortHostLoopback(port) {
+			return true
+		}
+	}
+	return false
+}
+
+func composePortHostLoopback(value any) bool {
+	hostIP := ""
+	switch port := value.(type) {
+	case map[string]any:
+		hostIP = composeScalarString(port["host_ip"])
+	case string:
+		text := strings.TrimSpace(strings.SplitN(port, "/", 2)[0])
+		if strings.HasPrefix(text, "[") {
+			if end := strings.IndexByte(text, ']'); end > 0 {
+				hostIP = text[1:end]
+			}
+		} else {
+			parts := strings.Split(text, ":")
+			if len(parts) >= 3 {
+				hostIP = parts[0]
+			}
+		}
+	}
+	hostIP = strings.ToLower(strings.TrimSpace(strings.Trim(hostIP, "[]")))
+	return hostIP == "127.0.0.1" || hostIP == "::1" || hostIP == "localhost"
+}
 
 func mapKeys(value any) []string {
 	items, ok := value.(map[string]any)
@@ -598,6 +789,44 @@ func mapKeys(value any) []string {
 	}
 	sort.Strings(result)
 	return result
+}
+
+func composePortSummary(value any) (string, bool) {
+	switch port := value.(type) {
+	case string:
+		text := strings.TrimSpace(port)
+		return text, text != ""
+	case map[string]any:
+		target := composeScalarString(port["target"])
+		if target == "" {
+			return "", false
+		}
+		published := composeScalarString(port["published"])
+		result := target
+		if published != "" {
+			result = published + ":" + target
+		}
+		if hostIP := composeScalarString(port["host_ip"]); hostIP != "" {
+			result = hostIP + ":" + result
+		}
+		if protocol := composeScalarString(port["protocol"]); protocol != "" && !strings.EqualFold(protocol, "tcp") {
+			result += "/" + protocol
+		}
+		return result, true
+	default:
+		return "", false
+	}
+}
+
+func composeScalarString(value any) string {
+	switch value := value.(type) {
+	case string:
+		return strings.TrimSpace(value)
+	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64:
+		return strings.TrimSpace(fmt.Sprint(value))
+	default:
+		return ""
+	}
 }
 
 func validateComposeDependencies(document map[string]any, workingDir string) error {
@@ -737,7 +966,8 @@ func (s *Service) ComposePreview(ctx context.Context, action, name, content stri
 		return ComposePreview{}, composeError(ErrComposeConfigInvalid, "该操作不需要 Compose 预览")
 	}
 	summary := ComposeConfigSummary{}
-	fingerprintContent := content
+	effectiveContent := content
+	fingerprintContent := effectiveContent
 	if action == "create" || action == "edit" {
 		if action == "edit" {
 			_, editable, reason := composeConfigState(target)
@@ -747,14 +977,19 @@ func (s *Service) ComposePreview(ctx context.Context, action, name, content stri
 				}
 				return ComposePreview{}, composeError(ErrComposeMultiFile, reason)
 			}
+			effectiveContent, err = s.restoreComposeRedactedContent(target, content)
+			if err != nil {
+				return ComposePreview{}, err
+			}
 		}
 		var summaryErr error
-		if summary, summaryErr = validateComposeContent(content, target.WorkingDir); summaryErr != nil {
+		if summary, summaryErr = validateComposeContent(effectiveContent, target.WorkingDir); summaryErr != nil {
 			return ComposePreview{}, summaryErr
 		}
-		if err := s.validateComposeCandidate(ctx, target, content); err != nil {
+		if err := s.validateComposeCandidate(ctx, target, effectiveContent); err != nil {
 			return ComposePreview{}, err
 		}
+		fingerprintContent = effectiveContent
 	} else if len(target.ConfigFiles) > 0 {
 		current, readErr := os.ReadFile(target.ConfigFiles[0])
 		if readErr != nil {
@@ -771,8 +1006,62 @@ func (s *Service) ComposePreview(ctx context.Context, action, name, content stri
 		fingerprintContent = string(current)
 	}
 	fingerprint := composeFingerprint(action, name, target, fingerprintContent, removeVolumes)
-	impact := map[string]bool{"writeFiles": action == "create" || action == "edit", "restartService": action == "create" || action == "update", "removeVolumes": action == "delete" && removeVolumes}
-	return ComposePreview{Action: action, ProjectName: name, PreviewFingerprint: fingerprint, Summary: summary, Target: target, Impact: impact}, nil
+	impact := composeImpactDescription(action, name, summary, removeVolumes)
+	return ComposePreview{Action: action, ProjectName: name, PreviewFingerprint: fingerprint, Summary: summary, Target: target, EffectiveContent: effectiveContent, Impact: impact}, nil
+}
+
+func composeImpactDescription(action, projectName string, summary ComposeConfigSummary, removeVolumes bool) string {
+	services := make([]string, 0, len(summary.Services))
+	for _, service := range summary.Services {
+		if name := strings.TrimSpace(service.Name); name != "" {
+			services = append(services, name)
+		}
+	}
+
+	networks := append([]string(nil), summary.Networks...)
+	if len(networks) == 0 && len(services) > 0 {
+		networks = []string{projectName + "_default"}
+	}
+
+	list := func(items []string) string {
+		if len(items) == 0 {
+			return "无"
+		}
+		return strings.Join(items, "、")
+	}
+
+	parts := make([]string, 0, 6)
+	switch action {
+	case "create":
+		parts = append(parts, "创建容器："+list(services))
+		parts = append(parts, "创建网络："+list(networks))
+		parts = append(parts, "创建或使用卷："+list(summary.Volumes))
+		parts = append(parts, "发布端口："+list(summary.Ports))
+		parts = append(parts, "写入 Compose 配置并启动服务")
+	case "edit":
+		parts = append(parts, "更新 Compose 配置文件")
+		parts = append(parts, "涉及容器服务："+list(services))
+		parts = append(parts, "涉及网络："+list(networks))
+		parts = append(parts, "涉及卷："+list(summary.Volumes))
+		parts = append(parts, "涉及端口："+list(summary.Ports))
+		parts = append(parts, "不会自动创建、重建或重启容器")
+	case "update":
+		parts = append(parts, "更新容器："+list(services))
+		parts = append(parts, "使用或创建网络："+list(networks))
+		parts = append(parts, "使用或创建卷："+list(summary.Volumes))
+		parts = append(parts, "保持端口映射："+list(summary.Ports))
+		parts = append(parts, "拉取镜像并重建、重启服务")
+	case "delete":
+		parts = append(parts, "删除容器："+list(services))
+		parts = append(parts, "删除网络："+list(networks))
+		if removeVolumes {
+			parts = append(parts, "删除卷："+list(summary.Volumes))
+		} else {
+			parts = append(parts, "保留卷："+list(summary.Volumes))
+		}
+		parts = append(parts, "释放端口："+list(summary.Ports))
+	}
+	return strings.Join(parts, "；")
 }
 
 func composeOperationForAction(action string) string {
@@ -929,6 +1218,426 @@ func (s *Service) ComposeConfig(ctx context.Context, name string) (string, Compo
 		return "", target, composeError(ErrComposeConfigUnavailable, "Compose 配置文件读取失败")
 	}
 	return string(content), target, nil
+}
+
+// GetComposeConfigView returns a safe editor payload by default. The reveal
+// path still uses the same file and permission checks, but the handler must
+// authenticate the operator before requesting plaintext.
+func (s *Service) GetComposeConfigView(ctx context.Context, name string, reveal bool) (ComposeConfigView, error) {
+	content, target, err := s.ComposeConfig(ctx, name)
+	if err != nil {
+		return ComposeConfigView{}, err
+	}
+
+	view := ComposeConfigView{
+		ProjectName:        target.ProjectName,
+		ConfigFile:         target.ConfigFiles[0],
+		Content:            content,
+		ContentMode:        "plaintext",
+		ConfigRevision:     hashContent(content),
+		RedactionAvailable: true,
+	}
+	redacted, fields, redactionErr := redactComposeConfig(content)
+	view.ContainsSensitive = len(fields) > 0 || redactionErr != nil
+	view.SensitiveFields = fields
+	if redactionErr != nil {
+		view.RedactionAvailable = false
+		view.RedactionReason = "当前 Compose 配置无法安全脱敏展示，请通过明文查看后编辑"
+	}
+	if reveal {
+		return view, nil
+	}
+
+	view.ContentMode = "redacted"
+	if redactionErr != nil {
+		view.Content = "# 当前 Compose 配置无法安全脱敏展示，请点击“查看敏感配置并编辑”查看原文。\n"
+		return view, nil
+	}
+	view.Content = redacted
+	return view, nil
+}
+
+func redactComposeConfig(content string) (string, []ComposeSensitiveField, error) {
+	var document yaml.Node
+	if err := yaml.Unmarshal([]byte(content), &document); err != nil {
+		return "", nil, err
+	}
+	if document.Kind != yaml.DocumentNode || len(document.Content) != 1 {
+		return "", nil, errors.New("compose yaml document is not a single document")
+	}
+
+	fields := make([]ComposeSensitiveField, 0)
+	seen := make(map[string]struct{})
+	redactComposeYAMLNode(document.Content[0], nil, "", false, &fields, seen)
+	encoded, err := yaml.Marshal(&document)
+	if err != nil {
+		return "", nil, err
+	}
+	return string(encoded), fields, nil
+}
+
+func redactComposeYAMLNode(node *yaml.Node, path []string, parentKey string, skipKeyMatch bool, fields *[]ComposeSensitiveField, seen map[string]struct{}) bool {
+	if node == nil {
+		return false
+	}
+	clearComposeYAMLComments(node)
+	changed := false
+	switch node.Kind {
+	case yaml.DocumentNode:
+		for _, child := range node.Content {
+			changed = redactComposeYAMLNode(child, path, parentKey, false, fields, seen) || changed
+		}
+	case yaml.MappingNode:
+		for index := 0; index+1 < len(node.Content); index += 2 {
+			keyNode, valueNode := node.Content[index], node.Content[index+1]
+			key := strings.TrimSpace(keyNode.Value)
+			childPath := append(append([]string(nil), path...), key)
+			kind := ""
+			if !skipKeyMatch {
+				kind = composeSensitiveKeyKind(key)
+			}
+			if kind != "" {
+				addComposeSensitiveField(fields, seen, composeYAMLPath(childPath), kind)
+				changed = redactComposeSensitiveNode(valueNode, childPath, fields, seen) || changed
+				continue
+			}
+			childSkipKeyMatch := strings.EqualFold(key, "secrets") || strings.EqualFold(key, "configs")
+			changed = redactComposeYAMLNode(valueNode, childPath, key, childSkipKeyMatch, fields, seen) || changed
+		}
+	case yaml.SequenceNode:
+		for index, child := range node.Content {
+			itemPath := append(append([]string(nil), path...), "["+strconv.Itoa(index)+"]")
+			if (strings.EqualFold(parentKey, "environment") || strings.EqualFold(parentKey, "labels")) && child.Kind == yaml.ScalarNode {
+				key, separator, assignedValue, ok := splitComposeAssignment(child.Value)
+				if ok {
+					if kind := composeSensitiveKeyKind(key); kind != "" {
+						fieldPath := append(append([]string(nil), path...), "["+strconv.Itoa(index)+"]"+"."+key)
+						addComposeSensitiveField(fields, seen, composeYAMLPath(fieldPath), kind)
+						if !composeExternalSecretReference(assignedValue) {
+							child.Value = key + separator + composeRedactedSecretMarker
+							child.Tag = "!!str"
+							changed = true
+						}
+						continue
+					}
+				}
+			}
+			changed = redactComposeYAMLNode(child, itemPath, parentKey, false, fields, seen) || changed
+		}
+	case yaml.ScalarNode:
+		if redacted, ok := redactComposeEmbeddedSecret(node.Value); ok {
+			node.Value = redacted
+			node.Tag = "!!str"
+			addComposeSensitiveField(fields, seen, composeYAMLPath(path), "embedded_credential")
+			changed = true
+		}
+	case yaml.AliasNode:
+		// Anchors are visited at their definition. Following aliases here can
+		// recurse forever on valid recursive YAML documents.
+	}
+	return changed
+}
+
+func redactComposeSensitiveNode(node *yaml.Node, path []string, fields *[]ComposeSensitiveField, seen map[string]struct{}) bool {
+	if node == nil {
+		return false
+	}
+	clearComposeYAMLComments(node)
+	switch node.Kind {
+	case yaml.ScalarNode:
+		if strings.TrimSpace(node.Value) == "" || composeExternalSecretReference(node.Value) {
+			return false
+		}
+		node.Value = composeRedactedSecretMarker
+		node.Tag = "!!str"
+		return true
+	case yaml.SequenceNode:
+		changed := false
+		for _, child := range node.Content {
+			changed = redactComposeSensitiveNode(child, path, fields, seen) || changed
+		}
+		return changed
+	case yaml.MappingNode:
+		changed := false
+		for index := 0; index+1 < len(node.Content); index += 2 {
+			clearComposeYAMLComments(node.Content[index])
+			changed = redactComposeSensitiveNode(node.Content[index+1], path, fields, seen) || changed
+		}
+		return changed
+	case yaml.AliasNode:
+		// Redact the anchor definition as well as the alias. The visited set
+		// prevents recursive aliases from causing an infinite traversal.
+		redactComposeAliasTarget(node.Alias, make(map[*yaml.Node]struct{}))
+		node.Kind = yaml.ScalarNode
+		node.Tag = "!!str"
+		node.Value = composeRedactedSecretMarker
+		node.Alias = nil
+		return true
+	default:
+		return false
+	}
+}
+
+func redactComposeAliasTarget(node *yaml.Node, visited map[*yaml.Node]struct{}) {
+	if node == nil {
+		return
+	}
+	if _, ok := visited[node]; ok {
+		return
+	}
+	visited[node] = struct{}{}
+	clearComposeYAMLComments(node)
+	switch node.Kind {
+	case yaml.ScalarNode:
+		if !composeExternalSecretReference(node.Value) {
+			node.Value = composeRedactedSecretMarker
+			node.Tag = "!!str"
+		}
+	case yaml.SequenceNode:
+		for _, child := range node.Content {
+			redactComposeAliasTarget(child, visited)
+		}
+	case yaml.MappingNode:
+		for index := 0; index+1 < len(node.Content); index += 2 {
+			clearComposeYAMLComments(node.Content[index])
+			redactComposeAliasTarget(node.Content[index+1], visited)
+		}
+	case yaml.AliasNode:
+		redactComposeAliasTarget(node.Alias, visited)
+	}
+}
+
+func redactComposeEmbeddedSecret(value string) (string, bool) {
+	if strings.TrimSpace(value) == "" || composeExternalSecretReference(value) {
+		return value, false
+	}
+	if strings.Contains(value, "-----BEGIN") {
+		return composeRedactedSecretMarker, true
+	}
+	redacted := composeSecretURLPattern.ReplaceAllString(value, `${1}`+composeRedactedSecretMarker+`${4}`)
+	redacted = containerSensitiveLogAssignmentPattern.ReplaceAllString(redacted, `${1}${2}`+composeRedactedSecretMarker)
+	redacted = composeSecretFlagPattern.ReplaceAllStringFunc(redacted, func(match string) string {
+		parts := composeSecretFlagPattern.FindStringSubmatch(match)
+		if len(parts) != 3 || composeExternalSecretReference(strings.Trim(parts[2], "\"'")) {
+			return match
+		}
+		return parts[1] + composeRedactedSecretMarker
+	})
+	return redacted, redacted != value
+}
+
+func composeSensitiveKeyKind(key string) string {
+	key = strings.TrimSpace(key)
+	if key == "" || !composeSensitiveKeyPattern.MatchString(key) {
+		return ""
+	}
+	lower := strings.ToLower(key)
+	switch {
+	case strings.Contains(lower, "password"), strings.Contains(lower, "passwd"), strings.Contains(lower, "pwd"), strings.Contains(lower, "pass"):
+		return "password"
+	case strings.Contains(lower, "token"), strings.Contains(lower, "cookie"), strings.Contains(lower, "session"):
+		return "token"
+	case strings.Contains(lower, "key"), strings.Contains(lower, "private"):
+		return "key"
+	case strings.Contains(lower, "credential"), strings.Contains(lower, "auth"), strings.Contains(lower, "dsn"), strings.Contains(lower, "url"), strings.Contains(lower, "connection"):
+		return "credential"
+	default:
+		return "secret"
+	}
+}
+
+func splitComposeAssignment(value string) (string, string, string, bool) {
+	index := strings.IndexByte(value, '=')
+	if index <= 0 {
+		return "", "", "", false
+	}
+	key := strings.TrimSpace(value[:index])
+	if key == "" {
+		return "", "", "", false
+	}
+	return key, "=", value[index+1:], true
+}
+
+func composeExternalSecretReference(value string) bool {
+	value = strings.TrimSpace(value)
+	if strings.HasPrefix(value, "${") && strings.HasSuffix(value, "}") {
+		return true
+	}
+	if !strings.HasPrefix(value, "$") || len(value) < 2 {
+		return false
+	}
+	for index, char := range value[1:] {
+		if (index == 0 && !((char >= 'A' && char <= 'Z') || (char >= 'a' && char <= 'z') || char == '_')) ||
+			(index > 0 && !((char >= 'A' && char <= 'Z') || (char >= 'a' && char <= 'z') || (char >= '0' && char <= '9') || char == '_')) {
+			return false
+		}
+	}
+	return true
+}
+
+func composeYAMLPath(parts []string) string {
+	result := ""
+	for _, part := range parts {
+		if strings.HasPrefix(part, "[") {
+			result += part
+		} else if result == "" {
+			result = part
+		} else {
+			result += "." + part
+		}
+	}
+	return result
+}
+
+func addComposeSensitiveField(fields *[]ComposeSensitiveField, seen map[string]struct{}, path, kind string) {
+	if path == "" {
+		path = "<document>"
+	}
+	key := path + "\x00" + kind
+	if _, exists := seen[key]; exists {
+		return
+	}
+	seen[key] = struct{}{}
+	*fields = append(*fields, ComposeSensitiveField{Path: path, Kind: kind})
+}
+
+func clearComposeYAMLComments(node *yaml.Node) {
+	if node == nil {
+		return
+	}
+	node.HeadComment, node.LineComment, node.FootComment = "", "", ""
+}
+
+func (s *Service) restoreComposeRedactedContent(target ComposeProjectTarget, content string) (string, error) {
+	if !strings.Contains(content, composeRedactedSecretMarker) {
+		return content, nil
+	}
+	if len(target.ConfigFiles) != 1 {
+		return "", composeError(ErrComposeMultiFile, "当前项目使用多个 Compose 配置文件，无法保留脱敏字段")
+	}
+	original, err := os.ReadFile(target.ConfigFiles[0])
+	if err != nil {
+		return "", composeError(ErrComposeConfigUnavailable, "无法读取原 Compose 配置以保留敏感字段")
+	}
+	return restoreComposeRedactedValues(string(original), content)
+}
+
+func restoreComposeRedactedValues(original, candidate string) (string, error) {
+	var originalDocument, candidateDocument yaml.Node
+	if err := yaml.Unmarshal([]byte(original), &originalDocument); err != nil {
+		return "", composeError(ErrComposeConfigInvalid, "原 Compose 配置无法解析，无法安全保留敏感字段")
+	}
+	if err := yaml.Unmarshal([]byte(candidate), &candidateDocument); err != nil {
+		return "", composeError(ErrComposeConfigInvalid, "脱敏 Compose 配置无法解析，请重新打开编辑器或查看明文后再保存")
+	}
+	if originalDocument.Kind != yaml.DocumentNode || len(originalDocument.Content) != 1 || candidateDocument.Kind != yaml.DocumentNode || len(candidateDocument.Content) != 1 {
+		return "", composeError(ErrComposeConfigInvalid, "Compose 配置文档结构无效，无法安全保留敏感字段")
+	}
+	mergeComposeRedactedValues(originalDocument.Content[0], candidateDocument.Content[0], "", false)
+	encoded, err := yaml.Marshal(&candidateDocument)
+	if err != nil {
+		return "", composeError(ErrComposeConfigInvalid, "脱敏 Compose 配置无法保存")
+	}
+	if strings.Contains(string(encoded), composeRedactedSecretMarker) {
+		return "", composeError(ErrComposeConfigInvalid, "Compose 配置包含未解析的敏感字段，请查看明文后再保存")
+	}
+	return string(encoded), nil
+}
+
+func mergeComposeRedactedValues(original, candidate *yaml.Node, parentKey string, skipKeyMatch bool) {
+	if original == nil || candidate == nil || original.Kind != candidate.Kind {
+		return
+	}
+	switch candidate.Kind {
+	case yaml.DocumentNode:
+		for index := range candidate.Content {
+			if index < len(original.Content) {
+				mergeComposeRedactedValues(original.Content[index], candidate.Content[index], parentKey, false)
+			}
+		}
+	case yaml.MappingNode:
+		originalValues := composeYAMLMappingValues(original)
+		for index := 0; index+1 < len(candidate.Content); index += 2 {
+			keyNode, valueNode := candidate.Content[index], candidate.Content[index+1]
+			key := strings.TrimSpace(keyNode.Value)
+			kind := ""
+			if !skipKeyMatch {
+				kind = composeSensitiveKeyKind(key)
+			}
+			originalValue := originalValues[key]
+			if kind != "" && originalValue != nil && composeYAMLNodeContainsMarker(valueNode) {
+				*candidate.Content[index+1] = *originalValue
+				continue
+			}
+			childSkipKeyMatch := strings.EqualFold(key, "secrets") || strings.EqualFold(key, "configs")
+			mergeComposeRedactedValues(originalValue, valueNode, key, childSkipKeyMatch)
+		}
+	case yaml.SequenceNode:
+		for index, valueNode := range candidate.Content {
+			if valueNode.Kind == yaml.ScalarNode && (strings.EqualFold(parentKey, "environment") || strings.EqualFold(parentKey, "labels")) {
+				key, _, candidateValue, ok := splitComposeAssignment(valueNode.Value)
+				if ok && strings.Contains(candidateValue, composeRedactedSecretMarker) {
+					if originalValue := composeYAMLAssignmentValue(original, key); originalValue != nil {
+						*candidate.Content[index] = *originalValue
+						continue
+					}
+				}
+			}
+			if index < len(original.Content) {
+				mergeComposeRedactedValues(original.Content[index], valueNode, parentKey, false)
+			}
+		}
+	case yaml.ScalarNode:
+		if !strings.Contains(candidate.Value, composeRedactedSecretMarker) || original.Kind != yaml.ScalarNode {
+			return
+		}
+		redactedOriginal, changed := redactComposeEmbeddedSecret(original.Value)
+		if changed && redactedOriginal == candidate.Value {
+			*candidate = *original
+		}
+	}
+}
+
+func composeYAMLMappingValues(node *yaml.Node) map[string]*yaml.Node {
+	values := make(map[string]*yaml.Node)
+	if node == nil || node.Kind != yaml.MappingNode {
+		return values
+	}
+	for index := 0; index+1 < len(node.Content); index += 2 {
+		values[strings.TrimSpace(node.Content[index].Value)] = node.Content[index+1]
+	}
+	return values
+}
+
+func composeYAMLAssignmentValue(node *yaml.Node, key string) *yaml.Node {
+	if node == nil || node.Kind != yaml.SequenceNode {
+		return nil
+	}
+	for _, item := range node.Content {
+		if item.Kind != yaml.ScalarNode {
+			continue
+		}
+		itemKey, _, _, ok := splitComposeAssignment(item.Value)
+		if ok && itemKey == key {
+			return item
+		}
+	}
+	return nil
+}
+
+func composeYAMLNodeContainsMarker(node *yaml.Node) bool {
+	if node == nil {
+		return false
+	}
+	if node.Kind == yaml.ScalarNode {
+		return strings.Contains(node.Value, composeRedactedSecretMarker)
+	}
+	for _, child := range node.Content {
+		if composeYAMLNodeContainsMarker(child) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Service) StageComposeContent(target ComposeProjectTarget, content string) (string, string, error) {

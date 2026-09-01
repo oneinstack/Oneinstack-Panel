@@ -492,6 +492,11 @@ func isSensitiveOperation(method, path string) bool {
 		(strings.HasSuffix(path, "/status") || strings.HasSuffix(path, "/settings") || strings.HasSuffix(path, "/config") || path == "/v1/website/update" || path == "/v1/website/add") {
 		return true
 	}
+	if strings.HasPrefix(path, "/v1/containers/compose/") &&
+		((method == http.MethodGet && strings.HasSuffix(path, "/config")) ||
+			(method == http.MethodPost && strings.HasSuffix(path, "/config/reveal"))) {
+		return true
+	}
 	if strings.HasPrefix(path, "/v1/containers/") &&
 		((method == http.MethodPost && strings.HasSuffix(path, "/terminal/ticket")) ||
 			(method == http.MethodGet && strings.HasSuffix(path, "/terminal/open"))) {

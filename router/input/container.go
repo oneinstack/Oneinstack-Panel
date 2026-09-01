@@ -161,6 +161,10 @@ type ContainerComposeRequest struct {
 	Confirm            bool   `json:"confirm"`
 }
 
+type ContainerComposeConfigRevealRequest struct {
+	PanelPassword string `json:"panelPassword" binding:"required"`
+}
+
 type ContainerComposePreviewRequest struct {
 	Action        string `json:"action"`
 	Name          string `json:"name"`

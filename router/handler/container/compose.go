@@ -15,6 +15,7 @@ import (
 	"oneinstack/internal/models"
 	accessservice "oneinstack/internal/services/access"
 	containerService "oneinstack/internal/services/container"
+	userservice "oneinstack/internal/services/user"
 	"oneinstack/router/input"
 	"oneinstack/router/middleware"
 
@@ -118,12 +119,49 @@ func GetCompose(c *gin.Context) {
 func GetComposeConfig(c *gin.Context) {
 	ctx, cancel := requestContext(c)
 	defer cancel()
-	content, target, err := service.ComposeConfig(ctx, c.Param("name"))
+	view, err := service.GetComposeConfigView(ctx, c.Param("name"), false)
 	if err != nil {
 		composeOperationError(c, err)
 		return
 	}
-	core.HandleSuccess(c, gin.H{"projectName": target.ProjectName, "configFile": target.ConfigFiles[0], "content": content})
+	c.Header("Cache-Control", "no-store")
+	core.HandleSuccess(c, view)
+}
+
+func RevealComposeConfig(c *gin.Context) {
+	var request input.ContainerComposeConfigRevealRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "请输入当前面板密码"))
+		return
+	}
+	if !verifyCurrentPanelPassword(c, request.PanelPassword) {
+		core.HandleError(c, core.NewError(core.ErrInvalidPassword, "当前面板密码错误"))
+		return
+	}
+	ctx, cancel := requestContext(c)
+	defer cancel()
+	view, err := service.GetComposeConfigView(ctx, c.Param("name"), true)
+	if err != nil {
+		composeOperationError(c, err)
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	c.Header("Pragma", "no-cache")
+	core.HandleSuccess(c, view)
+}
+
+func verifyCurrentPanelPassword(c *gin.Context, password string) bool {
+	usernameValue, exists := c.Get(middleware.ContextUsername)
+	username, ok := usernameValue.(string)
+	if !exists || !ok || username == "" || strings.TrimSpace(password) == "" {
+		return false
+	}
+	account, verified := userservice.CheckUserPassword(username, password)
+	if !verified {
+		return false
+	}
+	userID, ok := middleware.AuthenticatedUserID(c)
+	return ok && account.ID == userID
 }
 
 func UpdateComposeConfig(c *gin.Context) {
@@ -152,7 +190,7 @@ func UpdateComposeConfig(c *gin.Context) {
 		composeOperationError(c, containerService.ErrComposePreviewStale)
 		return
 	}
-	path, contentHash, err := service.StageComposeContent(preview.Target, request.Content)
+	path, contentHash, err := service.StageComposeContent(preview.Target, preview.EffectiveContent)
 	if err != nil {
 		composeOperationError(c, err)
 		return

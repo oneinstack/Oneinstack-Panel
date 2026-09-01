@@ -536,6 +536,7 @@ func SetupRouter() *gin.Engine {
 		containerg.POST("/compose", middleware.RequirePermission(accessservice.PermissionContainerComposeWrite), containerHandler.CreateCompose)
 		containerg.GET("/compose/:name", middleware.RequirePermission(accessservice.PermissionContainerRead), containerHandler.GetCompose)
 		containerg.GET("/compose/:name/config", middleware.RequirePermission(accessservice.PermissionContainerComposeWrite), containerHandler.GetComposeConfig)
+		containerg.POST("/compose/:name/config/reveal", middleware.RequirePermission(accessservice.PermissionContainerComposeWrite), containerHandler.RevealComposeConfig)
 		containerg.PUT("/compose/:name/config", middleware.RequirePermission(accessservice.PermissionContainerComposeWrite), containerHandler.UpdateComposeConfig)
 		containerg.POST("/compose/:name/actions", middleware.RequirePermission(accessservice.PermissionContainerComposeWrite), containerHandler.ComposeAction)
 		containerg.GET("/compose/:name/logs", middleware.RequirePermission(accessservice.PermissionContainerLogsRead), containerHandler.ComposeLogs)
