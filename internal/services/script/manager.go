@@ -438,6 +438,81 @@ func (sm *ScriptManager) runInstallActions(scriptInfo *ScriptInfo, installPath s
 	return sm.runInstallActionsContext(context.Background(), scriptInfo, installPath, output, nil)
 }
 
+const actionDiagnosticLimit = 16 * 1024
+
+type actionFailure struct {
+	action     string
+	cause      error
+	diagnostic string
+}
+
+func (e *actionFailure) Error() string {
+	return fmt.Sprintf("%s action failed: %v", e.action, e.cause)
+}
+
+func (e *actionFailure) Unwrap() error {
+	return e.cause
+}
+
+// UserMessage exposes the useful script diagnostic without replacing the
+// wrapped error used for classification and cancellation checks.
+func (e *actionFailure) UserMessage() string {
+	return e.diagnostic
+}
+
+type actionDiagnosticBuffer struct {
+	data  []byte
+	limit int
+}
+
+func (b *actionDiagnosticBuffer) Write(data []byte) (int, error) {
+	if b.limit <= 0 {
+		b.limit = actionDiagnosticLimit
+	}
+	if len(data) >= b.limit {
+		b.data = append(b.data[:0], data[len(data)-b.limit:]...)
+		return len(data), nil
+	}
+	b.data = append(b.data, data...)
+	if len(b.data) > b.limit {
+		b.data = b.data[len(b.data)-b.limit:]
+	}
+	return len(data), nil
+}
+
+func (b *actionDiagnosticBuffer) String() string {
+	return string(b.data)
+}
+
+func summarizeActionDiagnostic(value string) string {
+	var diagnostic string
+	for _, line := range strings.Split(value, "\n") {
+		line = strings.TrimSpace(sanitizeLifecycleValue(line, 1024))
+		if line == "" {
+			continue
+		}
+		lower := strings.ToLower(line)
+		var candidate string
+		switch {
+		case strings.HasPrefix(lower, "error:"):
+			candidate = strings.TrimSpace(line[len("error:"):])
+		case strings.HasPrefix(lower, "[error]"):
+			candidate = strings.TrimSpace(line[len("[error]"):])
+		}
+		if candidate == "" || isGenericActionFailureDiagnostic(candidate) {
+			continue
+		}
+		diagnostic = candidate
+	}
+	return sanitizeLifecycleValue(diagnostic, 512)
+}
+
+func isGenericActionFailureDiagnostic(value string) bool {
+	lower := strings.ToLower(strings.TrimSpace(value))
+	return strings.Contains(lower, "action failed") &&
+		(strings.Contains(lower, "exit status") || strings.HasSuffix(lower, "failed"))
+}
+
 func (sm *ScriptManager) runInstallActionsContext(
 	ctx context.Context,
 	scriptInfo *ScriptInfo,
@@ -496,6 +571,8 @@ func (sm *ScriptManager) runInstallActionsContext(
 		if _, err := fmt.Fprintf(output, "\n===== %s =====\n", action.name); err != nil {
 			return fmt.Errorf("write action log: %w", err)
 		}
+		diagnostic := &actionDiagnosticBuffer{limit: actionDiagnosticLimit}
+		diagnosticWriter := newRedactingWriter(diagnostic, secretParameterValues(scriptInfo))
 		if err := sm.runActionContext(
 			ctx,
 			action.name,
@@ -503,7 +580,7 @@ func (sm *ScriptManager) runInstallActionsContext(
 			scriptInfo.WorkingDir,
 			scriptInfo.Params,
 			scriptInfo.timeout(action.name),
-			output,
+			io.MultiWriter(output, diagnosticWriter),
 			observer,
 			lifecycleLogContext{
 				component:       scriptInfo.Name,
@@ -515,6 +592,12 @@ func (sm *ScriptManager) runInstallActionsContext(
 				output:          output,
 			},
 		); err != nil {
+			_ = diagnosticWriter.Flush()
+			failure := &actionFailure{
+				action:     action.name,
+				cause:      err,
+				diagnostic: summarizeActionDiagnostic(diagnostic.String()),
+			}
 			writeLifecycleLog(output, lifecycleLogEntry{
 				Timestamp:       time.Now().UTC().Format(time.RFC3339Nano),
 				Component:       scriptInfo.Name,
@@ -591,7 +674,7 @@ func (sm *ScriptManager) runInstallActionsContext(
 						ErrorSummary:    sanitizeLifecycleValue(rollbackErr.Error(), 512),
 						Message:         "rollback action failed; manual recovery is required",
 					})
-					return fmt.Errorf("%s action failed: %v; rollback failed: %v", action.name, err, rollbackErr)
+					return fmt.Errorf("%w; rollback failed: %v", failure, rollbackErr)
 				}
 				writeLifecycleLog(output, lifecycleLogEntry{
 					Timestamp:       time.Now().UTC().Format(time.RFC3339Nano),
@@ -608,7 +691,7 @@ func (sm *ScriptManager) runInstallActionsContext(
 					Message:         "rollback action completed",
 				})
 			}
-			return fmt.Errorf("%s action failed: %w", action.name, err)
+			return failure
 		}
 		if observer != nil {
 			observer.OnActionComplete(action.name)

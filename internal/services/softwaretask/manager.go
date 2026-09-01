@@ -1161,16 +1161,30 @@ func classifyExecutionError(err error) string {
 	}
 }
 
+type errorWithUserMessage interface {
+	UserMessage() string
+}
+
 func safeErrorMessage(err error) string {
 	if err == nil {
 		return ""
 	}
-	message := strings.Map(func(r rune) rune {
+	var userMessage errorWithUserMessage
+	if errors.As(err, &userMessage) {
+		if message := sanitizeErrorMessage(userMessage.UserMessage()); message != "" {
+			return message
+		}
+	}
+	return sanitizeErrorMessage(err.Error())
+}
+
+func sanitizeErrorMessage(message string) string {
+	message = strings.Map(func(r rune) rune {
 		if r < 0x20 && r != '\t' {
 			return -1
 		}
 		return r
-	}, err.Error())
+	}, message)
 	if len(message) > 1000 {
 		message = message[:1000]
 	}
