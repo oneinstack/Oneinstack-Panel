@@ -1901,8 +1901,19 @@ func (s *Service) verifyComposeTask(ctx context.Context, operation string, targe
 	if operation == models.ContainerTaskOperationComposeStop {
 		for _, service := range services {
 			status := strings.ToLower(parseComposeStringField(service, "State"))
-			if strings.Contains(status, "running") {
+			if status == "running" {
 				return composeError(ErrComposeOperationFailed, "Compose 项目仍有服务处于运行状态")
+			}
+		}
+	}
+	if operation == models.ContainerTaskOperationComposeCreate ||
+		operation == models.ContainerTaskOperationComposeStart ||
+		operation == models.ContainerTaskOperationComposeRestart ||
+		operation == models.ContainerTaskOperationComposeUpdate {
+		for _, service := range services {
+			status := strings.ToLower(parseComposeStringField(service, "State"))
+			if status != "running" {
+				return composeError(ErrComposeOperationFailed, "Compose 项目启动后仍有服务未处于运行状态")
 			}
 		}
 	}

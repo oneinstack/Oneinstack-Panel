@@ -511,15 +511,21 @@ func (m *CreateTaskManager) run(taskID string) {
 			case models.ContainerTaskOperationComposeCreate:
 				m.phase(task.ID, models.ContainerTaskStatusCreating, 20, "正在创建 Compose 项目")
 			case models.ContainerTaskOperationComposeEdit:
-				m.phase(task.ID, models.ContainerTaskStatusCreating, 50, "正在保存 Compose 配置")
+				m.composePhase(task.ID, models.ContainerTaskStatusCreating, "editing", 50, "正在保存 Compose 配置")
 			case models.ContainerTaskOperationComposeUpdate:
-				m.phase(task.ID, models.ContainerTaskStatusPulling, 20, "正在拉取 Compose 镜像")
+				m.composePhase(task.ID, models.ContainerTaskStatusPulling, "updating", 20, "正在拉取 Compose 镜像")
 			case models.ContainerTaskOperationComposeStart, models.ContainerTaskOperationComposeRestart:
-				m.phase(task.ID, models.ContainerTaskStatusCreating, 20, "正在启动 Compose 服务")
+				phase := "starting"
+				message := "正在启动 Compose 服务"
+				if request.Operation == models.ContainerTaskOperationComposeRestart {
+					phase = "restarting"
+					message = "正在重启 Compose 服务"
+				}
+				m.composePhase(task.ID, models.ContainerTaskStatusCreating, phase, 20, message)
 			case models.ContainerTaskOperationComposeStop:
-				m.phase(task.ID, models.ContainerTaskStatusCreating, 20, "正在停止 Compose 服务")
+				m.composePhase(task.ID, models.ContainerTaskStatusCreating, "stopping", 20, "正在停止 Compose 服务")
 			case models.ContainerTaskOperationComposeDelete:
-				m.phase(task.ID, models.ContainerTaskStatusCreating, 20, "正在删除 Compose 资源")
+				m.composePhase(task.ID, models.ContainerTaskStatusCreating, "deleting", 20, "正在删除 Compose 资源")
 			}
 		}
 		if err == nil && request.Compose == nil {
@@ -558,6 +564,9 @@ func (m *CreateTaskManager) run(taskID string) {
 		m.finish(task.ID, models.ContainerTaskStatusSucceeded, "CONTAINER_CREATED", "容器创建成功，尚未启动")
 	case isNetworkOperation(request.Operation):
 		m.finish(task.ID, models.ContainerTaskStatusSucceeded, "CONTAINER_NETWORK_UPDATED", "容器网络调整成功")
+	case isComposeOperation(request.Operation):
+		code, message := composeTaskSuccess(request.Operation)
+		m.finish(task.ID, models.ContainerTaskStatusSucceeded, code, message)
 	default:
 		m.finish(task.ID, models.ContainerTaskStatusSucceeded, "", "容器任务执行成功")
 	}
@@ -591,6 +600,27 @@ func composeTaskFailure(err error) (string, string) {
 		return "DOCKER_RUNTIME_UNAVAILABLE", "Docker 运行时不可用"
 	default:
 		return "COMPOSE_OPERATION_FAILED", "Docker Compose 操作失败，请查看任务日志中的脱敏输出"
+	}
+}
+
+func composeTaskSuccess(operation string) (string, string) {
+	switch operation {
+	case models.ContainerTaskOperationComposeCreate:
+		return "COMPOSE_CREATED", "Compose 项目创建并启动成功"
+	case models.ContainerTaskOperationComposeEdit:
+		return "COMPOSE_CONFIG_SAVED", "Compose 配置保存成功"
+	case models.ContainerTaskOperationComposeStart:
+		return "COMPOSE_STARTED", "Compose 服务启动成功"
+	case models.ContainerTaskOperationComposeStop:
+		return "COMPOSE_STOPPED", "Compose 服务停止成功"
+	case models.ContainerTaskOperationComposeRestart:
+		return "COMPOSE_RESTARTED", "Compose 服务重启成功"
+	case models.ContainerTaskOperationComposeUpdate:
+		return "COMPOSE_UPDATED", "Compose 项目更新成功"
+	case models.ContainerTaskOperationComposeDelete:
+		return "COMPOSE_DELETED", "Compose 项目删除成功"
+	default:
+		return "", "容器任务执行成功"
 	}
 }
 
@@ -656,7 +686,11 @@ func parseDockerProgress(line, operation string) (int, *int, string, []map[strin
 }
 
 func (m *CreateTaskManager) phase(id, status string, progress int, message string) {
-	m.updateEvent(id, "phase", "info", progress, nil, message, nil, "", "")
+	m.updateEvent(id, "phase", "info", progress, nil, message, nil, "", "", map[string]any{"status": status, "phase": status})
+}
+
+func (m *CreateTaskManager) composePhase(id, status, phase string, progress int, message string) {
+	m.updateEvent(id, "phase", "info", progress, nil, message, nil, "", "", map[string]any{"status": status, "phase": phase})
 }
 
 func (m *CreateTaskManager) finish(id, status, code, message string) error {
@@ -712,6 +746,9 @@ func (m *CreateTaskManager) updateEvent(id, typ, level string, progress int, pha
 		}
 		if value, ok := extra[0]["error_message"].(string); ok {
 			message = value
+		}
+		if value, ok := extra[0]["phase"].(string); ok {
+			phase = value
 		}
 	}
 	task.EventSeq++
