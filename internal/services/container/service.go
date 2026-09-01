@@ -2823,13 +2823,26 @@ func (w *streamLineWriter) Write(p []byte) (int, error) {
 	_, _ = w.buf.Write(p)
 	_, _ = w.all.Write(p)
 	for {
-		line, err := w.buf.ReadString('\n')
-		if err != nil {
-			w.buf.WriteString(line)
+		data := w.buf.Bytes()
+		delimiter := -1
+		for index, value := range data {
+			if value == '\n' || value == '\r' {
+				delimiter = index
+				break
+			}
+		}
+		if delimiter < 0 {
 			break
 		}
-		if w.emit != nil {
-			w.emit(strings.TrimSpace(line))
+		line := string(data[:delimiter])
+		consume := delimiter + 1
+		if data[delimiter] == '\r' && consume < len(data) && data[consume] == '\n' {
+			consume++
+		}
+		w.buf.Next(consume)
+		line = strings.TrimSpace(line)
+		if line != "" && w.emit != nil {
+			w.emit(line)
 		}
 	}
 	return len(p), nil
@@ -2838,7 +2851,7 @@ func (w *streamLineWriter) Write(p []byte) (int, error) {
 func (w *streamLineWriter) String() string {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return w.all.String()
+	return normalizeStreamOutput(w.all.String())
 }
 
 func (w *streamLineWriter) Flush() {
@@ -2851,6 +2864,10 @@ func (w *streamLineWriter) Flush() {
 	}
 }
 
+func normalizeStreamOutput(output string) string {
+	return strings.NewReplacer("\r\n", "\n", "\r", "\n").Replace(output)
+}
+
 func (s *Service) runStreaming(ctx context.Context, timeout time.Duration, args []string, emit func(string)) error {
 	if _, err := exec.LookPath(s.binary); err != nil {
 		return fmt.Errorf("%w: %s executable file not found in PATH", ErrRuntimeUnavailable, s.binary)
@@ -2858,16 +2875,27 @@ func (s *Service) runStreaming(ctx context.Context, timeout time.Duration, args 
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	command := exec.CommandContext(ctx, s.binary, args...)
-	var output streamLineWriter
-	output.emit = emit
-	command.Stdout = &output
-	command.Stderr = &output
+	var emitMu sync.Mutex
+	streamEmit := func(line string) {
+		if emit == nil {
+			return
+		}
+		emitMu.Lock()
+		defer emitMu.Unlock()
+		emit(line)
+	}
+	var stdout, stderr streamLineWriter
+	stdout.emit = streamEmit
+	stderr.emit = streamEmit
+	command.Stdout = &stdout
+	command.Stderr = &stderr
 	if err := command.Run(); err != nil {
-		output.Flush()
+		stdout.Flush()
+		stderr.Flush()
 		if ctx.Err() != nil {
 			return fmt.Errorf("%w: docker %s", ErrDockerCommandTimeout, strings.Join(args, " "))
 		}
-		message := strings.TrimSpace(output.String())
+		message := strings.TrimSpace(strings.Join([]string{stdout.String(), stderr.String()}, "\n"))
 		if message == "" {
 			message = err.Error()
 		}
@@ -2878,7 +2906,8 @@ func (s *Service) runStreaming(ctx context.Context, timeout time.Duration, args 
 		}
 		return errors.New(message)
 	}
-	output.Flush()
+	stdout.Flush()
+	stderr.Flush()
 	return nil
 }
 
