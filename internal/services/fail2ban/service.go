@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -70,11 +71,13 @@ type PolicyChangeRequest struct {
 }
 
 type BanRequest struct {
-	IncidentID string `json:"incidentId,omitempty"`
-	PolicyID   string `json:"policyId"`
-	IP         string `json:"ip,omitempty"`
-	Reason     string `json:"reason"`
-	RequestIP  string `json:"-"`
+	IncidentID     string `json:"incidentId,omitempty"`
+	PolicyID       string `json:"policyId"`
+	IP             string `json:"ip,omitempty"`
+	Reason         string `json:"reason"`
+	BanTimeSeconds int    `json:"banTimeSeconds,omitempty"`
+	BanMinutes     int    `json:"banMinutes,omitempty"`
+	RequestIP      string `json:"-"`
 }
 
 type Status struct {
@@ -96,16 +99,18 @@ type PolicyView struct {
 }
 
 type Ban struct {
-	PolicyID string `json:"policyId"`
-	Policy   string `json:"policy"`
-	Jail     string `json:"jail"`
-	IP       string `json:"ip"`
-	Managed  bool   `json:"managed"`
-	BanTime  int    `json:"banTimeSeconds"`
+	PolicyID  string     `json:"policyId"`
+	Policy    string     `json:"policy"`
+	Jail      string     `json:"jail"`
+	IP        string     `json:"ip"`
+	Managed   bool       `json:"managed"`
+	BanTime   int        `json:"banTimeSeconds"`
+	ExpiresAt *time.Time `json:"expiresAt,omitempty"`
 }
 
 type Service struct {
-	db *gorm.DB
+	db    *gorm.DB
+	banMu sync.Mutex
 }
 
 func NewService(database *gorm.DB) *Service { return &Service{db: database} }
@@ -301,6 +306,11 @@ func (s *Service) ApplyPolicyChange(ctx context.Context, request PolicyChangeReq
 			_ = s.validateAndReload(ctx)
 			return nil, err
 		}
+		if err := s.db.Delete(&models.Fail2banBan{}, "policy_id = ?", policy.ID).Error; err != nil {
+			_ = restoreFile(path, old, oldErr == nil)
+			_ = s.validateAndReload(ctx)
+			return nil, err
+		}
 		return policy, nil
 	}
 
@@ -492,25 +502,141 @@ func (s *Service) ListPolicies(ctx context.Context) ([]PolicyView, error) {
 	return result, nil
 }
 
+type banInfo struct {
+	IP        string
+	BannedAt  time.Time
+	ExpiresAt time.Time
+}
+
 func (s *Service) ListBans(ctx context.Context) ([]Ban, error) {
 	var policies []models.Fail2banPolicy
 	if err := s.db.Where("enabled = ?", true).Order("created_at ASC").Find(&policies).Error; err != nil {
 		return nil, err
 	}
+	var records []models.Fail2banBan
+	if err := s.db.Find(&records).Error; err != nil {
+		return nil, err
+	}
+	recordByKey := make(map[string]models.Fail2banBan, len(records))
+	for _, record := range records {
+		recordByKey[banRecordKey(record.PolicyID, record.IP)] = record
+	}
 	result := make([]Ban, 0)
 	for _, policy := range policies {
-		output, err := run(ctx, "status", policy.JailName)
+		infos, err := s.listPolicyBans(ctx, policy)
 		if err != nil {
 			continue
 		}
-		for _, address := range parseBannedIPs(output) {
-			result = append(result, Ban{PolicyID: policy.ID, Policy: policy.Name, Jail: policy.JailName, IP: address, Managed: true, BanTime: policy.BanTimeSeconds})
+		for _, info := range infos {
+			banTime := policy.BanTimeSeconds
+			expiresAt := info.ExpiresAt
+			if !info.BannedAt.IsZero() && !expiresAt.IsZero() {
+				if seconds := int(expiresAt.Sub(info.BannedAt).Seconds()); seconds > 0 {
+					banTime = seconds
+				}
+			} else if record, ok := recordByKey[banRecordKey(policy.ID, info.IP)]; ok {
+				banTime = record.BanTimeSeconds
+				expiresAt = record.ExpiresAt
+			}
+			var expiry *time.Time
+			if !expiresAt.IsZero() {
+				expiresAt = expiresAt.UTC()
+				expiry = &expiresAt
+			}
+			result = append(result, Ban{
+				PolicyID: policy.ID, Policy: policy.Name, Jail: policy.JailName,
+				IP: info.IP, Managed: true, BanTime: banTime, ExpiresAt: expiry,
+			})
 		}
 	}
 	return result, nil
 }
 
+func (s *Service) listPolicyBans(ctx context.Context, policy models.Fail2banPolicy) ([]banInfo, error) {
+	output, err := run(ctx, "get", policy.JailName, "banip", "--with-time")
+	if err == nil {
+		infos := parseBannedIPDetails(output)
+		if len(infos) > 0 || strings.TrimSpace(output) == "" {
+			return infos, nil
+		}
+	}
+	output, err = run(ctx, "status", policy.JailName)
+	if err != nil {
+		return nil, err
+	}
+	addresses := parseBannedIPs(output)
+	infos := make([]banInfo, 0, len(addresses))
+	for _, address := range addresses {
+		infos = append(infos, banInfo{IP: address})
+	}
+	return infos, nil
+}
+
+// SyncBanRecords imports active bans and their actual Fail2ban deadlines into
+// Panel state. This also adopts bans created before the expiry table existed.
+func (s *Service) SyncBanRecords(ctx context.Context) error {
+	var policies []models.Fail2banPolicy
+	if err := s.db.Order("created_at ASC").Find(&policies).Error; err != nil {
+		return err
+	}
+	for _, policy := range policies {
+		infos, err := s.listPolicyBans(ctx, policy)
+		if err != nil {
+			continue
+		}
+		for _, info := range infos {
+			if info.ExpiresAt.IsZero() {
+				continue
+			}
+			banTime := policy.BanTimeSeconds
+			bannedAt := info.BannedAt
+			if !bannedAt.IsZero() {
+				if seconds := int(info.ExpiresAt.Sub(bannedAt).Seconds()); seconds > 0 {
+					banTime = seconds
+				}
+			} else {
+				bannedAt = info.ExpiresAt.Add(-time.Duration(banTime) * time.Second)
+			}
+			if err := s.upsertBanRecord(models.Fail2banBan{
+				PolicyID: policy.ID, Jail: policy.JailName, IP: info.IP,
+				BanTimeSeconds: banTime, BannedAt: bannedAt.UTC(), ExpiresAt: info.ExpiresAt.UTC(),
+			}); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (s *Service) upsertBanRecord(record models.Fail2banBan) error {
+	if s == nil || s.db == nil {
+		return ErrUnavailable
+	}
+	if strings.TrimSpace(record.ID) == "" {
+		record.ID = uuid.NewString()
+	}
+	values := map[string]any{
+		"jail": record.Jail, "ban_time_seconds": record.BanTimeSeconds,
+		"banned_at": record.BannedAt, "expires_at": record.ExpiresAt,
+	}
+	if record.TaskID != "" {
+		values["task_id"] = record.TaskID
+	}
+	return s.db.Where("policy_id = ? AND ip = ?", record.PolicyID, record.IP).
+		Assign(values).FirstOrCreate(&record).Error
+}
+
+func banRecordKey(policyID, ip string) string { return policyID + "\x00" + ip }
+
 func (s *Service) ResolveBanRequest(request BanRequest) (BanRequest, *models.Fail2banPolicy, *models.SecurityIncident, error) {
+	return s.resolveBanRequest(request, false)
+}
+
+func (s *Service) ResolveUnbanRequest(request BanRequest) (BanRequest, *models.Fail2banPolicy, *models.SecurityIncident, error) {
+	return s.resolveBanRequest(request, true)
+}
+
+func (s *Service) resolveBanRequest(request BanRequest, allowDisabled bool) (BanRequest, *models.Fail2banPolicy, *models.SecurityIncident, error) {
 	request.PolicyID = strings.TrimSpace(request.PolicyID)
 	request.IncidentID = strings.TrimSpace(request.IncidentID)
 	request.Reason = strings.TrimSpace(request.Reason)
@@ -521,7 +647,7 @@ func (s *Service) ResolveBanRequest(request BanRequest) (BanRequest, *models.Fai
 	if err := s.db.First(&policy, "id = ?", request.PolicyID).Error; err != nil {
 		return request, nil, nil, err
 	}
-	if !policy.Enabled {
+	if !allowDisabled && !policy.Enabled {
 		return request, nil, nil, validation("目标规则尚未启用")
 	}
 	var incident *models.SecurityIncident
@@ -541,6 +667,22 @@ func (s *Service) ResolveBanRequest(request BanRequest) (BanRequest, *models.Fai
 	if isProtectedIP(ip, request.RequestIP) {
 		return request, nil, nil, ErrProtectedAddress
 	}
+	if request.BanMinutes < 0 || request.BanMinutes > 525600 {
+		return request, nil, nil, validation("封禁时间必须在 300-31536000 秒之间")
+	}
+	if request.BanTimeSeconds != 0 && request.BanMinutes != 0 && request.BanTimeSeconds != request.BanMinutes*60 {
+		return request, nil, nil, validation("banTimeSeconds 与 banMinutes 不能同时指定不同值")
+	}
+	if request.BanTimeSeconds == 0 && request.BanMinutes > 0 {
+		request.BanTimeSeconds = request.BanMinutes * 60
+	}
+	request.BanMinutes = 0
+	if request.BanTimeSeconds == 0 {
+		request.BanTimeSeconds = policy.BanTimeSeconds
+	}
+	if request.BanTimeSeconds < 300 || request.BanTimeSeconds > 31536000 {
+		return request, nil, nil, validation("封禁时间必须在 300-31536000 秒之间")
+	}
 	return request, &policy, incident, nil
 }
 
@@ -549,14 +691,44 @@ func (s *Service) Ban(ctx context.Context, request BanRequest, taskID string) er
 	if err != nil {
 		return err
 	}
-	if _, err := run(ctx, "set", policy.JailName, "banip", request.IP); err != nil {
-		bans, _ := s.ListBans(ctx)
-		if !containsBan(bans, policy.ID, request.IP) {
+	s.banMu.Lock()
+	defer s.banMu.Unlock()
+	var banErr error
+	var restoreErr error
+	restoreBanTime := false
+	if request.BanTimeSeconds != policy.BanTimeSeconds {
+		if _, err := run(ctx, "set", policy.JailName, "bantime", strconv.Itoa(request.BanTimeSeconds)); err != nil {
 			return err
 		}
+		restoreBanTime = true
+	}
+	_, banErr = run(ctx, "set", policy.JailName, "banip", request.IP)
+	if restoreBanTime {
+		restoreCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		_, restoreErr = run(restoreCtx, "set", policy.JailName, "bantime", strconv.Itoa(policy.BanTimeSeconds))
+		cancel()
+	}
+	if banErr != nil {
+		output, statusErr := run(ctx, "status", policy.JailName)
+		if statusErr == nil && containsAddress(parseBannedIPs(output), request.IP) {
+			banErr = nil
+		}
+	}
+	if banErr != nil || restoreErr != nil {
+		if restoreErr != nil {
+			return errors.Join(banErr, fmt.Errorf("恢复 Fail2ban 默认封禁时长失败: %w", restoreErr))
+		}
+		return banErr
+	}
+	now := time.Now().UTC()
+	if err := s.upsertBanRecord(models.Fail2banBan{
+		PolicyID: policy.ID, Jail: policy.JailName, IP: request.IP,
+		BanTimeSeconds: request.BanTimeSeconds, BannedAt: now,
+		ExpiresAt: now.Add(time.Duration(request.BanTimeSeconds) * time.Second), TaskID: taskID,
+	}); err != nil {
+		return err
 	}
 	if incident != nil {
-		now := time.Now().UTC()
 		_ = s.db.Model(&models.SecurityIncident{}).Where("id = ?", incident.ID).Updates(map[string]any{
 			"status": "blocked", "task_id": taskID, "resolved_at": &now, "updated_at": now,
 		}).Error
@@ -565,14 +737,17 @@ func (s *Service) Ban(ctx context.Context, request BanRequest, taskID string) er
 }
 
 func (s *Service) Unban(ctx context.Context, request BanRequest) error {
-	request, policy, _, err := s.ResolveBanRequest(request)
+	request, policy, _, err := s.ResolveUnbanRequest(request)
 	if err != nil {
 		return err
 	}
 	if _, err := run(ctx, "set", policy.JailName, "unbanip", request.IP); err != nil {
-		return err
+		output, statusErr := run(ctx, "status", policy.JailName)
+		if statusErr != nil || containsAddress(parseBannedIPs(output), request.IP) {
+			return err
+		}
 	}
-	return nil
+	return s.db.Where("policy_id = ? AND ip = ?", policy.ID, request.IP).Delete(&models.Fail2banBan{}).Error
 }
 
 func (s *Service) DismissIncident(id string, userID int64) error {
@@ -804,9 +979,40 @@ func parseBannedIPs(output string) []string {
 	return nil
 }
 
-func containsBan(values []Ban, policyID, address string) bool {
+func parseBannedIPDetails(output string) []banInfo {
+	result := make([]banInfo, 0)
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 || net.ParseIP(fields[0]) == nil {
+			continue
+		}
+		info := banInfo{IP: net.ParseIP(fields[0]).String()}
+		if len(fields) >= 3 {
+			info.BannedAt = parseBanTime(fields[1], fields[2])
+		}
+		for index, field := range fields {
+			if field != "=" || index+2 >= len(fields) {
+				continue
+			}
+			info.ExpiresAt = parseBanTime(fields[index+1], fields[index+2])
+			break
+		}
+		result = append(result, info)
+	}
+	return result
+}
+
+func parseBanTime(date, clock string) time.Time {
+	parsed, err := time.ParseInLocation("2006-01-02 15:04:05", date+" "+clock, time.Local)
+	if err != nil {
+		return time.Time{}
+	}
+	return parsed.UTC()
+}
+
+func containsAddress(values []string, address string) bool {
 	for _, value := range values {
-		if value.PolicyID == policyID && value.IP == address {
+		if value == address {
 			return true
 		}
 	}

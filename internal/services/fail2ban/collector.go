@@ -46,8 +46,14 @@ func (m *Manager) runCollector(ctx context.Context) {
 
 func (m *Manager) collect(ctx context.Context) {
 	status, err := m.service.Status(ctx)
-	if err != nil || !status.Installed || !status.ServiceActive {
+	if err != nil || status == nil || !status.Installed || !status.ServiceActive {
 		return
+	}
+	if err := m.service.SyncBanRecords(ctx); err != nil {
+		log.Printf("fail2ban ban expiry synchronization failed: %v", err)
+	}
+	if err := m.expireBans(ctx); err != nil {
+		log.Printf("fail2ban expired ban cleanup failed: %v", err)
 	}
 	if err := m.ensureMigrationTask(); err != nil {
 		log.Printf("fail2ban legacy migration deferred: %v", err)
@@ -58,6 +64,28 @@ func (m *Manager) collect(ctx context.Context) {
 	if err := m.collectDetectorEvents(ctx); err != nil {
 		log.Printf("fail2ban detector event collection failed: %v", err)
 	}
+}
+
+func (m *Manager) expireBans(ctx context.Context) error {
+	var expired []models.Fail2banBan
+	if err := m.db.Where("expires_at <= ?", time.Now().UTC()).Order("expires_at ASC").Find(&expired).Error; err != nil {
+		return err
+	}
+	for _, ban := range expired {
+		var active int64
+		if err := m.db.Model(&models.Fail2banTask{}).
+			Where("operation = ? AND policy_id = ? AND target_ip = ? AND status IN ?", "unban_ip", ban.PolicyID, ban.IP,
+				[]string{models.Fail2banTaskQueued, models.Fail2banTaskRunning}).Count(&active).Error; err != nil {
+			return err
+		}
+		if active > 0 {
+			continue
+		}
+		if err := m.submitExpiredUnban(ctx, ban); err != nil {
+			log.Printf("fail2ban expired ban unban deferred for %s: %v", ban.IP, err)
+		}
+	}
+	return nil
 }
 
 func ensureState(db *gorm.DB) (models.Fail2banState, error) {

@@ -315,6 +315,17 @@ func Preview(c *gin.Context) {
 			return
 		}
 	}
+	if operation == "fail2ban.ban" || operation == "fail2ban.unban" {
+		var err error
+		payload, err = normalizeFail2banBanPayload(payload, operation, c.ClientIP())
+		if err != nil {
+			if handleFail2banPreviewError(c, err) {
+				return
+			}
+			core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "入侵防护预览参数无效"))
+			return
+		}
+	}
 	document, resourceVersion, err := buildDocument(operation, payload)
 	if err != nil {
 		if handleWebsitePreviewError(c, operation, err) {
@@ -463,6 +474,28 @@ func normalizeFail2banPolicyChangePayload(payload json.RawMessage, userID int64)
 	return result, nil
 }
 
+func normalizeFail2banBanPayload(payload json.RawMessage, operation, requestIP string) (json.RawMessage, error) {
+	var request fail2banservice.BanRequest
+	if err := json.Unmarshal(payload, &request); err != nil {
+		return nil, err
+	}
+	request.RequestIP = requestIP
+	var err error
+	if operation == "fail2ban.unban" {
+		request, _, _, err = fail2banservice.DefaultService().ResolveUnbanRequest(request)
+	} else {
+		request, _, _, err = fail2banservice.DefaultService().ResolveBanRequest(request)
+	}
+	if err != nil {
+		return nil, err
+	}
+	result, err := json.Marshal(request)
+	if err != nil {
+		return nil, fmt.Errorf("normalize fail2ban ban payload: %w", err)
+	}
+	return result, nil
+}
+
 func handleFail2banPreviewError(c *gin.Context, err error) bool {
 	switch {
 	case isJSONDecodeError(err):
@@ -481,6 +514,11 @@ func handleFail2banPreviewError(c *gin.Context, err error) bool {
 		core.HandleErrorWithStatus(c, http.StatusConflict, core.NewError(
 			core.ErrResourceStateInvalid,
 			"规则已被其他操作修改，请刷新后重试",
+		))
+	case errors.Is(err, fail2banservice.ErrProtectedAddress):
+		core.HandleError(c, core.NewError(
+			core.ErrInsufficientPermissions,
+			"该地址属于系统保护范围，不能封禁",
 		))
 	case errors.Is(err, gorm.ErrRecordNotFound):
 		core.HandleError(c, core.NewError(core.ErrNotFound, "目标入侵防护策略不存在，请刷新后重试"))

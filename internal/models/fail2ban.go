@@ -33,6 +33,24 @@ type Fail2banPolicy struct {
 
 func (Fail2banPolicy) TableName() string { return "fail2ban_policy" }
 
+// Fail2banBan records the expiry deadline for a managed ban. Fail2ban keeps
+// its own runtime state, while this record lets Panel recover and retry an
+// expiry unban after a Panel or Fail2ban restart.
+type Fail2banBan struct {
+	ID             string    `json:"-" gorm:"primaryKey;size:36"`
+	PolicyID       string    `json:"policyId" gorm:"size:36;not null;uniqueIndex:idx_fail2ban_ban_policy_ip,priority:1"`
+	Jail           string    `json:"jail" gorm:"size:96;not null"`
+	IP             string    `json:"ip" gorm:"size:64;not null;uniqueIndex:idx_fail2ban_ban_policy_ip,priority:2"`
+	BanTimeSeconds int       `json:"banTimeSeconds" gorm:"not null"`
+	BannedAt       time.Time `json:"bannedAt" gorm:"not null"`
+	ExpiresAt      time.Time `json:"expiresAt" gorm:"not null;index"`
+	TaskID         string    `json:"taskId,omitempty" gorm:"size:36;index"`
+	CreatedAt      time.Time `json:"createdAt"`
+	UpdatedAt      time.Time `json:"updatedAt"`
+}
+
+func (Fail2banBan) TableName() string { return "fail2ban_ban" }
+
 type SecurityIncident struct {
 	ID          string     `json:"id" gorm:"primaryKey;size:36"`
 	PolicyID    string     `json:"policyId" gorm:"size:36;not null;index"`

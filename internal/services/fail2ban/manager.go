@@ -102,12 +102,21 @@ func (m *Manager) SubmitPolicyChange(request PolicyChangeRequest, userID int64, 
 
 func (m *Manager) SubmitBan(operation string, request BanRequest, userID int64, requestIP, triggeredBy string) (*models.Fail2banTask, error) {
 	request.RequestIP = requestIP
-	request, policy, incident, err := m.service.ResolveBanRequest(request)
-	if err != nil {
-		return nil, err
-	}
 	if operation != "ban_ip" && operation != "unban_ip" {
 		return nil, validation("任务操作无效")
+	}
+	var (
+		policy   *models.Fail2banPolicy
+		incident *models.SecurityIncident
+		err      error
+	)
+	if operation == "unban_ip" {
+		request, policy, incident, err = m.service.ResolveUnbanRequest(request)
+	} else {
+		request, policy, incident, err = m.service.ResolveBanRequest(request)
+	}
+	if err != nil {
+		return nil, err
 	}
 	parameters, _ := json.Marshal(taskParameters{Ban: &request})
 	task := &models.Fail2banTask{
@@ -120,6 +129,25 @@ func (m *Manager) SubmitBan(operation string, request BanRequest, userID int64, 
 		task.IncidentID = incident.ID
 	}
 	return m.submit(task)
+}
+
+func (m *Manager) submitExpiredUnban(_ context.Context, ban models.Fail2banBan) error {
+	request := BanRequest{
+		PolicyID: ban.PolicyID, IP: ban.IP, Reason: "封禁时长已到期，自动解封",
+	}
+	request, policy, _, err := m.service.ResolveUnbanRequest(request)
+	if err != nil {
+		return err
+	}
+	parameters, _ := json.Marshal(taskParameters{Ban: &request})
+	task := &models.Fail2banTask{
+		ID: uuid.NewString(), Operation: "unban_ip", PolicyID: policy.ID, TargetIP: request.IP,
+		IdempotencyKey: digest("expiry-unban|" + ban.ID + "|" + ban.ExpiresAt.UTC().Format(time.RFC3339Nano) + "|" + time.Now().UTC().Format(time.RFC3339Nano)),
+		Status:         models.Fail2banTaskQueued, Phase: "queued", Message: "到期解封任务已排队",
+		RequestedBy: 0, TriggeredBy: "system", ParametersJSON: string(parameters),
+	}
+	_, err = m.submit(task)
+	return err
 }
 
 func (m *Manager) SubmitMigration() (*models.Fail2banTask, error) {

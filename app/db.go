@@ -222,6 +222,7 @@ func createTables() error {
 		&models.FirewallPortForward{},
 		&models.FirewallAutoBlockConfig{},
 		&models.Fail2banPolicy{},
+		&models.Fail2banBan{},
 		&models.SecurityIncident{},
 		&models.Fail2banTask{},
 		&models.Fail2banTaskEvent{},
