@@ -118,13 +118,14 @@ type UserAccess struct {
 }
 
 type UserListItem struct {
-	ID                 int64         `json:"id"`
-	Username           string        `json:"username"`
-	IsAdmin            bool          `json:"isAdmin"`
-	IsSuperAdmin       bool          `json:"isSuperAdmin"`
-	MustChangePassword bool          `json:"mustChangePassword"`
-	CreatedAt          time.Time     `json:"createdAt"`
-	Roles              []RoleSummary `json:"roles"`
+	ID                   int64         `json:"id"`
+	Username             string        `json:"username"`
+	IsAdmin              bool          `json:"isAdmin"`
+	IsSuperAdmin         bool          `json:"isSuperAdmin"`
+	MustChangePassword   bool          `json:"mustChangePassword"`
+	PasswordChangeReason *string       `json:"passwordChangeReason"`
+	CreatedAt            time.Time     `json:"createdAt"`
+	Roles                []RoleSummary `json:"roles"`
 }
 
 type UserListResult struct {
@@ -684,16 +685,25 @@ func (service *Service) ListUsers(page, pageSize int, keyword string) (*UserList
 			return nil, err
 		}
 		items = append(items, UserListItem{
-			ID:                 user.ID,
-			Username:           user.Username,
-			IsAdmin:            user.IsAdmin,
-			IsSuperAdmin:       user.IsAdmin,
-			MustChangePassword: user.MustChangePassword,
-			CreatedAt:          user.CreateTime,
-			Roles:              access.Roles,
+			ID:                   user.ID,
+			Username:             user.Username,
+			IsAdmin:              user.IsAdmin,
+			IsSuperAdmin:         user.IsAdmin,
+			MustChangePassword:   user.MustChangePassword,
+			PasswordChangeReason: passwordChangeReason(user),
+			CreatedAt:            user.CreateTime,
+			Roles:                access.Roles,
 		})
 	}
 	return &UserListResult{Items: items, Total: total, Page: page, PageSize: pageSize}, nil
+}
+
+func passwordChangeReason(user models.User) *string {
+	if !user.MustChangePassword || user.PasswordChangeReason == "" {
+		return nil
+	}
+	reason := user.PasswordChangeReason
+	return &reason
 }
 
 func (service *Service) CreateUser(username, password string, isAdmin bool, roleCodes []string) (*models.User, error) {
@@ -857,8 +867,9 @@ func (service *Service) ResetUserPassword(userID int64, password string) error {
 		return err
 	}
 	return service.db.Model(&models.User{}).Where("id = ?", userID).Updates(map[string]any{
-		"password":             hashed,
-		"must_change_password": true,
+		"password":               hashed,
+		"must_change_password":   true,
+		"password_change_reason": models.PasswordChangeReasonAdminReset,
 	}).Error
 }
 

@@ -972,9 +972,10 @@ func ResetUserPassword(username, newPassword string) error {
 		}
 		nextVersion := user.EffectiveSecurityVersion() + 1
 		if err := tx.Model(&models.User{}).Where("id = ?", user.ID).Updates(map[string]any{
-			"password":             hashed,
-			"must_change_password": false,
-			"security_version":     nextVersion,
+			"password":               hashed,
+			"must_change_password":   false,
+			"password_change_reason": "",
+			"security_version":       nextVersion,
 		}).Error; err != nil {
 			return err
 		}

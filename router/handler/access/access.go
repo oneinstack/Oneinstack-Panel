@@ -2,6 +2,7 @@ package access
 
 import (
 	"errors"
+	"net/http"
 	"strconv"
 	"strings"
 
@@ -143,7 +144,13 @@ func ResetUserPassword(c *gin.Context) {
 		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "重置密码失败"))
 		return
 	}
-	core.HandleSuccess(c, nil)
+	response := core.SuccessResponseForContext(c, nil)
+	response.Message = i18n.Message(
+		c.GetString("locale"),
+		i18n.MessagePasswordResetRequiresChange,
+		"密码已重置，用户下次登录需修改密码",
+	)
+	c.JSON(http.StatusOK, response)
 }
 
 func buildMeResponse(locale string, access *accessservice.UserAccess) gin.H {

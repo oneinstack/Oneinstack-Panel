@@ -12,9 +12,10 @@ const (
 )
 
 const (
-	MessageOperationSucceeded = "operation.succeeded"
-	MessageValidationFailed   = "validation.failed"
-	MessageRequestInvalid     = "request.invalid"
+	MessageOperationSucceeded          = "operation.succeeded"
+	MessageValidationFailed            = "validation.failed"
+	MessageRequestInvalid              = "request.invalid"
+	MessagePasswordResetRequiresChange = "password.reset.requires_change"
 )
 
 var supportedLocales = map[string]string{
@@ -26,14 +27,16 @@ var supportedLocales = map[string]string{
 
 var messages = map[string]map[string]string{
 	LocaleZhCN: {
-		MessageOperationSucceeded: "操作成功",
-		MessageValidationFailed:   "输入验证失败",
-		MessageRequestInvalid:     "请求参数错误",
+		MessageOperationSucceeded:          "操作成功",
+		MessageValidationFailed:            "输入验证失败",
+		MessageRequestInvalid:              "请求参数错误",
+		MessagePasswordResetRequiresChange: "密码已重置，用户下次登录需修改密码",
 	},
 	LocaleEnUS: {
-		MessageOperationSucceeded: "Operation succeeded",
-		MessageValidationFailed:   "Input validation failed",
-		MessageRequestInvalid:     "Invalid request parameters",
+		MessageOperationSucceeded:          "Operation succeeded",
+		MessageValidationFailed:            "Input validation failed",
+		MessageRequestInvalid:              "Invalid request parameters",
+		MessagePasswordResetRequiresChange: "Password reset. The user must change it at the next login.",
 	},
 }
 
