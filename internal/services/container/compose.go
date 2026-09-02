@@ -647,8 +647,12 @@ func composeHasLegacyPostgresDataMount(value any) bool {
 		switch volume := item.(type) {
 		case string:
 			parts := strings.Split(volume, ":")
-			if len(parts) >= 2 {
-				target = parts[len(parts)-2]
+			for index := 1; index < len(parts); index++ {
+				candidate := strings.TrimSpace(parts[index])
+				if strings.HasPrefix(candidate, "/") {
+					target = candidate
+					break
+				}
 			}
 		case map[string]any:
 			target = composeScalarString(volume["target"])
