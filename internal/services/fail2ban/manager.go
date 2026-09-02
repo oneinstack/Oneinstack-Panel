@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"time"
 
 	"oneinstack/app"
 	"oneinstack/internal/models"
+	auditservice "oneinstack/internal/services/audit"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -18,6 +20,7 @@ import (
 
 type TaskListOptions struct {
 	ActiveOnly bool
+	Operation  string
 	Page       int
 	PageSize   int
 }
@@ -216,6 +219,7 @@ func (m *Manager) execute(parent context.Context, id string) {
 	var params taskParameters
 	if err := json.Unmarshal([]byte(task.ParametersJSON), &params); err != nil {
 		m.fail(&task, "invalid_parameters", err)
+		m.recordBanAudit(&task, params, "failure", taskFailureMessage(err))
 		return
 	}
 	ctx, cancel := context.WithTimeout(parent, 2*time.Minute)
@@ -247,13 +251,99 @@ func (m *Manager) execute(parent context.Context, id string) {
 	}
 	if err != nil {
 		m.fail(&task, taskErrorCode(err), err)
+		m.recordBanAudit(&task, params, "failure", taskFailureMessage(err))
 		return
 	}
 	finished := time.Now().UTC()
-	_ = m.update(&task, map[string]any{
+	if err := m.update(&task, map[string]any{
 		"status": models.Fail2banTaskSucceeded, "phase": "completed", "progress": 100,
 		"message": "安全任务执行成功", "finished_at": &finished, "error_code": "", "error_message": "",
-	}, "completed", "info", "安全任务执行成功")
+	}, "completed", "info", "安全任务执行成功"); err != nil {
+		log.Printf("persist fail2ban task completion %s: %v", task.ID, err)
+		return
+	}
+	m.recordBanAudit(&task, params, "success", "安全任务执行成功")
+}
+
+// recordBanAudit preserves the completed ban/unban operation after the active
+// ban row is removed. The task table remains the execution record; the audit
+// chain is the user-facing, append-only history shared by security operations.
+func (m *Manager) recordBanAudit(task *models.Fail2banTask, params taskParameters, outcome, detail string) {
+	if task == nil || (task.Operation != "ban_ip" && task.Operation != "unban_ip") {
+		return
+	}
+	manager := auditservice.Default()
+	if manager == nil {
+		return
+	}
+	targetIP := strings.TrimSpace(task.TargetIP)
+	reason := ""
+	banTimeSeconds := 0
+	expiresAt := ""
+	if params.Ban != nil {
+		if targetIP == "" {
+			targetIP = strings.TrimSpace(params.Ban.IP)
+		}
+		reason = strings.TrimSpace(params.Ban.Reason)
+		if task.Operation == "ban_ip" {
+			banTimeSeconds = params.Ban.BanTimeSeconds
+		}
+	}
+	if task.Operation == "ban_ip" && outcome == "success" {
+		var ban models.Fail2banBan
+		if err := m.db.Where("policy_id = ? AND ip = ?", task.PolicyID, targetIP).First(&ban).Error; err == nil {
+			banTimeSeconds = ban.BanTimeSeconds
+			expiresAt = ban.ExpiresAt.UTC().Format(time.RFC3339)
+		}
+	}
+	triggeredBy := strings.TrimSpace(task.TriggeredBy)
+	if triggeredBy == "" {
+		triggeredBy = "user"
+	}
+	action := "fail2ban.ban"
+	operationName := "封禁"
+	if task.Operation == "unban_ip" {
+		action = "fail2ban.unban"
+		operationName = "解封"
+	}
+	status := 200
+	if outcome == "failure" {
+		status = 500
+	}
+	message := fmt.Sprintf("Fail2ban%s%s，IP=%s，策略=%s，任务=%s，触发方式=%s",
+		operationName, detail, targetIP, task.PolicyID, task.ID, triggeredBy)
+	if reason != "" {
+		message += "，原因=" + reason
+	}
+	if banTimeSeconds > 0 {
+		message += fmt.Sprintf("，封禁时长=%d秒", banTimeSeconds)
+	}
+	if expiresAt != "" {
+		message += "，到期时间=" + expiresAt
+	}
+	createdAt := time.Now().UTC()
+	if task.FinishedAt != nil && !task.FinishedAt.IsZero() {
+		createdAt = task.FinishedAt.UTC()
+	}
+	_, err := manager.Append(auditservice.EventInput{
+		RequestID: "fail2ban-task-" + task.ID,
+		EventType: "security",
+		Action:    action,
+		Method:    "WORKER",
+		Route:     "/v1/security/fail2ban/tasks/:id",
+		Path:      "/v1/security/fail2ban/tasks/" + task.ID,
+		Status:    status,
+		Outcome:   outcome,
+		Sensitive: true,
+		UserID:    task.RequestedBy,
+		AuthMode:  triggeredBy,
+		RemoteIP:  targetIP,
+		Message:   message,
+		CreatedAt: createdAt,
+	})
+	if err != nil {
+		log.Printf("persist fail2ban %s audit %s: %v", task.Operation, task.ID, err)
+	}
 }
 
 func (m *Manager) fail(task *models.Fail2banTask, code string, cause error) {
@@ -324,6 +414,9 @@ func (m *Manager) List(options TaskListOptions) (*TaskList, error) {
 	query := m.db.Model(&models.Fail2banTask{})
 	if options.ActiveOnly {
 		query = query.Where("status IN ?", []string{models.Fail2banTaskQueued, models.Fail2banTaskRunning})
+	}
+	if operation := strings.TrimSpace(options.Operation); operation != "" {
+		query = query.Where("operation = ?", operation)
 	}
 	var total int64
 	if err := query.Count(&total).Error; err != nil {

@@ -168,6 +168,7 @@ func SetupRouter() *gin.Engine {
 			fail2bang.GET("/bans", middleware.RequirePermission(accessservice.PermissionSecurityRead), fail2banHandler.Bans)
 			fail2bang.GET("/incidents", middleware.RequirePermission(accessservice.PermissionSecurityRead), fail2banHandler.Incidents)
 			fail2bang.POST("/incidents/:id/dismiss", middleware.RequirePermission(accessservice.PermissionSecurityWrite), fail2banHandler.DismissIncident)
+			fail2bang.GET("/unban-records", middleware.RequirePermission(accessservice.PermissionSecurityRead), fail2banHandler.UnbanRecords)
 			fail2bang.GET("/tasks", middleware.RequirePermission(accessservice.PermissionSecurityRead), fail2banHandler.Tasks)
 			fail2bang.GET("/tasks/:id", middleware.RequirePermission(accessservice.PermissionSecurityRead), fail2banHandler.Task)
 			fail2bang.GET("/tasks/:id/events", middleware.RequirePermission(accessservice.PermissionSecurityRead), fail2banHandler.TaskEvents)

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"os/exec"
@@ -20,6 +21,7 @@ import (
 
 	"oneinstack/app"
 	"oneinstack/internal/models"
+	auditservice "oneinstack/internal/services/audit"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -525,6 +527,7 @@ func (s *Service) ListBans(ctx context.Context) ([]Ban, error) {
 	for _, policy := range policies {
 		infos, err := s.listPolicyBans(ctx, policy)
 		if err != nil {
+			result = appendPersistedBans(result, policy, recordByKey)
 			continue
 		}
 		for _, info := range infos {
@@ -557,6 +560,25 @@ func (s *Service) ListBans(ctx context.Context) ([]Ban, error) {
 		}
 	}
 	return result, nil
+}
+
+// appendPersistedBans is only used when the runtime jail cannot be queried.
+// A successful Panel task has already verified the ban and persisted its
+// deadline; using that short-lived record keeps the list useful during a
+// transient Fail2ban query failure without replacing runtime state as truth.
+func appendPersistedBans(result []Ban, policy models.Fail2banPolicy, records map[string]models.Fail2banBan) []Ban {
+	now := time.Now().UTC()
+	for _, record := range records {
+		if record.PolicyID != policy.ID || strings.TrimSpace(record.TaskID) == "" || !record.ExpiresAt.After(now) {
+			continue
+		}
+		expiresAt := record.ExpiresAt.UTC()
+		result = append(result, Ban{
+			PolicyID: policy.ID, Policy: policy.Name, Jail: record.Jail, IP: record.IP,
+			Managed: true, BanTime: record.BanTimeSeconds, ExpiresAt: &expiresAt,
+		})
+	}
+	return result
 }
 
 func (s *Service) listPolicyBans(ctx context.Context, policy models.Fail2banPolicy) ([]banInfo, error) {
@@ -617,15 +639,66 @@ func (s *Service) SyncBanRecords(ctx context.Context) error {
 			} else {
 				bannedAt = info.ExpiresAt.Add(-time.Duration(banTime) * time.Second)
 			}
-			if err := s.upsertBanRecord(models.Fail2banBan{
+			record := models.Fail2banBan{
 				PolicyID: policy.ID, Jail: policy.JailName, IP: info.IP,
 				BanTimeSeconds: banTime, BannedAt: bannedAt.UTC(), ExpiresAt: info.ExpiresAt.UTC(),
-			}); err != nil {
+			}
+			if err := s.upsertBanRecord(record); err != nil {
 				return err
+			}
+			if err := s.ensureActiveBanAudit(policy, record); err != nil {
+				log.Printf("persist fail2ban active ban audit for %s: %v", record.IP, err)
 			}
 		}
 	}
 	return nil
+}
+
+// ensureActiveBanAudit records a ban discovered in Fail2ban runtime state.
+// Panel-created bans have a task ID and are audited by the task worker; this
+// path covers bans created outside Panel or imported from an older runtime.
+func (s *Service) ensureActiveBanAudit(policy models.Fail2banPolicy, ban models.Fail2banBan) error {
+	manager := auditservice.Default()
+	if manager == nil {
+		return nil
+	}
+	requestID := digest("fail2ban-active-ban|" + policy.ID + "|" + ban.IP + "|" +
+		ban.BannedAt.UTC().Format(time.RFC3339Nano) + "|" + ban.ExpiresAt.UTC().Format(time.RFC3339Nano))
+	var existing models.AuditEvent
+	err := s.db.Where("request_id = ? AND action = ?", requestID, "fail2ban.ban").First(&existing).Error
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return err
+	}
+	createdAt := ban.BannedAt
+	if createdAt.IsZero() {
+		createdAt = ban.CreatedAt
+	}
+	if createdAt.IsZero() {
+		createdAt = time.Now().UTC()
+	}
+	message := fmt.Sprintf(
+		"Fail2ban 检测到实时封禁，IP=%s，策略=%s，Jail=%s，封禁时长=%d秒，到期时间=%s，触发方式=external",
+		ban.IP, policy.Name, ban.Jail, ban.BanTimeSeconds, ban.ExpiresAt.UTC().Format(time.RFC3339),
+	)
+	_, err = manager.Append(auditservice.EventInput{
+		RequestID: requestID,
+		EventType: "security",
+		Action:    "fail2ban.ban",
+		Method:    "WORKER",
+		Route:     "/v1/security/fail2ban/bans",
+		Path:      "/v1/security/fail2ban/bans",
+		Status:    200,
+		Outcome:   "success",
+		Sensitive: true,
+		AuthMode:  "external",
+		RemoteIP:  ban.IP,
+		Message:   message,
+		CreatedAt: createdAt.UTC(),
+	})
+	return err
 }
 
 func (s *Service) upsertBanRecord(record models.Fail2banBan) error {

@@ -40,11 +40,23 @@ func Templates(c *gin.Context) {
 
 func Policies(c *gin.Context) {
 	result, err := fail2banservice.DefaultService().ListPolicies(c.Request.Context())
+	if err == nil {
+		locale := middleware.RequestLocale(c)
+		for index := range result {
+			result[index].Name = i18n.LocalizeBusinessText(locale, result[index].Name)
+		}
+	}
 	respond(c, result, err)
 }
 
 func Bans(c *gin.Context) {
 	result, err := fail2banservice.DefaultService().ListBans(c.Request.Context())
+	if err == nil {
+		locale := middleware.RequestLocale(c)
+		for index := range result {
+			result[index].Policy = i18n.LocalizeBusinessText(locale, result[index].Policy)
+		}
+	}
 	respond(c, result, err)
 }
 
@@ -103,7 +115,15 @@ func DismissIncident(c *gin.Context) {
 func Tasks(c *gin.Context) {
 	page, pageSize := pagination(c)
 	result, err := fail2banservice.DefaultManager().List(fail2banservice.TaskListOptions{
-		ActiveOnly: c.Query("active") == "true", Page: page, PageSize: pageSize,
+		ActiveOnly: c.Query("active") == "true", Operation: c.Query("operation"), Page: page, PageSize: pageSize,
+	})
+	respond(c, result, err)
+}
+
+func UnbanRecords(c *gin.Context) {
+	page, pageSize := pagination(c)
+	result, err := fail2banservice.DefaultManager().List(fail2banservice.TaskListOptions{
+		Operation: "unban_ip", Page: page, PageSize: pageSize,
 	})
 	respond(c, result, err)
 }

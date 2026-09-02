@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"oneinstack/internal/models"
+	auditservice "oneinstack/internal/services/audit"
 	safeservice "oneinstack/internal/services/safe"
 
 	"github.com/google/uuid"
@@ -45,6 +47,9 @@ func (m *Manager) runCollector(ctx context.Context) {
 }
 
 func (m *Manager) collect(ctx context.Context) {
+	if err := m.ensureIncidentAuditEvents(); err != nil {
+		log.Printf("fail2ban incident audit backfill failed: %v", err)
+	}
 	status, err := m.service.Status(ctx)
 	if err != nil || status == nil || !status.Installed || !status.ServiceActive {
 		return
@@ -206,7 +211,13 @@ func (m *Manager) collectDetectorEvents(ctx context.Context) error {
 				ip := net.ParseIP(event.IP)
 				if ip != nil && !isProtectedIP(ip, "") {
 					observed := time.Unix(event.ObservedAt, 0).UTC()
-					_, _ = m.recordIncident(ctx, &policy, policy.Template, ip.String(), event.Failures, observed, observed, nil)
+					incident, recordErr := m.recordIncident(ctx, &policy, policy.Template, ip.String(), event.Failures, observed, observed, nil)
+					if recordErr != nil {
+						return recordErr
+					}
+					if auditErr := m.ensureIncidentAuditEvent(incident); auditErr != nil {
+						return auditErr
+					}
 				}
 			}
 		}
@@ -215,6 +226,83 @@ func (m *Manager) collectDetectorEvents(ctx context.Context) error {
 		}
 	}
 	return m.db.Model(&models.Fail2banState{}).Where("id = ?", 1).Update("event_file_offset", offset).Error
+}
+
+const incidentAuditAction = "fail2ban.incident.detected"
+
+// ensureIncidentAuditEvents makes externally detected incidents visible to the
+// audit page without turning the incident table into a second audit chain.
+// Panel login incidents already point at their auth.login_failed evidence and
+// must not receive a duplicate synthetic event.
+func (m *Manager) ensureIncidentAuditEvents() error {
+	var incidents []models.SecurityIncident
+	if err := m.db.Where("source <> ?", "panel-login").Find(&incidents).Error; err != nil {
+		return err
+	}
+	for i := range incidents {
+		if err := m.ensureIncidentAuditEvent(&incidents[i]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (m *Manager) ensureIncidentAuditEvent(incident *models.SecurityIncident) error {
+	if m == nil || m.db == nil || incident == nil || incident.Source == "panel-login" || len(incident.Evidence) > 0 {
+		return nil
+	}
+	requestID := "fail2ban-incident-" + incident.ID
+	var event models.AuditEvent
+	err := m.db.Where("request_id = ? AND action = ?", requestID, incidentAuditAction).First(&event).Error
+	if err == nil {
+		return m.attachIncidentAuditEvidence(incident, event.ID)
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return err
+	}
+	audit := auditservice.Default()
+	if audit == nil {
+		return nil
+	}
+	createdAt := incident.LastSeenAt
+	if createdAt.IsZero() {
+		createdAt = incident.CreatedAt
+	}
+	appended, err := audit.Append(auditservice.EventInput{
+		RequestID: requestID,
+		EventType: "security",
+		Action:    incidentAuditAction,
+		Method:    "WORKER",
+		Route:     "/v1/security/fail2ban/incidents",
+		Path:      "/v1/security/fail2ban/incidents",
+		Status:    200,
+		Outcome:   "failure",
+		Sensitive: true,
+		RemoteIP:  incident.RemoteIP,
+		Message: fmt.Sprintf(
+			"Fail2ban 检测到 %s 入侵事件，来源 IP=%s，尝试次数=%d，风险等级=%s，状态=%s，事件 ID=%s",
+			incident.Source, incident.RemoteIP, incident.Attempts, incident.Severity, incident.Status, incident.ID,
+		),
+		CreatedAt: createdAt.UTC(),
+	})
+	if err != nil {
+		return err
+	}
+	return m.attachIncidentAuditEvidence(incident, appended.ID)
+}
+
+func (m *Manager) attachIncidentAuditEvidence(incident *models.SecurityIncident, eventID uint64) error {
+	evidence, err := json.Marshal([]uint64{eventID})
+	if err != nil {
+		return err
+	}
+	if err := m.db.Model(&models.SecurityIncident{}).
+		Where("id = ? AND source <> ?", incident.ID, "panel-login").
+		Update("evidence", string(evidence)).Error; err != nil {
+		return err
+	}
+	incident.Evidence = []uint64{eventID}
+	return nil
 }
 
 func (m *Manager) recordIncident(ctx context.Context, policy *models.Fail2banPolicy, source, address string, attempts int, first, last time.Time, evidence []uint64) (*models.SecurityIncident, error) {
