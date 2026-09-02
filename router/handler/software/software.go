@@ -78,6 +78,10 @@ func ListSoftwareCategories(c *gin.Context) {
 		core.HandleError(c, core.WrapError(err, core.ErrInternalError, "查询软件分类失败"))
 		return
 	}
+	locale := middleware.RequestLocale(c)
+	for index := range categories {
+		categories[index].Name = i18n.LocalizeSoftwareCategory(locale, categories[index].Name)
+	}
 	core.HandleSuccess(c, categories)
 }
 

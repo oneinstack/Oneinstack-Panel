@@ -6,6 +6,36 @@ import (
 	"golang.org/x/text/message/catalog"
 )
 
+// LocalizeSoftwareCategory translates built-in software-store category labels
+// while keeping Category.Value unchanged for subsequent list filtering.
+func LocalizeSoftwareCategory(locale, value string) string {
+	if Canonical(locale) != LocaleEnUS {
+		return value
+	}
+	if translated, ok := englishSoftwareCategories[value]; ok {
+		return translated
+	}
+	return value
+}
+
+var englishSoftwareCategories = map[string]string{
+	"全部":       "All",
+	"建站":       "Websites",
+	"数据库":      "Databases",
+	"Web服务器":   "Web Servers",
+	"运行环境":     "Runtime Environments",
+	"缓存":       "Cache",
+	"实用工具":     "Utilities",
+	"容器":       "Containers",
+	"安全":       "Security",
+	"云存储":      "Cloud Storage",
+	"中间件":      "Middleware",
+	"研发协作":     "Development & Collaboration",
+	"协作/效率":    "Collaboration & Productivity",
+	"AI / 大模型": "AI / LLM",
+	"其他":       "Other",
+}
+
 // LocalizeSoftwareDescription renders a software description from the local
 // language pack. Descriptions without a registered translation keep the source
 // value so extending the catalog does not break the response.
