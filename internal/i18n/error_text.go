@@ -18,6 +18,17 @@ var (
 	ruleExpiryPattern      = regexp.MustCompile(`^第 ([0-9]+) 条规则的过期时间格式错误$`)
 )
 
+var (
+	lengthRangePattern               = regexp.MustCompile(`^(.+?) 长度必须为 ([0-9]+)-([0-9]+) 个字符$`)
+	websiteWebServerMismatchPattern  = regexp.MustCompile(`^WEBSITE_WEB_SERVER_MISMATCH: 网站 (.+) 属于 (.+)，当前运行 Web Server 为 (.+)，请切换回 (.+) 后操作$`)
+	websiteEngineImmutablePattern    = regexp.MustCompile(`^WEBSITE_ENGINE_IMMUTABLE: 网站 (.+) 的 Engine 已固定为 (.+)，不能修改为 (.+)$`)
+	websiteConfigUnavailablePattern  = regexp.MustCompile(`^WEBSITE_CONFIG_UNAVAILABLE: 网站 (.+) 属于 (.+)，当前没有可用的该归属运行配置文件$`)
+	policyTemplateConflictPattern    = regexp.MustCompile(`^策略模板“(.+?)”（(.+?)）已存在，请直接编辑现有策略，不要重复添加。$`)
+	webServerSyntaxDiagnosticPattern = regexp.MustCompile(`^Web Server 配置语法错误：第 ([0-9]+) 行；Nginx 诊断：(.*)。(.+)$`)
+	webServerSyntaxLinePattern       = regexp.MustCompile(`^Web Server 配置语法错误：第 ([0-9]+) 行。(.*)$`)
+	webServerPreflightPattern        = regexp.MustCompile(`^Web Server 配置预检失败：(.*)。(.+)$`)
+)
+
 // LocalizeText translates API response text that predates message keys.
 // It intentionally targets response messages only; persisted task, audit, and
 // runtime logs keep their original text for historical consistency.
@@ -26,6 +37,9 @@ func LocalizeText(locale, text string) string {
 		return text
 	}
 	if translated, ok := englishErrorTexts[text]; ok {
+		return translated
+	}
+	if translated, ok := englishOperationPreviewErrorTexts[text]; ok {
 		return translated
 	}
 	if translated := translateContainerErrorText(text); translated != "" {
@@ -79,6 +93,21 @@ func translateContainerErrorText(text string) string {
 }
 
 func translateDynamicErrorText(text string) (string, bool) {
+	if translated, ok := translateWebServerConfigDetail(text); ok {
+		return translated, true
+	}
+	if matches := websiteWebServerMismatchPattern.FindStringSubmatch(text); len(matches) == 5 {
+		return fmt.Sprintf("Website %s belongs to %s, but the current Web Server is %s. Switch back to %s before continuing", matches[1], matches[2], matches[3], matches[4]), true
+	}
+	if matches := websiteEngineImmutablePattern.FindStringSubmatch(text); len(matches) == 4 {
+		return fmt.Sprintf("Website %s has its Engine fixed to %s and cannot be changed to %s", matches[1], matches[2], matches[3]), true
+	}
+	if matches := websiteConfigUnavailablePattern.FindStringSubmatch(text); len(matches) == 3 {
+		return fmt.Sprintf("Website %s belongs to %s, but no runtime configuration is currently available for that owner", matches[1], matches[2]), true
+	}
+	if matches := policyTemplateConflictPattern.FindStringSubmatch(text); len(matches) == 3 {
+		return fmt.Sprintf("Policy template \"%s\" (%s) already exists. Edit the existing policy instead of adding a duplicate.", matches[1], matches[2]), true
+	}
 	if matches := fail2banRatePattern.FindStringSubmatch(text); len(matches) == 3 {
 		action := "Ban"
 		if matches[1] == "解封" {
@@ -114,6 +143,35 @@ func translateDynamicErrorText(text string) (string, bool) {
 	return "", false
 }
 
+func translateWebServerConfigDetail(text string) (string, bool) {
+	if matches := webServerSyntaxDiagnosticPattern.FindStringSubmatch(text); len(matches) == 4 {
+		return fmt.Sprintf(
+			"Web Server configuration syntax error at line %s; Nginx diagnostic: %s. %s",
+			matches[1], matches[2], localizeWebServerConfigFragment(matches[3]),
+		), true
+	}
+	if matches := webServerSyntaxLinePattern.FindStringSubmatch(text); len(matches) == 3 {
+		return fmt.Sprintf(
+			"Web Server configuration syntax error at line %s. %s",
+			matches[1], localizeWebServerConfigFragment(matches[2]),
+		), true
+	}
+	if matches := webServerPreflightPattern.FindStringSubmatch(text); len(matches) == 3 {
+		return fmt.Sprintf(
+			"Web Server configuration preflight failed: %s. %s",
+			localizeWebServerConfigFragment(matches[1]), localizeWebServerConfigFragment(matches[2]),
+		), true
+	}
+	return "", false
+}
+
+func localizeWebServerConfigFragment(value string) string {
+	if translated, ok := englishOperationPreviewErrorTexts[value]; ok {
+		return translated
+	}
+	return value
+}
+
 func ContainsHan(text string) bool {
 	for _, value := range text {
 		if unicode.Is(unicode.Han, value) {
@@ -132,6 +190,9 @@ func translateValidationText(text string) (string, bool) {
 	}
 	if matches := rangePattern.FindStringSubmatch(text); len(matches) == 4 {
 		return fmt.Sprintf("%s must be between %s and %s", parameterName(matches[1]), matches[2], matches[3]), true
+	}
+	if matches := lengthRangePattern.FindStringSubmatch(text); len(matches) == 4 {
+		return fmt.Sprintf("%s must be between %s and %s characters", parameterName(matches[1]), matches[2], matches[3]), true
 	}
 	if matches := maxLengthPattern.FindStringSubmatch(text); len(matches) == 3 {
 		return fmt.Sprintf("%s must not exceed %s characters", parameterName(matches[1]), matches[2]), true
@@ -290,6 +351,8 @@ var englishTerms = map[string]string{
 	"数据库实例":          "database instance",
 	"数据库实例列表":        "database instance list",
 	"数据库实例请求":        "database instance request",
+	"封禁或解封原因":        "ban or unban reason",
+	"规则名称":           "rule name",
 	"数据库实例删除":        "database deletion",
 	"数据库标识":          "database identifier",
 	"数据库查询":          "database query",
@@ -1041,4 +1104,70 @@ var englishErrorTexts = map[string]string{
 	"请刷新执行记录，确认任务状态后再操作。": "Refresh the execution records and confirm the task status before trying again.",
 	"当前 Panel 进程未持有该执行的活动上下文，请刷新执行记录；如果仍显示运行中，" +
 		"请检查 Panel 是否发生重启或采用多实例部署。": "The current Panel process does not own the active execution context. Refresh the execution records. If it still appears to be running, check whether Panel restarted or is deployed with multiple instances.",
+}
+
+var englishOperationPreviewErrorTexts = map[string]string{
+	"action 必须是 create、update 或 delete": "action must be create, update, or delete",
+	"无法识别规则操作者":                         "The rule operator could not be identified",
+	"规则 ID 无效":                          "The rule ID is invalid",
+	"规则模板只支持 sshd、panel-login、nginx-http-auth、nginx-botsearch、mysql-auth、redis-auth 或 vsftpd-auth": "The rule template must be one of sshd, panel-login, nginx-http-auth, nginx-botsearch, mysql-auth, redis-auth, or vsftpd-auth",
+	"规则名称长度必须为 1-64 个字符":                    "The rule name must be between 1 and 64 characters",
+	"处置模式必须是 observe 或 autoBan":             "The enforcement mode must be observe or autoBan",
+	"触发次数必须在 3-100 之间":                      "The trigger count must be between 3 and 100",
+	"统计窗口必须在 60-86400 秒之间":                  "The observation window must be between 60 and 86400 seconds",
+	"封禁时间必须在 300-31536000 秒之间":              "The ban duration must be between 300 and 31536000 seconds",
+	"规则模板不可用":                               "The rule template is unavailable",
+	"目标规则尚未启用":                              "The target rule is not enabled",
+	"封禁目标必须是单个有效 IP 地址":                     "The ban target must be a single valid IP address",
+	"banTimeSeconds 与 banMinutes 不能同时指定不同值": "banTimeSeconds and banMinutes must not specify different values at the same time",
+	"异常事件 ID 无效":                            "The incident ID is invalid",
+	"自定义白名单最多包含 64 个地址或网段":                  "The custom allowlist can contain at most 64 addresses or networks",
+	"白名单包含无效的 IP 网段":                        "The allowlist contains an invalid IP network",
+	"白名单包含无效的 IP 地址":                        "The allowlist contains an invalid IP address",
+	"入侵防护预览参数无效":                            "The intrusion-protection preview parameters are invalid",
+	"入侵防护参数格式错误":                            "The intrusion-protection parameters have an invalid format",
+	"请检查策略动作、模板和参数取值后重试。":                   "Check the policy action, template, and parameter values before retrying.",
+	"目标入侵防护策略不存在，请刷新后重试":                    "The target intrusion-protection policy does not exist. Refresh and try again",
+	"目标地址属于私网、回环、链路本地、可信代理、Panel 监听地址或当前请求来源 IP，不能封禁。": "The target address is private, loopback, link-local, a trusted proxy, a Panel listening address, or the current request IP, and cannot be banned.",
+	"权限上下文不可用":      "The authorization context is unavailable",
+	"权限上下文无效":       "The authorization context is invalid",
+	"服务控制组件参数不正确":   "The service-control component parameters are invalid",
+	"当前角色无权控制该组件服务": "The current role cannot control this component service",
+	"网站创建参数无效":      "The website creation parameters are invalid",
+	"网站根目录必须是受管网站根目录下的相对目录，不能越界或包含符号链接": "The website root directory must be relative to the managed website root and must not escape it or contain symbolic links",
+	"网站归属 Web Server 不一致":                "The website belongs to a different Web Server",
+	"网站归属 Web Server 不可修改":               "The website's Web Server cannot be changed",
+	"网站运行配置不可用":                          "The website runtime configuration is unavailable",
+	"Web Server 配置语法校验失败，请根据诊断信息修正后重新预览": "Web Server configuration validation failed. Correct the diagnostic issues and create a new preview.",
+	"预览阶段未写入原配置，请修正后重新预览。":               "The original configuration was not written during preview. Correct the configuration and create a new preview.",
+	"原配置已自动恢复，请修正后重新预览。":                 "The original configuration was restored automatically. Correct the configuration and create a new preview.",
+	"配置内容超过允许大小限制":                       "The configuration content exceeds the allowed size limit",
+	"配置内容包含不允许的 NUL 字节":                  "The configuration content contains a disallowed NUL byte",
+	"include 指令未提供文件路径":                  "The include directive does not provide a file path",
+	"不支持包含变量的动态 include，请改用固定文件路径":       "Dynamic includes containing variables are not supported. Use a fixed file path instead",
+	"include 嵌套层级超过允许限制":                 "The include nesting depth exceeds the allowed limit",
+	"include 依赖文件数量超过允许限制":               "The number of include dependencies exceeds the allowed limit",
+	"include 依赖文件不存在":                    "An include dependency does not exist",
+	"include 依赖文件超出受管配置目录范围":             "An include dependency is outside the managed configuration directory",
+	"include 路径逃逸受管配置目录":                 "The include path escapes the managed configuration directory",
+	"include 依赖文件不能是符号链接":                "An include dependency cannot be a symbolic link",
+	"include 文件路径格式无效":                   "The include file path has an invalid format",
+	"include 依赖文件无法读取":                   "An include dependency cannot be read",
+	"include 依赖文件无法暂存到预览目录":              "An include dependency cannot be staged in the preview directory",
+	"Web Server 配置语法校验失败，原配置已自动恢复；请检查 Nginx/OpenResty 指令格式后重新预览。": "Web Server configuration validation failed. The original configuration was restored automatically. Check the Nginx/OpenResty directive syntax and create a new preview.",
+	"Web Server 配置预检失败": "Web Server configuration preflight failed",
+	"Web Server 配置语法错误": "Web Server configuration syntax error",
+	"Web Server 配置语法校验失败，预览阶段未写入原配置；请检查 Nginx/OpenResty 指令格式后重新预览。": "Web Server configuration validation failed. The original configuration was not written during preview. Check the Nginx/OpenResty directive syntax and create a new preview.",
+	"防火墙参数无效":       "The firewall parameters are invalid",
+	"生成操作预览失败":      "Failed to generate the operation preview",
+	"保存操作预览失败":      "Failed to save the operation preview",
+	"读取操作预览失败":      "Failed to read the operation preview",
+	"执行已确认的操作预览失败":  "Failed to execute the confirmed operation preview",
+	"操作超时，原配置已尝试恢复": "The operation timed out. The original configuration was restored if possible.",
+	"Web Server 配置校验或重载未在限定时间内完成，请检查服务状态和日志后重试。": "Web Server configuration validation or reload did not finish within the allowed time. Check the service status and logs before retrying.",
+	"操作已取消，原配置已尝试恢复":                             "The operation was canceled. The original configuration was restored if possible.",
+	"当前请求已取消，操作未完成；请确认服务状态后重新预览并执行。":             "The current request was canceled before the operation completed. Check the service status, then create a new preview and execute it.",
+	"Web Server 配置校验失败，原配置已恢复":                   "Web Server configuration validation failed. The original configuration was restored.",
+	"未检测到可管理的 Web Server":                        "No manageable Web Server was detected",
+	"Web Server 重载失败，原配置已回滚":                     "Web Server reload failed. The original configuration was rolled back.",
 }

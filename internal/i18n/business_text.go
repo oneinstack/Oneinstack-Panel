@@ -15,6 +15,15 @@ func LocalizeBusinessText(locale, value string) string {
 	if translated, ok := englishBusinessTexts[value]; ok {
 		return translated
 	}
+	if translated, ok := englishOperationPreviewBusinessTexts[value]; ok {
+		return translated
+	}
+	if translated := translateWebServerPreviewText(value); translated != "" {
+		return translated
+	}
+	if translated := translateWebsiteRuntimePreviewText(value); translated != "" {
+		return translated
+	}
 	if strings.HasPrefix(value, "计划任务：") {
 		return "Scheduled task: " + strings.TrimSpace(strings.TrimPrefix(value, "计划任务："))
 	}
@@ -55,6 +64,58 @@ func LocalizeBusinessText(locale, value string) string {
 		}
 	}
 	return value
+}
+
+func translateWebServerPreviewText(value string) string {
+	const (
+		syntaxSuffix   = " 配置语法"
+		validatePrefix = "校验 "
+		validateSuffix = " 配置"
+		reloadPrefix   = "重新加载 "
+	)
+	if strings.HasSuffix(value, syntaxSuffix) {
+		name := strings.TrimSpace(strings.TrimSuffix(value, syntaxSuffix))
+		if name == "Web Server" {
+			return name + " configuration syntax"
+		}
+	}
+	if strings.HasPrefix(value, validatePrefix) && strings.HasSuffix(value, validateSuffix) {
+		name := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(value, validatePrefix), validateSuffix))
+		if name == "Web Server" {
+			return "Validate " + name + " configuration"
+		}
+	}
+	if strings.HasPrefix(value, reloadPrefix) {
+		name := strings.TrimSpace(strings.TrimPrefix(value, reloadPrefix))
+		if name == "Web Server" {
+			return "Reload " + name
+		}
+	}
+	return ""
+}
+
+func translateWebsiteRuntimePreviewText(value string) string {
+	const (
+		prefix = "网站 "
+		open   = "（"
+		close  = "）"
+		suffix = "将修改运行配置或流量路径，执行前需要确认"
+	)
+	if !strings.HasPrefix(value, prefix) || !strings.HasSuffix(value, suffix) {
+		return ""
+	}
+	body := strings.TrimSuffix(strings.TrimPrefix(value, prefix), suffix)
+	openIndex := strings.Index(body, open)
+	if openIndex <= 0 || !strings.HasSuffix(body, close) {
+		return ""
+	}
+	domainEnd := len(body) - len(close)
+	if domainEnd <= openIndex+len(open) {
+		return ""
+	}
+	name := body[:openIndex]
+	domain := body[openIndex+len(open) : domainEnd]
+	return "Website " + name + " (" + domain + ") will modify the runtime configuration or traffic path. Confirmation is required before execution"
 }
 
 func LocalizeStatusText(locale, value string, failed bool) string {
@@ -308,6 +369,10 @@ var englishBusinessTexts = map[string]string{
 	"检测 Nginx HTTP 基础认证失败": "Detects failed Nginx HTTP basic-authentication attempts",
 	"Nginx 恶意扫描防护":         "Nginx malicious scan protection",
 	"检测针对常见敏感路径的恶意扫描":      "Detects malicious scans for common sensitive paths",
+	"MySQL 登录防护":           "MySQL login protection",
+	"Redis 认证防护":           "Redis authentication protection",
+	"FTP 登录防护":             "FTP login protection",
+	"SSH 登录防护（由旧自动封禁迁移）":   "SSH login protection (migrated from legacy automatic banning)",
 	"服务器尚未安装 Fail2ban 组件":  "The Fail2ban component is not installed",
 	"Fail2ban 服务未运行或无法响应":  "The Fail2ban service is not running or is not responding",
 	"规则变更已排队":              "The policy change has been queued",
@@ -594,4 +659,17 @@ var englishBusinessTexts = map[string]string{
 	"恢复请求已通过预检，等待独立恢复服务接管":         "The restore request passed preflight checks and is waiting for the dedicated restore service",
 	"恢复任务已交给独立 systemd 单元，面板将短暂离线并自动完成健康检查": "The restore task was handed to a dedicated systemd unit. The Panel will briefly go offline and run health checks automatically",
 	"更新任务已交给独立 systemd 单元执行，面板将在完成或回滚后恢复服务": "The update task was handed to a dedicated systemd unit. The Panel will resume after completion or rollback",
+}
+
+var englishOperationPreviewBusinessTexts = map[string]string{
+	"创建或复用规范化后的网站根目录":               "Create or reuse the normalized website root directory",
+	"按需放行网站端口":                      "Allow website ports as needed",
+	"更新 Web 服务器受管配置":                "Update the managed Web Server configuration",
+	"更新网站受管虚拟主机配置":                  "Update the managed website virtual-host configuration",
+	"网站配置版本":                        "Website configuration revision",
+	"预览基于当前网站和运行配置生成":               "The preview was generated from the current website and runtime configuration",
+	"执行阶段将重新校验":                     "The execution stage will validate again",
+	"执行前创建配置快照；发布或重载失败时恢复原配置":       "Create a configuration snapshot before execution; restore the original configuration if publication or reload fails",
+	"创建或复用 Caddy 访问日志文件并授予运行用户写入权限": "Create or reuse the Caddy access-log file and grant the runtime user write access",
+	"启用或停用网站虚拟主机配置；网站数据和网站文件保留":     "Enable or disable the website virtual-host configuration; website data and files are retained",
 }

@@ -507,7 +507,7 @@ func ErrorResponseForLocale(err *AppError, locale string) *APIResponse {
 
 func localizedErrorMessage(locale, message string, code ErrorCode) string {
 	translated := i18n.LocalizeText(locale, message)
-	if i18n.Canonical(locale) != i18n.LocaleEnUS || !i18n.ContainsHan(translated) {
+	if i18n.Canonical(locale) != i18n.LocaleEnUS || !i18n.ContainsHan(translated) || strings.TrimSpace(translated) != strings.TrimSpace(message) {
 		return translated
 	}
 	return defaultEnglishErrorMessage(code)
@@ -515,7 +515,7 @@ func localizedErrorMessage(locale, message string, code ErrorCode) string {
 
 func localizedErrorDetail(locale, detail string, code ErrorCode) string {
 	translated := i18n.LocalizeText(locale, detail)
-	if i18n.Canonical(locale) != i18n.LocaleEnUS || !i18n.ContainsHan(translated) {
+	if i18n.Canonical(locale) != i18n.LocaleEnUS || !i18n.ContainsHan(translated) || strings.TrimSpace(translated) != strings.TrimSpace(detail) {
 		return translated
 	}
 	return defaultEnglishErrorDetail(code)
