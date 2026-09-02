@@ -107,6 +107,7 @@ type Ban struct {
 	IP        string     `json:"ip"`
 	Managed   bool       `json:"managed"`
 	BanTime   int        `json:"banTimeSeconds"`
+	CreatedAt *time.Time `json:"createdAt,omitempty"`
 	ExpiresAt *time.Time `json:"expiresAt,omitempty"`
 }
 
@@ -548,6 +549,7 @@ func (s *Service) ListBans(ctx context.Context) ([]Ban, error) {
 				banTime = record.BanTimeSeconds
 				expiresAt = record.ExpiresAt
 			}
+			createdAt := banCreatedAt(info.BannedAt, record, hasRecord)
 			var expiry *time.Time
 			if !expiresAt.IsZero() {
 				expiresAt = expiresAt.UTC()
@@ -555,10 +557,13 @@ func (s *Service) ListBans(ctx context.Context) ([]Ban, error) {
 			}
 			result = append(result, Ban{
 				PolicyID: policy.ID, Policy: policy.Name, Jail: policy.JailName,
-				IP: info.IP, Managed: true, BanTime: banTime, ExpiresAt: expiry,
+				IP: info.IP, Managed: true, BanTime: banTime, CreatedAt: createdAt, ExpiresAt: expiry,
 			})
 		}
 	}
+	sort.SliceStable(result, func(i, j int) bool {
+		return banCreatedAtBefore(result[i], result[j])
+	})
 	return result, nil
 }
 
@@ -573,12 +578,45 @@ func appendPersistedBans(result []Ban, policy models.Fail2banPolicy, records map
 			continue
 		}
 		expiresAt := record.ExpiresAt.UTC()
+		createdAt := banCreatedAt(record.BannedAt, record, true)
 		result = append(result, Ban{
 			PolicyID: policy.ID, Policy: policy.Name, Jail: record.Jail, IP: record.IP,
-			Managed: true, BanTime: record.BanTimeSeconds, ExpiresAt: &expiresAt,
+			Managed: true, BanTime: record.BanTimeSeconds, CreatedAt: createdAt, ExpiresAt: &expiresAt,
 		})
 	}
 	return result
+}
+
+func banCreatedAt(runtimeBannedAt time.Time, record models.Fail2banBan, hasRecord bool) *time.Time {
+	createdAt := runtimeBannedAt
+	if hasRecord {
+		if !record.BannedAt.IsZero() {
+			createdAt = record.BannedAt
+		} else if createdAt.IsZero() {
+			createdAt = record.CreatedAt
+		}
+	}
+	if createdAt.IsZero() {
+		return nil
+	}
+	createdAt = createdAt.UTC()
+	return &createdAt
+}
+
+func banCreatedAtBefore(left, right Ban) bool {
+	if left.CreatedAt == nil {
+		return false
+	}
+	if right.CreatedAt == nil {
+		return true
+	}
+	if !left.CreatedAt.Equal(*right.CreatedAt) {
+		return left.CreatedAt.Before(*right.CreatedAt)
+	}
+	if left.PolicyID != right.PolicyID {
+		return left.PolicyID < right.PolicyID
+	}
+	return left.IP < right.IP
 }
 
 func (s *Service) listPolicyBans(ctx context.Context, policy models.Fail2banPolicy) ([]banInfo, error) {
