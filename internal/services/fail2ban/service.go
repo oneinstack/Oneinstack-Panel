@@ -530,11 +530,18 @@ func (s *Service) ListBans(ctx context.Context) ([]Ban, error) {
 		for _, info := range infos {
 			banTime := policy.BanTimeSeconds
 			expiresAt := info.ExpiresAt
-			if !info.BannedAt.IsZero() && !expiresAt.IsZero() {
+			record, hasRecord := recordByKey[banRecordKey(policy.ID, info.IP)]
+			if hasRecord && strings.TrimSpace(record.TaskID) != "" {
+				// Panel-created bans may use a one-off duration. Fail2ban's
+				// runtime bantime is restored to the policy default after the
+				// manual ban, so the persisted Panel deadline is authoritative.
+				banTime = record.BanTimeSeconds
+				expiresAt = record.ExpiresAt
+			} else if !info.BannedAt.IsZero() && !expiresAt.IsZero() {
 				if seconds := int(expiresAt.Sub(info.BannedAt).Seconds()); seconds > 0 {
 					banTime = seconds
 				}
-			} else if record, ok := recordByKey[banRecordKey(policy.ID, info.IP)]; ok {
+			} else if hasRecord {
 				banTime = record.BanTimeSeconds
 				expiresAt = record.ExpiresAt
 			}
@@ -579,6 +586,14 @@ func (s *Service) SyncBanRecords(ctx context.Context) error {
 	if err := s.db.Order("created_at ASC").Find(&policies).Error; err != nil {
 		return err
 	}
+	var records []models.Fail2banBan
+	if err := s.db.Find(&records).Error; err != nil {
+		return err
+	}
+	recordByKey := make(map[string]models.Fail2banBan, len(records))
+	for _, record := range records {
+		recordByKey[banRecordKey(record.PolicyID, record.IP)] = record
+	}
 	for _, policy := range policies {
 		infos, err := s.listPolicyBans(ctx, policy)
 		if err != nil {
@@ -586,6 +601,11 @@ func (s *Service) SyncBanRecords(ctx context.Context) error {
 		}
 		for _, info := range infos {
 			if info.ExpiresAt.IsZero() {
+				continue
+			}
+			if record, ok := recordByKey[banRecordKey(policy.ID, info.IP)]; ok && strings.TrimSpace(record.TaskID) != "" {
+				// Keep the Panel-requested one-off deadline. The collector will
+				// submit the idempotent unban task when that deadline is reached.
 				continue
 			}
 			banTime := policy.BanTimeSeconds

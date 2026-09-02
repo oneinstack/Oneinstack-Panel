@@ -683,6 +683,13 @@ func validateContainerCreateRequest(request ContainerCreateRequest) error {
 	if err := validateOfficialPostgresEnvironment(request.Image, request.Environment); err != nil {
 		addError("environment", err.Error())
 	}
+	if isOfficialPostgres18OrNewerImage(request.Image) {
+		for index, mount := range request.Mounts {
+			if isLegacyPostgresDataMountTarget(mount.Target) {
+				addError(fmt.Sprintf("mounts[%d].target", index), postgresDataMountRecommendation())
+			}
+		}
+	}
 	if request.AutoRemove && request.Restart != "" && request.Restart != "no" {
 		addError("autoRemove", "退出后自动删除不能与重启策略同时使用；请关闭自动删除，或将重启策略设置为不重启")
 	}
@@ -820,6 +827,45 @@ func validateOfficialPostgresEnvironment(image string, environment map[string]st
 		return nil
 	}
 	return errors.New("PostgreSQL 官方镜像缺少初始化认证参数，请在 environment 中设置非空 POSTGRES_PASSWORD 或已挂载的 POSTGRES_PASSWORD_FILE；仅测试环境可使用 POSTGRES_HOST_AUTH_METHOD=trust，生产环境不建议这样配置")
+}
+
+var postgresImageMajorPattern = regexp.MustCompile(`^([0-9]+)(?:[.-]|$)`)
+
+const (
+	postgresLegacyDataPath      = "/var/lib/postgresql/data"
+	postgresRecommendedDataPath = "/var/lib/postgresql"
+)
+
+func isOfficialPostgres18OrNewerImage(image string) bool {
+	reference := strings.TrimSpace(image)
+	if at := strings.IndexByte(reference, '@'); at >= 0 {
+		reference = reference[:at]
+	}
+	if slash := strings.LastIndexByte(reference, '/'); slash >= 0 {
+		reference = reference[slash+1:]
+	}
+	if !strings.HasPrefix(strings.ToLower(reference), "postgres:") {
+		return false
+	}
+
+	parts := strings.SplitN(reference, ":", 2)
+	if len(parts) != 2 || !strings.EqualFold(parts[0], "postgres") {
+		return false
+	}
+	match := postgresImageMajorPattern.FindStringSubmatch(strings.TrimSpace(parts[1]))
+	if len(match) != 2 {
+		return false
+	}
+	major, err := strconv.Atoi(match[1])
+	return err == nil && major >= 18
+}
+
+func isLegacyPostgresDataMountTarget(target string) bool {
+	return filepath.Clean(strings.TrimSpace(target)) == postgresLegacyDataPath
+}
+
+func postgresDataMountRecommendation() string {
+	return "PostgreSQL 18+ 官方镜像的数据卷应只挂载到 " + postgresRecommendedDataPath + "；旧路径 " + postgresLegacyDataPath + " 会被视为未使用挂载"
 }
 
 func (s *Service) ContainerAction(ctx context.Context, id, action string, force, confirm bool) error {

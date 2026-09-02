@@ -247,6 +247,8 @@ func boundedConfigDiff(before, after string) string {
 
 var fail2banPreviewLimiter = middleware.NewRateLimiter(10, time.Minute)
 
+const fail2banProtectedAddressDetail = "目标地址属于私网、回环、链路本地、可信代理、Panel 监听地址或当前请求来源 IP，不能封禁。"
+
 func Preview(c *gin.Context) {
 	var request previewRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
@@ -516,9 +518,10 @@ func handleFail2banPreviewError(c *gin.Context, err error) bool {
 			"规则已被其他操作修改，请刷新后重试",
 		))
 	case errors.Is(err, fail2banservice.ErrProtectedAddress):
-		core.HandleError(c, core.NewError(
+		core.HandleError(c, core.NewErrorWithDetail(
 			core.ErrInsufficientPermissions,
 			"该地址属于系统保护范围，不能封禁",
+			fail2banProtectedAddressDetail,
 		))
 	case errors.Is(err, gorm.ErrRecordNotFound):
 		core.HandleError(c, core.NewError(core.ErrNotFound, "目标入侵防护策略不存在，请刷新后重试"))
@@ -1583,6 +1586,7 @@ func writeExecutionError(c *gin.Context, err error) {
 		code, message = core.ErrResourceStateInvalid, "规则已被其他操作修改，请刷新后重试"
 	case errors.Is(err, fail2banservice.ErrProtectedAddress):
 		code, message = core.ErrInsufficientPermissions, "该地址属于系统保护范围，不能封禁"
+		detail = fail2banProtectedAddressDetail
 	case errors.Is(err, fail2banservice.ErrUnavailable):
 		code, message = core.ErrServiceUnavailable, "Fail2ban 未安装、未验证或服务不可用"
 	}

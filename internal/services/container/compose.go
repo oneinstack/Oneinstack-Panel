@@ -592,6 +592,9 @@ func validateComposeContent(content, workingDir string) (ComposeConfigSummary, e
 			item.Build = true
 		}
 		summary.Services = append(summary.Services, item)
+		if isOfficialPostgres18OrNewerImage(item.Image) && composeHasLegacyPostgresDataMount(service["volumes"]) {
+			return ComposeConfigSummary{}, composeError(ErrComposeConfigInvalid, "服务 "+name+" 使用了 PostgreSQL 18+ 的旧数据目录挂载；"+postgresDataMountRecommendation())
+		}
 		if privileged, ok := service["privileged"].(bool); ok && privileged {
 			summary.Warnings = append(summary.Warnings, "服务 "+name+" 启用了 privileged，具有较高宿主机访问风险")
 		}
@@ -624,6 +627,37 @@ func validateComposeContent(content, workingDir string) (ComposeConfigSummary, e
 		}
 	}
 	return summary, nil
+}
+
+func composeHasLegacyPostgresDataMount(value any) bool {
+	var items []any
+	switch typed := value.(type) {
+	case []any:
+		items = typed
+	case []string:
+		for _, item := range typed {
+			items = append(items, item)
+		}
+	default:
+		return false
+	}
+
+	for _, item := range items {
+		target := ""
+		switch volume := item.(type) {
+		case string:
+			parts := strings.Split(volume, ":")
+			if len(parts) >= 2 {
+				target = parts[len(parts)-2]
+			}
+		case map[string]any:
+			target = composeScalarString(volume["target"])
+		}
+		if isLegacyPostgresDataMountTarget(target) {
+			return true
+		}
+	}
+	return false
 }
 
 func composeIsRedisService(name string, service map[string]any) bool {
