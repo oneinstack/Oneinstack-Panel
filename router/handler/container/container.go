@@ -78,7 +78,31 @@ func ListContainers(c *gin.Context) {
 		}
 		filtered = append(filtered, item)
 	}
-	core.HandleSuccess(c, gin.H{"items": filtered, "total": len(filtered)})
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("pageSize", "10"))
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > 100 {
+		pageSize = 10
+	}
+
+	start := len(filtered)
+	totalPages := (len(filtered) + pageSize - 1) / pageSize
+	if page <= totalPages {
+		start = (page - 1) * pageSize
+	}
+	end := start + pageSize
+	if end > len(filtered) {
+		end = len(filtered)
+	}
+
+	core.HandleSuccess(c, gin.H{
+		"items":    filtered[start:end],
+		"total":    len(filtered),
+		"page":     page,
+		"pageSize": pageSize,
+	})
 }
 func GetContainer(c *gin.Context) {
 	ctx, cancel := requestContext(c)
