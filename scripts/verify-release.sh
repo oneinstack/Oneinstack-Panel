@@ -44,6 +44,11 @@ for archive in "$@"; do
     echo "Missing ${root}/script-registry/bundled in $archive" >&2
     exit 1
   fi
+  if tar -xOf "$archive" "${root}/config.yaml" |
+    grep -Eq "^[[:space:]]*secret(Id|Key):[[:space:]]*(\"[^\"]+\"|'[^']+'|[^#[:space:]\"']+)"; then
+    echo "Release config contains a non-empty credential: $archive" >&2
+    exit 1
+  fi
 
   echo "Verified ${archive}"
 done

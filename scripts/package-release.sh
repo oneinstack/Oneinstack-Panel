@@ -65,7 +65,16 @@ for target in "${targets[@]}"; do
   mkdir -p "$package_root"
 
   install -m 0755 "$binary" "${package_root}/one"
-  install -m 0644 "${project_dir}/config.yaml" "${package_root}/config.yaml"
+  # config.yaml is a release template. Never ship operator credentials from
+  # a developer checkout; existing installations keep their own local config
+  # during an in-place update.
+  awk '
+    /^[[:space:]]*secret(Id|Key):[[:space:]]*/ {
+      sub(/:.*/, ": \"\"")
+    }
+    { print }
+  ' "${project_dir}/config.yaml" > "${package_root}/config.yaml"
+  chmod 0644 "${package_root}/config.yaml"
   install -m 0644 "${project_dir}/README.md" "${package_root}/README.md"
   install -m 0644 "${project_dir}/README-zh.md" "${package_root}/README-zh.md"
   install -m 0644 "${project_dir}/BUILD.md" "${package_root}/BUILD.md"

@@ -15,7 +15,9 @@ rules=(
   'GitHub token|gh[pousr]_[A-Za-z0-9]{36,255}'
   'GitHub fine-grained token|github_pat_[A-Za-z0-9_]{50,255}'
   'AWS access key|AKIA[0-9A-Z]{16}'
+  'Tencent Cloud SecretId|AKID[A-Za-z0-9]{10,}'
   'Slack token|xox[baprs]-[A-Za-z0-9-]{20,255}'
+  "non-empty config credential|^[[:space:]]*secret(Id|Key):[[:space:]]*(\"[^\"]+\"|'[^']+'|[^#[:space:]\"']+)"
 )
 
 pathspecs=(
