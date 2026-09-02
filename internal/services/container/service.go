@@ -2657,36 +2657,17 @@ func (s *Service) TestRegistry(ctx context.Context, id uint) (RegistrySummary, e
 		return RegistrySummary{}, err
 	}
 	endpoint := registryProbeEndpoint(record)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return RegistrySummary{}, errors.New("仓库地址无效")
-	}
 	client := &http.Client{Timeout: 15 * time.Second}
+	password := ""
 	if record.AuthEnabled {
-		password, decryptErr := utils.DecryptCredential(record.PasswordEnc, utils.CredentialPurposeRegistryPassword)
+		var decryptErr error
+		password, decryptErr = utils.DecryptCredential(record.PasswordEnc, utils.CredentialPurposeRegistryPassword)
 		if decryptErr != nil {
 			return RegistrySummary{}, errors.New("仓库凭据解密失败")
 		}
-		req.SetBasicAuth(record.Username, password)
 	}
-	response, requestErr := client.Do(req)
-	if requestErr != nil {
-		result, updateErr := s.updateRegistryStatus(record, models.RegistryStatusFailed, registryProbeStatusMessage(requestErr))
-		if updateErr != nil {
-			return RegistrySummary{}, updateErr
-		}
-		return result, fmt.Errorf("%w: %v", ErrRegistryProbeFailed, requestErr)
-	}
-	defer response.Body.Close()
-	// Registry V2 endpoints commonly return 401 together with a Bearer challenge
-	// when the endpoint is reachable but anonymous access is not allowed. For a
-	// connection-only check this is healthy; configured credentials still need a
-	// successful authenticated response.
-	if response.StatusCode == http.StatusUnauthorized && !record.AuthEnabled && strings.TrimSpace(response.Header.Get("WWW-Authenticate")) != "" {
-		return s.updateRegistryStatus(record, models.RegistryStatusSuccess, "")
-	}
-	if response.StatusCode < 200 || response.StatusCode >= 400 {
-		probeErr := fmt.Errorf("仓库返回 HTTP %d", response.StatusCode)
+	probeErr := probeRegistry(ctx, client, endpoint, record, password)
+	if probeErr != nil {
 		result, updateErr := s.updateRegistryStatus(record, models.RegistryStatusFailed, registryProbeStatusMessage(probeErr))
 		if updateErr != nil {
 			return RegistrySummary{}, updateErr
@@ -2694,6 +2675,166 @@ func (s *Service) TestRegistry(ctx context.Context, id uint) (RegistrySummary, e
 		return result, fmt.Errorf("%w: %v", ErrRegistryProbeFailed, probeErr)
 	}
 	return s.updateRegistryStatus(record, models.RegistryStatusSuccess, "")
+}
+
+type registryAuthChallenge struct {
+	Scheme string
+	Params map[string]string
+}
+
+type registryTokenResponse struct {
+	Token       string `json:"token"`
+	AccessToken string `json:"access_token"`
+}
+
+var registryAuthParamPattern = regexp.MustCompile(`(?i)([a-z][a-z0-9_-]*)\s*=\s*("(?:\\.|[^"])*"|[^,\s]+)`)
+
+func probeRegistry(ctx context.Context, client *http.Client, endpoint string, record models.ContainerRegistry, password string) error {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return errors.New("仓库地址无效")
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		return err
+	}
+	status := response.StatusCode
+	challenge := parseRegistryAuthChallenge(response.Header.Get("WWW-Authenticate"))
+	_ = response.Body.Close()
+
+	if status >= 200 && status < 400 {
+		return nil
+	}
+	if status != http.StatusUnauthorized {
+		return fmt.Errorf("仓库返回 HTTP %d", status)
+	}
+	if !record.AuthEnabled {
+		if challenge.Scheme != "" {
+			return nil
+		}
+		return errors.New("仓库返回 HTTP 401")
+	}
+	if strings.TrimSpace(record.Username) == "" || strings.TrimSpace(password) == "" {
+		return errors.New("仓库认证失败: HTTP 401")
+	}
+	if challenge.Scheme == "" {
+		return errors.New("仓库认证失败: HTTP 401")
+	}
+
+	switch challenge.Scheme {
+	case "bearer":
+		token, tokenErr := requestRegistryBearerToken(ctx, client, challenge, record.Username, password)
+		if tokenErr != nil {
+			return tokenErr
+		}
+		return probeRegistryWithBearer(ctx, client, endpoint, token)
+	case "basic":
+		return probeRegistryWithBasicAuth(ctx, client, endpoint, record.Username, password)
+	default:
+		return fmt.Errorf("仓库认证方式不受支持: %s", challenge.Scheme)
+	}
+}
+
+func parseRegistryAuthChallenge(header string) registryAuthChallenge {
+	header = strings.TrimSpace(header)
+	if header == "" {
+		return registryAuthChallenge{}
+	}
+	schemeEnd := strings.IndexAny(header, " \t")
+	if schemeEnd < 0 {
+		return registryAuthChallenge{Scheme: strings.ToLower(header)}
+	}
+	challenge := registryAuthChallenge{Scheme: strings.ToLower(strings.TrimSpace(header[:schemeEnd])), Params: map[string]string{}}
+	for _, match := range registryAuthParamPattern.FindAllStringSubmatch(header[schemeEnd:], -1) {
+		value := match[2]
+		if strings.HasPrefix(value, `"`) {
+			if unquoted, err := strconv.Unquote(value); err == nil {
+				value = unquoted
+			} else {
+				value = strings.Trim(value, `"`)
+			}
+		}
+		challenge.Params[strings.ToLower(match[1])] = value
+	}
+	return challenge
+}
+
+func requestRegistryBearerToken(ctx context.Context, client *http.Client, challenge registryAuthChallenge, username, password string) (string, error) {
+	realm := strings.TrimSpace(challenge.Params["realm"])
+	if realm == "" {
+		return "", errors.New("仓库认证服务地址缺失")
+	}
+	tokenURL, err := url.Parse(realm)
+	if err != nil || tokenURL.Scheme == "" || tokenURL.Host == "" {
+		return "", errors.New("仓库认证服务地址无效")
+	}
+	query := tokenURL.Query()
+	if service := strings.TrimSpace(challenge.Params["service"]); service != "" {
+		query.Set("service", service)
+	}
+	if scope := strings.TrimSpace(challenge.Params["scope"]); scope != "" {
+		query.Set("scope", scope)
+	}
+	tokenURL.RawQuery = query.Encode()
+	tokenRequest, err := http.NewRequestWithContext(ctx, http.MethodGet, tokenURL.String(), nil)
+	if err != nil {
+		return "", errors.New("仓库认证请求无效")
+	}
+	tokenRequest.SetBasicAuth(username, password)
+	tokenResponse, err := client.Do(tokenRequest)
+	if err != nil {
+		return "", fmt.Errorf("仓库认证服务请求失败: %w", err)
+	}
+	defer tokenResponse.Body.Close()
+	if tokenResponse.StatusCode < 200 || tokenResponse.StatusCode >= 300 {
+		return "", fmt.Errorf("仓库认证服务返回 HTTP %d", tokenResponse.StatusCode)
+	}
+	var payload registryTokenResponse
+	if err := json.NewDecoder(io.LimitReader(tokenResponse.Body, 1<<20)).Decode(&payload); err != nil {
+		return "", errors.New("仓库认证服务响应无效")
+	}
+	token := strings.TrimSpace(payload.Token)
+	if token == "" {
+		token = strings.TrimSpace(payload.AccessToken)
+	}
+	if token == "" {
+		return "", errors.New("仓库认证服务未返回有效令牌")
+	}
+	return token, nil
+}
+
+func probeRegistryWithBearer(ctx context.Context, client *http.Client, endpoint, token string) error {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return errors.New("仓库地址无效")
+	}
+	request.Header.Set("Authorization", "Bearer "+token)
+	response, err := client.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode >= 200 && response.StatusCode < 400 {
+		return nil
+	}
+	return fmt.Errorf("仓库认证后返回 HTTP %d", response.StatusCode)
+}
+
+func probeRegistryWithBasicAuth(ctx context.Context, client *http.Client, endpoint, username, password string) error {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return errors.New("仓库地址无效")
+	}
+	request.SetBasicAuth(username, password)
+	response, err := client.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode >= 200 && response.StatusCode < 400 {
+		return nil
+	}
+	return fmt.Errorf("仓库认证后返回 HTTP %d", response.StatusCode)
 }
 
 func registryProbeStatusMessage(err error) string {
@@ -2709,6 +2850,10 @@ func registryProbeStatusMessage(err error) string {
 		return "仓库连接超时，请检查网络连通性和仓库服务状态"
 	case strings.Contains(lower, "x509"), strings.Contains(lower, "certificate"):
 		return "仓库 TLS 证书校验失败，请检查证书有效期、域名和信任链"
+	case strings.Contains(lower, "仓库认证服务地址缺失"), strings.Contains(lower, "仓库认证服务地址无效"), strings.Contains(lower, "仓库认证方式不受支持"):
+		return "仓库认证协议配置无效，请确认该地址支持 Docker Registry V2 API"
+	case strings.Contains(lower, "仓库认证服务响应无效"), strings.Contains(lower, "仓库认证服务未返回有效令牌"):
+		return "仓库认证服务响应无效，请检查 Registry 认证配置"
 	case strings.Contains(lower, "http 401"):
 		return "仓库身份认证失败，请检查认证配置和凭据"
 	case strings.Contains(lower, "http 403"):
