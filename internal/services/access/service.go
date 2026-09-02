@@ -2,7 +2,6 @@ package access
 
 import (
 	"errors"
-	"fmt"
 	"sort"
 	"strings"
 	"time"
@@ -102,8 +101,10 @@ const (
 
 type RoleSummary struct {
 	Code        string   `json:"code"`
+	Key         string   `json:"key"`
 	Name        string   `json:"name"`
 	Description string   `json:"description"`
+	Builtin     bool     `json:"builtin"`
 	Permissions []string `json:"permissions,omitempty"`
 }
 
@@ -115,6 +116,7 @@ type UserAccess struct {
 	Permissions   []string
 	PermissionSet map[string]struct{}
 	CanApprove    bool
+	MenuTree      []MenuNode
 }
 
 type UserListItem struct {
@@ -223,10 +225,23 @@ func builtinRoles() []struct {
 	Role        models.Role
 	Permissions []string
 } {
+	allPermissions := make([]string, 0, len(builtinPermissions()))
+	for _, permission := range builtinPermissions() {
+		allPermissions = append(allPermissions, permission.Code)
+	}
 	return []struct {
 		Role        models.Role
 		Permissions []string
 	}{
+		{
+			Role: models.Role{
+				Code:        RoleSuperAdmin,
+				Name:        "超级管理员",
+				Description: "拥有面板全部已登记权限",
+				Builtin:     true,
+			},
+			Permissions: allPermissions,
+		},
 		{
 			Role: models.Role{
 				Code:        RoleObserver,
@@ -453,6 +468,12 @@ func (service *Service) seedBuiltin() error {
 				}
 			}
 		}
+		if err := seedBuiltinMenus(tx, permissionIDByCode); err != nil {
+			return err
+		}
+		if err := migrateLegacyAdministrators(tx); err != nil {
+			return err
+		}
 		return nil
 	})
 }
@@ -468,26 +489,18 @@ func (service *Service) LoadUserAccess(userID int64) (*UserAccess, error) {
 	access := &UserAccess{
 		UserID:        user.ID,
 		Username:      user.Username,
-		IsSuperAdmin:  user.IsAdmin,
 		PermissionSet: make(map[string]struct{}),
-	}
-	if user.IsAdmin {
-		for _, permission := range builtinPermissions() {
-			access.PermissionSet[permission.Code] = struct{}{}
-		}
-		access.Permissions = mapKeys(access.PermissionSet)
-		access.CanApprove = access.HasPermission(PermissionApprovalReview) && access.HasPermission(PermissionApprovalExecute)
-		return access, nil
 	}
 	type row struct {
 		RoleCode        string
 		RoleName        string
 		RoleDescription string
+		RoleBuiltin     bool
 		PermissionCode  string
 	}
 	var rows []row
 	if err := service.db.Table("user_roles AS ur").
-		Select("r.code AS role_code", "r.name AS role_name", "r.description AS role_description", "p.code AS permission_code").
+		Select("r.code AS role_code", "r.name AS role_name", "r.description AS role_description", "r.builtin AS role_builtin", "p.code AS permission_code").
 		Joins("JOIN roles r ON r.id = ur.role_id").
 		Joins("LEFT JOIN role_permissions rp ON rp.role_id = r.id").
 		Joins("LEFT JOIN permissions p ON p.id = rp.permission_id").
@@ -505,14 +518,41 @@ func (service *Service) LoadUserAccess(userID int64) (*UserAccess, error) {
 		if !ok {
 			summary = &RoleSummary{
 				Code:        item.RoleCode,
+				Key:         item.RoleCode,
 				Name:        item.RoleName,
 				Description: item.RoleDescription,
+				Builtin:     item.RoleBuiltin,
 			}
 			roleMap[item.RoleCode] = summary
 		}
 		if item.PermissionCode != "" {
+			summary.Permissions = append(summary.Permissions, item.PermissionCode)
 			access.PermissionSet[item.PermissionCode] = struct{}{}
 		}
+		if item.RoleCode == RoleSuperAdmin {
+			access.IsSuperAdmin = true
+		}
+	}
+	// is_admin is retained as a compatibility projection for databases or
+	// callers that have not gone through the startup migration yet. Once any
+	// RBAC role is present, role membership remains the source of truth. This
+	// fallback only covers a legacy administrator with no roles at all, so a
+	// stale projection cannot elevate a user who has an explicit role.
+	if user.IsAdmin && len(roleMap) == 0 {
+		permissions := make([]string, 0, len(builtinPermissions()))
+		for _, permission := range builtinPermissions() {
+			access.PermissionSet[permission.Code] = struct{}{}
+			permissions = append(permissions, permission.Code)
+		}
+		roleMap[RoleSuperAdmin] = &RoleSummary{
+			Code:        RoleSuperAdmin,
+			Key:         RoleSuperAdmin,
+			Name:        "超级管理员",
+			Description: "拥有面板全部已登记权限",
+			Builtin:     true,
+			Permissions: permissions,
+		}
+		access.IsSuperAdmin = true
 	}
 	roleCodes := make([]string, 0, len(roleMap))
 	for code := range roleMap {
@@ -520,10 +560,16 @@ func (service *Service) LoadUserAccess(userID int64) (*UserAccess, error) {
 	}
 	sort.Strings(roleCodes)
 	for _, code := range roleCodes {
+		sort.Strings(roleMap[code].Permissions)
 		access.Roles = append(access.Roles, *roleMap[code])
 	}
 	access.Permissions = mapKeys(access.PermissionSet)
 	access.CanApprove = access.HasPermission(PermissionApprovalReview) && access.HasPermission(PermissionApprovalExecute)
+	menus, err := service.loadMenuTree()
+	if err != nil {
+		return nil, err
+	}
+	access.MenuTree = filterMenuTree(menus, access.PermissionSet, access.IsSuperAdmin)
 	return access, nil
 }
 
@@ -653,8 +699,10 @@ func (service *Service) ListRoles() ([]RoleSummary, error) {
 		sort.Strings(perms)
 		result = append(result, RoleSummary{
 			Code:        role.Code,
+			Key:         role.Code,
 			Name:        role.Name,
 			Description: role.Description,
+			Builtin:     role.Builtin,
 			Permissions: perms,
 		})
 	}
@@ -687,8 +735,8 @@ func (service *Service) ListUsers(page, pageSize int, keyword string) (*UserList
 		items = append(items, UserListItem{
 			ID:                   user.ID,
 			Username:             user.Username,
-			IsAdmin:              user.IsAdmin,
-			IsSuperAdmin:         user.IsAdmin,
+			IsAdmin:              access.IsSuperAdmin,
+			IsSuperAdmin:         access.IsSuperAdmin,
 			MustChangePassword:   user.MustChangePassword,
 			PasswordChangeReason: passwordChangeReason(user),
 			CreatedAt:            user.CreateTime,
@@ -718,10 +766,14 @@ func (service *Service) CreateUser(username, password string, isAdmin bool, role
 	if err != nil {
 		return nil, err
 	}
+	roleCodes, err = normalizeRoleCodes(roleCodes, isAdmin)
+	if err != nil {
+		return nil, err
+	}
 	user := &models.User{
 		Username:           username,
 		Password:           hashed,
-		IsAdmin:            isAdmin,
+		IsAdmin:            false,
 		FirstJoin:          false,
 		MustChangePassword: true,
 		SecurityVersion:    1,
@@ -730,10 +782,7 @@ func (service *Service) CreateUser(username, password string, isAdmin bool, role
 		if err := tx.Create(user).Error; err != nil {
 			return err
 		}
-		if isAdmin {
-			return nil
-		}
-		return assignRoles(tx, user.ID, roleCodes)
+		return assignRoles(tx, user.ID, 0, roleCodes)
 	})
 	if err != nil {
 		return nil, err
@@ -766,9 +815,13 @@ func (service *Service) DeleteUser(userID, currentUserID int64, confirmed bool) 
 		if user.ID == currentUserID {
 			return ErrDeleteCurrentUser
 		}
-		if user.IsAdmin {
-			var adminCount int64
-			if err := tx.Model(&models.User{}).Where("is_admin = ?", true).Count(&adminCount).Error; err != nil {
+		isSuperAdmin, err := isSuperAdminUser(tx, user.ID)
+		if err != nil {
+			return err
+		}
+		if isSuperAdmin {
+			adminCount, err := countSuperAdmins(tx)
+			if err != nil {
 				return err
 			}
 			if adminCount <= 1 {
@@ -802,48 +855,67 @@ func (service *Service) DeleteUser(userID, currentUserID int64, confirmed bool) 
 	})
 }
 
-func (service *Service) AssignRoles(userID int64, roleCodes []string) error {
+func (service *Service) AssignRoles(userID, currentUserID int64, roleCodes []string) error {
 	if service.db == nil {
 		return errors.New("database is not initialized")
 	}
 	return service.db.Transaction(func(tx *gorm.DB) error {
 		var user models.User
 		if err := tx.First(&user, userID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrUserNotFound
+			}
 			return err
 		}
-		if user.IsAdmin {
-			return nil
-		}
-		return assignRoles(tx, userID, roleCodes)
+		return assignRoles(tx, userID, currentUserID, roleCodes)
 	})
 }
 
-func assignRoles(tx *gorm.DB, userID int64, roleCodes []string) error {
-	normalized := make([]string, 0, len(roleCodes))
-	seen := make(map[string]struct{})
-	for _, code := range roleCodes {
-		code = strings.TrimSpace(code)
-		if code == "" {
-			continue
+func assignRoles(tx *gorm.DB, userID, currentUserID int64, roleCodes []string) error {
+	normalized, err := normalizeRoleCodes(roleCodes, false)
+	if err != nil {
+		return err
+	}
+	desiredSuperAdmin := false
+	for _, code := range normalized {
+		if code == RoleSuperAdmin {
+			desiredSuperAdmin = true
+			break
 		}
-		if _, ok := seen[code]; ok {
-			continue
+	}
+	if currentUserID > 0 {
+		currentIsSuperAdmin, err := isSuperAdminUser(tx, currentUserID)
+		if err != nil {
+			return err
 		}
-		seen[code] = struct{}{}
-		normalized = append(normalized, code)
+		if currentUserID == userID && currentIsSuperAdmin && !desiredSuperAdmin {
+			return ErrCannotDemoteCurrentSuperAdmin
+		}
+		targetIsSuperAdmin, err := isSuperAdminUser(tx, userID)
+		if err != nil {
+			return err
+		}
+		if targetIsSuperAdmin && !desiredSuperAdmin {
+			count, err := countSuperAdmins(tx)
+			if err != nil {
+				return err
+			}
+			if count <= 1 {
+				return ErrDeleteLastSuperAdmin
+			}
+		}
 	}
 	if err := tx.Where("user_id = ?", userID).Delete(&models.UserRole{}).Error; err != nil {
 		return err
 	}
-	if len(normalized) == 0 {
-		return nil
-	}
 	var roles []models.Role
-	if err := tx.Where("code IN ?", normalized).Find(&roles).Error; err != nil {
-		return err
-	}
-	if len(roles) != len(normalized) {
-		return fmt.Errorf("one or more roles do not exist")
+	if len(normalized) > 0 {
+		if err := tx.Where("code IN ?", normalized).Find(&roles).Error; err != nil {
+			return err
+		}
+		if len(roles) != len(normalized) {
+			return ErrRoleNotFound
+		}
 	}
 	for _, role := range roles {
 		link := models.UserRole{
@@ -855,7 +927,25 @@ func assignRoles(tx *gorm.DB, userID int64, roleCodes []string) error {
 			return err
 		}
 	}
-	return nil
+	return tx.Model(&models.User{}).Where("id = ?", userID).Update("is_admin", desiredSuperAdmin).Error
+}
+
+func isSuperAdminUser(tx *gorm.DB, userID int64) (bool, error) {
+	var count int64
+	err := tx.Table("user_roles AS ur").
+		Joins("JOIN roles r ON r.id = ur.role_id").
+		Where("ur.user_id = ? AND r.code = ?", userID, RoleSuperAdmin).
+		Count(&count).Error
+	return count > 0, err
+}
+
+func countSuperAdmins(tx *gorm.DB) (int64, error) {
+	var count int64
+	err := tx.Table("user_roles AS ur").
+		Joins("JOIN roles r ON r.id = ur.role_id").
+		Where("r.code = ?", RoleSuperAdmin).
+		Distinct("ur.user_id").Count(&count).Error
+	return count, err
 }
 
 func (service *Service) ResetUserPassword(userID int64, password string) error {

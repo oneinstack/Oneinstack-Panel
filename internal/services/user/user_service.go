@@ -4,6 +4,7 @@ import (
 	"oneinstack/app"
 	"oneinstack/internal/crypto"
 	"oneinstack/internal/models"
+	accessservice "oneinstack/internal/services/access"
 	"oneinstack/utils"
 )
 
@@ -24,7 +25,6 @@ func CreateUser(username, password string, isAdmin bool) error {
 	user := &models.User{
 		Username:           username,
 		Password:           hashed,
-		IsAdmin:            isAdmin,
 		FirstJoin:          false,
 		MustChangePassword: true,
 		SecurityVersion:    1,
@@ -32,6 +32,12 @@ func CreateUser(username, password string, isAdmin bool) error {
 	tx := app.DB().Create(user)
 	if tx.Error != nil {
 		return tx.Error
+	}
+	if isAdmin {
+		if err := accessservice.NewService(app.DB()).AssignRoles(user.ID, 0, []string{accessservice.RoleSuperAdmin}); err != nil {
+			_ = app.DB().Delete(user).Error
+			return err
+		}
 	}
 	return nil
 }

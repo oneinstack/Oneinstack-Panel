@@ -198,9 +198,10 @@ func LoginHandler(c *gin.Context) {
 		"user": gin.H{
 			"id":                  account.ID,
 			"username":            account.Username,
-			"isAdmin":             account.IsAdmin,
-			"isSuperAdmin":        account.IsAdmin,
+			"isAdmin":             accessSummary != nil && accessSummary.IsSuperAdmin,
+			"isSuperAdmin":        accessSummary != nil && accessSummary.IsSuperAdmin,
 			"firstAccessibleMenu": authorizationMatrix.FirstAccessibleMenu,
+			"menuTree":            authorizationMatrix.MenuTree,
 			"roles":               roleItems(accessSummary),
 			"permissions":         permissionItems(accessSummary),
 			"canApprove":          accessSummary != nil && accessSummary.CanApprove,
@@ -238,8 +239,10 @@ func roleItems(access *accessservice.UserAccess) []gin.H {
 	items := make([]gin.H, 0, len(access.Roles))
 	for _, role := range access.Roles {
 		items = append(items, gin.H{
-			"code": role.Code,
-			"name": role.Name,
+			"code":    role.Code,
+			"key":     role.Key,
+			"name":    role.Name,
+			"builtin": role.Builtin,
 		})
 	}
 	return items

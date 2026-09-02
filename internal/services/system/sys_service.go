@@ -7,6 +7,7 @@ import (
 	"oneinstack/app"
 	"oneinstack/internal/crypto"
 	"oneinstack/internal/models"
+	accessservice "oneinstack/internal/services/access"
 	"oneinstack/router/output"
 
 	"regexp"
@@ -394,12 +395,16 @@ func SystemInfo() (*output.PanelSettings, error) {
 	if tx.Error != nil {
 		return nil, tx.Error
 	}
+	access, err := accessservice.NewService(app.DB()).LoadUserAccess(u.ID)
+	if err != nil {
+		return nil, err
+	}
 	info := &output.PanelSettings{
 		Port: port,
 		User: output.UserSummary{
 			ID:         u.ID,
 			Username:   u.Username,
-			IsAdmin:    u.IsAdmin,
+			IsAdmin:    access.IsSuperAdmin,
 			FirstJoin:  u.FirstJoin,
 			CreateTime: u.CreateTime,
 		},

@@ -114,6 +114,8 @@ func createTables() error {
 		&models.Permission{},
 		&models.RolePermission{},
 		&models.UserRole{},
+		&models.Menu{},
+		&models.MenuPermission{},
 	)
 	if err != nil {
 		return err
@@ -840,11 +842,15 @@ func InitializeAdminAuto() (*BootstrapCredentials, error) {
 	user := &models.User{
 		Username:           credentials.Username,
 		Password:           hashed,
-		IsAdmin:            true,
 		MustChangePassword: true,
 		SecurityVersion:    1,
 	}
 	if err := DB().Create(user).Error; err != nil {
+		_ = os.Remove(bootstrapPath)
+		return nil, err
+	}
+	if err := accessservice.NewService(DB()).AssignRoles(user.ID, 0, []string{accessservice.RoleSuperAdmin}); err != nil {
+		_ = DB().Delete(user).Error
 		_ = os.Remove(bootstrapPath)
 		return nil, err
 	}
@@ -947,11 +953,18 @@ func LoadBootstrapCredentials(consume bool) (*BootstrapCredentials, bool, error)
 }
 
 func PrimaryAdminUsername() (string, error) {
-	var user models.User
-	if err := DB().Where("is_admin = ?", true).Order("id ASC").First(&user).Error; err != nil {
+	var username string
+	if err := DB().Table("users AS u").
+		Joins("JOIN user_roles ur ON ur.user_id = u.id").
+		Joins("JOIN roles r ON r.id = ur.role_id").
+		Where("r.code = ?", accessservice.RoleSuperAdmin).
+		Order("u.id ASC").Pluck("u.username", &username).Error; err != nil {
 		return "", err
 	}
-	return user.Username, nil
+	if username == "" {
+		return "", gorm.ErrRecordNotFound
+	}
+	return username, nil
 }
 
 // ResetUserPassword is the privileged CLI reset path. It does not require the
@@ -1019,13 +1032,16 @@ func setupAdminUser(userName string, password string) error {
 	user := &models.User{
 		Username:           userName,
 		Password:           hashed,
-		IsAdmin:            true,
 		MustChangePassword: true,
 		SecurityVersion:    1,
 	}
 	tx := DB().Create(user)
 	if tx.Error != nil {
 		return tx.Error
+	}
+	if err := accessservice.NewService(DB()).AssignRoles(user.ID, 0, []string{accessservice.RoleSuperAdmin}); err != nil {
+		_ = DB().Delete(user).Error
+		return err
 	}
 	return nil
 }

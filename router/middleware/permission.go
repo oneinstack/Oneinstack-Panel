@@ -22,6 +22,7 @@ const (
 
 type AuthorizationMatrix struct {
 	Menu                map[string]bool            `json:"menu"`
+	MenuTree            []accessservice.MenuNode   `json:"menuTree"`
 	FirstAccessibleMenu string                     `json:"firstAccessibleMenu,omitempty"`
 	Actions             map[string]bool            `json:"actions"`
 	ApprovalPolicies    map[string]bool            `json:"approvalPolicies"`
@@ -65,6 +66,12 @@ var authorizationMenuRules = []menuVisibilityRule{
 		},
 	},
 	{
+		key: "certificate",
+		visible: func(has func(string) bool, access *accessservice.UserAccess) bool {
+			return has(accessservice.PermissionCertificateRead) || has(accessservice.PermissionCertificateWrite)
+		},
+	},
+	{
 		key: "file",
 		visible: func(has func(string) bool, access *accessservice.UserAccess) bool {
 			return has(accessservice.PermissionFileRead) || has(accessservice.PermissionFileWrite)
@@ -95,6 +102,18 @@ var authorizationMenuRules = []menuVisibilityRule{
 				has(accessservice.PermissionSoftwareWrite) ||
 				has(accessservice.PermissionServiceRead) ||
 				has(accessservice.PermissionServiceWrite)
+		},
+	},
+	{
+		key: "configSnapshots",
+		visible: func(has func(string) bool, access *accessservice.UserAccess) bool {
+			return has(accessservice.PermissionConfigSnapshotRead) || has(accessservice.PermissionConfigSnapshotWrite)
+		},
+	},
+	{
+		key: "systemManagement",
+		visible: func(has func(string) bool, access *accessservice.UserAccess) bool {
+			return has(accessservice.PermissionSystemRead) || has(accessservice.PermissionSystemWrite)
 		},
 	},
 	{
@@ -239,6 +258,20 @@ func BuildAuthorizationMatrix(access *accessservice.UserAccess) AuthorizationMat
 	for _, rule := range authorizationMenuRules {
 		menu[rule.key] = rule.visible(has, access)
 	}
+	menuTree := []accessservice.MenuNode(nil)
+	hasDynamicMenu := access != nil && access.MenuTree != nil
+	if hasDynamicMenu {
+		menuTree = accessservice.FilterMenuTreeByFeatures(
+			access.MenuTree,
+			app.ONE_CONFIG.System.TerminalEnabled,
+			app.ONE_CONFIG.Bastion.Enabled,
+		)
+		for key := range menu {
+			menu[key] = false
+		}
+		setMenuTreeVisibility(menuTree, menu)
+		menu["logout"] = true
+	}
 	actions := map[string]bool{
 		"website.delete":              has(accessservice.PermissionWebsiteWrite),
 		"website.restore":             has(accessservice.PermissionWebsiteWrite),
@@ -263,15 +296,18 @@ func BuildAuthorizationMatrix(access *accessservice.UserAccess) AuthorizationMat
 	for operation, permission := range accessservice.OperationPermissions() {
 		actions[operation] = has(permission)
 	}
-	firstAccessibleMenu := ""
-	for _, rule := range authorizationMenuRules {
-		if rule.key != "logout" && menu[rule.key] {
-			firstAccessibleMenu = rule.key
-			break
+	firstAccessibleMenu := firstAccessibleMenu(menuTree)
+	if !hasDynamicMenu {
+		for _, rule := range authorizationMenuRules {
+			if rule.key != "logout" && menu[rule.key] {
+				firstAccessibleMenu = rule.key
+				break
+			}
 		}
 	}
 	return AuthorizationMatrix{
 		Menu:                menu,
+		MenuTree:            menuTree,
 		FirstAccessibleMenu: firstAccessibleMenu,
 		Actions:             actions,
 		ApprovalPolicies: map[string]bool{
@@ -384,6 +420,25 @@ func BuildAuthorizationMatrix(access *accessservice.UserAccess) AuthorizationMat
 	}
 }
 
+func setMenuTreeVisibility(nodes []accessservice.MenuNode, menu map[string]bool) {
+	for _, node := range nodes {
+		menu[node.Key] = true
+		setMenuTreeVisibility(node.Children, menu)
+	}
+}
+
+func firstAccessibleMenu(nodes []accessservice.MenuNode) string {
+	for _, node := range nodes {
+		if node.Type == "page" {
+			return node.Key
+		}
+		if first := firstAccessibleMenu(node.Children); first != "" {
+			return first
+		}
+	}
+	return ""
+}
+
 // AuditLog 审计日志中间件
 func AuditLog() gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -482,7 +537,9 @@ func isReadOnlyPost(path string) bool {
 
 // isSensitiveOperation 判断是否为敏感操作
 func isSensitiveOperation(method, path string) bool {
-	if method != http.MethodGet && (path == "/v1/access/users" || strings.HasPrefix(path, "/v1/access/users/")) {
+	if method != http.MethodGet && (path == "/v1/access/users" || strings.HasPrefix(path, "/v1/access/users/") ||
+		path == "/v1/access/roles" || strings.HasPrefix(path, "/v1/access/roles/") ||
+		path == "/v1/access/menus" || strings.HasPrefix(path, "/v1/access/menus/")) {
 		return true
 	}
 	if method == http.MethodPost && (path == "/v1/operations/preview" || strings.HasPrefix(path, "/v1/operations/") && strings.HasSuffix(path, "/execute")) {
