@@ -860,7 +860,12 @@ func normalizeSelfSignedOptions(options SelfSignedOptions) (SelfSignedOptions, e
 
 	options.Algorithm = strings.ToLower(strings.TrimSpace(options.Algorithm))
 	if options.Algorithm == "" {
-		return SelfSignedOptions{}, &RequestValidationError{Field: "algorithm", Message: "请选择自签证书密钥算法"}
+		// Keep the API usable when an older client does not submit the
+		// algorithm after failing to load the optional algorithm list. The
+		// default is one of the server-supported algorithms and is persisted
+		// with the task, so this does not make the client choose an arbitrary
+		// key type.
+		options.Algorithm = supportedKeyAlgorithms[0].Value
 	}
 	if !IsSupportedKeyAlgorithm(options.Algorithm) {
 		return SelfSignedOptions{}, &RequestValidationError{Field: "algorithm", Message: "不支持当前自签证书密钥算法，请从算法列表中选择"}
