@@ -548,12 +548,42 @@ func (m *Manager) preflight(ctx context.Context, candidate string, snapshot upda
 			return err
 		}
 	}
+	identityPath := filepath.Clean(strings.TrimSpace(m.config.TranslationIdentityPath))
+	if identityPath != "." && identityPath != "" {
+		if !filepath.IsAbs(identityPath) || !pathWithin(m.config.InstallDir, identityPath) {
+			return fmt.Errorf("translation identity path must stay within the Panel install directory")
+		}
+		info, err := os.Stat(identityPath)
+		if errors.Is(err, os.ErrNotExist) {
+			info = nil
+		} else if err != nil {
+			return err
+		}
+		if info != nil {
+			relative, err := filepath.Rel(m.config.InstallDir, identityPath)
+			if err != nil || relative == "." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+				return fmt.Errorf("resolve translation identity preflight path")
+			}
+			target := filepath.Join(preflightRoot, relative)
+			if err := copyFile(identityPath, target, 0600); err != nil {
+				return err
+			}
+		}
+	}
+	env := map[string]string{
+		"ONEINSTACK_BASE_PATH":   preflightRoot,
+		"ONEINSTACK_CONFIG_PATH": filepath.Join(preflightRoot, "config.yaml"),
+	}
+	if identityPath != "." && identityPath != "" {
+		relative, err := filepath.Rel(m.config.InstallDir, identityPath)
+		if err != nil || relative == "." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("resolve translation identity environment path")
+		}
+		env["ONEINSTACK_TRANSLATION_IDENTITY_PATH"] = filepath.Join(preflightRoot, relative)
+	}
 	_, err := m.runner.Run(ctx, Command{
 		Name: candidate, Args: []string{"update", "preflight"},
-		Env: map[string]string{
-			"ONEINSTACK_BASE_PATH":   preflightRoot,
-			"ONEINSTACK_CONFIG_PATH": filepath.Join(preflightRoot, "config.yaml"),
-		},
+		Env: env,
 	})
 	return err
 }

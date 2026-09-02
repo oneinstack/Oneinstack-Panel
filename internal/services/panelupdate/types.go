@@ -32,24 +32,25 @@ var (
 )
 
 type Config struct {
-	Enabled          bool
-	ManifestURL      string
-	ResolveURL       string
-	KeyStatusURL     string
-	TrustStatePath   string
-	InstanceID       string
-	Channel          string
-	TrustedKeys      map[string]string
-	RequestTimeout   time.Duration
-	MaxPackageBytes  int64
-	MaxExpandedBytes int64
-	HealthTimeout    time.Duration
-	BackupRetention  int
-	InstallDir       string
-	HealthURL        string
-	CurrentVersion   string
-	OS               string
-	Arch             string
+	Enabled                 bool
+	ManifestURL             string
+	ResolveURL              string
+	KeyStatusURL            string
+	TrustStatePath          string
+	InstanceID              string
+	Channel                 string
+	TrustedKeys             map[string]string
+	RequestTimeout          time.Duration
+	MaxPackageBytes         int64
+	MaxExpandedBytes        int64
+	HealthTimeout           time.Duration
+	BackupRetention         int
+	InstallDir              string
+	TranslationIdentityPath string
+	HealthURL               string
+	CurrentVersion          string
+	OS                      string
+	Arch                    string
 }
 
 type Manifest struct {

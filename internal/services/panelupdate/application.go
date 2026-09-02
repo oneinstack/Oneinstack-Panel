@@ -47,11 +47,12 @@ func NewApplicationManager(manifestOverride string) (*Manager, error) {
 		TrustedKeys:     trustedKeys,
 		RequestTimeout:  time.Duration(center.RequestTimeoutSeconds) * time.Second,
 		MaxPackageBytes: center.MaxPackageBytes, MaxExpandedBytes: center.MaxExpandedBytes,
-		HealthTimeout:   time.Duration(center.HealthTimeoutSeconds) * time.Second,
-		BackupRetention: center.BackupRetention,
-		InstallDir:      strings.TrimSuffix(app.GetBasePath(), "/"),
-		HealthURL:       "http://127.0.0.1:" + app.ONE_CONFIG.System.Port + "/health/ready",
-		CurrentVersion:  buildinfo.Current().Version, OS: runtime.GOOS, Arch: runtime.GOARCH,
+		HealthTimeout:           time.Duration(center.HealthTimeoutSeconds) * time.Second,
+		BackupRetention:         center.BackupRetention,
+		InstallDir:              strings.TrimSuffix(app.GetBasePath(), "/"),
+		TranslationIdentityPath: app.ONE_CONFIG.Translation.IdentityPath,
+		HealthURL:               "http://127.0.0.1:" + app.ONE_CONFIG.System.Port + "/health/ready",
+		CurrentVersion:          buildinfo.Current().Version, OS: runtime.GOOS, Arch: runtime.GOARCH,
 	})
 }
 

@@ -13,6 +13,7 @@ func Locale() gin.HandlerFunc {
 		locale := i18n.FromRequest(c.Request)
 		c.Set(ContextLocale, locale)
 		c.Header("Content-Language", locale)
+		c.Header("Vary", "Accept-Language")
 		c.Next()
 	}
 }

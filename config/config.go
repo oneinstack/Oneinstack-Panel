@@ -5,4 +5,5 @@ type Server struct {
 	ScriptCenter ScriptCenter `mapstructure:"scriptCenter" json:"scriptCenter" yaml:"scriptCenter"`
 	UpdateCenter UpdateCenter `mapstructure:"updateCenter" json:"updateCenter" yaml:"updateCenter"`
 	Bastion      BastionHost  `mapstructure:"bastion" json:"bastion" yaml:"bastion"`
+	Translation  Translation  `mapstructure:"translation" json:"translation" yaml:"translation"`
 }

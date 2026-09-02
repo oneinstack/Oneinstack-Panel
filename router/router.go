@@ -6,6 +6,7 @@ import (
 	"log"
 	"oneinstack/app"
 	accessservice "oneinstack/internal/services/access"
+	translationservice "oneinstack/internal/services/translation"
 	authzHandler "oneinstack/router/handler/access"
 	approvalHandler "oneinstack/router/handler/approval"
 	configsnapshotHandler "oneinstack/router/handler/configsnapshot"
@@ -59,6 +60,14 @@ func SetupRouter() *gin.Engine {
 	}
 	r.Use(middleware.SecurityHeaders())
 	r.Use(middleware.Locale())
+	translationConfig := app.ONE_CONFIG.Translation
+	if translationService, err := translationservice.New(translationConfig, app.DB()); err == nil && translationService != nil {
+		r.Use(middleware.ResponseTranslation(
+			translationService,
+			translationConfig.MaxFieldsPerResponse,
+			translationConfig.ResponseTimeoutSeconds,
+		))
+	}
 	r.Use(gin.LoggerWithConfig(gin.LoggerConfig{
 		Output: logOutput,
 		SkipPaths: []string{

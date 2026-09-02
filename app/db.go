@@ -298,6 +298,9 @@ func createTables() error {
 	if err := db.AutoMigrate(&models.FileShare{}); err != nil {
 		return err
 	}
+	if err := db.AutoMigrate(&models.TranslationCache{}); err != nil {
+		return err
+	}
 	if err := db.AutoMigrate(&models.FileFavorite{}); err != nil {
 		return err
 	}

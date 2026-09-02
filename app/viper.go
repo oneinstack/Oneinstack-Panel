@@ -114,6 +114,18 @@ bastion:
     maxConcurrentCollects: 5
     retentionDays: 30
     cleanupSchedule: "30 4 * * *"
+translation:
+    enabled: false
+    mode: "center"
+    provider: "tencent-hunyuan"
+    centerUrl: ""
+    identityPath: "/usr/local/one/translation/panel-center.key"
+    activationCodeFile: "/usr/local/one/translation/activation-code"
+    responseTimeoutSeconds: 15
+    cacheTTLMinutes: 1440
+    cacheMaxEntries: 4096
+    maxTextLength: 512
+    maxFieldsPerResponse: 0
 `
 
 // LoadConfig reads the application configuration without panicking. When no
@@ -130,6 +142,12 @@ func LoadConfig(path ...string) (*viper.Viper, error) {
 		}
 	} else if err != nil {
 		return nil, fmt.Errorf("stat config file: %w", err)
+	}
+	if err := syncDefaultConfig(configPath); err != nil {
+		return nil, fmt.Errorf("sync default config: %w", err)
+	}
+	if err := migrateTranslationConfig(configPath); err != nil {
+		return nil, fmt.Errorf("migrate translation config: %w", err)
 	}
 
 	v := viper.New()
@@ -218,6 +236,17 @@ func LoadConfig(path ...string) (*viper.Viper, error) {
 	v.SetDefault("bastion.maxConcurrentCollects", 5)
 	v.SetDefault("bastion.retentionDays", 30)
 	v.SetDefault("bastion.cleanupSchedule", "30 4 * * *")
+	v.SetDefault("translation.enabled", false)
+	v.SetDefault("translation.mode", "center")
+	v.SetDefault("translation.provider", "tencent-hunyuan")
+	v.SetDefault("translation.centerUrl", "")
+	v.SetDefault("translation.identityPath", filepath.Join(GetBasePath(), "translation", "panel-center.key"))
+	v.SetDefault("translation.activationCodeFile", filepath.Join(GetBasePath(), "translation", "activation-code"))
+	v.SetDefault("translation.responseTimeoutSeconds", 15)
+	v.SetDefault("translation.cacheTTLMinutes", 1440)
+	v.SetDefault("translation.cacheMaxEntries", 4096)
+	v.SetDefault("translation.maxTextLength", 512)
+	v.SetDefault("translation.maxFieldsPerResponse", 0)
 	for key, environmentName := range map[string]string{
 		"system.port":                             "ONEINSTACK_SYSTEM_PORT",
 		"system.bindAddress":                      "ONEINSTACK_SYSTEM_BIND_ADDRESS",
@@ -301,6 +330,17 @@ func LoadConfig(path ...string) (*viper.Viper, error) {
 		"bastion.maxConcurrentCollects":           "ONEINSTACK_BASTION_MAX_CONCURRENT_COLLECTS",
 		"bastion.retentionDays":                   "ONEINSTACK_BASTION_RETENTION_DAYS",
 		"bastion.cleanupSchedule":                 "ONEINSTACK_BASTION_CLEANUP_SCHEDULE",
+		"translation.enabled":                     "ONEINSTACK_TRANSLATION_ENABLED",
+		"translation.mode":                        "ONEINSTACK_TRANSLATION_MODE",
+		"translation.provider":                    "ONEINSTACK_TRANSLATION_PROVIDER",
+		"translation.centerUrl":                   "ONEINSTACK_TRANSLATION_CENTER_URL",
+		"translation.identityPath":                "ONEINSTACK_TRANSLATION_IDENTITY_PATH",
+		"translation.activationCodeFile":          "ONEINSTACK_TRANSLATION_ACTIVATION_CODE_FILE",
+		"translation.responseTimeoutSeconds":      "ONEINSTACK_TRANSLATION_RESPONSE_TIMEOUT_SECONDS",
+		"translation.cacheTTLMinutes":             "ONEINSTACK_TRANSLATION_CACHE_TTL_MINUTES",
+		"translation.cacheMaxEntries":             "ONEINSTACK_TRANSLATION_CACHE_MAX_ENTRIES",
+		"translation.maxTextLength":               "ONEINSTACK_TRANSLATION_MAX_TEXT_LENGTH",
+		"translation.maxFieldsPerResponse":        "ONEINSTACK_TRANSLATION_MAX_FIELDS_PER_RESPONSE",
 	} {
 		if err := v.BindEnv(key, environmentName); err != nil {
 			return nil, fmt.Errorf("bind environment %s: %w", environmentName, err)
@@ -327,6 +367,7 @@ func LoadConfig(path ...string) (*viper.Viper, error) {
 	if err := v.Unmarshal(&ONE_CONFIG); err != nil {
 		return nil, fmt.Errorf("decode config file: %w", err)
 	}
+	normalizeTranslationPaths()
 	if err := validateSystemConfig(); err != nil {
 		return nil, err
 	}
@@ -334,6 +375,9 @@ func LoadConfig(path ...string) (*viper.Viper, error) {
 		return nil, err
 	}
 	if err := validateUpdateCenterConfig(); err != nil {
+		return nil, err
+	}
+	if err := validateTranslationConfig(); err != nil {
 		return nil, err
 	}
 
@@ -350,6 +394,12 @@ func configFilePath(path ...string) string {
 		configPath = path[0]
 	}
 	return configPath
+}
+
+// ConfigPath returns the effective Panel configuration path for services that
+// need to protect files outside config.yaml, such as the Center identity.
+func ConfigPath(path ...string) string {
+	return configFilePath(path...)
 }
 
 // ReadCLILanguage reads only the persisted terminal language. It does not
@@ -484,6 +534,241 @@ func yamlMappingValue(mapping *yaml.Node, key string) *yaml.Node {
 	return nil
 }
 
+// syncDefaultConfig adds configuration keys introduced by a newer Panel
+// version without changing values that were explicitly configured by the
+// operator. Defaults are read from the bundled template rather than from
+// Viper, so environment-variable overrides and generated secrets are never
+// persisted into config.yaml.
+func syncDefaultConfig(configPath string) error {
+	contents, err := os.ReadFile(configPath)
+	if err != nil {
+		return fmt.Errorf("read config file: %w", err)
+	}
+
+	var current yaml.Node
+	if len(contents) == 0 {
+		current = yaml.Node{Kind: yaml.DocumentNode, Content: []*yaml.Node{{Kind: yaml.MappingNode}}}
+	} else if err := yaml.Unmarshal(contents, &current); err != nil {
+		return fmt.Errorf("decode config file: %w", err)
+	}
+	if len(current.Content) == 0 || current.Content[0].Kind == 0 {
+		current = yaml.Node{Kind: yaml.DocumentNode, Content: []*yaml.Node{{Kind: yaml.MappingNode}}}
+	}
+	currentRoot := current.Content[0]
+	if currentRoot.Kind != yaml.MappingNode {
+		return fmt.Errorf("config file root must be a YAML mapping")
+	}
+
+	var defaults yaml.Node
+	if err := yaml.Unmarshal([]byte(defaultConfig), &defaults); err != nil {
+		return fmt.Errorf("decode bundled default config: %w", err)
+	}
+	if len(defaults.Content) == 0 || defaults.Content[0].Kind != yaml.MappingNode {
+		return fmt.Errorf("bundled default config root must be a YAML mapping")
+	}
+
+	changed := mergeMissingConfigKeys(currentRoot, defaults.Content[0])
+	if !changed {
+		return nil
+	}
+	encoded, err := yaml.Marshal(&current)
+	if err != nil {
+		return fmt.Errorf("encode config file: %w", err)
+	}
+	if err := writeConfigAtomically(configPath, encoded); err != nil {
+		return fmt.Errorf("persist added defaults: %w", err)
+	}
+	return nil
+}
+
+func mergeMissingConfigKeys(current, defaults *yaml.Node) bool {
+	changed := false
+	for index := 0; index+1 < len(defaults.Content); index += 2 {
+		key := defaults.Content[index]
+		value := defaults.Content[index+1]
+		existing := yamlMappingValueFold(current, key.Value)
+		if existing == nil {
+			current.Content = append(current.Content, cloneYAMLNode(key), cloneYAMLNode(value))
+			changed = true
+			continue
+		}
+		if existing.Kind == yaml.MappingNode && value.Kind == yaml.MappingNode {
+			if mergeMissingConfigKeys(existing, value) {
+				changed = true
+			}
+		}
+	}
+	return changed
+}
+
+func cloneYAMLNode(node *yaml.Node) *yaml.Node {
+	clone := *node
+	clone.Content = make([]*yaml.Node, len(node.Content))
+	for index, child := range node.Content {
+		clone.Content[index] = cloneYAMLNode(child)
+	}
+	return &clone
+}
+
+func yamlMappingValueFold(mapping *yaml.Node, key string) *yaml.Node {
+	if mapping != nil && mapping.Kind == yaml.DocumentNode {
+		if len(mapping.Content) == 0 {
+			return nil
+		}
+		mapping = mapping.Content[0]
+	}
+	if mapping == nil || mapping.Kind != yaml.MappingNode {
+		return nil
+	}
+	for index := 0; index+1 < len(mapping.Content); index += 2 {
+		if strings.EqualFold(mapping.Content[index].Value, key) {
+			return mapping.Content[index+1]
+		}
+	}
+	return nil
+}
+
+func migrateTranslationConfig(configPath string) error {
+	contents, err := os.ReadFile(configPath)
+	if err != nil {
+		return fmt.Errorf("read config file: %w", err)
+	}
+	var document yaml.Node
+	if err := yaml.Unmarshal(contents, &document); err != nil {
+		return fmt.Errorf("decode config file: %w", err)
+	}
+	if len(document.Content) == 0 || document.Content[0].Kind != yaml.MappingNode {
+		return fmt.Errorf("config file root must be a YAML mapping")
+	}
+	translation := yamlMappingValueFold(document.Content[0], "translation")
+	if translation == nil {
+		return nil
+	}
+	if translation.Kind != yaml.MappingNode {
+		return fmt.Errorf("config section translation must be a YAML mapping")
+	}
+	changed := false
+	for index := 0; index+1 < len(translation.Content); {
+		key := translation.Content[index]
+		if strings.EqualFold(key.Value, "secretId") || strings.EqualFold(key.Value, "secretKey") {
+			translation.Content = append(translation.Content[:index], translation.Content[index+2:]...)
+			changed = true
+			continue
+		}
+		index += 2
+	}
+	mode := yamlMappingValueFold(translation, "mode")
+	if mode == nil {
+		translation.Content = append(translation.Content,
+			&yaml.Node{Kind: yaml.ScalarNode, Value: "mode"},
+			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "center"},
+		)
+		changed = true
+	} else if strings.ToLower(strings.TrimSpace(mode.Value)) != "center" {
+		mode.Kind = yaml.ScalarNode
+		mode.Tag = "!!str"
+		mode.Style = 0
+		mode.Value = "center"
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
+	encoded, err := yaml.Marshal(&document)
+	if err != nil {
+		return fmt.Errorf("encode migrated translation config: %w", err)
+	}
+	return writeConfigAtomically(configPath, encoded)
+}
+
+func persistConfigValue(configPath, sectionName, keyName, value string) error {
+	contents, err := os.ReadFile(configPath)
+	if err != nil {
+		return fmt.Errorf("read config file: %w", err)
+	}
+
+	var document yaml.Node
+	if len(contents) == 0 {
+		document = yaml.Node{Kind: yaml.DocumentNode, Content: []*yaml.Node{{Kind: yaml.MappingNode}}}
+	} else if err := yaml.Unmarshal(contents, &document); err != nil {
+		return fmt.Errorf("decode config file: %w", err)
+	}
+	if len(document.Content) == 0 || document.Content[0].Kind == 0 {
+		document = yaml.Node{Kind: yaml.DocumentNode, Content: []*yaml.Node{{Kind: yaml.MappingNode}}}
+	}
+	root := document.Content[0]
+	if root.Kind != yaml.MappingNode {
+		return fmt.Errorf("config file root must be a YAML mapping")
+	}
+
+	section := yamlMappingValueFold(root, sectionName)
+	if section == nil {
+		section = &yaml.Node{Kind: yaml.MappingNode}
+		root.Content = append(root.Content,
+			&yaml.Node{Kind: yaml.ScalarNode, Value: sectionName}, section,
+		)
+	} else if section.Kind != yaml.MappingNode {
+		return fmt.Errorf("config section %s must be a YAML mapping", sectionName)
+	}
+
+	entry := yamlMappingValueFold(section, keyName)
+	if entry == nil {
+		section.Content = append(section.Content,
+			&yaml.Node{Kind: yaml.ScalarNode, Value: keyName},
+			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: value},
+		)
+	} else {
+		entry.Kind = yaml.ScalarNode
+		entry.Tag = "!!str"
+		entry.Style = 0
+		entry.Value = value
+	}
+
+	encoded, err := yaml.Marshal(&document)
+	if err != nil {
+		return fmt.Errorf("encode config file: %w", err)
+	}
+	return writeConfigAtomically(configPath, encoded)
+}
+
+func writeConfigAtomically(configPath string, encoded []byte) error {
+	mode := os.FileMode(0600)
+	if info, err := os.Stat(configPath); err == nil {
+		mode = info.Mode().Perm()
+		if mode == 0 {
+			mode = 0600
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat config file: %w", err)
+	}
+
+	temporary, err := os.CreateTemp(filepath.Dir(configPath), ".config.yaml.*")
+	if err != nil {
+		return fmt.Errorf("create temporary config file: %w", err)
+	}
+	temporaryName := temporary.Name()
+	defer os.Remove(temporaryName)
+	if err := temporary.Chmod(mode); err != nil {
+		temporary.Close()
+		return fmt.Errorf("secure temporary config file: %w", err)
+	}
+	if _, err := temporary.Write(encoded); err != nil {
+		temporary.Close()
+		return fmt.Errorf("write config file: %w", err)
+	}
+	if err := temporary.Sync(); err != nil {
+		temporary.Close()
+		return fmt.Errorf("sync config file: %w", err)
+	}
+	if err := temporary.Close(); err != nil {
+		return fmt.Errorf("close config file: %w", err)
+	}
+	if err := os.Rename(temporaryName, configPath); err != nil {
+		return fmt.Errorf("replace config file: %w", err)
+	}
+	return nil
+}
+
 func validateUpdateCenterConfig() error {
 	center := ONE_CONFIG.UpdateCenter
 	switch center.Channel {
@@ -593,6 +878,75 @@ func isLoopbackHost(host string) bool {
 	return address != nil && address.IsLoopback()
 }
 
+func validateTranslationConfig() error {
+	translation := ONE_CONFIG.Translation
+	mode := strings.ToLower(strings.TrimSpace(translation.Mode))
+	if mode == "" {
+		mode = "center"
+	}
+	if mode != "center" {
+		return fmt.Errorf("validate config: translation.mode must be center")
+	}
+	if translation.ResponseTimeoutSeconds < 1 || translation.ResponseTimeoutSeconds > 60 {
+		return fmt.Errorf("validate config: translation.responseTimeoutSeconds must be between 1 and 60")
+	}
+	if translation.CacheTTLMinutes < 1 || translation.CacheTTLMinutes > 43200 {
+		return fmt.Errorf("validate config: translation.cacheTTLMinutes must be between 1 and 43200")
+	}
+	if translation.CacheMaxEntries < 1 || translation.CacheMaxEntries > 100000 {
+		return fmt.Errorf("validate config: translation.cacheMaxEntries must be between 1 and 100000")
+	}
+	if translation.MaxTextLength < 1 || translation.MaxTextLength > 4096 {
+		return fmt.Errorf("validate config: translation.maxTextLength must be between 1 and 4096")
+	}
+	if translation.MaxFieldsPerResponse < 0 || translation.MaxFieldsPerResponse > 100000 {
+		return fmt.Errorf("validate config: translation.maxFieldsPerResponse must be between 0 and 100000")
+	}
+	if !translation.Enabled {
+		return nil
+	}
+	centerURL := strings.TrimSpace(translation.CenterURL)
+	if centerURL == "" {
+		centerURL = strings.TrimSpace(ONE_CONFIG.UpdateCenter.CenterURL)
+	}
+	if centerURL == "" && ONE_CONFIG.ScriptCenter.Enabled {
+		centerURL = strings.TrimSpace(ONE_CONFIG.ScriptCenter.URL)
+	}
+	parsed, err := url.Parse(centerURL)
+	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.Fragment != "" ||
+		(parsed.Scheme != "https" && !(parsed.Scheme == "http" && isLoopbackHost(parsed.Hostname()))) {
+		return fmt.Errorf("validate config: enabled translation.centerUrl must use HTTPS (HTTP is allowed only for loopback development)")
+	}
+	for name, path := range map[string]string{
+		"identityPath":       translation.IdentityPath,
+		"activationCodeFile": translation.ActivationCodeFile,
+	} {
+		if strings.TrimSpace(path) == "" || !filepath.IsAbs(path) || filepath.Clean(path) == string(filepath.Separator) {
+			return fmt.Errorf("validate config: translation.%s must be a non-root absolute path", name)
+		}
+		if !configPathWithin(GetBasePath(), path) {
+			return fmt.Errorf("validate config: translation.%s must stay within the Panel base path", name)
+		}
+	}
+	return nil
+}
+
+func normalizeTranslationPaths() {
+	if strings.TrimSpace(ONE_CONFIG.Translation.IdentityPath) == "" ||
+		filepath.Clean(ONE_CONFIG.Translation.IdentityPath) == "/usr/local/one/translation/panel-center.key" {
+		ONE_CONFIG.Translation.IdentityPath = filepath.Join(GetBasePath(), "translation", "panel-center.key")
+	}
+	if strings.TrimSpace(ONE_CONFIG.Translation.ActivationCodeFile) == "" ||
+		filepath.Clean(ONE_CONFIG.Translation.ActivationCodeFile) == "/usr/local/one/translation/activation-code" {
+		ONE_CONFIG.Translation.ActivationCodeFile = filepath.Join(GetBasePath(), "translation", "activation-code")
+	}
+}
+
+func configPathWithin(root, candidate string) bool {
+	relative, err := filepath.Rel(filepath.Clean(root), filepath.Clean(candidate))
+	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
+}
+
 func initializeJWTSecret(v *viper.Viper, configPath string) error {
 	secret := strings.TrimSpace(v.GetString("system.jwtSecret"))
 	if secret == "" || secret == legacyInsecureJWTSecret {
@@ -602,7 +956,7 @@ func initializeJWTSecret(v *viper.Viper, configPath string) error {
 		}
 		secret = hex.EncodeToString(random)
 		v.Set("system.jwtSecret", secret)
-		if err := v.WriteConfig(); err != nil {
+		if err := persistConfigValue(configPath, "system", "jwtSecret", secret); err != nil {
 			return fmt.Errorf("persist JWT secret: %w", err)
 		}
 		if err := os.Chmod(configPath, 0600); err != nil {
@@ -629,7 +983,7 @@ func initializeCredentialKey(v *viper.Viper, configPath string) error {
 		}
 		secret = hex.EncodeToString(random)
 		v.Set("system.credentialKey", secret)
-		if err := v.WriteConfig(); err != nil {
+		if err := persistConfigValue(configPath, "system", "credentialKey", secret); err != nil {
 			return fmt.Errorf("persist credential encryption key: %w", err)
 		}
 		if err := os.Chmod(configPath, 0600); err != nil {
