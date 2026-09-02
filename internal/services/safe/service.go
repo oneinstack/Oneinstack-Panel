@@ -162,7 +162,11 @@ func (s *Service) List(param *input.IptablesRuleParam) (*services.PaginatedResul
 	if param.State != nil {
 		tx = tx.Where("state = ?", *param.State)
 	}
-	tx = tx.Order("protected DESC, id DESC")
+	// ports is stored as a normalized string (for example, "22" or "80-90").
+	// SQLite casts the leading numeric part of a range/list to an integer, which
+	// gives the desired numeric ordering by the first port. Rules without ports
+	// are placed after port rules.
+	tx = tx.Order("CASE WHEN TRIM(COALESCE(ports, '')) = '' THEN 2147483647 ELSE CAST(ports AS INTEGER) END ASC, create_time DESC, id DESC")
 	result, err := services.Paginate[models.IptablesRule](tx, &models.IptablesRule{}, &input.Page{
 		Page: param.Page.Page, PageSize: param.Page.PageSize,
 	})
