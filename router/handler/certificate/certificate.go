@@ -391,7 +391,9 @@ func taskManager(c *gin.Context) (*certificateService.Manager, bool) {
 func catalogError(c *gin.Context, err error, message string) {
 	var validationErr *certificateService.RequestValidationError
 	if errors.As(err, &validationErr) {
-		core.HandleError(c, core.NewFieldError(core.ErrInvalidParameter, validationErr.Message, validationErr.Field))
+		appErr := core.NewErrorWithDetail(core.ErrInvalidParameter, validationErr.Message, validationErr.Message)
+		appErr.Field = validationErr.Field
+		core.HandleError(c, appErr)
 		return
 	}
 	if errors.Is(err, gorm.ErrRecordNotFound) {

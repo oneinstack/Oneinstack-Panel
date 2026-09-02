@@ -8,10 +8,17 @@ import (
 )
 
 var (
-	positiveIntegerPattern = regexp.MustCompile(`^(.+?) 必须是(?:有效的)?正整数$`)
-	nonNegativePattern     = regexp.MustCompile(`^(.+?) 必须是(?:大于等于 0 的|非负)整数$`)
-	rangePattern           = regexp.MustCompile(`^(.+?) 必须(?:是|在) ([0-9]+) 到 ([0-9]+) 之间(?:的整数)?$`)
-	maxLengthPattern       = regexp.MustCompile(`^(.+?) 最长为 ([0-9]+) 个字符$`)
+	positiveIntegerPattern = regexp.MustCompile(`^(.+?)\s*必须是(?:有效的)?正整数$`)
+	nonNegativePattern     = regexp.MustCompile(`^(.+?)\s*必须是(?:大于等于 0 的|非负)整数$`)
+	rangePattern           = regexp.MustCompile(`^(.+?)\s*必须(?:是|为|在)\s*([0-9]+)\s*(?:到|至|-)\s*([0-9]+)\s*(个字符|个文件名|个域名|个|项|条|行|字节|秒|分钟|小时|天|年|KB|KiB|MB|MiB|GB|GiB)?\s*之间(?:的整数)?$`)
+	maxLengthPattern       = regexp.MustCompile(`^(.+?)\s*最长为\s*([0-9]+)\s*个字符$`)
+	lengthRangePattern     = regexp.MustCompile(`^(.+?)\s*长度必须为\s*([0-9]+)\s*(?:-|至|到)\s*([0-9]+)\s*个字符$`)
+	exceedsPattern         = regexp.MustCompile(`^(.+?)\s*(?:不能|不得)超过\s*([0-9]+)\s*(个字符|个文件名|个域名|个|项|条|行|字节|秒|分钟|小时|天|年|KB|KiB|MB|MiB|GB|GiB)$`)
+	rfc3339Pattern         = regexp.MustCompile(`^(.+?)\s*必须(?:使用\s*RFC3339\s*格式|是\s*RFC3339\s*时间)$`)
+	notBeforePattern       = regexp.MustCompile(`^(.+?)\s*不能早于\s*(.+)$`)
+	booleanPattern         = regexp.MustCompile(`^(.+?)\s*必须是\s*(true 或 false)$`)
+	supportedPattern       = regexp.MustCompile(`^(.+?)\s*不是支持的(.+)$`)
+	validHTTPStatusPattern = regexp.MustCompile(`^(.+?)\s*必须是有效的 HTTP 状态码$`)
 	retryAfterPattern      = regexp.MustCompile(`^请在 ([0-9]+) 秒后重试。?$`)
 	fail2banRatePattern    = regexp.MustCompile(`^(封禁|解封)预览请求过于频繁：(.+)$`)
 	confirmationPattern    = regexp.MustCompile(`^确认文本必须为 (.+)$`)
@@ -19,11 +26,17 @@ var (
 )
 
 var (
-	lengthRangePattern               = regexp.MustCompile(`^(.+?) 长度必须为 ([0-9]+)-([0-9]+) 个字符$`)
 	websiteWebServerMismatchPattern  = regexp.MustCompile(`^WEBSITE_WEB_SERVER_MISMATCH: 网站 (.+) 属于 (.+)，当前运行 Web Server 为 (.+)，请切换回 (.+) 后操作$`)
 	websiteEngineImmutablePattern    = regexp.MustCompile(`^WEBSITE_ENGINE_IMMUTABLE: 网站 (.+) 的 Engine 已固定为 (.+)，不能修改为 (.+)$`)
 	websiteConfigUnavailablePattern  = regexp.MustCompile(`^WEBSITE_CONFIG_UNAVAILABLE: 网站 (.+) 属于 (.+)，当前没有可用的该归属运行配置文件$`)
 	policyTemplateConflictPattern    = regexp.MustCompile(`^策略模板“(.+?)”（(.+?)）已存在，请直接编辑现有策略，不要重复添加。$`)
+	containerRiskConfirmationPattern = regexp.MustCompile(`^(.+?)。确认后请提交 confirmHighRisk=true。$`)
+	configRollbackPattern            = regexp.MustCompile(`^回滚资源类型=(.+?)、原操作=(.+?)，在(.+?)阶段失败；具体原因：(.+)$`)
+	certificateDNSPattern            = regexp.MustCompile(`^域名 (.+) 没有有效的 A/AAAA DNS 记录，请先将域名解析到本服务器后再申请 HTTP-01 证书。$`)
+	certificateHTTP403Pattern        = regexp.MustCompile(`^域名 (.+) 的 HTTP-01 验证地址返回 403，请检查 DNS 是否指向本服务器，以及 CDN/WAF 是否拦截了验证请求。$`)
+	certificateHTTP404Pattern        = regexp.MustCompile(`^域名 (.+) 的 HTTP-01 验证地址返回 404，请检查网站是否启用、80 端口是否可访问，以及 ACME 验证路由是否已发布。$`)
+	certificateBindDetailPattern     = regexp.MustCompile(`^证书绑定(资源读取|校验|部署)失败：(.*)$`)
+	firewallConfirmationPattern      = regexp.MustCompile(`^关闭防火墙需要输入确认文本 (.+)$`)
 	webServerSyntaxDiagnosticPattern = regexp.MustCompile(`^Web Server 配置语法错误：第 ([0-9]+) 行；Nginx 诊断：(.*)。(.+)$`)
 	webServerSyntaxLinePattern       = regexp.MustCompile(`^Web Server 配置语法错误：第 ([0-9]+) 行。(.*)$`)
 	webServerPreflightPattern        = regexp.MustCompile(`^Web Server 配置预检失败：(.*)。(.+)$`)
@@ -108,6 +121,49 @@ func translateDynamicErrorText(text string) (string, bool) {
 	if matches := policyTemplateConflictPattern.FindStringSubmatch(text); len(matches) == 3 {
 		return fmt.Sprintf("Policy template \"%s\" (%s) already exists. Edit the existing policy instead of adding a duplicate.", matches[1], matches[2]), true
 	}
+	if matches := containerRiskConfirmationPattern.FindStringSubmatch(text); len(matches) == 2 {
+		parts := strings.Split(matches[1], "；")
+		localized := make([]string, 0, len(parts))
+		for _, part := range parts {
+			translated, ok := englishErrorTexts[strings.TrimSpace(part)]
+			if !ok {
+				return "", false
+			}
+			localized = append(localized, translated)
+		}
+		return fmt.Sprintf("%s. Submit confirmHighRisk=true after confirming.", strings.Join(localized, "; ")), true
+	}
+	if matches := configRollbackPattern.FindStringSubmatch(text); len(matches) == 5 {
+		phase := parameterName(matches[3])
+		cause := LocalizeText(LocaleEnUS, strings.TrimSpace(matches[4]))
+		if ContainsHan(phase) {
+			phase = "the current"
+		}
+		if ContainsHan(cause) {
+			cause = "see the Panel logs for the underlying cause"
+		}
+		return fmt.Sprintf("Configuration rollback failed for resource type %s and original operation %s during %s phase. Reason: %s", matches[1], matches[2], phase, cause), true
+	}
+	if matches := certificateDNSPattern.FindStringSubmatch(text); len(matches) == 2 {
+		return fmt.Sprintf("Domain %s has no valid A/AAAA DNS record. Point it to this server before requesting an HTTP-01 certificate.", matches[1]), true
+	}
+	if matches := certificateHTTP403Pattern.FindStringSubmatch(text); len(matches) == 2 {
+		return fmt.Sprintf("The HTTP-01 validation URL for domain %s returned 403. Check that DNS points to this server and that the CDN/WAF is not blocking the validation request.", matches[1]), true
+	}
+	if matches := certificateHTTP404Pattern.FindStringSubmatch(text); len(matches) == 2 {
+		return fmt.Sprintf("The HTTP-01 validation URL for domain %s returned 404. Check that the website is enabled, port 80 is reachable, and the ACME validation route is published.", matches[1]), true
+	}
+	if matches := certificateBindDetailPattern.FindStringSubmatch(text); len(matches) == 3 {
+		stage := map[string]string{"资源读取": "resource lookup", "校验": "validation", "部署": "deployment"}[matches[1]]
+		cause := LocalizeText(LocaleEnUS, strings.TrimSpace(matches[2]))
+		if ContainsHan(cause) {
+			cause = "see the task log for the underlying cause"
+		}
+		return fmt.Sprintf("Certificate binding %s failed: %s", stage, cause), true
+	}
+	if matches := firewallConfirmationPattern.FindStringSubmatch(text); len(matches) == 2 {
+		return fmt.Sprintf("Disabling the firewall requires the confirmation text %s", matches[1]), true
+	}
 	if matches := fail2banRatePattern.FindStringSubmatch(text); len(matches) == 3 {
 		action := "Ban"
 		if matches[1] == "解封" {
@@ -188,8 +244,12 @@ func translateValidationText(text string) (string, bool) {
 	if matches := nonNegativePattern.FindStringSubmatch(text); len(matches) == 2 {
 		return fmt.Sprintf("%s must be a non-negative integer", parameterName(matches[1])), true
 	}
-	if matches := rangePattern.FindStringSubmatch(text); len(matches) == 4 {
-		return fmt.Sprintf("%s must be between %s and %s", parameterName(matches[1]), matches[2], matches[3]), true
+	if matches := rangePattern.FindStringSubmatch(text); len(matches) == 5 {
+		unit := validationUnit(matches[4])
+		if unit != "" {
+			unit = " " + unit
+		}
+		return fmt.Sprintf("%s must be between %s and %s%s", parameterName(matches[1]), matches[2], matches[3], unit), true
 	}
 	if matches := lengthRangePattern.FindStringSubmatch(text); len(matches) == 4 {
 		return fmt.Sprintf("%s must be between %s and %s characters", parameterName(matches[1]), matches[2], matches[3]), true
@@ -197,10 +257,65 @@ func translateValidationText(text string) (string, bool) {
 	if matches := maxLengthPattern.FindStringSubmatch(text); len(matches) == 3 {
 		return fmt.Sprintf("%s must not exceed %s characters", parameterName(matches[1]), matches[2]), true
 	}
+	if matches := exceedsPattern.FindStringSubmatch(text); len(matches) == 4 {
+		unit := validationUnit(matches[3])
+		if unit != "" {
+			unit = " " + unit
+		}
+		return fmt.Sprintf("%s must not exceed %s%s", parameterName(matches[1]), matches[2], unit), true
+	}
+	if matches := rfc3339Pattern.FindStringSubmatch(text); len(matches) == 2 {
+		return fmt.Sprintf("%s must use RFC3339 format", parameterName(matches[1])), true
+	}
+	if matches := notBeforePattern.FindStringSubmatch(text); len(matches) == 3 {
+		return fmt.Sprintf("%s must not be earlier than %s", parameterName(matches[1]), parameterName(matches[2])), true
+	}
+	if matches := booleanPattern.FindStringSubmatch(text); len(matches) == 3 {
+		return fmt.Sprintf("%s must be true or false", parameterName(matches[1])), true
+	}
+	if matches := supportedPattern.FindStringSubmatch(text); len(matches) == 3 {
+		return fmt.Sprintf("%s is not a supported %s", parameterName(matches[1]), parameterName(matches[2])), true
+	}
+	if matches := validHTTPStatusPattern.FindStringSubmatch(text); len(matches) == 2 {
+		return fmt.Sprintf("%s must be a valid HTTP status code", parameterName(matches[1])), true
+	}
 	if matches := retryAfterPattern.FindStringSubmatch(text); len(matches) == 2 {
 		return fmt.Sprintf("Retry after %s seconds.", matches[1]), true
 	}
 	return "", false
+}
+
+func validationUnit(value string) string {
+	switch strings.TrimSpace(value) {
+	case "个字符":
+		return "characters"
+	case "个文件名":
+		return "filenames"
+	case "个域名":
+		return "domains"
+	case "个", "项":
+		return "items"
+	case "条":
+		return "entries"
+	case "行":
+		return "lines"
+	case "字节":
+		return "bytes"
+	case "秒":
+		return "seconds"
+	case "分钟":
+		return "minutes"
+	case "小时":
+		return "hours"
+	case "天":
+		return "days"
+	case "年":
+		return "years"
+	case "KB", "KiB", "MB", "MiB", "GB", "GiB":
+		return value
+	default:
+		return ""
+	}
 }
 
 func parameterName(value string) string {
@@ -644,10 +759,45 @@ var englishTerms = map[string]string{
 	"登录请求":           "login request",
 	"终端会话":           "terminal session",
 	"终端会话票据":         "terminal session ticket",
+	"CPU权重":          "CPU weight",
+	"CPU限制":          "CPU limit",
+	"内存限制":           "memory limit",
+	"网站端口":           "website port",
+	"面板端口":           "Panel port",
+	"转发端口":           "forwarding port",
+	"镜像文件大小":         "image file size",
+	"统计周期":           "statistics period",
+	"时间":             "time",
+	"开始时间":           "start time",
+	"结束时间":           "end time",
+	"审批状态":           "approval status",
+	"审批模块":           "approval module",
+	"历史样本查询范围":       "historical sample query range",
+	"历史样本查询结束时间":     "historical sample query end time",
+	"密码长度":           "password length",
+	"备注":             "remark",
+	"IP 归属地":         "IP geolocation",
+	"伪静态规则":          "rewrite rules",
+	"IP 规则":          "IP rules",
+	"域名":             "domain names",
+	"自签证书域名":         "self-signed certificate domains",
+	"自签证书有效期":        "self-signed certificate validity period",
+	"续期提前天数":         "renewal lead time in days",
+	"编排模板描述":         "orchestration template description",
+	"编排模板内容":         "orchestration template content",
+	"Docker 配置":      "Docker configuration",
+	"读取当前配置":         "read current configuration",
+	"创建回滚快照":         "create rollback snapshot",
+	"应用目标配置":         "apply target configuration",
 }
 
 var englishErrorTexts = map[string]string{
-	"容器标识无效": "The container identifier is invalid",
+	"角色、菜单或用户不存在":      "The role, menu, or user does not exist",
+	"角色或菜单参数不合法":       "The role or menu parameters are invalid",
+	"角色或菜单当前状态不允许此操作":  "The current role or menu state does not allow this operation",
+	"内置资源或超级管理员身份不可修改": "Built-in resources and super administrator identity cannot be modified",
+	"角色描述不合法":          "The role description is invalid",
+	"容器标识无效":           "The container identifier is invalid",
 	"容器标识不能为空、不能包含换行符，且不能以短横线开头。": "The container identifier must not be empty, contain line breaks, or start with a hyphen.",
 	"Docker stats 读取超时":      "Docker stats timed out while reading container metrics",
 	"Docker stats 权限不足":      "The Panel process does not have permission to read Docker stats",
@@ -655,12 +805,25 @@ var englishErrorTexts = map[string]string{
 	"Docker stats 未返回指标":     "Docker stats returned no container metrics",
 	"Docker 运行时不可用，无法读取实时指标": "The Docker runtime is unavailable, so real-time metrics cannot be read",
 	"Docker stats 读取失败":      "Docker stats failed while reading container metrics",
+	"容器详情正在刷新，请稍后重试":         "Container details are refreshing. Please try again later",
+	"Docker 在容器重启期间未返回完整详情；请保留当前详情并稍后重新加载。": "Docker did not return complete details while the container was restarting. Keep the current details and reload them later.",
+	"Docker日志不可读取": "The Docker logs cannot be read",
+	"该容器使用的 Docker 日志驱动不支持通过 docker logs 读取，请检查 Docker 日志驱动配置或改用主机日志查看。": "The Docker log driver used by this container does not support docker logs. Check the Docker log-driver configuration or use the host logs instead.",
+	"容器日志查询参数格式不正确": "The container log query parameters have an invalid format",
+	"Docker 未返回完整容器实时指标，容器可能正在重启或 Docker daemon 尚未完成统计采样。": "Docker did not return complete real-time container metrics. The container may be restarting or the Docker daemon may not have completed a stats sample.",
+	"Docker 未返回可用的错误摘要，请结合请求时间查看 Docker daemon 日志。":        "Docker did not return a usable error summary. Check the Docker daemon logs using the request time.",
+	"Docker 未返回可用的容器启动错误摘要，请结合容器状态和 Docker daemon 日志继续诊断。": "Docker did not return a usable container-startup error summary. Continue diagnosing with the container state and Docker daemon logs.",
+	"容器以 privileged 模式运行": "The container runs in privileged mode",
+	"容器挂载了 Docker socket": "The container mounts the Docker socket",
+	"容器挂载了宿主机根目录":         "The container mounts the host root directory",
+	"容器使用了宿主机命名空间":        "The container uses the host namespace",
 	"Docker stats 未在限定时间内返回容器实时指标，请检查 Docker daemon 状态、容器运行状态和面板请求超时设置后重试。":      "Docker stats did not return container metrics within the allowed time. Check the Docker daemon, container state, and Panel request timeout before retrying.",
 	"面板进程无权访问 Docker daemon 或 Docker socket，请检查面板运行用户、Docker socket 所属用户组和访问权限。": "The Panel process cannot access the Docker daemon or Docker socket. Check the Panel user, the socket group, and its access permissions.",
 	"Docker 未找到该容器，请刷新容器列表后重新打开详情。":                                              "Docker could not find the container. Refresh the container list and reopen its details.",
 	"Docker 未返回容器实时指标，容器可能已停止或 Docker daemon 尚未完成统计采样。":                          "Docker returned no real-time container metrics. The container may have stopped or the Docker daemon may not have completed a stats sample.",
 	"Docker daemon 当前不可用，请确认 Docker 服务已启动，并检查面板运行用户是否有访问 Docker socket 的权限。":     "The Docker daemon is currently unavailable. Verify that Docker is running and that the Panel process user can access the Docker socket.",
 	"Docker 未能返回容器实时指标，请检查 Docker daemon、容器状态和面板运行用户权限后重试。":                      "Docker could not return real-time container metrics. Check the Docker daemon, container state, and Panel process permissions, then retry.",
+	"镜像推送未在限定时间内完成，请检查目标 Registry 服务、网络连通性和镜像大小后重试。":                             "The image push did not finish within the allowed time. Check the target Registry service, network connectivity, and image size before retrying.",
 	"容器镜像仓库域名解析失败":                     "Failed to resolve the container registry domain",
 	"容器镜像仓库拒绝连接":                       "The container registry refused the connection",
 	"容器镜像仓库网络不可达":                      "The container registry network is unreachable",
@@ -691,6 +854,9 @@ var englishErrorTexts = map[string]string{
 	"实时订阅不支持 beforeId":           "Real-time streaming does not support beforeId",
 	"指标查询范围必须为 0 到 31 天":         "The metrics query range must be between 0 and 31 days",
 	"静默时间必须在 0 到 43200 分钟之间":     "The silence duration must be between 0 and 43200 minutes",
+	"时间必须使用 RFC3339 格式":          "Time must use RFC3339 format",
+	"历史样本查询结束时间不能早于开始时间":         "The historical sample query end time must not be earlier than the start time",
+	"历史样本查询范围不能超过 31 天":          "The historical sample query range must not exceed 31 days",
 	"eventType 无效":    "eventType is invalid",
 	"severity 无效":     "severity is invalid",
 	"resourceType 无效": "resourceType is invalid",
@@ -720,110 +886,141 @@ var englishErrorTexts = map[string]string{
 	"未找到 Docker 可执行文件（docker），请安装 Docker CLI/Engine，并确认 docker 已加入面板进程的 PATH。":             "The Docker executable was not found. Install Docker CLI/Engine and make sure docker is available in the Panel process PATH.",
 	"Docker 客户端已安装，但无法连接 Docker 守护进程；请确认 Docker 服务已启动，并检查当前面板运行用户是否有访问 Docker socket 的权限。": "The Docker client is installed, but the daemon cannot be reached. Verify that Docker is running and that the Panel process user can access the Docker socket.",
 	"无法确认 Docker 运行时状态；请检查 Docker 是否安装、服务是否启动，以及面板进程的 PATH 和 Docker socket 权限。":            "The Docker runtime status could not be determined. Check the installation, service status, Panel process PATH, and Docker socket permissions.",
-	"下载容器任务日志失败":                      "Failed to download the container task log",
-	"停用动态口令认证失败":                      "Failed to disable TOTP authentication",
-	"创建安全模板任务失败":                      "Failed to create the security-template task",
-	"启用动态口令认证失败":                      "Failed to enable TOTP authentication",
-	"堡垒机请求处理失败":                       "Failed to process the bastion host request",
-	"操作失败":                            "The operation failed",
-	"操作异常":                            "The operation encountered an error",
-	"操作执行失败，请稍后重试":                    "The operation failed. Please try again later",
-	"更新安全模板任务失败":                      "Failed to update the security-template task",
-	"系统处理异常，请稍后重试":                    "The server encountered an error. Please try again later",
-	"系统错误":                            "Server error",
-	"请求参数无效，请检查提交内容":                  "The request parameters are invalid. Check the submitted data",
-	"请求参数格式不正确，请检查字段类型和格式":            "The request parameters have an invalid format. Check field types and formats",
-	"请求参数错误":                          "Invalid request parameters",
-	"请求失败":                            "The request failed",
-	"Cookie 会话请求的 Origin 与当前面板地址不匹配。": "The Origin of the cookie-authenticated request does not match the current Panel address.",
-	"Docker操作失败":                      "The Docker operation failed",
-	"Docker运行时不可用，请先安装并启动 Docker 后重试": "The Docker runtime is unavailable. Install and start Docker before retrying",
-	"Docker镜像拉取失败":                    "Failed to pull the Docker image",
-	"SSH 会话票据参数格式不正确":                 "The SSH session ticket parameters have an invalid format",
-	"Web 终端未启用":                       "The Web terminal is not enabled",
-	"order 仅支持 asc 或 desc":            "order must be either asc or desc",
-	"page 必须是大于等于 1 的整数":              "page must be an integer greater than or equal to 1",
-	"sort 仅支持 pid、cpu、memory 或 name":  "sort must be one of pid, cpu, memory, or name",
-	"type 仅支持 access 或 error":         "type must be either access or error",
-	"上传文件过大":                          "The uploaded file is too large",
-	"上传路径无效":                          "The upload path is invalid",
-	"不支持的操作类型":                        "The operation type is not supported",
-	"不支持的组件服务":                        "The component service is not supported",
-	"不支持的证书审批动作":                      "The certificate approval action is not supported",
-	"不能修改文件根目录属性":                     "The file-management root attributes cannot be modified",
-	"不能修改符号链接属性":                      "Symbolic-link attributes cannot be modified",
-	"不能覆盖文件根目录":                       "The file-management root cannot be overwritten",
-	"不能预览文件根目录":                       "The file-management root cannot be previewed",
-	"主域名确认不匹配":                        "The primary-domain confirmation does not match",
-	"二次认证失败":                          "Secondary authentication failed",
-	"二进制文件不支持在线编辑":                    "Binary files cannot be edited online",
-	"此文件不支持预览/编辑":                     "This file does not support preview or editing",
-	"仅支持下载普通文件":                       "Only regular files can be downloaded",
-	"仅支持保存普通文件":                       "Only regular files can be saved",
-	"仅支持分享普通文件":                       "Only regular files can be shared",
-	"仅支持读取普通文件":                       "Only regular files can be read",
-	"仅支持预览普通图片文件":                     "Only regular image files can be previewed",
-	"任务日志不存在或已按保留策略清理":                "The task log does not exist or was removed by the retention policy",
-	"会话不存在或已经失效":                      "The session does not exist or is no longer valid",
-	"保存 Web 服务器配置失败":                  "Failed to save the Web server configuration",
-	"修改属性失败":                          "Failed to modify the attributes",
-	"修改数据库账号密码失败":                     "Failed to change the database account password",
-	"停用动态口令的验证参数格式不正确":                "The verification parameters for disabling TOTP have an invalid format",
-	"关闭网站 SSL 失败":                     "Failed to disable SSL for the website",
-	"分享不存在或已经取消":                      "The share does not exist or has been revoked",
-	"分享文件已发生变化，请重新创建分享":               "The shared file has changed. Create the share again",
-	"分享链接无效或已失效":                      "The share link is invalid or has expired",
-	"分配角色失败":                          "Failed to assign roles",
-	"创建 Web 服务器配置快照失败":                "Failed to create the Web server configuration snapshot",
-	"创建 firewalld 安装任务失败":             "Failed to create the firewalld installation task",
-	"创建卸载任务失败":                        "Failed to create the removal task",
-	"创建压缩包所需存储容量不足":                   "There is not enough storage to create the archive",
-	"创建失败":                            "Failed to create the file or directory",
-	"创建安装任务失败":                        "Failed to create the installation task",
-	"创建快照参数错误":                        "The snapshot creation parameters are invalid",
-	"创建恢复请求失败":                        "Failed to create the restore request",
-	"创建数据库凭据审批失败":                     "Failed to create the database credential approval request",
-	"创建数据库备份任务失败":                     "Failed to create the database backup task",
-	"创建数据库恢复任务失败":                     "Failed to create the database restore task",
-	"创建数据库恢复审批失败":                     "Failed to create the database restore approval request",
-	"创建数据库连接删除审批失败":                   "Failed to create the database connection deletion approval request",
-	"创建网站删除审批失败":                      "Failed to create the website deletion approval request",
-	"创建网站备份任务失败":                      "Failed to create the website backup task",
-	"创建网站安全删除任务失败":                    "Failed to create the safe website deletion task",
-	"创建网站恢复任务失败":                      "Failed to create the website restore task",
-	"创建网站恢复审批失败":                      "Failed to create the website restore approval request",
-	"创建网站配置快照失败":                      "Failed to create the website configuration snapshot",
-	"创建计划任务参数格式不正确":                   "The scheduled-task creation parameters have an invalid format",
-	"创建证书禁用审批失败":                      "Failed to create the certificate-disable approval request",
-	"创建证书签发任务失败":                      "Failed to create the certificate issuance task",
-	"创建证书签发审批失败":                      "Failed to create the certificate issuance approval request",
-	"创建证书续签任务失败":                      "Failed to create the certificate renewal task",
-	"创建证书续签审批失败":                      "Failed to create the certificate renewal approval request",
-	"创建面板访问配置快照失败":                    "Failed to create the Panel access configuration snapshot",
-	"删除备份需要明确确认":                      "Deleting the backup requires explicit confirmation",
-	"删除用户需要显式确认":                      "Deleting a user requires explicit confirmation",
-	"删除文件或目录失败":                       "Failed to delete the file or directory",
-	"不能删除当前登录账号":                      "The currently signed-in account cannot be deleted",
-	"不能删除最后一个超级管理员":                   "The last super administrator cannot be deleted",
-	"删除计划任务参数格式不正确":                   "The scheduled-task deletion parameters have an invalid format",
-	"动态口令认证尚未配置":                      "TOTP authentication is not configured",
-	"动态口令认证已经启用":                      "TOTP authentication is already enabled",
-	"卸载任务服务不可用":                       "The removal task service is unavailable",
-	"取消执行失败":                          "Failed to cancel the execution",
-	"只能恢复发布成功的配置历史":                   "Only successfully published configuration history can be restored",
-	"同步 Center 软件商城失败":                "Failed to synchronize the Center software catalog",
-	"同步数据库信息失败":                       "Failed to synchronize database information",
-	"启动独立恢复服务失败":                      "Failed to start the standalone restore service",
-	"启动独立更新服务: %w":                    "Failed to start the standalone update service: %w",
-	"启用动态口令的验证参数格式不正确":                "The verification parameters for enabling TOTP have an invalid format",
-	"启用计划任务参数格式不正确":                   "The scheduled-task enable parameters have an invalid format",
-	"启用计划任务失败":                        "Failed to enable the scheduled task",
-	"回滚请求格式错误":                        "The rollback request has an invalid format",
-	"图片为空或超过 30 MB 预览上限":              "The image is empty or exceeds the 30 MB preview limit",
-	"图片路径无效":                          "The image path is invalid",
-	"图片预览链接无效或已过期":                    "The image preview link is invalid or expired",
-	"堡垒机操作失败":                         "The bastion host operation failed",
-	"堡垒机服务不可用，请先启用堡垒机模块":              "The bastion host service is unavailable. Enable the bastion host module first",
+	"请安装与当前 Docker CLI 兼容的 Compose 插件后重试。":                                                 "Install a Compose plugin compatible with the current Docker CLI, then retry.",
+	"请确认 Docker 服务已启动，并检查面板运行用户是否有访问 Docker socket 的权限。":                                   "Verify that Docker is running and that the Panel process user can access the Docker socket.",
+	"请检查 Docker daemon、网络、代理和镜像仓库状态后重试。":                                                   "Check the Docker daemon, network, proxy, and image registry status, then retry.",
+	"请检查 Compose 项目状态、配置文件权限和 Docker 运行时后重试。":                                              "Check the Compose project state, configuration-file permissions, and Docker runtime, then retry.",
+	"规则不能为空": "The rule must not be empty",
+	"规则类型必须是 port、ip、region 或 auto_block":  "The rule type must be one of port, ip, region, or auto_block",
+	"规则方向必须是 in 或 out":                     "The rule direction must be either in or out",
+	"协议必须是 tcp、udp、icmp 或 all":             "The protocol must be one of tcp, udp, icmp, or all",
+	"策略必须是 allow 或 deny":                   "The policy must be either allow or deny",
+	"地区规则必须填写地区名称":                         "A region rule must include a region name",
+	"过期时间必须晚于当前时间":                         "The expiration time must be later than the current time",
+	"单条规则展开后不能超过 100 个 IP/端口组合":            "A single rule must not expand to more than 100 IP/port combinations",
+	"网站名称不能为空":                             "The website name must not be empty",
+	"转发协议必须是 tcp 或 udp":                    "The forwarding protocol must be either tcp or udp",
+	"自动封禁配置不能为空":                           "The automatic-blocking configuration must not be empty",
+	"统计周期必须在 1-1440 分钟之间":                  "The statistics period must be between 1 and 1440 minutes",
+	"过期时间格式必须是 RFC3339":                    "The expiration time must use RFC3339 format",
+	"IP 仅支持 IPv4 地址或 CIDR 网段":              "IP values must be IPv4 addresses or CIDR networks",
+	"不能创建会阻断全部 IPv4 入站流量的规则":               "A rule that blocks all IPv4 inbound traffic cannot be created",
+	"过期规则不能重新启用，请先修改过期时间":                  "An expired rule cannot be enabled again. Update its expiration time first.",
+	"请选择至少一条规则":                            "Select at least one rule",
+	"单次批量操作不能超过 500 条规则":                   "A single batch operation cannot include more than 500 rules",
+	"批量操作仅支持 enable、disable 或 delete":      "Batch operations support only enable, disable, or delete",
+	"导入文件中没有规则":                            "The import file contains no rules",
+	"单次最多导入 500 条规则":                       "At most 500 rules can be imported at once",
+	"端口转发 ID 无效":                           "The port-forwarding ID is invalid",
+	"端口转发不能为空":                             "Port forwarding must not be empty",
+	"不能转发当前面板管理端口":                         "The current Panel management port cannot be forwarded",
+	"目标地址必须是有效的 IPv4 地址":                   "The target address must be a valid IPv4 address",
+	"UFW echo-request 规则缺少 ACCEPT/DROP 动作": "The UFW echo-request rule is missing an ACCEPT/DROP action",
+	"未找到 UFW echo-request 规则":              "The UFW echo-request rule was not found",
+	"下载容器任务日志失败":                           "Failed to download the container task log",
+	"停用动态口令认证失败":                           "Failed to disable TOTP authentication",
+	"创建安全模板任务失败":                           "Failed to create the security-template task",
+	"启用动态口令认证失败":                           "Failed to enable TOTP authentication",
+	"堡垒机请求处理失败":                            "Failed to process the bastion host request",
+	"操作失败":                                 "The operation failed",
+	"操作异常":                                 "The operation encountered an error",
+	"操作执行失败，请稍后重试":                         "The operation failed. Please try again later",
+	"更新安全模板任务失败":                           "Failed to update the security-template task",
+	"系统处理异常，请稍后重试":                         "The server encountered an error. Please try again later",
+	"系统错误":                                 "Server error",
+	"请求参数无效，请检查提交内容":                       "The request parameters are invalid. Check the submitted data",
+	"请求参数格式不正确，请检查字段类型和格式":                 "The request parameters have an invalid format. Check field types and formats",
+	"请求参数错误":                               "Invalid request parameters",
+	"请求失败":                                 "The request failed",
+	"Cookie 会话请求的 Origin 与当前面板地址不匹配。":      "The Origin of the cookie-authenticated request does not match the current Panel address.",
+	"Docker操作失败":                           "The Docker operation failed",
+	"Docker运行时不可用，请先安装并启动 Docker 后重试":      "The Docker runtime is unavailable. Install and start Docker before retrying",
+	"Docker镜像拉取失败":                         "Failed to pull the Docker image",
+	"SSH 会话票据参数格式不正确":                      "The SSH session ticket parameters have an invalid format",
+	"Web 终端未启用":                            "The Web terminal is not enabled",
+	"order 仅支持 asc 或 desc":                 "order must be either asc or desc",
+	"page 必须是大于等于 1 的整数":                   "page must be an integer greater than or equal to 1",
+	"sort 仅支持 pid、cpu、memory 或 name":       "sort must be one of pid, cpu, memory, or name",
+	"type 仅支持 access 或 error":              "type must be either access or error",
+	"上传文件过大":                               "The uploaded file is too large",
+	"上传路径无效":                               "The upload path is invalid",
+	"不支持的操作类型":                             "The operation type is not supported",
+	"不支持的组件服务":                             "The component service is not supported",
+	"不支持的证书审批动作":                           "The certificate approval action is not supported",
+	"不能修改文件根目录属性":                          "The file-management root attributes cannot be modified",
+	"不能修改符号链接属性":                           "Symbolic-link attributes cannot be modified",
+	"不能覆盖文件根目录":                            "The file-management root cannot be overwritten",
+	"不能预览文件根目录":                            "The file-management root cannot be previewed",
+	"主域名确认不匹配":                             "The primary-domain confirmation does not match",
+	"二次认证失败":                               "Secondary authentication failed",
+	"二进制文件不支持在线编辑":                         "Binary files cannot be edited online",
+	"此文件不支持预览/编辑":                          "This file does not support preview or editing",
+	"仅支持下载普通文件":                            "Only regular files can be downloaded",
+	"仅支持保存普通文件":                            "Only regular files can be saved",
+	"仅支持分享普通文件":                            "Only regular files can be shared",
+	"仅支持读取普通文件":                            "Only regular files can be read",
+	"仅支持预览普通图片文件":                          "Only regular image files can be previewed",
+	"任务日志不存在或已按保留策略清理":                     "The task log does not exist or was removed by the retention policy",
+	"会话不存在或已经失效":                           "The session does not exist or is no longer valid",
+	"保存 Web 服务器配置失败":                       "Failed to save the Web server configuration",
+	"修改属性失败":                               "Failed to modify the attributes",
+	"修改数据库账号密码失败":                          "Failed to change the database account password",
+	"停用动态口令的验证参数格式不正确":                     "The verification parameters for disabling TOTP have an invalid format",
+	"关闭网站 SSL 失败":                          "Failed to disable SSL for the website",
+	"分享不存在或已经取消":                           "The share does not exist or has been revoked",
+	"分享文件已发生变化，请重新创建分享":                    "The shared file has changed. Create the share again",
+	"分享链接无效或已失效":                           "The share link is invalid or has expired",
+	"分配角色失败":                               "Failed to assign roles",
+	"创建 Web 服务器配置快照失败":                     "Failed to create the Web server configuration snapshot",
+	"创建 firewalld 安装任务失败":                  "Failed to create the firewalld installation task",
+	"创建卸载任务失败":                             "Failed to create the removal task",
+	"创建压缩包所需存储容量不足":                        "There is not enough storage to create the archive",
+	"创建失败":                                 "Failed to create the file or directory",
+	"创建安装任务失败":                             "Failed to create the installation task",
+	"创建快照参数错误":                             "The snapshot creation parameters are invalid",
+	"创建恢复请求失败":                             "Failed to create the restore request",
+	"创建数据库凭据审批失败":                          "Failed to create the database credential approval request",
+	"创建数据库备份任务失败":                          "Failed to create the database backup task",
+	"创建数据库恢复任务失败":                          "Failed to create the database restore task",
+	"创建数据库恢复审批失败":                          "Failed to create the database restore approval request",
+	"创建数据库连接删除审批失败":                        "Failed to create the database connection deletion approval request",
+	"创建网站删除审批失败":                           "Failed to create the website deletion approval request",
+	"创建网站备份任务失败":                           "Failed to create the website backup task",
+	"创建网站安全删除任务失败":                         "Failed to create the safe website deletion task",
+	"创建网站恢复任务失败":                           "Failed to create the website restore task",
+	"创建网站恢复审批失败":                           "Failed to create the website restore approval request",
+	"创建网站配置快照失败":                           "Failed to create the website configuration snapshot",
+	"创建计划任务参数格式不正确":                        "The scheduled-task creation parameters have an invalid format",
+	"创建证书禁用审批失败":                           "Failed to create the certificate-disable approval request",
+	"创建证书签发任务失败":                           "Failed to create the certificate issuance task",
+	"创建证书签发审批失败":                           "Failed to create the certificate issuance approval request",
+	"创建证书续签任务失败":                           "Failed to create the certificate renewal task",
+	"创建证书续签审批失败":                           "Failed to create the certificate renewal approval request",
+	"创建面板访问配置快照失败":                         "Failed to create the Panel access configuration snapshot",
+	"删除备份需要明确确认":                           "Deleting the backup requires explicit confirmation",
+	"删除用户需要显式确认":                           "Deleting a user requires explicit confirmation",
+	"删除文件或目录失败":                            "Failed to delete the file or directory",
+	"不能删除当前登录账号":                           "The currently signed-in account cannot be deleted",
+	"不能删除最后一个超级管理员":                        "The last super administrator cannot be deleted",
+	"删除计划任务参数格式不正确":                        "The scheduled-task deletion parameters have an invalid format",
+	"动态口令认证尚未配置":                           "TOTP authentication is not configured",
+	"动态口令认证已经启用":                           "TOTP authentication is already enabled",
+	"卸载任务服务不可用":                            "The removal task service is unavailable",
+	"取消执行失败":                               "Failed to cancel the execution",
+	"只能恢复发布成功的配置历史":                        "Only successfully published configuration history can be restored",
+	"同步 Center 软件商城失败":                     "Failed to synchronize the Center software catalog",
+	"同步数据库信息失败":                            "Failed to synchronize database information",
+	"启动独立恢复服务失败":                           "Failed to start the standalone restore service",
+	"启动独立更新服务: %w":                         "Failed to start the standalone update service: %w",
+	"启用动态口令的验证参数格式不正确":                     "The verification parameters for enabling TOTP have an invalid format",
+	"启用计划任务参数格式不正确":                        "The scheduled-task enable parameters have an invalid format",
+	"启用计划任务失败":                             "Failed to enable the scheduled task",
+	"回滚请求格式错误":                             "The rollback request has an invalid format",
+	"图片为空或超过 30 MB 预览上限":                   "The image is empty or exceeds the 30 MB preview limit",
+	"图片路径无效":                               "The image path is invalid",
+	"图片预览链接无效或已过期":                         "The image preview link is invalid or expired",
+	"堡垒机操作失败":                              "The bastion host operation failed",
+	"堡垒机服务不可用，请先启用堡垒机模块":                   "The bastion host service is unavailable. Enable the bastion host module first",
 	"堡垒机模块未启用或服务管理器未初始化，请先在面板配置中启用堡垒机模块。": "The bastion host module is disabled or its service manager is not initialized. Enable the module in Panel settings.",
 	"备份上传请求无效":                       "The backup upload request is invalid",
 	"备份包格式、完整性或兼容性校验失败":              "The backup package failed format, integrity, or compatibility validation",
@@ -1102,6 +1299,55 @@ var englishErrorTexts = map[string]string{
 	"该执行当前无法取消":           "The execution cannot currently be canceled",
 	"该执行已结束，无法取消":         "The execution has already ended and cannot be canceled",
 	"请刷新执行记录，确认任务状态后再操作。": "Refresh the execution records and confirm the task status before trying again.",
+	"上传证书参数格式不正确":         "The certificate-upload parameters have an invalid format",
+	"自签证书参数格式不正确":         "The self-signed certificate parameters have an invalid format",
+	"申请 ACME 证书参数格式不正确":   "The ACME certificate request parameters have an invalid format",
+	"网站绑定参数不完整":           "The website-binding parameters are incomplete",
+	"DNS 账号参数格式不正确":       "The DNS-account parameters have an invalid format",
+	"证书任务服务不可用":           "The certificate-task service is unavailable",
+	"证书部署服务不可用":           "The certificate-deployment service is unavailable",
+	"证书操作失败，请查看任务日志。":     "The certificate operation failed. Check the task log.",
+	"网站所属 Web Server 与当前运行实例不一致，请切换回网站所属 Web Server 后重试。":        "The website's Web Server does not match the current runtime instance. Switch back to the website's Web Server and retry.",
+	"证书或私钥文件为空，请重新上传包含证书和私钥的完整材料。":                               "The certificate or private-key file is empty. Upload complete certificate and private-key material again.",
+	"证书文件格式不可用，请上传 PEM 编码的有效证书文件。":                               "The certificate file format is invalid. Upload a valid PEM-encoded certificate file.",
+	"证书已过期，请重新申请或上传未过期的证书。":                                      "The certificate has expired. Request a new certificate or upload one that has not expired.",
+	"证书尚未生效，请检查服务器时间或稍后重试。":                                      "The certificate is not valid yet. Check the server time or retry later.",
+	"证书与私钥不匹配，请重新上传同一证书对应的私钥。":                                   "The certificate and private key do not match. Upload the private key for the same certificate again.",
+	"证书资源文件位置无效，请重新导入证书资源。":                                      "The certificate resource file location is invalid. Import the certificate resource again.",
+	"Caddy 配置目录或主配置文件不可用，请检查 Caddy 安装、服务配置和目录权限后重试。":             "The Caddy configuration directory or main configuration file is unavailable. Check the Caddy installation, service configuration, and directory permissions, then retry.",
+	"Web Server 配置校验失败，请检查当前站点配置及证书文件后重试。":                       "Web Server configuration validation failed. Check the current site configuration and certificate files, then retry.",
+	"Web Server 重载失败，当前配置已回滚，请检查服务状态和错误日志后重试。":                   "Web Server reload failed and the current configuration was rolled back. Check the service status and error log, then retry.",
+	"网站已停用，请先启用网站后再绑定证书。":                                        "The website is disabled. Enable it before binding a certificate.",
+	"域名没有有效的 A/AAAA DNS 记录，请先将域名解析到本服务器后再申请 HTTP-01 证书。":         "The domain has no valid A/AAAA DNS record. Point it to this server before requesting an HTTP-01 certificate.",
+	"HTTP-01 验证地址返回 403，请检查 DNS 是否指向本服务器，以及 CDN/WAF 是否拦截了验证请求。":  "The HTTP-01 validation URL returned 403. Check that DNS points to this server and that the CDN/WAF is not blocking the validation request.",
+	"HTTP-01 验证地址返回 404，请检查网站是否启用、80 端口是否可访问，以及 ACME 验证路由是否已发布。": "The HTTP-01 validation URL returned 404. Check that the website is enabled, port 80 is reachable, and the ACME validation route is published.",
+	"HTTP-01 验证路由发布失败，请检查网站所属 Web Server、配置校验和服务状态后重试。":          "Publishing the HTTP-01 validation route failed. Check the website's Web Server, configuration validation, and service status, then retry.",
+	"证书文件或存储目录不可写，请检查面板运行用户的目录权限后重试。":                            "The certificate file or storage directory is not writable. Check the Panel user's directory permissions, then retry.",
+	"证书存储目录或依赖文件不存在，请检查证书目录配置和磁盘状态后重试。":                          "The certificate storage directory or a dependency file does not exist. Check the certificate-directory configuration and disk status, then retry.",
+	"证书资源正被其他操作占用，请等待当前任务完成后重试。":                                 "The certificate resource is being used by another operation. Wait for the current task to finish, then retry.",
+	"证书存储目录配置无效，请检查目录是否为绝对路径并且可用。":                               "The certificate storage-directory configuration is invalid. Check that it is an available absolute path.",
+	"证书数据库尚未初始化，请检查面板启动状态和数据库配置。":                                "The certificate database is not initialized. Check the Panel startup status and database configuration.",
+	"证书签发器未配置，请检查证书任务服务配置后重试。":                                   "The certificate issuer is not configured. Check the certificate-task service configuration, then retry.",
+	"证书部署器未配置，请检查证书任务服务配置后重试。":                                   "The certificate deployer is not configured. Check the certificate-task service configuration, then retry.",
+	"DNS 账号或 DNS 挑战处理失败，请检查账号凭据、权限及域名 DNS 托管是否匹配后重试。":            "The DNS account or DNS challenge failed. Check the account credentials, permissions, and domain DNS hosting, then retry.",
+	"ACME 域名验证失败，请检查域名解析、验证方式和 CA 服务状态后重试。":                      "ACME domain validation failed. Check the domain resolution, validation method, and CA service status, then retry.",
+	"ACME 目录地址未配置，证书任务服务无法启动，请检查 ACME 配置后重试。":                    "The ACME directory URL is not configured, so the certificate-task service cannot start. Check the ACME configuration, then retry.",
+	"ACME 任务超时配置无效，请将超时时间设置为 1 到 120 分钟。":                        "The ACME task-timeout configuration is invalid. Set the timeout to between 1 and 120 minutes.",
+	"ACME 挑战目录配置无效，请检查目录是否为可用的绝对路径。":                             "The ACME challenge-directory configuration is invalid. Check that it is an available absolute path.",
+	"证书任务队列已满，请等待已有任务完成后重试。":                                     "The certificate-task queue is full. Wait for existing tasks to finish, then retry.",
+	"证书任务服务正在停止，请稍后重试。":                                          "The certificate-task service is stopping. Retry later.",
+	"当前已有证书任务正在执行，请等待任务完成后重试。":                                   "A certificate task is already running. Wait for it to finish, then retry.",
+	"现有证书不包含目标域名，请重新上传覆盖该域名的证书。":                                 "The existing certificate does not cover the target domain. Upload a certificate that covers it again.",
+	"证书资源创建失败，请查看证书任务详情或任务日志获取具体原因。":                             "Certificate resource creation failed. Check the certificate-task details or task log for the specific cause.",
+	"证书绑定失败，请查看任务日志。":                                            "Certificate binding failed. Check the task log.",
+	"证书资源或目标网站不存在，请刷新资源列表后重试。":                                   "The certificate resource or target website does not exist. Refresh the resource list and retry.",
+	"证书绑定资源读取失败，请检查证书资源和目标网站是否仍然存在。":                             "Reading the certificate-binding resource failed. Check that the certificate resource and target website still exist.",
+	"证书绑定校验失败，请检查证书格式、私钥匹配关系、有效期和网站域名范围。":                        "Certificate-binding validation failed. Check the certificate format, private-key match, validity period, and website domain coverage.",
+	"证书材料校验已通过，但 Web Server 部署失败，请检查 Web Server 错误日志。":           "The certificate material passed validation, but Web Server deployment failed. Check the Web Server error log.",
+	"Web Server 已完成证书部署，但绑定关系保存失败，系统已回滚部署，请检查数据库状态后重试。":          "Web Server deployed the certificate, but saving the binding failed and the deployment was rolled back. Check the database status, then retry.",
+	"自签证书域名不能为空，请至少填写一个有效域名":                                     "Self-signed certificate domains must not be empty. Enter at least one valid domain.",
+	"自签证书域名不能超过 100 个":                                           "Self-signed certificate domains must not exceed 100 items.",
+	"自签证书域名格式不正确，请检查域名是否包含空格或格式不完整":                              "The self-signed certificate domain format is invalid. Check for spaces or incomplete domain names.",
 	"当前 Panel 进程未持有该执行的活动上下文，请刷新执行记录；如果仍显示运行中，" +
 		"请检查 Panel 是否发生重启或采用多实例部署。": "The current Panel process does not own the active execution context. Refresh the execution records. If it still appears to be running, check whether Panel restarted or is deployed with multiple instances.",
 }
@@ -1129,11 +1375,13 @@ var englishOperationPreviewErrorTexts = map[string]string{
 	"请检查策略动作、模板和参数取值后重试。":                   "Check the policy action, template, and parameter values before retrying.",
 	"目标入侵防护策略不存在，请刷新后重试":                    "The target intrusion-protection policy does not exist. Refresh and try again",
 	"目标地址属于私网、回环、链路本地、可信代理、Panel 监听地址或当前请求来源 IP，不能封禁。": "The target address is private, loopback, link-local, a trusted proxy, a Panel listening address, or the current request IP, and cannot be banned.",
-	"权限上下文不可用":      "The authorization context is unavailable",
-	"权限上下文无效":       "The authorization context is invalid",
-	"服务控制组件参数不正确":   "The service-control component parameters are invalid",
-	"当前角色无权控制该组件服务": "The current role cannot control this component service",
-	"网站创建参数无效":      "The website creation parameters are invalid",
+	"权限上下文不可用":               "The authorization context is unavailable",
+	"权限上下文无效":                "The authorization context is invalid",
+	"服务控制组件参数不正确":            "The service-control component parameters are invalid",
+	"当前角色无权控制该组件服务":          "The current role cannot control this component service",
+	"网站创建参数无效":               "The website creation parameters are invalid",
+	"请检查网站设置字段后重试。":          "Check the website settings fields and retry.",
+	"请检查网站名称、域名、类型和相关参数后重试。": "Check the website name, domain, type, and related parameters, then retry.",
 	"网站根目录必须是受管网站根目录下的相对目录，不能越界或包含符号链接": "The website root directory must be relative to the managed website root and must not escape it or contain symbolic links",
 	"网站归属 Web Server 不一致":                "The website belongs to a different Web Server",
 	"网站归属 Web Server 不可修改":               "The website's Web Server cannot be changed",

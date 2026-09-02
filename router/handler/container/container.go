@@ -891,7 +891,7 @@ func containerActionCommandError(c *gin.Context, action string, err error) {
 		detail = "Docker 未返回可用的错误摘要，请结合请求时间查看 Docker daemon 日志。"
 	}
 	appError := core.NewErrorWithDetail(core.ErrOperationFailed, title, detail)
-	c.JSON(http.StatusConflict, core.ErrorResponse(appError))
+	c.JSON(http.StatusConflict, core.ErrorResponseForLocale(appError, c.GetString("locale")))
 }
 
 func containerActionStateError(c *gin.Context, action string, state gin.H) {
@@ -914,7 +914,7 @@ func containerActionStateError(c *gin.Context, action string, state gin.H) {
 		detail = "Docker 未返回可用的容器启动错误摘要，请结合容器状态和 Docker daemon 日志继续诊断。"
 	}
 	appError := core.NewErrorWithDetail(core.ErrOperationFailed, title, detail)
-	response := core.ErrorResponse(appError)
+	response := core.ErrorResponseForLocale(appError, c.GetString("locale"))
 	response.Data = state
 	c.JSON(http.StatusConflict, response)
 }

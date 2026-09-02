@@ -1582,6 +1582,10 @@ func writeExecutionError(c *gin.Context, err error) {
 		code, message = core.ErrConfigApplyFailed, "Web Server 重载失败，原配置已回滚"
 	case errors.Is(err, fail2banservice.ErrValidation):
 		code, message = core.ErrValidationFailed, "入侵防护参数无效，请检查后重试"
+		detail = strings.TrimSpace(strings.TrimPrefix(err.Error(), fail2banservice.ErrValidation.Error()+":"))
+		if detail == "" {
+			detail = "请检查策略动作、模板和参数取值后重试。"
+		}
 	case errors.Is(err, fail2banservice.ErrRevisionConflict):
 		code, message = core.ErrResourceStateInvalid, "规则已被其他操作修改，请刷新后重试"
 	case errors.Is(err, fail2banservice.ErrProtectedAddress):

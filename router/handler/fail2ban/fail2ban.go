@@ -212,7 +212,14 @@ func respond(c *gin.Context, data any, err error) {
 	case errors.Is(err, gorm.ErrRecordNotFound):
 		code, message = core.ErrNotFound, "目标入侵防护资源不存在"
 	}
-	core.HandleError(c, core.NewErrorWithDetail(code, message, err.Error()))
+	detail := err.Error()
+	if errors.Is(err, fail2banservice.ErrValidation) {
+		detail = strings.TrimSpace(strings.TrimPrefix(detail, fail2banservice.ErrValidation.Error()+":"))
+		if detail == "" {
+			detail = "请检查策略动作、模板和参数取值后重试。"
+		}
+	}
+	core.HandleError(c, core.NewErrorWithDetail(code, message, detail))
 }
 
 func pagination(c *gin.Context) (int, int) {
