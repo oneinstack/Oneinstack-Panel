@@ -37,6 +37,7 @@ type MonitorRule struct {
 	ConsecutiveSamples int        `gorm:"not null" json:"consecutiveSamples"`
 	CooldownMinutes    int        `gorm:"not null" json:"cooldownMinutes"`
 	Severity           string     `gorm:"size:16;index;not null" json:"severity"`
+	SeverityName       string     `gorm:"-" json:"severityName,omitempty"`
 	Enabled            bool       `gorm:"index;not null" json:"enabled"`
 	SilencedUntil      *time.Time `gorm:"index" json:"silencedUntil,omitempty"`
 	CreatedAt          time.Time  `json:"createdAt"`

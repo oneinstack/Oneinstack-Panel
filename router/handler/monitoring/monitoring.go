@@ -136,6 +136,12 @@ func ListRules(c *gin.Context) {
 		return
 	}
 	result, err := manager.ListRules()
+	if err == nil {
+		locale := c.GetString("locale")
+		for index := range result {
+			result[index].SeverityName = i18n.LocalizeMonitorSeverity(locale, result[index].Severity)
+		}
+	}
 	writeResult(c, result, err)
 }
 
