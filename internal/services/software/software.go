@@ -287,6 +287,30 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 	if err != nil {
 		return nil, err
 	}
+	versionOptions := make(map[string][]output.VersionOption)
+	keys := make([]string, 0, len(paginated.Data))
+	for _, item := range paginated.Data {
+		keys = append(keys, item.Key)
+	}
+	if len(keys) > 0 {
+		var versionRows []models.Software
+		if err := app.DB().Where("`key` IN ? AND (catalog_visible = ? OR installed = ?)", keys, true, true).
+			Order("`key` ASC, version_order ASC, version ASC").Find(&versionRows).Error; err != nil {
+			return nil, err
+		}
+		for _, row := range versionRows {
+			versionOptions[row.Key] = append(versionOptions[row.Key], output.VersionOption{
+				Version:            row.Version,
+				Line:               row.VersionLine,
+				Channel:            row.CatalogChannel,
+				Enabled:            row.CatalogVisible || row.Installed,
+				Recommended:        row.Recommended,
+				AllowCustomVersion: row.AllowCustomVersion,
+				Installable:        row.Installable,
+				ReleaseNotes:       row.ReleaseNotes,
+			})
+		}
+	}
 
 	failedTaskByKey := make(map[string]models.SoftwareTask)
 	latestTaskByKey := make(map[string]models.SoftwareTask)
@@ -335,6 +359,7 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 			LatestPackageVersion:    item.LatestPackageVersion,
 			UpdateReason:            softwareUpdateReason(item),
 			RecommendedVersion:      item.RecommendedVersion,
+			VersionOptions:          versionOptions[item.Key],
 			Installable:             item.Installable,
 			CatalogManaged:          item.CatalogManaged,
 			IsUpdate:                item.IsUpdate,

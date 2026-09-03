@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"oneinstack/internal/models"
+	"oneinstack/internal/services/scriptregistry"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -264,6 +265,11 @@ func (m *Manager) submit(request InstallRequest, requestedBy int64) (*models.Sof
 		request.RestoreFromID != "" {
 		return nil, errors.New("configuration payload is only valid for configure tasks")
 	}
+	if request.Operation == "uninstall" {
+		if err := validateUninstallParameters(request.Parameters); err != nil {
+			return nil, err
+		}
+	}
 	if request.Key == "" {
 		return nil, errors.New("software key and version are required")
 	}
@@ -356,6 +362,9 @@ func (m *Manager) submit(request InstallRequest, requestedBy int64) (*models.Sof
 		"port":     request.Port,
 		"username": request.Username,
 		"switch":   request.SwitchRequested,
+	}
+	if request.Operation == "uninstall" {
+		safeParameterValues["dataPolicy"] = uninstallDataPolicy(request.Parameters)
 	}
 	if request.Operation == "configure" {
 		safeParameterValues["revision"] = request.Revision
@@ -827,12 +836,23 @@ func (m *Manager) validateCatalogInstall(key, version string) error {
 		return nil
 	}
 	var catalogRow models.Software
-	if err := m.db.
-		Where("`key` = ? AND version = ?", key, version).
-		First(&catalogRow).Error; errors.Is(err, gorm.ErrRecordNotFound) {
-		return fmt.Errorf("software %s %s is not published by Center", key, version)
-	} else if err != nil {
-		return fmt.Errorf("read Center software catalog entry: %w", err)
+	result := m.db.Where("`key` = ? AND version = ?", key, version).First(&catalogRow)
+	if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+		result = m.db.Where(
+			"`key` = ? AND catalog_channel = ? AND allow_custom_version = ? AND version_line <> ''",
+			key, state.Channel, true,
+		).Order("version_order ASC, id ASC").First(&catalogRow)
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("software %s %s is not published by Center", key, version)
+		}
+		if result.Error != nil {
+			return fmt.Errorf("read Center custom-version policy: %w", result.Error)
+		}
+		if !scriptregistry.SupportsSoftwareVersion([]string{catalogRow.VersionLine}, version) {
+			return fmt.Errorf("software %s version %s is outside the published version line %s", key, version, catalogRow.VersionLine)
+		}
+	} else if result.Error != nil {
+		return fmt.Errorf("read Center software catalog entry: %w", result.Error)
 	}
 	if !catalogRow.CatalogManaged || !catalogRow.CatalogVisible {
 		return fmt.Errorf("software %s %s has been removed from the Center catalog", key, version)
@@ -841,6 +861,43 @@ func (m *Manager) validateCatalogInstall(key, version string) error {
 		return fmt.Errorf("software %s %s installation is disabled by Center", key, version)
 	}
 	return nil
+}
+
+func validateUninstallParameters(parameters map[string]string) error {
+	policy := uninstallDataPolicy(parameters)
+	confirmed := uninstallDataDeletionConfirmed(parameters)
+	switch policy {
+	case "preserve":
+		return nil
+	case "delete":
+		if !confirmed {
+			return errors.New("deleting component data requires confirmDataDeletion=true")
+		}
+		return nil
+	default:
+		return errors.New("dataPolicy must be preserve or delete")
+	}
+}
+
+func uninstallDataPolicy(parameters map[string]string) string {
+	policy := "preserve"
+	for key, value := range parameters {
+		switch strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(key), "-", "_"), ".", "_")) {
+		case "uninstall_data_policy", "data_policy":
+			policy = strings.ToLower(strings.TrimSpace(value))
+		}
+	}
+	return policy
+}
+
+func uninstallDataDeletionConfirmed(parameters map[string]string) bool {
+	for key, value := range parameters {
+		switch strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(key), "-", "_"), ".", "_")) {
+		case "uninstall_confirm_data_deletion", "confirm_data_deletion":
+			return strings.EqualFold(strings.TrimSpace(value), "true")
+		}
+	}
+	return false
 }
 
 func (m *Manager) validateExclusiveDatabaseInstall(component string) error {

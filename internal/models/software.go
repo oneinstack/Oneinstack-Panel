@@ -84,6 +84,8 @@ type Software struct {
 	CatalogVisible          bool      `json:"catalog_visible" gorm:"not null;default:true;index"`
 	Installable             bool      `json:"installable" gorm:"not null;default:true"`
 	Recommended             bool      `json:"recommended" gorm:"not null;default:false"`
+	VersionLine             string    `json:"versionLine,omitempty" gorm:"size:32;index"`
+	AllowCustomVersion      bool      `json:"allowCustomVersion" gorm:"not null;default:false"`
 	CatalogOrder            int       `json:"catalog_order" gorm:"not null;default:0;index"`
 	VersionOrder            int       `json:"version_order" gorm:"not null;default:0"`
 	CatalogRevision         string    `json:"catalog_revision" gorm:"size:64"`

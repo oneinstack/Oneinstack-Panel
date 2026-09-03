@@ -143,7 +143,17 @@ func RemoveSoftware(c *gin.Context) {
 		core.HandleError(c, appErr)
 		return
 	}
-	task, err := manager.SubmitUninstallWithParameters(req.Name, req.Version, req.Parameters, userID)
+	parameters := make(map[string]string, len(req.Parameters)+2)
+	for key, value := range req.Parameters {
+		parameters[key] = value
+	}
+	if req.DataPolicy != "" {
+		parameters["UNINSTALL_DATA_POLICY"] = req.DataPolicy
+	}
+	if req.ConfirmDataDeletion {
+		parameters["UNINSTALL_CONFIRM_DATA_DELETION"] = "true"
+	}
+	task, err := manager.SubmitUninstallWithParameters(req.Name, req.Version, parameters, userID)
 	if err != nil {
 		appErr := core.WrapError(err, core.ErrBadRequest, "创建卸载任务失败")
 		core.HandleError(c, appErr)

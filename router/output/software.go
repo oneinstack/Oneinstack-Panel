@@ -1,32 +1,44 @@
 package output
 
 type Software struct {
-	Id                      int          `json:"id"`
-	Name                    string       `json:"name"`
-	Describe                string       `json:"describe"`
-	Key                     string       `json:"key"`
-	Component               string       `json:"component"`
-	Icon                    string       `json:"icon"`
-	Type                    string       `json:"type"`
-	Status                  int          `json:"status"` //0待安装,1安装中,2安装成功,3安装失败
-	Resource                string       `json:"resource"`
-	Log                     string       `json:"log"`
-	Installed               bool         `json:"installed"`
-	Versions                []string     `json:"versions"`
-	InstallVersion          string       `json:"install_version"`
-	Port                    string       `json:"port,omitempty"`
-	InstalledPackageVersion string       `json:"installedPackageVersion,omitempty"`
-	LatestPackageVersion    string       `json:"latestPackageVersion,omitempty"`
-	UpdateReason            string       `json:"updateReason,omitempty"`
-	RecommendedVersion      string       `json:"recommendedVersion,omitempty"`
-	Installable             bool         `json:"installable"`
-	CatalogManaged          bool         `json:"catalogManaged"`
-	IsUpdate                bool         `json:"isUpdate"`
-	Tags                    string       `json:"tags"`
-	ManageScopes            []string     `json:"manageScopes,omitempty"`
-	ServiceName             string       `json:"serviceName,omitempty"`
-	Params                  []*SoftParam `json:"params"`
-	FailureMessage          string       `json:"failureMessage,omitempty"`
+	Id                      int             `json:"id"`
+	Name                    string          `json:"name"`
+	Describe                string          `json:"describe"`
+	Key                     string          `json:"key"`
+	Component               string          `json:"component"`
+	Icon                    string          `json:"icon"`
+	Type                    string          `json:"type"`
+	Status                  int             `json:"status"` //0待安装,1安装中,2安装成功,3安装失败
+	Resource                string          `json:"resource"`
+	Log                     string          `json:"log"`
+	Installed               bool            `json:"installed"`
+	Versions                []string        `json:"versions"`
+	InstallVersion          string          `json:"install_version"`
+	VersionOptions          []VersionOption `json:"versionOptions,omitempty"`
+	Port                    string          `json:"port,omitempty"`
+	InstalledPackageVersion string          `json:"installedPackageVersion,omitempty"`
+	LatestPackageVersion    string          `json:"latestPackageVersion,omitempty"`
+	UpdateReason            string          `json:"updateReason,omitempty"`
+	RecommendedVersion      string          `json:"recommendedVersion,omitempty"`
+	Installable             bool            `json:"installable"`
+	CatalogManaged          bool            `json:"catalogManaged"`
+	IsUpdate                bool            `json:"isUpdate"`
+	Tags                    string          `json:"tags"`
+	ManageScopes            []string        `json:"manageScopes,omitempty"`
+	ServiceName             string          `json:"serviceName,omitempty"`
+	Params                  []*SoftParam    `json:"params"`
+	FailureMessage          string          `json:"failureMessage,omitempty"`
+}
+
+type VersionOption struct {
+	Version            string `json:"version"`
+	Line               string `json:"line,omitempty"`
+	Channel            string `json:"channel"`
+	Enabled            bool   `json:"enabled"`
+	Recommended        bool   `json:"recommended,omitempty"`
+	AllowCustomVersion bool   `json:"allowCustomVersion,omitempty"`
+	Installable        bool   `json:"installable"`
+	ReleaseNotes       string `json:"releaseNotes,omitempty"`
 }
 
 type SoftParam struct {

@@ -13,11 +13,14 @@ import (
 )
 
 var (
-	componentIDPattern  = regexp.MustCompile(`^[a-z][a-z0-9-]{1,63}$`)
-	versionPattern      = regexp.MustCompile(`^v?[0-9]+(?:\.[0-9]+){1,2}(?:[-+][0-9A-Za-z.-]+)?$`)
-	parameterPattern    = regexp.MustCompile(`^[A-Z][A-Z0-9_]{1,63}$`)
-	runtimeGroupPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{1,63}$`)
-	serviceNamePattern  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.@-]{0,127}$`)
+	componentIDPattern         = regexp.MustCompile(`^[a-z][a-z0-9-]{1,63}$`)
+	versionPattern             = regexp.MustCompile(`^v?[0-9]+(?:\.[0-9]+){1,2}(?:[-+][0-9A-Za-z.-]+)?$`)
+	softwareVersionPattern     = regexp.MustCompile(`^v?[0-9]+(?:\.[0-9]+){1,2}(?:[-+][0-9A-Za-z.-]+)?$`)
+	softwareVersionLinePattern = regexp.MustCompile(`^v?[0-9]+(?:\.[0-9]+)*\.x$`)
+	parameterPattern           = regexp.MustCompile(`^[A-Z][A-Z0-9_]{1,63}$`)
+	configurationKeyPattern    = regexp.MustCompile(`^[a-z][A-Za-z0-9]{0,63}$`)
+	runtimeGroupPattern        = regexp.MustCompile(`^[a-z][a-z0-9-]{1,63}$`)
+	serviceNamePattern         = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.@-]{0,127}$`)
 )
 
 type Manifest struct {
@@ -30,6 +33,7 @@ type Manifest struct {
 	ServiceName   string        `json:"serviceName,omitempty" yaml:"serviceName,omitempty"`
 	Actions       Actions       `json:"actions" yaml:"actions"`
 	Parameters    []Parameter   `json:"parameters,omitempty" yaml:"parameters,omitempty"`
+	Configuration Configuration `json:"configuration,omitempty" yaml:"configuration,omitempty"`
 	Timeouts      Timeouts      `json:"timeouts" yaml:"timeouts"`
 }
 
@@ -88,6 +92,23 @@ type Parameter struct {
 	Secret      bool   `json:"secret,omitempty" yaml:"secret,omitempty"`
 	Default     string `json:"default,omitempty" yaml:"default,omitempty"`
 	Description string `json:"description,omitempty" yaml:"description,omitempty"`
+}
+
+type Configuration struct {
+	ApplyMode string               `json:"applyMode,omitempty" yaml:"applyMode,omitempty"`
+	Fields    []ConfigurationField `json:"fields,omitempty" yaml:"fields,omitempty"`
+}
+
+type ConfigurationField struct {
+	Key         string   `json:"key" yaml:"key"`
+	Label       string   `json:"label" yaml:"label"`
+	Type        string   `json:"type" yaml:"type"`
+	Env         string   `json:"env" yaml:"env"`
+	Unit        string   `json:"unit,omitempty" yaml:"unit,omitempty"`
+	Description string   `json:"description,omitempty" yaml:"description,omitempty"`
+	Min         *int     `json:"min,omitempty" yaml:"min,omitempty"`
+	Max         *int     `json:"max,omitempty" yaml:"max,omitempty"`
+	Options     []string `json:"options,omitempty" yaml:"options,omitempty"`
 }
 
 type Timeouts struct {
@@ -177,6 +198,12 @@ func (m Manifest) validate() error {
 	if len(m.Component.SoftwareVersions) == 0 {
 		return fmt.Errorf("component softwareVersions is required")
 	}
+	for _, supported := range m.Component.SoftwareVersions {
+		supported = strings.TrimSpace(supported)
+		if supported == "" {
+			return fmt.Errorf("component contains an empty software version")
+		}
+	}
 	switch m.Component.Channel {
 	case "stable", "beta", "development":
 	default:
@@ -259,6 +286,37 @@ func (m Manifest) validate() error {
 			return fmt.Errorf("secret parameter %s cannot have a default", parameter.Name)
 		}
 	}
+	if len(m.Configuration.Fields) > 0 {
+		if m.Actions.ConfigGet == "" || m.Actions.ConfigApply == "" {
+			return fmt.Errorf("configuration fields require configGet and configApply actions")
+		}
+		switch m.Configuration.ApplyMode {
+		case "reload", "restart":
+		default:
+			return fmt.Errorf("invalid configuration apply mode %q", m.Configuration.ApplyMode)
+		}
+		seen := make(map[string]struct{}, len(m.Configuration.Fields))
+		for _, field := range m.Configuration.Fields {
+			if !configurationKeyPattern.MatchString(field.Key) || strings.TrimSpace(field.Label) == "" {
+				return fmt.Errorf("invalid configuration field %q", field.Key)
+			}
+			if _, exists := seen[field.Key]; exists {
+				return fmt.Errorf("duplicate configuration field %q", field.Key)
+			}
+			seen[field.Key] = struct{}{}
+			if field.Env != "" && !parameterPattern.MatchString(field.Env) {
+				return fmt.Errorf("invalid configuration environment parameter %q", field.Env)
+			}
+			switch field.Type {
+			case "string", "integer", "boolean", "select", "port", "path", "worker_processes":
+			default:
+				return fmt.Errorf("invalid configuration field type %q", field.Type)
+			}
+			if field.Min != nil && field.Max != nil && *field.Min > *field.Max {
+				return fmt.Errorf("configuration field %s has an invalid range", field.Key)
+			}
+		}
+	}
 	return nil
 }
 
@@ -282,8 +340,29 @@ func (m Manifest) actionMap() map[string]string {
 }
 
 func (m Manifest) supportsSoftwareVersion(requested string) bool {
-	for _, supported := range m.Component.SoftwareVersions {
-		if supported == "*" || supported == requested {
+	return SupportsSoftwareVersion(m.Component.SoftwareVersions, requested)
+}
+
+func SupportsSoftwareVersion(supported []string, requested string) bool {
+	requested = strings.TrimSpace(requested)
+	for _, version := range supported {
+		version = strings.TrimSpace(version)
+		if version == "*" || version == requested {
+			return true
+		}
+	}
+	if !softwareVersionPattern.MatchString(requested) {
+		return false
+	}
+	for _, version := range supported {
+		version = strings.TrimSpace(version)
+		if !softwareVersionLinePattern.MatchString(version) {
+			continue
+		}
+		prefix := strings.TrimSuffix(version, ".x")
+		requestedParts := strings.Split(strings.TrimPrefix(requested, "v"), ".")
+		lineParts := strings.Split(strings.TrimPrefix(prefix, "v"), ".")
+		if len(requestedParts) >= len(lineParts) && strings.Join(requestedParts[:len(lineParts)], ".") == strings.Join(lineParts, ".") {
 			return true
 		}
 	}

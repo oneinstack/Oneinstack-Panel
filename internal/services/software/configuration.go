@@ -191,6 +191,36 @@ func componentConfigurationDefinition(component string) (configurationDefinition
 	return result, nil
 }
 
+func manifestConfigurationDefinition(
+	base configurationDefinition,
+	manifest scriptregistry.Manifest,
+) (configurationDefinition, error) {
+	if len(manifest.Configuration.Fields) == 0 {
+		return base, nil
+	}
+	result := base
+	result.ApplyMode = manifest.Configuration.ApplyMode
+	result.Fields = make([]ConfigurationField, 0, len(manifest.Configuration.Fields))
+	result.Environment = make(map[string]string, len(manifest.Configuration.Fields))
+	for _, field := range manifest.Configuration.Fields {
+		if strings.TrimSpace(field.Env) == "" {
+			return configurationDefinition{}, fmt.Errorf("configuration field %s has no action environment parameter", field.Key)
+		}
+		result.Fields = append(result.Fields, ConfigurationField{
+			Key:         field.Key,
+			Label:       field.Label,
+			Type:        field.Type,
+			Unit:        field.Unit,
+			Description: field.Description,
+			Min:         field.Min,
+			Max:         field.Max,
+			Options:     append([]string(nil), field.Options...),
+		})
+		result.Environment[field.Key] = field.Env
+	}
+	return result, nil
+}
+
 func NormalizeConfigurationValues(component string, values map[string]string) (map[string]string, error) {
 	definition, err := componentConfigurationDefinition(component)
 	if err != nil {
@@ -277,6 +307,10 @@ func (installer *Installer) InspectServiceConfiguration(
 	if err != nil {
 		return ComponentConfiguration{}, err
 	}
+	definition, err = manifestConfigurationDefinition(definition, componentPackage.Manifest)
+	if err != nil {
+		return ComponentConfiguration{}, err
+	}
 	scriptInfo, err := scriptInfoFromPackage(componentPackage, "configGet")
 	if err != nil {
 		return ComponentConfiguration{}, err
@@ -318,6 +352,10 @@ func (installer *Installer) ApplyServiceConfigurationTask(
 		return "", err
 	}
 	componentPackage, err := installer.resolveConfigurationPackage(ctx, definition, version)
+	if err != nil {
+		return "", err
+	}
+	definition, err = manifestConfigurationDefinition(definition, componentPackage.Manifest)
 	if err != nil {
 		return "", err
 	}

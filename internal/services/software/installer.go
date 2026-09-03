@@ -616,6 +616,23 @@ func (installer *Installer) setScriptParams(scriptInfo *script.ScriptInfo, param
 			}
 		}
 	}
+	if params.Port != "" {
+		for _, parameter := range scriptInfo.ParameterSpecs {
+			if strings.EqualFold(strings.TrimSpace(parameter.Type), "port") {
+				scriptInfo.Params[parameter.Name] = params.Port
+				break
+			}
+		}
+	}
+	if params.Username != "" {
+		for _, parameter := range scriptInfo.ParameterSpecs {
+			name := strings.ToUpper(strings.TrimSpace(parameter.Name))
+			if name == "RUN_USER" || name == "USERNAME" || name == "USER" {
+				scriptInfo.Params[parameter.Name] = params.Username
+				break
+			}
+		}
+	}
 	// Component-specific install fields are accepted only when declared by the
 	// resolved signed manifest. This supports new Center components without
 	// hard-coding their parameter names while preventing arbitrary environment
@@ -624,7 +641,8 @@ func (installer *Installer) setScriptParams(scriptInfo *script.ScriptInfo, param
 		for key, value := range params.Parameters {
 			parameterKey := strings.NewReplacer("-", "_", ".", "_").Replace(strings.ToLower(key))
 			manifestKey := strings.NewReplacer("-", "_", ".", "_").Replace(strings.ToLower(parameter.Name))
-			if parameterKey == manifestKey && value != "" {
+			aliasMatch := parameterKey == "port" && strings.HasSuffix(manifestKey, "_port")
+			if (parameterKey == manifestKey || aliasMatch) && value != "" {
 				scriptInfo.Params[parameter.Name] = value
 				break
 			}

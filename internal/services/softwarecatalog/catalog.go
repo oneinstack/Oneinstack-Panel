@@ -33,10 +33,11 @@ const (
 )
 
 var (
-	identifier      = regexp.MustCompile(`^[a-z][a-z0-9-]{1,63}$`)
-	softwareVersion = regexp.MustCompile(`^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$`)
-	serviceName     = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.@-]{0,127}$`)
-	runtimeGroup    = regexp.MustCompile(`^[a-z][a-z0-9-]{1,63}$`)
+	identifier          = regexp.MustCompile(`^[a-z][a-z0-9-]{1,63}$`)
+	softwareVersion     = regexp.MustCompile(`^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$`)
+	softwareVersionLine = regexp.MustCompile(`^v?[0-9]+(?:\.[0-9]+)*\.x$`)
+	serviceName         = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.@-]{0,127}$`)
+	runtimeGroup        = regexp.MustCompile(`^[a-z][a-z0-9-]{1,63}$`)
 )
 
 type Parameter struct {
@@ -49,12 +50,14 @@ type Parameter struct {
 }
 
 type Version struct {
-	Version      string `json:"version"`
-	Channel      string `json:"channel"`
-	Enabled      bool   `json:"enabled"`
-	Recommended  bool   `json:"recommended,omitempty"`
-	Order        int    `json:"order,omitempty"`
-	ReleaseNotes string `json:"releaseNotes,omitempty"`
+	Version            string `json:"version"`
+	Line               string `json:"line,omitempty"`
+	Channel            string `json:"channel"`
+	Enabled            bool   `json:"enabled"`
+	Recommended        bool   `json:"recommended,omitempty"`
+	AllowCustomVersion bool   `json:"allowCustomVersion,omitempty"`
+	Order              int    `json:"order,omitempty"`
+	ReleaseNotes       string `json:"releaseNotes,omitempty"`
 }
 
 type Product struct {
@@ -395,6 +398,8 @@ func (m *Manager) apply(document Document, packageVersions, publishedPackageVers
 					"catalog_visible":        product.Visible && version.Enabled,
 					"installable":            product.Installable && version.Enabled,
 					"recommended":            version.Recommended,
+					"version_line":           version.Line,
+					"allow_custom_version":   version.AllowCustomVersion,
 					"catalog_order":          product.Order,
 					"version_order":          version.Order,
 					"catalog_revision":       document.Revision,
@@ -873,6 +878,12 @@ func validateProduct(product Product) error {
 	for _, version := range product.Versions {
 		if !softwareVersion.MatchString(version.Version) {
 			return fmt.Errorf("software product %s has invalid version %q", product.Key, version.Version)
+		}
+		if version.Line != "" && !softwareVersionLine.MatchString(version.Line) {
+			return fmt.Errorf("software product %s has invalid version line %q", product.Key, version.Line)
+		}
+		if version.AllowCustomVersion && version.Line == "" {
+			return fmt.Errorf("software product %s custom versions require a version line", product.Key)
 		}
 		switch version.Channel {
 		case "stable", "beta", "development":

@@ -832,12 +832,19 @@ func compatibleWithHost(manifest Manifest, host Host) bool {
 			continue
 		}
 		for _, version := range system.Versions {
-			if version == "*" || version == host.SystemVersion {
+			if systemVersionMatches(version, host.SystemVersion) {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+func systemVersionMatches(supported, actual string) bool {
+	supported = strings.TrimSpace(supported)
+	actual = strings.TrimSpace(actual)
+	return supported == "*" || supported == actual ||
+		(!strings.Contains(supported, ".") && strings.HasPrefix(actual, supported+"."))
 }
 
 func compareVersions(left, right string) int {
