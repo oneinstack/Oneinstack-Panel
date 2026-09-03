@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -226,6 +227,10 @@ func NormalizeConfigurationValues(component string, values map[string]string) (m
 	if err != nil {
 		return nil, err
 	}
+	return normalizeConfigurationValues(definition, values)
+}
+
+func normalizeConfigurationValues(definition configurationDefinition, values map[string]string) (map[string]string, error) {
 	if len(values) != len(definition.Fields) {
 		return nil, errors.New("configuration must contain every managed field and no unknown fields")
 	}
@@ -254,6 +259,31 @@ func NormalizeConfigurationValues(component string, values map[string]string) (m
 		case "select":
 			if !containsConfigurationOption(field.Options, value) {
 				return nil, fmt.Errorf("configuration field %s has an unsupported value", field.Key)
+			}
+		case "port":
+			number, parseErr := strconv.Atoi(value)
+			minimum, maximum := 1, 65535
+			if field.Min != nil {
+				minimum = *field.Min
+			}
+			if field.Max != nil {
+				maximum = *field.Max
+			}
+			if parseErr != nil || number < minimum || number > maximum {
+				return nil, fmt.Errorf("configuration field %s is outside the allowed range", field.Key)
+			}
+			value = strconv.Itoa(number)
+		case "path":
+			if value == "" || !strings.HasPrefix(value, "/") || filepath.Clean(value) != value {
+				return nil, fmt.Errorf("configuration field %s must be a normalized absolute path", field.Key)
+			}
+			switch value {
+			case "/", "/usr", "/usr/local", "/etc", "/var", "/data", "/home", "/root":
+				return nil, fmt.Errorf("configuration field %s is too broad", field.Key)
+			}
+		case "string":
+			if value == "" {
+				return nil, fmt.Errorf("configuration field %s is required", field.Key)
 			}
 		case "worker_processes":
 			if value != "auto" {
@@ -347,15 +377,15 @@ func (installer *Installer) ApplyServiceConfigurationTask(
 	if !configurationHashPattern.MatchString(revision) {
 		return "", errors.New("invalid configuration revision")
 	}
-	normalized, err := NormalizeConfigurationValues(definition.Component, values)
-	if err != nil {
-		return "", err
-	}
 	componentPackage, err := installer.resolveConfigurationPackage(ctx, definition, version)
 	if err != nil {
 		return "", err
 	}
 	definition, err = manifestConfigurationDefinition(definition, componentPackage.Manifest)
+	if err != nil {
+		return "", err
+	}
+	normalized, err := normalizeConfigurationValues(definition, values)
 	if err != nil {
 		return "", err
 	}
@@ -463,7 +493,7 @@ func parseComponentConfiguration(
 	for _, field := range definition.Fields {
 		values[field.Key] = fields[field.Key]
 	}
-	values, err := NormalizeConfigurationValues(definition.Component, values)
+	values, err := normalizeConfigurationValues(definition, values)
 	if err != nil {
 		return ComponentConfiguration{}, fmt.Errorf("component configuration output is invalid: %w", err)
 	}
@@ -487,7 +517,12 @@ func PreviewConfiguration(
 	if revision != current.Revision {
 		return ConfigurationPreview{}, ErrConfigurationConflict
 	}
-	normalized, err := NormalizeConfigurationValues(current.Component, values)
+	definition := configurationDefinition{
+		Component: current.Component,
+		ApplyMode: current.ApplyMode,
+		Fields:    append([]ConfigurationField(nil), current.Fields...),
+	}
+	normalized, err := normalizeConfigurationValues(definition, values)
 	if err != nil {
 		return ConfigurationPreview{}, err
 	}
