@@ -57,6 +57,9 @@ func (m *Manager) RestoreOffline(ctx context.Context, id, passphrase string) (*R
 		return nil, err
 	}
 	defer prepared.Cleanup()
+	if err := m.validateWebServerCompatibility(prepared.WebServerComponent); err != nil {
+		return nil, err
+	}
 	operationID, err := randomBackupID()
 	if err != nil {
 		return nil, err

@@ -267,6 +267,10 @@ func handlePanelBackupError(c *gin.Context, err error, message string) {
 		core.HandleError(c, core.WrapError(err, core.ErrNotFound, "Panel 备份不存在"))
 	case errors.Is(err, panelbackup.ErrInvalidPassphrase):
 		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "备份密码错误或不符合要求"))
+	case errors.Is(err, panelbackup.ErrWebServerMismatch):
+		core.HandleError(c, core.NewErrorWithDetail(
+			core.ErrConflict, "备份与当前 Web Server 不兼容", err.Error(),
+		))
 	case errors.Is(err, panelbackup.ErrInvalidBackup):
 		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, panelbackup.ValidationFailureMessage(err)))
 	case errors.Is(err, panelbackup.ErrRestoreBusy), errors.Is(err, panelbackup.ErrRecoveryNeeded):

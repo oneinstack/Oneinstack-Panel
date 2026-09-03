@@ -2,6 +2,8 @@ package panelbackup
 
 import (
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 )
 
@@ -26,7 +28,65 @@ var (
 	ErrInvalidPassphrase = errors.New("invalid panel backup passphrase")
 	ErrRestoreBusy       = errors.New("panel restore is already running")
 	ErrRecoveryNeeded    = errors.New("an interrupted panel restore must be recovered")
+	ErrWebServerMismatch = errors.New("panel backup Web Server mismatch")
 )
+
+// WebServerMismatchError prevents a database snapshot from being restored
+// onto a different Web Server runtime. The Panel backup does not contain the
+// Web Server binary, systemd unit, or its managed configuration tree, so
+// silently restoring only the Panel records would leave the installation in
+// a mixed state.
+type WebServerMismatchError struct {
+	BackupComponent  string
+	CurrentComponent string
+}
+
+func (e *WebServerMismatchError) Error() string {
+	if e == nil {
+		return ErrWebServerMismatch.Error()
+	}
+	backup := webServerDisplayName(e.BackupComponent)
+	current := webServerDisplayName(e.CurrentComponent)
+	return fmt.Sprintf(
+		"PANEL_BACKUP_WEB_SERVER_MISMATCH: 备份中的 Web Server 为 %s，当前运行 Web Server 为 %s，请切换到 %s 后再恢复",
+		backup, current, backup,
+	)
+}
+
+func (e *WebServerMismatchError) Unwrap() error {
+	return ErrWebServerMismatch
+}
+
+func webServerDisplayName(component string) string {
+	switch strings.ToLower(strings.TrimSpace(component)) {
+	case "nginx":
+		return "Nginx"
+	case "openresty":
+		return "OpenResty"
+	case "tengine":
+		return "Tengine"
+	case "apache":
+		return "Apache HTTP Server"
+	case "caddy":
+		return "Caddy"
+	case "unavailable":
+		return "未检测到唯一可用 Web Server"
+	default:
+		return "未知 Web Server"
+	}
+}
+
+// RestoreFailureMessage returns a safe status message for restore failures.
+// It deliberately does not expose filesystem, SQL, or command details.
+func RestoreFailureMessage(err error) string {
+	if errors.Is(err, ErrWebServerMismatch) {
+		return "备份与当前 Web Server 不兼容，未修改现有配置和数据"
+	}
+	if ValidationStageOf(err) != "unknown" {
+		return ValidationFailureMessage(err)
+	}
+	return "Panel 恢复执行失败"
+}
 
 // ValidationStage identifies the safe, high-level stage at which a backup
 // failed validation. It is intentionally free of paths, SQL, and secrets.
@@ -92,6 +152,10 @@ type Config struct {
 	BackupRoot      string
 	MaxBackupBytes  int64
 	MaxFiles        int
+	// WebServerDetector is evaluated immediately before restore. It is kept
+	// as a callback so the backup package does not make the website service a
+	// required dependency for standalone archive operations and tests.
+	WebServerDetector func() (string, error)
 }
 
 type CreateOptions struct {

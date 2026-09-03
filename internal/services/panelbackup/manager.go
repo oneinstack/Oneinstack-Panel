@@ -53,9 +53,10 @@ type archiveSource struct {
 }
 
 type preparedBackup struct {
-	Manifest Manifest
-	Root     string
-	Cleanup  func()
+	Manifest           Manifest
+	Root               string
+	Cleanup            func()
+	WebServerComponent string
 }
 
 type countingWriter struct {
@@ -385,6 +386,9 @@ func (m *Manager) Preflight(ctx context.Context, id, passphrase string) (Preflig
 		return PreflightResult{}, err
 	}
 	defer prepared.Cleanup()
+	if err := m.validateWebServerCompatibility(prepared.WebServerComponent); err != nil {
+		return PreflightResult{}, err
+	}
 	return PreflightResult{
 		Backup: info, SchemaVersion: prepared.Manifest.SchemaVersion,
 		PanelVersion:         prepared.Manifest.PanelVersion,
@@ -736,7 +740,174 @@ func (m *Manager) prepare(ctx context.Context, info BackupInfo, passphrase strin
 		cleanup()
 		return preparedBackup{}, withValidationStage(ValidationStageDatabase, err)
 	}
-	return preparedBackup{Manifest: manifest, Root: extractedRoot, Cleanup: cleanup}, nil
+	webServerComponent, err := readBackupWebServerComponent(
+		filepath.Join(extractedRoot, "database", "myadmin.db"),
+	)
+	if err != nil {
+		cleanup()
+		return preparedBackup{}, withValidationStage(ValidationStageDatabase, err)
+	}
+	return preparedBackup{
+		Manifest: manifest, Root: extractedRoot, Cleanup: cleanup,
+		WebServerComponent: webServerComponent,
+	}, nil
+}
+
+var supportedWebServerComponents = map[string]struct{}{
+	"nginx": {}, "openresty": {}, "tengine": {}, "apache": {}, "caddy": {},
+}
+
+func normalizeWebServerComponent(value string) string {
+	component := strings.ToLower(strings.TrimSpace(value))
+	if _, ok := supportedWebServerComponents[component]; ok {
+		return component
+	}
+	return ""
+}
+
+func backupWebServerComponent(key, component string) string {
+	if normalized := normalizeWebServerComponent(component); normalized != "" {
+		return normalized
+	}
+	if strings.EqualFold(strings.TrimSpace(key), "webserver") {
+		return "nginx"
+	}
+	return normalizeWebServerComponent(key)
+}
+
+func readBackupWebServerComponent(path string) (string, error) {
+	dsn := "file:" + filepath.ToSlash(path) + "?mode=ro"
+	database, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
+	if err != nil {
+		return "", fmt.Errorf("%w: open SQLite snapshot for Web Server compatibility: %v", ErrInvalidBackup, err)
+	}
+	sqlDB, err := database.DB()
+	if err == nil {
+		defer sqlDB.Close()
+	}
+
+	componentSets := make([]map[string]struct{}, 0, 2)
+	if components, exists, err := readBackupSoftwareWebServers(database); err != nil {
+		return "", err
+	} else if exists {
+		componentSets = append(componentSets, components)
+	}
+	if engines, exists, err := readBackupWebsiteEngines(database); err != nil {
+		return "", err
+	} else if exists {
+		componentSets = append(componentSets, engines)
+	}
+
+	var selected string
+	for _, components := range componentSets {
+		for component := range components {
+			if selected == "" {
+				selected = component
+				continue
+			}
+			if selected != component {
+				return "", fmt.Errorf(
+					"%w: backup contains incompatible Web Server records",
+					ErrInvalidBackup,
+				)
+			}
+		}
+	}
+	return selected, nil
+}
+
+func readBackupSoftwareWebServers(database *gorm.DB) (map[string]struct{}, bool, error) {
+	if !sqliteTableExists(database, "softwares") {
+		return nil, false, nil
+	}
+	columns, err := sqliteTableColumns(database, "softwares")
+	if err != nil {
+		return nil, false, err
+	}
+	if !columns["key"] || !columns["installed"] {
+		return nil, false, nil
+	}
+	selectColumns := "`key`"
+	if columns["component"] {
+		selectColumns += ", component"
+	}
+	var rows []struct {
+		Key       string
+		Component string
+	}
+	if err := database.Table("softwares").Select(selectColumns).
+		Where("installed = ?", true).Find(&rows).Error; err != nil {
+		return nil, false, fmt.Errorf("%w: read backed-up Web Server records: %v", ErrInvalidBackup, err)
+	}
+	result := make(map[string]struct{})
+	for _, row := range rows {
+		if component := backupWebServerComponent(row.Key, row.Component); component != "" {
+			result[component] = struct{}{}
+		}
+	}
+	return result, len(result) > 0, nil
+}
+
+func readBackupWebsiteEngines(database *gorm.DB) (map[string]struct{}, bool, error) {
+	if !sqliteTableExists(database, "websites") {
+		return nil, false, nil
+	}
+	columns, err := sqliteTableColumns(database, "websites")
+	if err != nil {
+		return nil, false, err
+	}
+	if !columns["engine"] {
+		return nil, false, nil
+	}
+	var rows []struct{ Engine string }
+	if err := database.Table("websites").Select("engine").
+		Where("TRIM(COALESCE(engine, '')) <> ''").Find(&rows).Error; err != nil {
+		return nil, false, fmt.Errorf("%w: read backed-up website Web Server records: %v", ErrInvalidBackup, err)
+	}
+	result := make(map[string]struct{})
+	for _, row := range rows {
+		if component := normalizeWebServerComponent(row.Engine); component != "" {
+			result[component] = struct{}{}
+		}
+	}
+	return result, len(result) > 0, nil
+}
+
+func sqliteTableExists(database *gorm.DB, table string) bool {
+	var count int64
+	return database.Raw(
+		"SELECT COUNT(1) FROM sqlite_master WHERE type = 'table' AND name = ?", table,
+	).Scan(&count).Error == nil && count > 0
+}
+
+func sqliteTableColumns(database *gorm.DB, table string) (map[string]bool, error) {
+	var rows []struct{ Name string }
+	if err := database.Raw("PRAGMA table_info(" + table + ")").Scan(&rows).Error; err != nil {
+		return nil, fmt.Errorf("%w: inspect backed-up database schema: %v", ErrInvalidBackup, err)
+	}
+	result := make(map[string]bool, len(rows))
+	for _, row := range rows {
+		result[strings.ToLower(strings.TrimSpace(row.Name))] = true
+	}
+	return result, nil
+}
+
+func (m *Manager) validateWebServerCompatibility(backupComponent string) error {
+	backupComponent = normalizeWebServerComponent(backupComponent)
+	if backupComponent == "" || m.config.WebServerDetector == nil {
+		return nil
+	}
+	currentValue, err := m.config.WebServerDetector()
+	currentComponent := normalizeWebServerComponent(currentValue)
+	if err != nil || currentComponent == "" {
+		currentComponent = "unavailable"
+	}
+	if currentComponent == backupComponent {
+		return nil
+	}
+	return &WebServerMismatchError{
+		BackupComponent: backupComponent, CurrentComponent: currentComponent,
+	}
 }
 
 func (m *Manager) extractAndValidate(ctx context.Context, archivePath, destination string) (Manifest, error) {

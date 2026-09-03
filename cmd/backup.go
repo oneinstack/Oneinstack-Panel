@@ -220,10 +220,7 @@ func isPanelBackupCommand(command *cobra.Command) bool {
 
 func failedRestoreStatus(backupID string, startedAt time.Time, cause error) panelbackup.RestoreStatus {
 	finishedAt := time.Now().UTC()
-	message := "Panel 恢复执行失败"
-	if panelbackup.ValidationStageOf(cause) != "unknown" {
-		message = panelbackup.ValidationFailureMessage(cause)
-	}
+	message := panelbackup.RestoreFailureMessage(cause)
 	return panelbackup.RestoreStatus{
 		State: panelbackup.StatusFailed, BackupID: backupID,
 		Message: message, StartedAt: &startedAt,

@@ -8,6 +8,7 @@ import (
 	"gorm.io/gorm"
 
 	"oneinstack/app"
+	"oneinstack/internal/services/website"
 )
 
 func NewApplicationManager(database *gorm.DB) (*Manager, error) {
@@ -31,5 +32,12 @@ func NewApplicationManager(database *gorm.DB) (*Manager, error) {
 		DatabasePath:    filepath.Join(basePath, "myadmin.db"),
 		CertificatePath: certificatePath,
 		BackupRoot:      backupRoot,
+		WebServerDetector: func() (string, error) {
+			server, err := website.DetectWebServer()
+			if err != nil {
+				return "", err
+			}
+			return server.Component, nil
+		},
 	}, database)
 }
