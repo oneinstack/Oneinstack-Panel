@@ -882,6 +882,42 @@ check_health() {
   done
 }
 
+print_completion_summary() {
+  local line='========================================'
+  printf '\n%s\n' "$line"
+  if [[ "$cli_language" == "zh-CN" ]]; then
+    printf '          OneinStack Panel 部署完成\n'
+    printf '%s\n' "$line"
+    printf '服务状态: 已启动并通过健康检查\n'
+    printf '安装目录: %s\n' "$install_dir_runtime"
+    printf '\n访问信息:\n'
+  else
+    printf '          OneinStack Panel Ready\n'
+    printf '%s\n' "$line"
+    printf 'Service status: Started and healthy\n'
+    printf 'Install directory: %s\n' "$install_dir_runtime"
+    printf '\nAccess information:\n'
+  fi
+  if [[ "$skip_init" == false && -z "$root_prefix" ]]; then
+    ONEINSTACK_LANG="$cli_language" \
+      ONEINSTACK_BASE_PATH="$install_dir_runtime" \
+      ONEINSTACK_CONFIG_PATH="${install_dir_runtime}/config.yaml" \
+      "${install_dir}/one" default --peek || warn "安装完成后无法输出默认访问信息"
+  elif [[ -z "$root_prefix" && "$no_start" == false ]]; then
+    if [[ "$cli_language" == "zh-CN" ]]; then
+      printf '面板地址: %s\n' "${health_url%/health/ready}"
+    else
+      printf 'Panel URL: %s\n' "${health_url%/health/ready}"
+    fi
+  fi
+  if [[ "$cli_language" == "zh-CN" ]]; then
+    printf '\n首次登录后请立即修改管理员密码。\n'
+  else
+    printf '\nChange the administrator password after the first login.\n'
+  fi
+  printf '%s\n\n' "$line"
+}
+
 run_install() {
   check_install_sources
   check_managed_service
@@ -927,16 +963,7 @@ run_install() {
   start_service
   check_health
 
-  log "安装完成"
-  log "安装目录: ${install_dir_runtime}"
-  if [[ "$skip_init" == false && -z "$root_prefix" ]]; then
-    ONEINSTACK_LANG="$cli_language" \
-      ONEINSTACK_BASE_PATH="$install_dir_runtime" \
-      ONEINSTACK_CONFIG_PATH="${install_dir_runtime}/config.yaml" \
-      "${install_dir}/one" default --peek || warn "安装完成后无法输出默认访问信息"
-  elif [[ -z "$root_prefix" && "$no_start" == false ]]; then
-    log "面板地址: ${health_url%/health/ready}"
-  fi
+  print_completion_summary
 }
 
 remove_managed_service_and_link() {
