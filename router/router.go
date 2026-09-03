@@ -217,6 +217,8 @@ func SetupRouter() *gin.Engine {
 		sys.GET("/websitecount", system.GetWebSiteCount)
 		sys.GET("/remarkcount", system.GetRemarkCount)
 		sys.GET("/systeminfo", system.SystemInfo)
+		sys.GET("/navigation", system.GetNavigationSettings)
+		sys.PUT("/navigation", middleware.RequireAdmin(), system.UpdateNavigationSettings)
 		sys.GET("/processes", middleware.RequirePermission(accessservice.PermissionSystemRead), system.ListProcesses)
 		sys.GET("/processes/:pid", middleware.RequirePermission(accessservice.PermissionSystemRead), system.GetProcessDetail)
 		sys.GET("/disks", middleware.RequirePermission(accessservice.PermissionSystemRead), system.GetDiskInventory)

@@ -81,6 +81,31 @@ func SystemInfo(c *gin.Context) {
 	core.HandleSuccess(c, info)
 }
 
+func GetNavigationSettings(c *gin.Context) {
+	settings, err := system.GetNavigationSettings()
+	if err != nil {
+		core.HandleError(c, core.WrapError(err, core.ErrInternalError, "获取导航菜单设置失败"))
+		return
+	}
+	core.HandleSuccess(c, settings)
+}
+
+func UpdateNavigationSettings(c *gin.Context) {
+	var request struct {
+		HiddenPaths []string `json:"hiddenPaths"`
+	}
+	if err := c.ShouldBindJSON(&request); err != nil {
+		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "导航菜单设置参数格式不正确"))
+		return
+	}
+	settings, err := system.UpdateNavigationSettings(request.HiddenPaths)
+	if err != nil {
+		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "更新导航菜单设置失败"))
+		return
+	}
+	core.HandleSuccess(c, settings)
+}
+
 func UpdateUser(c *gin.Context) {
 	var request input.UpdateUserRequest
 	if err := c.ShouldBindJSON(&request); err != nil {

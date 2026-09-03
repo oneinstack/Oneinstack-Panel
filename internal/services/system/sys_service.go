@@ -1,6 +1,7 @@
 package system
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -24,6 +25,64 @@ import (
 )
 
 var ErrCurrentPasswordInvalid = errors.New("current password is invalid")
+
+var allowedNavigationPaths = map[string]struct{}{
+	"/home": {}, "/website": {}, "/database": {}, "/software": {},
+	"/container": {}, "/file": {}, "/terminal": {}, "/task": {},
+	"/monitor": {}, "/bastion": {}, "/runtime-log": {}, "/security": {},
+	"/certificate": {}, "/approval-center": {}, "/log": {},
+	"/config-snapshots": {}, "/system-management": {}, "/user-management": {},
+}
+
+type NavigationSettings struct {
+	HiddenPaths []string `json:"hiddenPaths"`
+}
+
+func GetNavigationSettings() (*NavigationSettings, error) {
+	var record models.System
+	if err := app.DB().First(&record).Error; err != nil {
+		return nil, err
+	}
+	settings := &NavigationSettings{HiddenPaths: []string{}}
+	if strings.TrimSpace(record.NavigationHiddenPaths) == "" {
+		return settings, nil
+	}
+	if err := json.Unmarshal([]byte(record.NavigationHiddenPaths), &settings.HiddenPaths); err != nil {
+		return nil, fmt.Errorf("decode navigation settings: %w", err)
+	}
+	return settings, nil
+}
+
+func UpdateNavigationSettings(hiddenPaths []string) (*NavigationSettings, error) {
+	seen := make(map[string]struct{}, len(hiddenPaths))
+	normalized := make([]string, 0, len(hiddenPaths))
+	for _, path := range hiddenPaths {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			continue
+		}
+		if _, ok := allowedNavigationPaths[path]; !ok {
+			return nil, fmt.Errorf("unsupported navigation path %q", path)
+		}
+		if _, ok := seen[path]; ok {
+			continue
+		}
+		seen[path] = struct{}{}
+		normalized = append(normalized, path)
+	}
+	contents, err := json.Marshal(normalized)
+	if err != nil {
+		return nil, err
+	}
+	var record models.System
+	if err := app.DB().First(&record).Error; err != nil {
+		return nil, err
+	}
+	if err := app.DB().Model(&record).Update("navigation_hidden_paths", string(contents)).Error; err != nil {
+		return nil, err
+	}
+	return &NavigationSettings{HiddenPaths: normalized}, nil
+}
 
 // PasswordStrengthError 表示可安全返回给调用方的密码强度校验错误。
 type PasswordStrengthError struct {
