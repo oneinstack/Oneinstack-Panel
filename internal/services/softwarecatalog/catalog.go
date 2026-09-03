@@ -47,6 +47,7 @@ type Parameter struct {
 	Rule        string `json:"rule,omitempty"`
 	Required    bool   `json:"required,omitempty"`
 	Placeholder string `json:"placeholder,omitempty"`
+	Default     string `json:"default,omitempty"`
 }
 
 type Version struct {

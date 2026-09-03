@@ -47,4 +47,5 @@ type SoftParam struct {
 	Rule     string `json:"rule"`
 	Required string `json:"required"`
 	Types    string `json:"type"`
+	Default  string `json:"default,omitempty"`
 }

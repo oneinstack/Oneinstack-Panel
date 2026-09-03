@@ -53,6 +53,7 @@ func (installer *Installer) Install(params *input.InstallParams, async bool) (st
 }
 
 func (installer *Installer) install(ctx context.Context, params *input.InstallParams, async bool) (string, error) {
+	NormalizeInstallParams(params)
 	actionName := "install"
 	if app.DB() != nil {
 		var installed int64
@@ -84,6 +85,7 @@ func (installer *Installer) InstallTask(
 	logPath string,
 	observer script.ExecutionObserver,
 ) (string, error) {
+	NormalizeInstallParams(params)
 	actionName := "install"
 	if app.DB() != nil {
 		var installed int64
@@ -103,6 +105,45 @@ func (installer *Installer) InstallTask(
 	reportPackageResolution(observer, scriptInfo)
 	installer.setScriptParams(scriptInfo, params)
 	return installer.scriptManager.ExecuteScriptTask(ctx, scriptInfo, params, logPath, observer)
+}
+
+// NormalizeInstallParams accepts both the legacy flat fields and the generic
+// catalog parameter map. This keeps the installation API compatible with
+// callers that render all manifest parameters from one form.
+func NormalizeInstallParams(params *input.InstallParams) {
+	if params == nil {
+		return
+	}
+	params.Version = strings.TrimSpace(params.Version)
+	params.Port = strings.TrimSpace(params.Port)
+	params.Username = strings.TrimSpace(params.Username)
+	if params.Version == "" {
+		params.Version = installParameterValue(params.Parameters, "software-version", "version")
+	}
+	if params.Port == "" {
+		params.Port = installParameterValue(params.Parameters, "port", "nginx-port", "nginxPort")
+	}
+	if params.Username == "" {
+		params.Username = installParameterValue(params.Parameters, "username", "run-user", "runUser")
+	}
+}
+
+func installParameterValue(parameters map[string]string, names ...string) string {
+	for _, name := range names {
+		target := compactInstallParameterName(name)
+		for key, value := range parameters {
+			if compactInstallParameterName(key) == target && strings.TrimSpace(value) != "" {
+				return strings.TrimSpace(value)
+			}
+		}
+	}
+	return ""
+}
+
+func compactInstallParameterName(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	value = strings.NewReplacer("-", "", "_", "", ".", "", " ", "").Replace(value)
+	return value
 }
 
 // Uninstall 卸载软件
@@ -575,6 +616,12 @@ func componentForRemove(value string) (component string, softwareKey string, err
 // setScriptParams 设置脚本参数
 func (installer *Installer) setScriptParams(scriptInfo *script.ScriptInfo, params *input.InstallParams) {
 	scriptInfo.Version = params.Version
+	markExplicit := func(parameterName string) {
+		name := strings.ToUpper(strings.TrimSpace(parameterName))
+		if name != "" {
+			scriptInfo.Params["ONEINSTACK_PARAMETER_"+name+"_EXPLICIT"] = "true"
+		}
+	}
 
 	// 根据不同软件设置不同参数
 	switch params.Key {
@@ -620,6 +667,7 @@ func (installer *Installer) setScriptParams(scriptInfo *script.ScriptInfo, param
 		for _, parameter := range scriptInfo.ParameterSpecs {
 			if strings.EqualFold(strings.TrimSpace(parameter.Type), "port") {
 				scriptInfo.Params[parameter.Name] = params.Port
+				markExplicit(parameter.Name)
 				break
 			}
 		}
@@ -629,6 +677,7 @@ func (installer *Installer) setScriptParams(scriptInfo *script.ScriptInfo, param
 			name := strings.ToUpper(strings.TrimSpace(parameter.Name))
 			if name == "RUN_USER" || name == "USERNAME" || name == "USER" {
 				scriptInfo.Params[parameter.Name] = params.Username
+				markExplicit(parameter.Name)
 				break
 			}
 		}
@@ -639,11 +688,17 @@ func (installer *Installer) setScriptParams(scriptInfo *script.ScriptInfo, param
 	// variable injection.
 	for _, parameter := range scriptInfo.ParameterSpecs {
 		for key, value := range params.Parameters {
+			if parameter.Type != "password" {
+				value = strings.TrimSpace(value)
+			}
 			parameterKey := strings.NewReplacer("-", "_", ".", "_").Replace(strings.ToLower(key))
 			manifestKey := strings.NewReplacer("-", "_", ".", "_").Replace(strings.ToLower(parameter.Name))
+			parameterKeyCompact := strings.ReplaceAll(parameterKey, "_", "")
+			manifestKeyCompact := strings.ReplaceAll(manifestKey, "_", "")
 			aliasMatch := parameterKey == "port" && strings.HasSuffix(manifestKey, "_port")
-			if (parameterKey == manifestKey || aliasMatch) && value != "" {
+			if (parameterKey == manifestKey || parameterKeyCompact == manifestKeyCompact || aliasMatch) && value != "" {
 				scriptInfo.Params[parameter.Name] = value
+				markExplicit(parameter.Name)
 				break
 			}
 		}

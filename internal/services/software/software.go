@@ -392,7 +392,18 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 		}
 		var params []*output.SoftParam
 		_ = json.Unmarshal([]byte(item.Params), &params)
+		installParameterValues := hydrateNginxInstallParameters(item.Component, item.Key, params)
+		if recommendedVersion := strings.TrimSpace(groupedResults[i].RecommendedVersion); recommendedVersion != "" {
+			for _, parameter := range params {
+				if parameter != nil && strings.EqualFold(strings.TrimSpace(parameter.Key), "software-version") {
+					parameter.Default = recommendedVersion
+				}
+			}
+		}
 		groupedResults[i].Params = params
+		if port := strings.TrimSpace(installParameterValues["port"]); port != "" {
+			groupedResults[i].Port = port
+		}
 		if groupedResults[i].Status == models.Soft_Status_Err {
 			if failedTask, exists := failedTaskByKey[item.Key]; exists {
 				groupedResults[i].FailureMessage = strings.TrimSpace(failedTask.ErrorMessage)

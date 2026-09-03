@@ -224,6 +224,7 @@ func SubmitInstallationTask(
 	req input.InstallParams,
 	requestedBy int64,
 ) (*models.SoftwareTask, error) {
+	softwareService.NormalizeInstallParams(&req)
 	if slices.Contains(models.DatabaseSoftwareKeys, req.Key) {
 		req.Port = "3306"
 		req.Username = "root"
