@@ -54,7 +54,7 @@ system:
     terminalEnabled: true
     terminalSessionMinutes: 15
     allowInsecureWebSocketInDev: false
-    allowInlineStyle: false
+    allowInlineStyle: true
     terminalIdleMinutes: 5
     terminalMaxConcurrent: 2
     terminalMaxPerUser: 1
@@ -68,7 +68,7 @@ scriptCenter:
     allowInsecureHTTP: false
     url: 'https://scripts.example.com'
     channel: 'stable'
-    requestTimeoutSeconds: 10
+    requestTimeoutSeconds: 120
     maxPackageBytes: 67108864
     maxExpandedBytes: 268435456
     cachePath: '/usr/local/one/script-registry/cache'
@@ -80,11 +80,11 @@ scriptCenter:
     # keyId: Base64-encoded Ed25519 public key. Keep empty until Center is deployed.
     trustedKeys: {}
 updateCenter:
-    enabled: false
-    centerUrl: ''
-    manifestUrl: 'https://updates.example.com/oneinstack/stable/manifest.json'
+    enabled: true
+    centerUrl: 'https://www.example.com'
+    manifestUrl: '' # 'https://updates.example.com/oneinstack/stable/manifest.json'
     channel: 'stable'
-    requestTimeoutSeconds: 20
+    requestTimeoutSeconds: 300
     maxPackageBytes: 268435456
     maxExpandedBytes: 536870912
     healthTimeoutSeconds: 60
@@ -100,6 +100,6 @@ bastion:                              # 堡垒机（Bastion Host）配置
   cleanupSchedule: "30 4 * * *"       # 过期记录清理调度（cron 表达式），每天凌晨 4:30 执行
 translation:
   configVersion: 2
-  enabled: true
+  enabled: false
   mode: "center"
-  centerUrl: "https://center.oneinstack.com"
+  centerUrl: "https://www.example.com"
