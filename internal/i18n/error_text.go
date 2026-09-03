@@ -1353,9 +1353,13 @@ var englishErrorTexts = map[string]string{
 	"证书绑定校验失败，请检查证书格式、私钥匹配关系、有效期和网站域名范围。":                        "Certificate-binding validation failed. Check the certificate format, private-key match, validity period, and website domain coverage.",
 	"证书材料校验已通过，但 Web Server 部署失败，请检查 Web Server 错误日志。":           "The certificate material passed validation, but Web Server deployment failed. Check the Web Server error log.",
 	"Web Server 已完成证书部署，但绑定关系保存失败，系统已回滚部署，请检查数据库状态后重试。":          "Web Server deployed the certificate, but saving the binding failed and the deployment was rolled back. Check the database status, then retry.",
+	"自签证书至少需要填写一个域名":                                             "Enter at least one domain for the self-signed certificate.",
 	"自签证书域名不能为空，请至少填写一个有效域名":                                     "Self-signed certificate domains must not be empty. Enter at least one valid domain.",
 	"自签证书域名不能超过 100 个":                                           "Self-signed certificate domains must not exceed 100 items.",
 	"自签证书域名格式不正确，请检查域名是否包含空格或格式不完整":                              "The self-signed certificate domain format is invalid. Check for spaces or incomplete domain names.",
+	"不支持当前自签证书密钥算法，请从算法列表中选择":                                    "The selected self-signed certificate key algorithm is not supported. Choose an algorithm from the list.",
+	"自签证书有效期必须是 1 到 30 年之间的整数":                                   "Self-signed certificate validity must be an integer between 1 and 30 years.",
+	"续期提前天数必须是 1 到 90 之间的整数":                                     "The renewal lead time must be an integer between 1 and 90 days.",
 	"当前 Panel 进程未持有该执行的活动上下文，请刷新执行记录；如果仍显示运行中，" +
 		"请检查 Panel 是否发生重启或采用多实例部署。": "The current Panel process does not own the active execution context. Refresh the execution records. If it still appears to be running, check whether Panel restarted or is deployed with multiple instances.",
 }
