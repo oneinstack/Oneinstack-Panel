@@ -1,19 +1,48 @@
 package i18n
 
 import (
+	"strings"
+
 	"golang.org/x/text/language"
 	"golang.org/x/text/message"
 	"golang.org/x/text/message/catalog"
 )
 
 // LocalizeSoftwareCategory translates built-in software-store category labels
-// while keeping Category.Value unchanged for subsequent list filtering.
+// while keeping the stable category value unchanged for subsequent filtering.
 func LocalizeSoftwareCategory(locale, value string) string {
 	if Canonical(locale) != LocaleEnUS {
 		return value
 	}
 	if translated, ok := englishSoftwareCategories[value]; ok {
 		return translated
+	}
+	return value
+}
+
+// SoftwareCategoryValue returns the stable English value exposed by the
+// software-store categories API. The "全部" value is kept as the empty
+// no-filter sentinel by ListCategories. Unknown/custom categories keep their
+// source value because the Panel cannot safely translate arbitrary labels.
+func SoftwareCategoryValue(value string) string {
+	value = strings.TrimSpace(value)
+	if translated, ok := englishSoftwareCategories[value]; ok {
+		return translated
+	}
+	return value
+}
+
+// NormalizeSoftwareCategory accepts both the persisted Chinese category and
+// its English API value, returning the persisted form used by software tags.
+func NormalizeSoftwareCategory(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	for source, translated := range englishSoftwareCategories {
+		if strings.EqualFold(value, source) || strings.EqualFold(value, translated) {
+			return source
+		}
 	}
 	return value
 }

@@ -3,6 +3,7 @@ package software
 import (
 	"encoding/json"
 	"oneinstack/app"
+	"oneinstack/internal/i18n"
 	"oneinstack/internal/models"
 	"oneinstack/internal/services"
 	"oneinstack/internal/services/scriptregistry"
@@ -82,7 +83,7 @@ func ListCategories(param *input.SoftwareCategoryParam) ([]Category, error) {
 			productCategories[row.Key] = make(map[string]struct{})
 		}
 		for _, value := range strings.Split(row.Tags, ",") {
-			name := strings.TrimSpace(value)
+			name := i18n.NormalizeSoftwareCategory(value)
 			if name == "" {
 				continue
 			}
@@ -102,7 +103,7 @@ func ListCategories(param *input.SoftwareCategoryParam) ([]Category, error) {
 
 	categories := []Category{{Name: "全部", Value: "", Count: len(productKeys)}}
 	for _, name := range softwareCategoryOrder {
-		categories = append(categories, Category{Name: name, Value: name, Count: counts[name]})
+		categories = append(categories, Category{Name: name, Value: i18n.SoftwareCategoryValue(name), Count: counts[name]})
 		delete(counts, name)
 	}
 	remaining := make([]string, 0, len(counts))
@@ -111,9 +112,9 @@ func ListCategories(param *input.SoftwareCategoryParam) ([]Category, error) {
 	}
 	slices.Sort(remaining)
 	for _, name := range remaining {
-		categories = append(categories, Category{Name: name, Value: name, Count: counts[name]})
+		categories = append(categories, Category{Name: name, Value: i18n.SoftwareCategoryValue(name), Count: counts[name]})
 	}
-	categories = append(categories, Category{Name: "其他", Value: "其他", Count: otherCount})
+	categories = append(categories, Category{Name: "其他", Value: i18n.SoftwareCategoryValue("其他"), Count: otherCount})
 	return categories, nil
 }
 
@@ -264,13 +265,17 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 		)
 	}
 
-	if param.Tags != "" {
-		if param.Tags == "其他" {
+	tag := i18n.NormalizeSoftwareCategory(param.Tags)
+	if tag == "全部" {
+		tag = ""
+	}
+	if tag != "" {
+		if tag == "其他" {
 			tx = tx.Having("MAX(CASE WHEN TRIM(COALESCE(tags, '')) <> '' THEN 1 ELSE 0 END) = 0")
 		} else {
 			tx = tx.Having(
 				"MAX(CASE WHEN tags LIKE ? THEN 1 ELSE 0 END) = 1",
-				"%"+param.Tags+"%",
+				"%"+tag+"%",
 			)
 		}
 	}
