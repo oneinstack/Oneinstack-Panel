@@ -177,7 +177,7 @@ func ImagePushFailureDetail(err error) string {
 	case errors.Is(cause, ErrRegistryNotAuthenticated):
 		return "当前 Registry 未配置认证，只能拉取和测试连通性，不能推送镜像；请先启用认证并保存用户名和 PAT。"
 	case errors.Is(cause, ErrImageReferenceMissingNamespace):
-		return "镜像引用缺少命名空间；Docker Hub 请使用 用户名/镜像名:标签，例如 lambqian67/http-echo:1.0，避免被解析为 docker.io/library/镜像名。"
+		return "镜像引用缺少命名空间；Docker Hub 请使用 namespace/imagename（可附 :tag），避免被解析为 docker.io/library/镜像名。"
 	case errors.Is(cause, ErrRegistryPushPermissionDenied):
 		return "Docker Hub 的 library 命名空间通常不允许普通账号推送，请改用账号或组织命名空间，并确认目标仓库的 push 权限。"
 	case strings.Contains(lower, "invalid reference format"), strings.Contains(lower, "tag is missing"):
@@ -1407,7 +1407,7 @@ func (s *Service) RegistryImageReference(registryID uint, imageName, reference s
 func validatePushReference(reference string) error {
 	parts := strings.Split(reference, "/")
 	if len(parts) == 1 {
-		return fmt.Errorf("%w: 镜像引用会被 Docker 解析为 docker.io/library/%s，请改为 用户名/%s", ErrImageReferenceMissingNamespace, reference, reference)
+		return fmt.Errorf("%w: 镜像引用会被 Docker 解析为 docker.io/library/...，请使用 namespace/imagename（可附 :tag）", ErrImageReferenceMissingNamespace)
 	}
 
 	first := strings.ToLower(strings.TrimSpace(parts[0]))
@@ -1419,7 +1419,7 @@ func validatePushReference(reference string) error {
 		pathParts = parts[1:]
 	}
 	if len(pathParts) < 2 {
-		return fmt.Errorf("%w: 镜像引用会被 Docker 解析为 docker.io/library/%s，请改为 用户名/%s", ErrImageReferenceMissingNamespace, strings.Join(pathParts, "/"), strings.Join(pathParts, "/"))
+		return fmt.Errorf("%w: 镜像引用会被 Docker 解析为 docker.io/library/...，请使用 namespace/imagename（可附 :tag）", ErrImageReferenceMissingNamespace)
 	}
 	if strings.EqualFold(pathParts[0], "library") {
 		return fmt.Errorf("%w: Docker Hub 的 library/%s 通常不是普通账号可推送的目标", ErrRegistryPushPermissionDenied, strings.Join(pathParts[1:], "/"))
