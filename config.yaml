@@ -98,3 +98,8 @@ bastion:                              # 堡垒机（Bastion Host）配置
   maxConcurrentCollects: 5            # 最大并发采集数
   retentionDays: 30                   # 会话记录保留天数
   cleanupSchedule: "30 4 * * *"       # 过期记录清理调度（cron 表达式），每天凌晨 4:30 执行
+translation:
+  configVersion: 2
+  enabled: true
+  mode: "center"
+  centerUrl: "https://center.oneinstack.com"

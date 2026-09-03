@@ -18,19 +18,26 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
 const (
-	translationBatchPath       = "/v1/panel/translation/batch"
-	translationEnrollPath      = "/v1/panel/translation/enroll"
-	translationSignatureDomain = "oneinstack-center-translation-v1"
-	translationMaxRequestBytes = 128 << 10
+	translationBatchPath              = "/v1/panel/translation/batch"
+	translationRegisterPath           = "/v1/panel/translation/register"
+	translationEnrollPath             = "/v1/panel/translation/enroll"
+	translationSignatureDomain        = "oneinstack-center-translation-v1"
+	translationRegisterDomain         = "oneinstack-center-translation-register-v1"
+	translationMaxRequestBytes        = 128 << 10
+	translationRegisterStartupTimeout = 5 * time.Second
+	translationRegisterMinRetryDelay  = time.Second
+	translationRegisterMaxRetryDelay  = 5 * time.Minute
 )
 
 var (
 	ErrCenterUnavailable  = errors.New("translation Center is unavailable")
 	ErrCenterUnauthorized = errors.New("translation Center rejected the Panel identity")
+	ErrCenterConflict     = errors.New("translation Center rejected the conflicting Panel identity")
 	ErrCenterRateLimited  = errors.New("translation Center rate limited the request")
 )
 
@@ -43,10 +50,15 @@ type centerClientConfig struct {
 }
 
 type centerClient struct {
-	baseURL  string
-	http     *http.Client
-	identity panelIdentity
-	now      func() time.Time
+	baseURL             string
+	http                *http.Client
+	identity            panelIdentity
+	now                 func() time.Time
+	registrationMu      sync.Mutex
+	registered          bool
+	registrationBlocked bool
+	nextRegistrationAt  time.Time
+	registrationDelay   time.Duration
 }
 
 type enrollRequest struct {
@@ -58,6 +70,23 @@ type enrollRequest struct {
 }
 
 type enrollResponse struct {
+	SchemaVersion int    `json:"schemaVersion"`
+	InstanceID    string `json:"instanceId"`
+	KeyID         string `json:"keyId"`
+	Status        string `json:"status"`
+}
+
+type registerRequest struct {
+	SchemaVersion int    `json:"schemaVersion"`
+	InstanceID    string `json:"instanceId"`
+	KeyID         string `json:"keyId"`
+	PublicKey     string `json:"publicKey"`
+	Timestamp     int64  `json:"timestamp"`
+	Nonce         string `json:"nonce"`
+	Signature     string `json:"signature"`
+}
+
+type registerResponse struct {
 	SchemaVersion int    `json:"schemaVersion"`
 	InstanceID    string `json:"instanceId"`
 	KeyID         string `json:"keyId"`
@@ -90,7 +119,7 @@ func newCenterClient(ctx context.Context, cfg centerClientConfig) (*centerClient
 	if strings.TrimSpace(cfg.InstallDir) == "" {
 		return nil, errors.New("translation install directory is required")
 	}
-	identity, created, err := loadPanelIdentity(cfg.InstallDir, cfg.IdentityPath)
+	identity, _, err := loadPanelIdentity(cfg.InstallDir, cfg.IdentityPath)
 	if err != nil {
 		return nil, fmt.Errorf("load Panel translation identity: %w", err)
 	}
@@ -110,14 +139,16 @@ func newCenterClient(ctx context.Context, cfg centerClientConfig) (*centerClient
 		if err := client.enroll(ctx, activationCode); err != nil {
 			return nil, err
 		}
+		client.markRegistrationSuccess()
 		if err := removeActivationCode(activationPath); err != nil {
 			return nil, err
 		}
 	} else if !errors.Is(readErr, os.ErrNotExist) {
 		return nil, readErr
-	} else if created {
-		return nil, errors.New("translation identity requires a one-time Center activation code")
 	}
+	registrationContext, cancel := context.WithTimeout(ctx, translationRegisterStartupTimeout)
+	_ = client.ensureRegistered(registrationContext)
+	cancel()
 	return client, nil
 }
 
@@ -178,7 +209,124 @@ func (c *centerClient) enroll(ctx context.Context, activationCode string) error 
 	return nil
 }
 
+func (c *centerClient) registrationPayload(input registerRequest) []byte {
+	return []byte(strings.Join([]string{
+		translationRegisterDomain,
+		http.MethodPost,
+		translationRegisterPath,
+		strconv.Itoa(input.SchemaVersion),
+		strings.TrimSpace(input.InstanceID),
+		strings.TrimSpace(input.KeyID),
+		strings.TrimSpace(input.PublicKey),
+		strconv.FormatInt(input.Timestamp, 10),
+		strings.TrimSpace(input.Nonce),
+	}, "\n"))
+}
+
+func (c *centerClient) register(ctx context.Context) error {
+	timestamp := c.now().Unix()
+	nonceBytes := make([]byte, 18)
+	if _, err := rand.Read(nonceBytes); err != nil {
+		return fmt.Errorf("%w: generate registration nonce", ErrCenterUnavailable)
+	}
+	input := registerRequest{
+		SchemaVersion: 1,
+		InstanceID:    c.identity.instanceID,
+		KeyID:         c.identity.keyID,
+		PublicKey:     publicKeyText(c.identity.publicKey),
+		Timestamp:     timestamp,
+		Nonce:         base64.RawURLEncoding.EncodeToString(nonceBytes),
+	}
+	input.Signature = base64.StdEncoding.EncodeToString(ed25519.Sign(c.identity.privateKey, c.registrationPayload(input)))
+	body, err := json.Marshal(input)
+	if err != nil {
+		return fmt.Errorf("%w: encode automatic enrollment", ErrCenterUnavailable)
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+translationRegisterPath, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("%w: create automatic enrollment request", ErrCenterUnavailable)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := c.http.Do(request)
+	if err != nil {
+		return fmt.Errorf("%w: automatic enrollment request failed", ErrCenterUnavailable)
+	}
+	defer response.Body.Close()
+	switch response.StatusCode {
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return ErrCenterUnauthorized
+	case http.StatusConflict:
+		return ErrCenterConflict
+	case http.StatusTooManyRequests:
+		return ErrCenterRateLimited
+	case http.StatusServiceUnavailable:
+		return ErrCenterUnavailable
+	case http.StatusOK, http.StatusCreated:
+	default:
+		return fmt.Errorf("%w: automatic enrollment returned HTTP status %d", ErrCenterUnavailable, response.StatusCode)
+	}
+	var result registerResponse
+	if err := json.NewDecoder(io.LimitReader(response.Body, 16<<10)).Decode(&result); err != nil {
+		return fmt.Errorf("%w: invalid automatic enrollment response", ErrCenterUnavailable)
+	}
+	if result.SchemaVersion != 1 || result.InstanceID != c.identity.instanceID ||
+		result.KeyID != c.identity.keyID || result.Status != "active" {
+		return fmt.Errorf("%w: automatic enrollment response is invalid", ErrCenterUnavailable)
+	}
+	return nil
+}
+
+func (c *centerClient) markRegistrationSuccess() {
+	c.registrationMu.Lock()
+	defer c.registrationMu.Unlock()
+	c.registered = true
+	c.registrationBlocked = false
+	c.nextRegistrationAt = time.Time{}
+	c.registrationDelay = 0
+}
+
+func (c *centerClient) ensureRegistered(ctx context.Context) error {
+	c.registrationMu.Lock()
+	defer c.registrationMu.Unlock()
+	if c.registered {
+		return nil
+	}
+	if c.registrationBlocked {
+		return ErrCenterUnauthorized
+	}
+	now := c.now()
+	if !c.nextRegistrationAt.IsZero() && now.Before(c.nextRegistrationAt) {
+		return ErrCenterUnavailable
+	}
+	err := c.register(ctx)
+	if err == nil {
+		c.registered = true
+		c.nextRegistrationAt = time.Time{}
+		c.registrationDelay = 0
+		return nil
+	}
+	if errors.Is(err, ErrCenterUnauthorized) || errors.Is(err, ErrCenterConflict) {
+		c.registrationBlocked = true
+		return err
+	}
+	delay := c.registrationDelay
+	if delay <= 0 {
+		delay = translationRegisterMinRetryDelay
+	} else if delay < translationRegisterMaxRetryDelay {
+		delay *= 2
+		if delay > translationRegisterMaxRetryDelay {
+			delay = translationRegisterMaxRetryDelay
+		}
+	}
+	c.registrationDelay = delay
+	c.nextRegistrationAt = now.Add(delay)
+	return err
+}
+
 func (c *centerClient) batch(ctx context.Context, sourceLocale, targetLocale string, texts []string) ([]centerResult, error) {
+	if err := c.ensureRegistered(ctx); err != nil {
+		return nil, err
+	}
 	body, err := json.Marshal(batchRequest{
 		SchemaVersion: 1,
 		SourceLocale:  sourceLocale,

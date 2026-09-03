@@ -3,6 +3,7 @@ package config
 // Translation controls the optional response translation fallback. Provider
 // credentials are owned by Center and never belong in the Panel config.
 type Translation struct {
+	ConfigVersion          int    `mapstructure:"configVersion" json:"configVersion" yaml:"configVersion"`
 	Enabled                bool   `mapstructure:"enabled" json:"enabled" yaml:"enabled"`
 	Mode                   string `mapstructure:"mode" json:"mode" yaml:"mode"`
 	Provider               string `mapstructure:"provider" json:"provider" yaml:"provider"`

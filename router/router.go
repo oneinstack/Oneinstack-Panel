@@ -67,6 +67,8 @@ func SetupRouter() *gin.Engine {
 			translationConfig.MaxFieldsPerResponse,
 			translationConfig.ResponseTimeoutSeconds,
 		))
+	} else if translationConfig.Enabled && err != nil {
+		log.Printf("translation service initialization deferred: %v", err)
 	}
 	r.Use(gin.LoggerWithConfig(gin.LoggerConfig{
 		Output: logOutput,

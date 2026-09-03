@@ -21,6 +21,11 @@ import (
 
 const legacyInsecureJWTSecret = "a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456"
 
+const (
+	translationConfigVersion = 2
+	translationCenterURL     = "https://center.oneinstack.com"
+)
+
 const defaultConfig = `scriptCenter:
     enabled: false
     allowInsecureHTTP: false
@@ -115,10 +120,11 @@ bastion:
     retentionDays: 30
     cleanupSchedule: "30 4 * * *"
 translation:
-    enabled: false
+    configVersion: 2
+    enabled: true
     mode: "center"
     provider: "tencent-hunyuan"
-    centerUrl: ""
+    centerUrl: "https://center.oneinstack.com"
     identityPath: "/usr/local/one/translation/panel-center.key"
     activationCodeFile: "/usr/local/one/translation/activation-code"
     responseTimeoutSeconds: 15
@@ -143,11 +149,11 @@ func LoadConfig(path ...string) (*viper.Viper, error) {
 	} else if err != nil {
 		return nil, fmt.Errorf("stat config file: %w", err)
 	}
-	if err := syncDefaultConfig(configPath); err != nil {
-		return nil, fmt.Errorf("sync default config: %w", err)
-	}
 	if err := migrateTranslationConfig(configPath); err != nil {
 		return nil, fmt.Errorf("migrate translation config: %w", err)
+	}
+	if err := syncDefaultConfig(configPath); err != nil {
+		return nil, fmt.Errorf("sync default config: %w", err)
 	}
 
 	v := viper.New()
@@ -236,10 +242,11 @@ func LoadConfig(path ...string) (*viper.Viper, error) {
 	v.SetDefault("bastion.maxConcurrentCollects", 5)
 	v.SetDefault("bastion.retentionDays", 30)
 	v.SetDefault("bastion.cleanupSchedule", "30 4 * * *")
-	v.SetDefault("translation.enabled", false)
+	v.SetDefault("translation.configVersion", translationConfigVersion)
+	v.SetDefault("translation.enabled", true)
 	v.SetDefault("translation.mode", "center")
 	v.SetDefault("translation.provider", "tencent-hunyuan")
-	v.SetDefault("translation.centerUrl", "")
+	v.SetDefault("translation.centerUrl", translationCenterURL)
 	v.SetDefault("translation.identityPath", filepath.Join(GetBasePath(), "translation", "panel-center.key"))
 	v.SetDefault("translation.activationCodeFile", filepath.Join(GetBasePath(), "translation", "activation-code"))
 	v.SetDefault("translation.responseTimeoutSeconds", 15)
@@ -657,6 +664,20 @@ func migrateTranslationConfig(configPath string) error {
 		}
 		index += 2
 	}
+	configVersion := 0
+	if version := yamlMappingValueFold(translation, "configVersion"); version != nil {
+		if parsed, parseErr := strconv.Atoi(strings.TrimSpace(version.Value)); parseErr == nil {
+			configVersion = parsed
+		}
+	}
+	if configVersion < translationConfigVersion {
+		setYAMLScalar(translation, "configVersion", strconv.Itoa(translationConfigVersion), "!!int")
+		setYAMLScalar(translation, "enabled", "true", "!!bool")
+		setYAMLScalar(translation, "mode", "center", "!!str")
+		setYAMLScalar(translation, "provider", "tencent-hunyuan", "!!str")
+		setYAMLScalar(translation, "centerUrl", translationCenterURL, "!!str")
+		changed = true
+	}
 	mode := yamlMappingValueFold(translation, "mode")
 	if mode == nil {
 		translation.Content = append(translation.Content,
@@ -679,6 +700,20 @@ func migrateTranslationConfig(configPath string) error {
 		return fmt.Errorf("encode migrated translation config: %w", err)
 	}
 	return writeConfigAtomically(configPath, encoded)
+}
+
+func setYAMLScalar(mapping *yaml.Node, key, value, tag string) {
+	if existing := yamlMappingValueFold(mapping, key); existing != nil {
+		existing.Kind = yaml.ScalarNode
+		existing.Tag = tag
+		existing.Style = 0
+		existing.Value = value
+		return
+	}
+	mapping.Content = append(mapping.Content,
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key},
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: tag, Value: value},
+	)
 }
 
 func persistConfigValue(configPath, sectionName, keyName, value string) error {
