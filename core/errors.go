@@ -218,6 +218,9 @@ func safeErrorDetail(err *AppError) string {
 		return ""
 	}
 
+	if isSafePostgresComposeMountDetail(detail) {
+		return detail
+	}
 	if classified := classifyErrorDetail(detail); classified != "" {
 		return classified
 	}
@@ -232,6 +235,11 @@ func safeErrorDetail(err *AppError) string {
 		return message
 	}
 	return defaultErrorDetail(err.Code)
+}
+
+func isSafePostgresComposeMountDetail(detail string) bool {
+	const suffix = "使用了 PostgreSQL 18+ 的旧数据目录挂载；PostgreSQL 18+ 官方镜像的数据卷应只挂载到 /var/lib/postgresql；旧路径 /var/lib/postgresql/data 会被视为未使用挂载"
+	return strings.HasPrefix(detail, "服务 ") && strings.HasSuffix(detail, suffix)
 }
 
 func safePublicErrorMessage(err *AppError) string {
