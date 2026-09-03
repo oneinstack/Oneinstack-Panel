@@ -165,11 +165,17 @@ type DiskDevice struct {
 }
 
 type DiskInventory struct {
-	Devices []DiskDevice `json:"devices"`
-	FSTab   []string     `json:"fstab"`
+	Devices  []DiskDevice `json:"devices"`
+	FSTab    []string     `json:"fstab"`
+	Total    int          `json:"total"`
+	Page     int          `json:"page"`
+	PageSize int          `json:"pageSize"`
 }
 
-func GetDiskInventory(ctx context.Context) (DiskInventory, error) {
+func GetDiskInventory(ctx context.Context, page, pageSize int) (DiskInventory, error) {
+	if page < 1 || pageSize < 1 || pageSize > 100 {
+		return DiskInventory{}, errors.New("invalid disk pagination")
+	}
 	partitions, err := disk.PartitionsWithContext(ctx, true)
 	if err != nil {
 		return DiskInventory{}, fmt.Errorf("list disk partitions: %w", err)
@@ -186,7 +192,18 @@ func GetDiskInventory(ctx context.Context) (DiskInventory, error) {
 		devices = append(devices, item)
 	}
 	sort.Slice(devices, func(i, j int) bool { return devices[i].Mountpoint < devices[j].Mountpoint })
-	return DiskInventory{Devices: devices, FSTab: readFSTabLines()}, nil
+	total := len(devices)
+	if page-1 > total/pageSize {
+		devices = []DiskDevice{}
+	} else {
+		start := (page - 1) * pageSize
+		end := start + pageSize
+		if end > total {
+			end = total
+		}
+		devices = devices[start:end]
+	}
+	return DiskInventory{Devices: devices, FSTab: readFSTabLines(), Total: total, Page: page, PageSize: pageSize}, nil
 }
 
 func readFSTabLines() []string {

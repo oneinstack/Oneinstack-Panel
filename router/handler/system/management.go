@@ -83,9 +83,19 @@ func GetProcessDetail(c *gin.Context) {
 }
 
 func GetDiskInventory(c *gin.Context) {
+	page, err := strconv.Atoi(c.DefaultQuery("page", "1"))
+	if err != nil || page < 1 {
+		core.HandleError(c, core.NewFieldError(core.ErrInvalidParameter, "page 必须是大于等于 1 的整数", "page"))
+		return
+	}
+	pageSize, err := strconv.Atoi(c.DefaultQuery("pageSize", "20"))
+	if err != nil || pageSize < 1 || pageSize > 100 {
+		core.HandleError(c, core.NewFieldError(core.ErrInvalidParameter, "pageSize 必须是 1 到 100 之间的整数", "pageSize"))
+		return
+	}
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
 	defer cancel()
-	result, err := systemservice.GetDiskInventory(ctx)
+	result, err := systemservice.GetDiskInventory(ctx, page, pageSize)
 	if err != nil {
 		core.HandleError(c, core.WrapError(err, core.ErrSystemError, "获取磁盘信息失败"))
 		return
