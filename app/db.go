@@ -1048,7 +1048,7 @@ func setupAdminUser(userName string, password string) error {
 
 func InitSystem() error {
 	r := &models.System{
-		Title: "OneStack",
+		Title: "OneStack", NavigationHiddenPaths: "[]",
 	}
 	var count int64 = 0
 	tx := DB().Model(models.System{}).Count(&count)
