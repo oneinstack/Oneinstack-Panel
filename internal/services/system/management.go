@@ -248,32 +248,198 @@ type SSHConfig struct {
 	Error                  string `json:"error,omitempty"`
 }
 
+const (
+	maxSSHCommandOutputBytes = 64 << 10
+	maxSSHDiagnosticRunes    = 512
+)
+
 func GetSSHConfig(ctx context.Context) SSHConfig {
 	path := "/etc/ssh/sshd_config"
-	if _, err := os.Stat(path); err != nil {
-		return SSHConfig{Error: "sshd 配置文件不存在"}
-	}
 	config := SSHConfig{Supported: true, ConfigPath: filepath.Clean(path)}
-	if _, err := exec.LookPath("sshd"); err == nil {
-		command := exec.CommandContext(ctx, "sshd", "-T", "-f", path)
-		if output, runErr := command.Output(); runErr == nil {
-			parseSSHEffectiveConfig(&config, string(output))
-		} else {
-			config.Error = "无法读取 sshd 生效配置"
-		}
+	info, err := os.Stat(path)
+	if err != nil {
+		config.Supported = false
+		config.Error = sshConfigPathError(path, err)
+		return config
+	}
+	if !info.Mode().IsRegular() {
+		config.Supported = false
+		config.Error = fmt.Sprintf("sshd 配置路径不是普通文件：%s", path)
+		return config
+	}
+
+	diagnostics := make([]string, 0, 2)
+	sshdPath, err := exec.LookPath("sshd")
+	if err != nil {
+		diagnostics = append(diagnostics, "无法执行 sshd -T：sshd 命令不存在或不在 PATH 中")
 	} else {
-		config.Error = "sshd 命令不可用"
-	}
-	for _, service := range []string{"sshd", "ssh"} {
-		if _, err := exec.LookPath("systemctl"); err != nil {
-			break
+		var stdout, stderr sshCommandOutput
+		stdout.limit = maxSSHCommandOutputBytes
+		stderr.limit = maxSSHCommandOutputBytes
+		command := exec.CommandContext(ctx, sshdPath, "-T", "-f", path)
+		command.Stdout = &stdout
+		command.Stderr = &stderr
+		if runErr := command.Run(); runErr != nil {
+			diagnostics = append(diagnostics, formatSSHCommandError(ctx, "sshd -T", runErr, &stderr, &stdout))
+		} else if strings.TrimSpace(stdout.String()) == "" {
+			diagnostics = append(diagnostics, "sshd -T 未返回生效配置")
+		} else {
+			parseSSHEffectiveConfig(&config, stdout.String())
+			if !hasSSHEffectiveConfig(&config) {
+				diagnostics = append(diagnostics, "sshd -T 返回的生效配置无法解析")
+			}
 		}
-		if exec.CommandContext(ctx, "systemctl", "is-active", "--quiet", service).Run() == nil {
-			config.Service = service
-			break
-		}
 	}
+
+	service, serviceDiagnostic := detectSSHService(ctx)
+	config.Service = service
+	if serviceDiagnostic != "" {
+		diagnostics = append(diagnostics, serviceDiagnostic)
+	}
+	config.Error = strings.Join(diagnostics, "；")
 	return config
+}
+
+func sshConfigPathError(path string, err error) string {
+	switch {
+	case os.IsNotExist(err):
+		return fmt.Sprintf("sshd 配置文件不存在：%s", path)
+	case os.IsPermission(err):
+		return fmt.Sprintf("无权限读取 sshd 配置文件：%s", path)
+	default:
+		return fmt.Sprintf("无法访问 sshd 配置文件 %s：%s", path, sanitizeSSHDiagnostic(err.Error()))
+	}
+}
+
+func formatSSHCommandError(ctx context.Context, commandName string, runErr error, stderr, stdout *sshCommandOutput) string {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return fmt.Sprintf("%s 执行超时", commandName)
+	}
+	if ctx.Err() != nil {
+		return fmt.Sprintf("%s 执行被取消：%s", commandName, sanitizeSSHDiagnostic(ctx.Err().Error()))
+	}
+	detail := sanitizeSSHDiagnostic(stderr.String())
+	if detail == "" {
+		detail = sanitizeSSHDiagnostic(stdout.String())
+	}
+	if detail == "" {
+		detail = sanitizeSSHDiagnostic(runErr.Error())
+	}
+	return fmt.Sprintf("%s 执行失败：%s", commandName, detail)
+}
+
+func detectSSHService(ctx context.Context) (string, string) {
+	systemctlPath, err := exec.LookPath("systemctl")
+	if err != nil {
+		return "", "无法检测 SSH 服务：systemctl 命令不存在或不在 PATH 中"
+	}
+
+	type serviceStatus struct {
+		name   string
+		status string
+	}
+	statuses := make([]serviceStatus, 0, 2)
+	for _, service := range []string{"sshd", "ssh"} {
+		var output sshCommandOutput
+		output.limit = maxSSHCommandOutputBytes
+		command := exec.CommandContext(ctx, systemctlPath, "is-active", "--no-pager", service+".service")
+		command.Stdout = &output
+		command.Stderr = &output
+		runErr := command.Run()
+		status := sanitizeSSHDiagnostic(output.String())
+		if runErr == nil && strings.EqualFold(strings.TrimSpace(status), "active") {
+			return service, ""
+		}
+		if status == "" {
+			if runErr != nil {
+				status = sanitizeSSHDiagnostic(runErr.Error())
+			} else {
+				status = "未知状态"
+			}
+		}
+		statuses = append(statuses, serviceStatus{name: service + ".service", status: status})
+	}
+
+	if ctx.Err() != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return "", "检测 SSH 服务状态超时"
+		}
+		return "", "检测 SSH 服务状态被取消"
+	}
+
+	details := make([]string, 0, len(statuses))
+	allKnownStates := true
+	for _, item := range statuses {
+		details = append(details, item.name+"="+item.status)
+		state := strings.ToLower(strings.TrimSpace(item.status))
+		switch state {
+		case "inactive", "failed", "unknown", "activating", "deactivating", "maintenance":
+		default:
+			allKnownStates = false
+		}
+	}
+	if allKnownStates {
+		return "", fmt.Sprintf("未检测到运行中的 SSH 服务：已检查 sshd.service、ssh.service（%s）；可能是服务未运行或服务名不匹配", strings.Join(details, "；"))
+	}
+	return "", fmt.Sprintf("SSH 服务状态检测失败：%s", strings.Join(details, "；"))
+}
+
+type sshCommandOutput struct {
+	value     strings.Builder
+	limit     int
+	truncated bool
+}
+
+func (output *sshCommandOutput) Write(data []byte) (int, error) {
+	remaining := output.limit - output.value.Len()
+	if remaining > 0 {
+		if len(data) < remaining {
+			remaining = len(data)
+		}
+		_, _ = output.value.Write(data[:remaining])
+	}
+	if remaining < len(data) {
+		output.truncated = true
+	}
+	return len(data), nil
+}
+
+func (output *sshCommandOutput) String() string {
+	value := output.value.String()
+	if output.truncated {
+		value += " [输出已截断]"
+	}
+	return value
+}
+
+func sanitizeSSHDiagnostic(value string) string {
+	value = strings.Map(func(char rune) rune {
+		switch char {
+		case '\n', '\r', '\t':
+			return ' '
+		case 0, 127:
+			return -1
+		default:
+			if char < 32 {
+				return -1
+			}
+			return char
+		}
+	}, value)
+	value = strings.Join(strings.Fields(value), " ")
+	if len([]rune(value)) > maxSSHDiagnosticRunes {
+		value = string([]rune(value)[:maxSSHDiagnosticRunes]) + "…"
+	}
+	return value
+}
+
+func hasSSHEffectiveConfig(config *SSHConfig) bool {
+	return config.Port != "" ||
+		config.PasswordAuthentication != "" ||
+		config.PermitRootLogin != "" ||
+		config.PubkeyAuthentication != "" ||
+		config.PermitEmptyPasswords != "" ||
+		config.ListenAddress != ""
 }
 
 func parseSSHEffectiveConfig(config *SSHConfig, output string) {
