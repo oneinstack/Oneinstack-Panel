@@ -1775,6 +1775,24 @@ func registryProbeError(err error) *core.AppError {
 
 func imagePushError(c *gin.Context, err error) {
 	switch {
+	case errors.Is(err, containerService.ErrRegistryNotAuthenticated):
+		core.HandleErrorWithStatus(c, http.StatusBadRequest, core.NewErrorWithDetail(
+			core.ErrInvalidParameter,
+			"镜像仓库未配置认证",
+			containerService.ImagePushFailureDetail(err),
+		))
+	case errors.Is(err, containerService.ErrImageReferenceMissingNamespace):
+		core.HandleErrorWithStatus(c, http.StatusBadRequest, core.NewErrorWithDetail(
+			core.ErrInvalidParameter,
+			"镜像引用缺少命名空间",
+			containerService.ImagePushFailureDetail(err),
+		))
+	case errors.Is(err, containerService.ErrRegistryPushPermissionDenied):
+		core.HandleErrorWithStatus(c, http.StatusForbidden, core.NewErrorWithDetail(
+			core.ErrForbidden,
+			"镜像仓库没有推送权限",
+			containerService.ImagePushFailureDetail(err),
+		))
 	case errors.Is(err, containerService.ErrRuntimeUnavailable):
 		core.HandleError(c, core.NewErrorWithDetail(
 			core.ErrContainerRuntimeUnavailable,
@@ -1788,11 +1806,29 @@ func imagePushError(c *gin.Context, err error) {
 			"镜像推送未在限定时间内完成，请检查目标 Registry 服务、网络连通性和镜像大小后重试。",
 		))
 	default:
+		detail := containerService.ImagePushFailureDetail(err)
 		core.HandleError(c, core.NewErrorWithDetail(
 			core.ErrOperationFailed,
-			"Docker镜像推送失败",
-			containerService.ImagePushFailureDetail(err),
+			imagePushErrorMessage(detail),
+			detail,
 		))
+	}
+}
+
+func imagePushErrorMessage(detail string) string {
+	switch {
+	case strings.HasPrefix(detail, "镜像仓库身份认证失败"):
+		return "镜像仓库身份认证失败"
+	case strings.HasPrefix(detail, "镜像仓库认证可能已通过"):
+		return "镜像仓库没有推送权限"
+	case strings.HasPrefix(detail, "目标镜像仓库或仓库内镜像不存在"):
+		return "目标镜像仓库不存在"
+	case strings.HasPrefix(detail, "镜像引用格式无效"):
+		return "镜像引用格式无效"
+	case strings.HasPrefix(detail, "本地不存在要推送的镜像"):
+		return "本地镜像不存在"
+	default:
+		return "Docker镜像推送失败"
 	}
 }
 

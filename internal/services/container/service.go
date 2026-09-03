@@ -32,6 +32,9 @@ var (
 	ErrInvalidLogOptions                = errors.New("invalid container log options")
 	ErrInvalidRegistryInput             = errors.New("invalid container registry input")
 	ErrRegistryProbeFailed              = errors.New("container registry probe failed")
+	ErrRegistryNotAuthenticated         = errors.New("container registry authentication is not configured")
+	ErrImageReferenceMissingNamespace   = errors.New("container image reference missing namespace")
+	ErrRegistryPushPermissionDenied     = errors.New("container registry push permission denied")
 	ErrImagePullFailed                  = errors.New("container image pull failed")
 	ErrImagePushFailed                  = errors.New("container image push failed")
 	ErrRegistryCredentialUnavailable    = errors.New("container registry credential unavailable")
@@ -171,14 +174,22 @@ func ImagePushFailureDetail(err error) string {
 	switch {
 	case errors.Is(cause, ErrRegistryCredentialUnavailable):
 		return "已保存的镜像仓库凭据无法读取，请重新保存 Registry 凭据后重试。"
+	case errors.Is(cause, ErrRegistryNotAuthenticated):
+		return "当前 Registry 未配置认证，只能拉取和测试连通性，不能推送镜像；请先启用认证并保存用户名和 PAT。"
+	case errors.Is(cause, ErrImageReferenceMissingNamespace):
+		return "镜像引用缺少命名空间；Docker Hub 请使用 用户名/镜像名:标签，例如 lambqian67/http-echo:1.0，避免被解析为 docker.io/library/镜像名。"
+	case errors.Is(cause, ErrRegistryPushPermissionDenied):
+		return "Docker Hub 的 library 命名空间通常不允许普通账号推送，请改用账号或组织命名空间，并确认目标仓库的 push 权限。"
 	case strings.Contains(lower, "invalid reference format"), strings.Contains(lower, "tag is missing"):
 		return "镜像引用格式无效，请检查仓库地址、命名空间、镜像名称和标签。"
 	case strings.Contains(lower, "no such image"), strings.Contains(lower, "unable to find image"), strings.Contains(lower, "reference does not exist"), strings.Contains(lower, "tag does not exist"):
 		return "本地不存在要推送的镜像，请先确认镜像名称和标签。"
-	case strings.Contains(lower, "unauthorized"), strings.Contains(lower, "authentication required"), strings.Contains(lower, "insufficient_scope"), strings.Contains(lower, "http 401"), strings.Contains(lower, "401 unauthorized"), strings.Contains(lower, "requested access to the resource is denied"), strings.Contains(lower, "access denied"), strings.Contains(lower, "forbidden"), strings.Contains(lower, "denied"):
-		return "镜像仓库认证失败或当前账号没有推送权限，请检查 Registry 凭据、目标仓库名称以及账号的 push 权限。"
 	case strings.Contains(lower, "manifest unknown"), strings.Contains(lower, "name unknown"), strings.Contains(lower, "repository does not exist"), strings.Contains(lower, "not found"):
 		return "目标镜像仓库或仓库内镜像不存在，请检查 Registry 地址、命名空间和镜像名称。"
+	case strings.Contains(lower, "requested access to the resource is denied"), strings.Contains(lower, "insufficient_scope"), strings.Contains(lower, "access denied"), strings.Contains(lower, "forbidden"), strings.Contains(lower, "permission denied"), strings.Contains(lower, "denied"):
+		return "镜像仓库认证可能已通过，但当前账号没有目标仓库的 push 权限，请确认命名空间、目标仓库是否已创建以及账号权限。"
+	case strings.Contains(lower, "authentication required"), strings.Contains(lower, "invalid username or password"), strings.Contains(lower, "unauthorized"), strings.Contains(lower, "http 401"), strings.Contains(lower, "401 unauthorized"):
+		return "镜像仓库身份认证失败，请检查 Registry 用户名和 PAT 是否正确、是否已过期。"
 	case strings.Contains(lower, "no such host"), strings.Contains(lower, "temporary failure in name resolution"), strings.Contains(lower, "server misbehaving"), strings.Contains(lower, "connection refused"), strings.Contains(lower, "network is unreachable"), strings.Contains(lower, "no route to host"), strings.Contains(lower, "dial tcp"), strings.Contains(lower, "lookup "):
 		return "无法连接目标镜像仓库，请检查仓库地址、面板服务器网络、DNS 和防火墙配置。"
 	case strings.Contains(lower, "x509"), strings.Contains(lower, "certificate"), strings.Contains(lower, "tls"), strings.Contains(lower, "server gave http response to https client"):
@@ -1393,6 +1404,37 @@ func (s *Service) RegistryImageReference(registryID uint, imageName, reference s
 	return validateReference(strings.TrimRight(registry.Address, "/") + "/" + imageName)
 }
 
+func validatePushReference(reference string) error {
+	parts := strings.Split(reference, "/")
+	if len(parts) == 1 {
+		return fmt.Errorf("%w: 镜像引用会被 Docker 解析为 docker.io/library/%s，请改为 用户名/%s", ErrImageReferenceMissingNamespace, reference, reference)
+	}
+
+	first := strings.ToLower(strings.TrimSpace(parts[0]))
+	if hasImageRegistryHost(first) && !isDockerHubRegistryHost(first) {
+		return nil
+	}
+	pathParts := parts
+	if hasImageRegistryHost(first) {
+		pathParts = parts[1:]
+	}
+	if len(pathParts) < 2 {
+		return fmt.Errorf("%w: 镜像引用会被 Docker 解析为 docker.io/library/%s，请改为 用户名/%s", ErrImageReferenceMissingNamespace, strings.Join(pathParts, "/"), strings.Join(pathParts, "/"))
+	}
+	if strings.EqualFold(pathParts[0], "library") {
+		return fmt.Errorf("%w: Docker Hub 的 library/%s 通常不是普通账号可推送的目标", ErrRegistryPushPermissionDenied, strings.Join(pathParts[1:], "/"))
+	}
+	return nil
+}
+
+func hasImageRegistryHost(value string) bool {
+	return strings.Contains(value, ".") || strings.Contains(value, ":") || strings.EqualFold(value, "localhost")
+}
+
+func isDockerHubRegistryHost(value string) bool {
+	return strings.EqualFold(value, "docker.io") || strings.EqualFold(value, "index.docker.io") || strings.EqualFold(value, "registry-1.docker.io")
+}
+
 func (s *Service) TagImage(ctx context.Context, id, reference string, removeOther, confirm bool) error {
 	id, err := validateReference(id)
 	if err != nil {
@@ -1433,6 +1475,9 @@ func (s *Service) PushImage(ctx context.Context, registryID uint, reference stri
 	if err != nil {
 		return err
 	}
+	if err := validatePushReference(reference); err != nil {
+		return &ImagePushError{Err: err}
+	}
 	args := []string{"push", reference}
 	if registryID != 0 {
 		db := app.DB()
@@ -1443,24 +1488,25 @@ func (s *Service) PushImage(ctx context.Context, registryID uint, reference stri
 		if err := db.First(&registry, registryID).Error; err != nil {
 			return fmt.Errorf("镜像仓库不存在: %w", err)
 		}
-		if registry.AuthEnabled {
-			if strings.TrimSpace(registry.Username) == "" || strings.TrimSpace(registry.PasswordEnc) == "" {
-				return &ImagePushError{Err: ErrRegistryCredentialUnavailable}
-			}
-			password, decryptErr := utils.DecryptCredential(registry.PasswordEnc, utils.CredentialPurposeRegistryPassword)
-			if decryptErr != nil {
-				return &ImagePushError{Err: fmt.Errorf("%w: %v", ErrRegistryCredentialUnavailable, decryptErr)}
-			}
-			configDir, configErr := os.MkdirTemp("", "oneinstack-docker-config-")
-			if configErr != nil {
-				return &ImagePushError{Err: fmt.Errorf("创建临时 Docker 配置失败: %w", configErr)}
-			}
-			defer os.RemoveAll(configDir)
-			if _, loginErr := s.runWithInput(ctx, time.Minute, password+"\n", "--config", configDir, "login", "--username", registry.Username, "--password-stdin", registry.Address); loginErr != nil {
-				return &ImagePushError{Err: fmt.Errorf("镜像仓库登录失败: %w", loginErr)}
-			}
-			args = []string{"--config", configDir, "push", reference}
+		if !registry.AuthEnabled {
+			return &ImagePushError{Err: fmt.Errorf("%w: 当前 Registry 未配置认证，只能拉取和测试连通性，不能推送镜像", ErrRegistryNotAuthenticated)}
 		}
+		if strings.TrimSpace(registry.Username) == "" || strings.TrimSpace(registry.PasswordEnc) == "" {
+			return &ImagePushError{Err: ErrRegistryCredentialUnavailable}
+		}
+		password, decryptErr := utils.DecryptCredential(registry.PasswordEnc, utils.CredentialPurposeRegistryPassword)
+		if decryptErr != nil {
+			return &ImagePushError{Err: fmt.Errorf("%w: %v", ErrRegistryCredentialUnavailable, decryptErr)}
+		}
+		configDir, configErr := os.MkdirTemp("", "oneinstack-docker-config-")
+		if configErr != nil {
+			return &ImagePushError{Err: fmt.Errorf("创建临时 Docker 配置失败: %w", configErr)}
+		}
+		defer os.RemoveAll(configDir)
+		if _, loginErr := s.runWithInput(ctx, time.Minute, password+"\n", "--config", configDir, "login", "--username", registry.Username, "--password-stdin", registry.Address); loginErr != nil {
+			return &ImagePushError{Err: fmt.Errorf("镜像仓库登录失败: %w", loginErr)}
+		}
+		args = []string{"--config", configDir, "push", reference}
 	}
 	if err := s.runStreaming(ctx, 30*time.Minute, args, nil); err != nil {
 		return &ImagePushError{Err: err}
@@ -2674,7 +2720,11 @@ func (s *Service) TestRegistry(ctx context.Context, id uint) (RegistrySummary, e
 		}
 		return result, fmt.Errorf("%w: %v", ErrRegistryProbeFailed, probeErr)
 	}
-	return s.updateRegistryStatus(record, models.RegistryStatusSuccess, "")
+	statusMessage := ""
+	if !record.AuthEnabled {
+		statusMessage = "Registry 连通性测试成功，但未配置认证；仅支持拉取和测试，不代表具备推送权限。"
+	}
+	return s.updateRegistryStatus(record, models.RegistryStatusSuccess, statusMessage)
 }
 
 type registryAuthChallenge struct {
@@ -2870,7 +2920,7 @@ func registryProbeEndpoint(record models.ContainerRegistry) string {
 	// docker.io is the image-reference namespace. Docker Hub serves the Registry
 	// V2 API from registry-1.docker.io; probing docker.io follows the website path
 	// instead of checking the registry used by Docker pulls.
-	if strings.EqualFold(address, "docker.io") || strings.EqualFold(address, "index.docker.io") {
+	if isDockerHubRegistryHost(address) {
 		address = "registry-1.docker.io"
 	}
 	return record.Protocol + "://" + address + "/v2/"
@@ -2887,8 +2937,12 @@ func (s *Service) updateRegistryStatus(record models.ContainerRegistry, status, 
 }
 
 func registrySummary(record models.ContainerRegistry) RegistrySummary {
+	statusMessage := record.StatusMessage
+	if !record.AuthEnabled && strings.TrimSpace(statusMessage) == "" {
+		statusMessage = "Registry 未配置认证；仅支持拉取和测试，不代表具备推送权限。"
+	}
 	return RegistrySummary{ID: record.ID, Name: record.Name, Address: record.Address, Protocol: record.Protocol,
-		AuthEnabled: record.AuthEnabled, Username: record.Username, Status: record.Status, StatusMessage: record.StatusMessage,
+		AuthEnabled: record.AuthEnabled, Username: record.Username, Status: record.Status, StatusMessage: statusMessage,
 		LastCheckedAt: record.LastCheckedAt, CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt}
 }
 
