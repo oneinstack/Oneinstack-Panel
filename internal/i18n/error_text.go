@@ -34,8 +34,9 @@ var (
 	configRollbackPattern            = regexp.MustCompile(`^回滚资源类型=(.+?)、原操作=(.+?)，在(.+?)阶段失败；具体原因：(.+)$`)
 	certificateDNSPattern            = regexp.MustCompile(`^域名 (.+) 没有有效的 A/AAAA DNS 记录，请先将域名解析到本服务器后再申请 HTTP-01 证书。$`)
 	certificateHTTP403Pattern        = regexp.MustCompile(`^域名 (.+) 的 HTTP-01 验证地址返回 403，请检查 DNS 是否指向本服务器，以及 CDN/WAF 是否拦截了验证请求。$`)
-	certificateHTTP404Pattern        = regexp.MustCompile(`^域名 (.+) 的 HTTP-01 验证地址返回 404，请检查网站是否启用、80 端口是否可访问，以及 ACME 验证路由是否已发布。$`)
+	certificateHTTP404Pattern        = regexp.MustCompile(`^域名 (.+) 的 HTTP-01 验证地址返回 404，请检查网站是否启用、80 端口是否可访问，以及 CDN/WAF 是否拦截了验证请求。$`)
 	certificateBindDetailPattern     = regexp.MustCompile(`^证书绑定(资源读取|校验|部署)失败：(.*)$`)
+	composePostgresMountPattern      = regexp.MustCompile(`^服务 (.+) 使用了 PostgreSQL 18\+ 的旧数据目录挂载；PostgreSQL 18\+ 官方镜像的数据卷应只挂载到 /var/lib/postgresql；旧路径 /var/lib/postgresql/data 会被视为未使用挂载$`)
 	firewallConfirmationPattern      = regexp.MustCompile(`^关闭防火墙需要输入确认文本 (.+)$`)
 	webServerSyntaxDiagnosticPattern = regexp.MustCompile(`^Web Server 配置语法错误：第 ([0-9]+) 行；Nginx 诊断：(.*)。(.+)$`)
 	webServerSyntaxLinePattern       = regexp.MustCompile(`^Web Server 配置语法错误：第 ([0-9]+) 行。(.*)$`)
@@ -106,11 +107,17 @@ func translateContainerErrorText(text string) string {
 }
 
 func translateDynamicErrorText(text string) (string, bool) {
+	if matches := composePostgresMountPattern.FindStringSubmatch(text); len(matches) == 2 {
+		return fmt.Sprintf("Service %s uses the legacy data-directory mount for PostgreSQL 18+. Official PostgreSQL 18+ images should mount data only at /var/lib/postgresql; the old path /var/lib/postgresql/data is treated as an unused mount.", matches[1]), true
+	}
 	if translated, ok := translateWebServerConfigDetail(text); ok {
 		return translated, true
 	}
 	if matches := websiteWebServerMismatchPattern.FindStringSubmatch(text); len(matches) == 5 {
 		return fmt.Sprintf("Website %s belongs to %s, but the current Web Server is %s. Switch back to %s before continuing", matches[1], matches[2], matches[3], matches[4]), true
+	}
+	if translated, ok := translatePanelBackupWebServerMismatch(text); ok {
+		return translated, true
 	}
 	if matches := websiteEngineImmutablePattern.FindStringSubmatch(text); len(matches) == 4 {
 		return fmt.Sprintf("Website %s has its Engine fixed to %s and cannot be changed to %s", matches[1], matches[2], matches[3]), true
@@ -1025,6 +1032,7 @@ var englishErrorTexts = map[string]string{
 	"备份上传请求无效":                       "The backup upload request is invalid",
 	"备份包格式、完整性或兼容性校验失败":              "The backup package failed format, integrity, or compatibility validation",
 	"备份密码错误或不符合要求":                   "The backup password is incorrect or does not meet the requirements",
+	"备份与当前 Web Server 不兼容":           "The backup is incompatible with the current Web Server",
 	"备份恢复预检失败":                       "The backup restore preflight check failed",
 	"复制失败":                           "Failed to copy the file or directory",
 	"复制所需存储容量不足":                     "There is not enough storage to copy the selected content",

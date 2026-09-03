@@ -465,7 +465,8 @@ func badComposeRequest(c *gin.Context, err error) {
 func composeOperationError(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, containerService.ErrComposeConfigInvalid):
-		core.HandleError(c, core.NewErrorWithDetail(core.ErrConfigValidateFailed, "Compose 配置无效", composeErrorMessage(err)))
+		detail := composeErrorMessage(err)
+		core.HandleError(c, core.NewErrorWithDetail(core.ErrConfigValidateFailed, composeConfigErrorMessage(err), detail))
 	case errors.Is(err, containerService.ErrComposeProjectNotFound), errors.Is(err, containerService.ErrComposeTemplateNotFound):
 		core.HandleError(c, core.NewErrorWithDetail(core.ErrNotFound, "Compose 项目或模板不存在", composeErrorMessage(err)))
 	case errors.Is(err, containerService.ErrComposeProjectConflict), errors.Is(err, containerService.ErrComposeProjectBusy), errors.Is(err, containerService.ErrComposePreviewStale), errors.Is(err, containerService.ErrComposeMultiFile):
@@ -485,6 +486,14 @@ func composeOperationError(c *gin.Context, err error) {
 	default:
 		core.HandleError(c, core.WrapError(err, core.ErrInternalError, "处理 Compose 请求失败"))
 	}
+}
+
+func composeConfigErrorMessage(err error) string {
+	var composeErr *containerService.ComposeError
+	if errors.As(err, &composeErr) && strings.TrimSpace(composeErr.Message) != "" {
+		return composeErr.Message
+	}
+	return "Compose 配置无效"
 }
 
 func composeErrorMessage(err error) string {
