@@ -617,6 +617,23 @@ func componentServiceStatusesFor(
 			status.AvailableActions = probe.AvailableActions
 			status.PackageSource = probe.PackageSource
 			status.State = serviceState(probe.ActiveState)
+			if status.State == "unknown" {
+				// Some CentOS installations keep a compatible mysqld process
+				// without exposing a usable mysql.service state. Preserve the
+				// verified probe fields, but use the actual process as a narrow
+				// fallback so a healthy service is not shown as unknown.
+				running, runningErr := softwareService.ComponentProcessRunning(probeCtx, definition.Component)
+				if runningErr == nil && running {
+					status.State = "running"
+					status.LoadState = "loaded"
+					status.ActiveState = "active"
+					status.SubState = "running"
+				} else if runningErr == nil {
+					status.State = "stopped"
+					status.ActiveState = "inactive"
+					status.SubState = "dead"
+				}
+			}
 			result[index] = status
 		}(index, runtimeDefinition, status)
 	}
