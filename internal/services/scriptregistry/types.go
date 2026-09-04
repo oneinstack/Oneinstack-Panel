@@ -359,13 +359,19 @@ func (m Manifest) validate() error {
 				return fmt.Errorf("duplicate source for %s %s", source.SoftwareVersion, source.Architecture)
 			}
 			seenSources[key] = struct{}{}
-			if !strings.HasPrefix(source.URL, "https://") || !strings.HasPrefix(source.SignatureURL, "https://") {
-				return fmt.Errorf("source URLs must use HTTPS")
+			if !strings.HasPrefix(source.URL, "https://") {
+				return fmt.Errorf("source URL must use HTTPS")
+			}
+			// Historical manifests and fixed-digest-only releases may omit a
+			// detached signature. When a signature is supplied, keep the same
+			// HTTPS and publisher-fingerprint guarantees as Center.
+			if source.SignatureURL != "" && !strings.HasPrefix(source.SignatureURL, "https://") {
+				return fmt.Errorf("source signatureUrl must use HTTPS")
 			}
 			if !regexp.MustCompile(`^[0-9a-f]{64}$`).MatchString(source.SHA256) {
 				return fmt.Errorf("source SHA-256 for %s %s is invalid", source.SoftwareVersion, source.Architecture)
 			}
-			if !regexp.MustCompile(`^[A-Fa-f0-9]{16,64}$`).MatchString(source.PublisherFingerprint) {
+			if source.SignatureURL != "" && !regexp.MustCompile(`^[A-Fa-f0-9]{16,64}$`).MatchString(source.PublisherFingerprint) {
 				return fmt.Errorf("source publisher fingerprint for %s %s is invalid", source.SoftwareVersion, source.Architecture)
 			}
 		}
