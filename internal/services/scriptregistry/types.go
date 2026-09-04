@@ -17,7 +17,8 @@ var (
 	versionPattern             = regexp.MustCompile(`^v?[0-9]+(?:\.[0-9]+){1,2}(?:[-+][0-9A-Za-z.-]+)?$`)
 	softwareVersionPattern     = regexp.MustCompile(`^v?[0-9]+(?:\.[0-9]+){1,2}(?:[-+][0-9A-Za-z.-]+)?$`)
 	softwareVersionLinePattern = regexp.MustCompile(`^v?[0-9]+(?:\.[0-9]+)*\.x$`)
-	parameterPattern           = regexp.MustCompile(`^[A-Z][A-Z0-9_]{1,63}$`)
+	parameterPattern           = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_-]{1,63}$`)
+	environmentPattern         = regexp.MustCompile(`^[A-Z][A-Z0-9_]{1,63}$`)
 	configurationKeyPattern    = regexp.MustCompile(`^[a-z][A-Za-z0-9]{0,63}$`)
 	runtimeGroupPattern        = regexp.MustCompile(`^[a-z][a-z0-9-]{1,63}$`)
 	serviceNamePattern         = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.@-]{0,127}$`)
@@ -34,16 +35,19 @@ type Manifest struct {
 	Actions       Actions       `json:"actions" yaml:"actions"`
 	Parameters    []Parameter   `json:"parameters,omitempty" yaml:"parameters,omitempty"`
 	Configuration Configuration `json:"configuration,omitempty" yaml:"configuration,omitempty"`
-	Timeouts      Timeouts      `json:"timeouts" yaml:"timeouts"`
+	// Sources is optional for compatibility with historical signed manifests.
+	Sources  *Sources `json:"sources,omitempty" yaml:"sources,omitempty"`
+	Timeouts Timeouts `json:"timeouts" yaml:"timeouts"`
 }
 
 type Component struct {
-	ID               string   `json:"id" yaml:"id"`
-	Name             string   `json:"name" yaml:"name"`
-	Version          string   `json:"version" yaml:"version"`
-	SoftwareVersions []string `json:"softwareVersions" yaml:"softwareVersions"`
-	Channel          string   `json:"channel" yaml:"channel"`
-	Description      string   `json:"description,omitempty" yaml:"description,omitempty"`
+	ID                 string   `json:"id" yaml:"id"`
+	Name               string   `json:"name" yaml:"name"`
+	Version            string   `json:"version" yaml:"version"`
+	SoftwareVersions   []string `json:"softwareVersions" yaml:"softwareVersions"`
+	Channel            string   `json:"channel" yaml:"channel"`
+	AllowCustomVersion bool     `json:"allowCustomVersion,omitempty" yaml:"allowCustomVersion,omitempty"`
+	Description        string   `json:"description,omitempty" yaml:"description,omitempty"`
 }
 
 type Compatibility struct {
@@ -87,6 +91,7 @@ type Actions struct {
 
 type Parameter struct {
 	Name        string `json:"name" yaml:"name"`
+	Env         string `json:"env,omitempty" yaml:"env,omitempty"`
 	Type        string `json:"type" yaml:"type"`
 	Required    bool   `json:"required,omitempty" yaml:"required,omitempty"`
 	Secret      bool   `json:"secret,omitempty" yaml:"secret,omitempty"`
@@ -104,11 +109,25 @@ type ConfigurationField struct {
 	Label       string   `json:"label" yaml:"label"`
 	Type        string   `json:"type" yaml:"type"`
 	Env         string   `json:"env" yaml:"env"`
+	Default     string   `json:"default,omitempty" yaml:"default,omitempty"`
 	Unit        string   `json:"unit,omitempty" yaml:"unit,omitempty"`
 	Description string   `json:"description,omitempty" yaml:"description,omitempty"`
 	Min         *int     `json:"min,omitempty" yaml:"min,omitempty"`
 	Max         *int     `json:"max,omitempty" yaml:"max,omitempty"`
 	Options     []string `json:"options,omitempty" yaml:"options,omitempty"`
+}
+
+type Sources struct {
+	Releases []SourceRelease `json:"releases,omitempty" yaml:"releases,omitempty"`
+}
+
+type SourceRelease struct {
+	SoftwareVersion      string `json:"softwareVersion" yaml:"softwareVersion"`
+	Architecture         string `json:"architecture" yaml:"architecture"`
+	URL                  string `json:"url" yaml:"url"`
+	SignatureURL         string `json:"signatureUrl" yaml:"signatureUrl"`
+	SHA256               string `json:"sha256" yaml:"sha256"`
+	PublisherFingerprint string `json:"publisherFingerprint" yaml:"publisherFingerprint"`
 }
 
 type Timeouts struct {
@@ -274,8 +293,12 @@ func (m Manifest) validate() error {
 			return fmt.Errorf("invalid parameter name %q", parameter.Name)
 		}
 		switch parameter.Name {
-		case "PATH", "LD_PRELOAD", "LD_LIBRARY_PATH", "BASH_ENV", "ENV", "SHELLOPTS", "IFS", "CDPATH":
+		case "PATH", "LD_PRELOAD", "LD_LIBRARY_PATH", "BASH_ENV", "ENV", "SHELLOPTS", "IFS", "CDPATH",
+			"path", "ld-preload", "ld-library-path", "bash-env", "env", "shellopts", "ifs", "cdpath":
 			return fmt.Errorf("parameter name %s is reserved", parameter.Name)
+		}
+		if parameter.Env != "" && !environmentPattern.MatchString(parameter.Env) {
+			return fmt.Errorf("invalid parameter environment name %q", parameter.Env)
 		}
 		switch parameter.Type {
 		case "string", "integer", "boolean", "port", "password", "path":
@@ -304,7 +327,7 @@ func (m Manifest) validate() error {
 				return fmt.Errorf("duplicate configuration field %q", field.Key)
 			}
 			seen[field.Key] = struct{}{}
-			if field.Env != "" && !parameterPattern.MatchString(field.Env) {
+			if field.Env != "" && !environmentPattern.MatchString(field.Env) {
 				return fmt.Errorf("invalid configuration environment parameter %q", field.Env)
 			}
 			switch field.Type {
@@ -314,6 +337,36 @@ func (m Manifest) validate() error {
 			}
 			if field.Min != nil && field.Max != nil && *field.Min > *field.Max {
 				return fmt.Errorf("configuration field %s has an invalid range", field.Key)
+			}
+		}
+	}
+	if m.Sources != nil {
+		seenSources := make(map[string]struct{}, len(m.Sources.Releases))
+		for _, source := range m.Sources.Releases {
+			if !softwareVersionPattern.MatchString(source.SoftwareVersion) {
+				return fmt.Errorf("invalid source software version %q", source.SoftwareVersion)
+			}
+			if !m.supportsSoftwareVersion(source.SoftwareVersion) {
+				return fmt.Errorf("source software version %s is not declared by the component", source.SoftwareVersion)
+			}
+			switch source.Architecture {
+			case "amd64", "arm64":
+			default:
+				return fmt.Errorf("unsupported source architecture %q", source.Architecture)
+			}
+			key := source.SoftwareVersion + "\x00" + source.Architecture
+			if _, exists := seenSources[key]; exists {
+				return fmt.Errorf("duplicate source for %s %s", source.SoftwareVersion, source.Architecture)
+			}
+			seenSources[key] = struct{}{}
+			if !strings.HasPrefix(source.URL, "https://") || !strings.HasPrefix(source.SignatureURL, "https://") {
+				return fmt.Errorf("source URLs must use HTTPS")
+			}
+			if !regexp.MustCompile(`^[0-9a-f]{64}$`).MatchString(source.SHA256) {
+				return fmt.Errorf("source SHA-256 for %s %s is invalid", source.SoftwareVersion, source.Architecture)
+			}
+			if !regexp.MustCompile(`^[A-Fa-f0-9]{16,64}$`).MatchString(source.PublisherFingerprint) {
+				return fmt.Errorf("source publisher fingerprint for %s %s is invalid", source.SoftwareVersion, source.Architecture)
 			}
 		}
 	}

@@ -2,6 +2,7 @@ package software
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"oneinstack/app"
 	"oneinstack/internal/models"
@@ -108,8 +109,9 @@ func (installer *Installer) InstallTask(
 }
 
 // NormalizeInstallParams accepts both the legacy flat fields and the generic
-// catalog parameter map. This keeps the installation API compatible with
-// callers that render all manifest parameters from one form.
+// catalog parameter map, then applies deterministic common defaults. This
+// keeps preview, task submission and direct installer callers on the same
+// parameter semantics. Secret generation remains in the task submission path.
 func NormalizeInstallParams(params *input.InstallParams) {
 	if params == nil {
 		return
@@ -120,11 +122,29 @@ func NormalizeInstallParams(params *input.InstallParams) {
 	if params.Version == "" {
 		params.Version = installParameterValue(params.Parameters, "software-version", "version")
 	}
+	if params.Pwd == "" {
+		params.Pwd = installParameterValue(
+			params.Parameters,
+			"pwd",
+			"password",
+			"mysql-password",
+			"mysqlPassword",
+			"MYSQL_PASSWORD",
+		)
+	}
 	if params.Port == "" {
-		params.Port = installParameterValue(params.Parameters, "port", "nginx-port", "nginxPort")
+		params.Port = installParameterValue(params.Parameters, "port", "nginx-port", "nginxPort", "mysql-port", "mysqlPort")
 	}
 	if params.Username == "" {
 		params.Username = installParameterValue(params.Parameters, "username", "run-user", "runUser")
+	}
+	if isDatabaseInstallKey(params.Key) {
+		if params.Port == "" {
+			params.Port = "3306"
+		}
+		if params.Username == "" {
+			params.Username = "root"
+		}
 	}
 }
 
@@ -235,10 +255,11 @@ func (installer *Installer) ServiceActionTask(
 		return "", err
 	}
 	reportPackageResolution(observer, scriptInfo)
-	params := (&serviceInstallParams{
-		key:     definition.SoftwareKey,
-		version: strings.TrimSpace(version),
-	}).input()
+	params := installedServiceInstallParams(
+		definition.SoftwareKey,
+		definition.Component,
+		strings.TrimSpace(version),
+	)
 	installer.setScriptParams(scriptInfo, params)
 	logName, err := installer.scriptManager.ExecuteScriptTask(ctx, scriptInfo, params, logPath, observer)
 	if err != nil {
@@ -545,15 +566,20 @@ func scriptInfoFromPackage(componentPackage scriptregistry.Package, actionName s
 		},
 	}
 	for _, parameter := range manifest.Parameters {
+		envName := strings.TrimSpace(parameter.Env)
+		if envName == "" {
+			envName = strings.ToUpper(strings.NewReplacer("-", "_", ".", "_").Replace(parameter.Name))
+		}
 		result.ParameterSpecs = append(result.ParameterSpecs, script.ParameterSpec{
 			Name:     parameter.Name,
+			Env:      envName,
 			Type:     parameter.Type,
 			Required: parameter.Required,
 			Secret:   parameter.Secret,
 			Default:  parameter.Default,
 		})
 		if parameter.Default != "" {
-			result.Params[parameter.Name] = parameter.Default
+			result.Params[envName] = parameter.Default
 		}
 	}
 	if actionName != "uninstall" && !IsServiceAction(actionName) &&
@@ -568,12 +594,56 @@ func scriptInfoFromPackage(componentPackage scriptregistry.Package, actionName s
 }
 
 type serviceInstallParams struct {
-	key     string
-	version string
+	key        string
+	version    string
+	parameters map[string]string
 }
 
 func (params *serviceInstallParams) input() *input.InstallParams {
-	return &input.InstallParams{Key: params.key, Version: params.version}
+	return &input.InstallParams{
+		Key:        params.key,
+		Version:    params.version,
+		Parameters: cloneInstallParameterMap(params.parameters),
+	}
+}
+
+func cloneInstallParameterMap(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return nil
+	}
+	result := make(map[string]string, len(values))
+	for key, value := range values {
+		result[key] = value
+	}
+	return result
+}
+
+func installedServiceInstallParams(key, component, version string) *input.InstallParams {
+	params := (&serviceInstallParams{key: key, version: version}).input()
+	if app.DB() == nil {
+		return params
+	}
+	var row models.Software
+	query := app.DB().Where("installed = ?", true)
+	if strings.TrimSpace(key) != "" {
+		query = query.Where("(`key` = ? OR component = ?)", key, component)
+	}
+	if err := query.Order("id DESC").First(&row).Error; err != nil {
+		return params
+	}
+	params.Port = strings.TrimSpace(row.HttpPort)
+	if strings.TrimSpace(row.RuntimeParamsJSON) == "" {
+		return params
+	}
+	var runtime map[string]string
+	if err := json.Unmarshal([]byte(row.RuntimeParamsJSON), &runtime); err != nil {
+		return params
+	}
+	params.Parameters = runtime
+	if params.Port == "" {
+		params.Port = installParameterValue(runtime, "port", "mysql-port", "mysqlPort")
+	}
+	return params
 }
 
 func optionalActionPath(root, relative string) string {
@@ -632,8 +702,29 @@ func componentForRemove(value string) (component string, softwareKey string, err
 // setScriptParams 设置脚本参数
 func (installer *Installer) setScriptParams(scriptInfo *script.ScriptInfo, params *input.InstallParams) {
 	scriptInfo.Version = params.Version
+	parameterEnvName := func(parameter script.ParameterSpec) string {
+		if value := strings.TrimSpace(parameter.Env); value != "" {
+			return value
+		}
+		return strings.ToUpper(strings.NewReplacer("-", "_", ".", "_").Replace(strings.TrimSpace(parameter.Name)))
+	}
 	markExplicit := func(parameterName string) {
-		name := strings.ToUpper(strings.TrimSpace(parameterName))
+		if params.ExplicitParameters != nil {
+			explicit := false
+			for name, value := range params.ExplicitParameters {
+				parameterNameCompact := compactInstallParameterName(parameterName)
+				nameCompact := compactInstallParameterName(name)
+				if value && (nameCompact == parameterNameCompact ||
+					(nameCompact == "port" && strings.HasSuffix(parameterNameCompact, "port"))) {
+					explicit = true
+					break
+				}
+			}
+			if !explicit {
+				return
+			}
+		}
+		name := strings.ToUpper(strings.NewReplacer("-", "_", ".", "_").Replace(strings.TrimSpace(parameterName)))
 		if name != "" {
 			scriptInfo.Params["ONEINSTACK_PARAMETER_"+name+"_EXPLICIT"] = "true"
 		}
@@ -641,12 +732,14 @@ func (installer *Installer) setScriptParams(scriptInfo *script.ScriptInfo, param
 
 	// 根据不同软件设置不同参数
 	switch params.Key {
-	case "db":
+	case "db", "mysql":
 		if params.Pwd != "" {
 			scriptInfo.Params["MYSQL_PASSWORD"] = params.Pwd
+			markExplicit("mysql-password")
 		}
 		if params.Port != "" {
 			scriptInfo.Params["MYSQL_PORT"] = params.Port
+			markExplicit("mysql-port")
 		}
 	case "redis":
 		if params.Port != "" {
@@ -670,29 +763,30 @@ func (installer *Installer) setScriptParams(scriptInfo *script.ScriptInfo, param
 			if !parameter.Secret || parameter.Type != "password" {
 				continue
 			}
-			name := strings.ToUpper(strings.TrimSpace(parameter.Name))
+			name := strings.ToUpper(strings.NewReplacer("-", "_", ".", "_").Replace(strings.TrimSpace(parameter.Name)))
 			if name != "PASSWORD" && !strings.HasSuffix(name, "_PASSWORD") {
 				continue
 			}
-			if _, exists := scriptInfo.Params[parameter.Name]; !exists {
-				scriptInfo.Params[parameter.Name] = params.Pwd
+			envName := parameterEnvName(parameter)
+			if _, exists := scriptInfo.Params[envName]; !exists {
+				scriptInfo.Params[envName] = params.Pwd
 			}
 		}
 	}
 	if params.Port != "" {
 		for _, parameter := range scriptInfo.ParameterSpecs {
 			if strings.EqualFold(strings.TrimSpace(parameter.Type), "port") {
-				scriptInfo.Params[parameter.Name] = params.Port
+				scriptInfo.Params[parameterEnvName(parameter)] = params.Port
 				markExplicit(parameter.Name)
 				break
 			}
 		}
 	}
-	if params.Username != "" {
+	if params.Username != "" && params.Key != "db" && params.Key != "mysql" {
 		for _, parameter := range scriptInfo.ParameterSpecs {
-			name := strings.ToUpper(strings.TrimSpace(parameter.Name))
+			name := strings.ToUpper(strings.NewReplacer("-", "_", ".", "_").Replace(strings.TrimSpace(parameter.Name)))
 			if name == "RUN_USER" || name == "USERNAME" || name == "USER" {
-				scriptInfo.Params[parameter.Name] = params.Username
+				scriptInfo.Params[parameterEnvName(parameter)] = params.Username
 				markExplicit(parameter.Name)
 				break
 			}
@@ -713,7 +807,7 @@ func (installer *Installer) setScriptParams(scriptInfo *script.ScriptInfo, param
 			manifestKeyCompact := strings.ReplaceAll(manifestKey, "_", "")
 			aliasMatch := parameterKey == "port" && strings.HasSuffix(manifestKey, "_port")
 			if (parameterKey == manifestKey || parameterKeyCompact == manifestKeyCompact || aliasMatch) && value != "" {
-				scriptInfo.Params[parameter.Name] = value
+				scriptInfo.Params[parameterEnvName(parameter)] = value
 				markExplicit(parameter.Name)
 				break
 			}

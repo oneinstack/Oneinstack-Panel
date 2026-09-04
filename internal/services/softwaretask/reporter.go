@@ -270,12 +270,19 @@ func (r *Reporter) finish(status, errorCode, message string) error {
 		update.errorMessage = message
 		update.setFailurePhase = true
 	}
-	return r.publishLocked(update, eventData{
+	err := r.publishLocked(update, eventData{
 		eventType: "terminal",
 		level:     level,
 		code:      errorCode,
 		message:   message,
 	})
+	if err != nil {
+		return err
+	}
+	if status != models.SoftwareTaskStatusSucceeded {
+		return r.manager.clearTaskSecret(r.taskID)
+	}
+	return nil
 }
 
 type taskUpdate struct {

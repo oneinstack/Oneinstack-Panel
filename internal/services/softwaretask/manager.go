@@ -15,6 +15,7 @@ import (
 
 	"oneinstack/internal/models"
 	"oneinstack/internal/services/scriptregistry"
+	"oneinstack/utils"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -32,13 +33,20 @@ type InstallRequest struct {
 	Port                  string
 	Username              string
 	Password              string
+	GeneratedSecret       bool
 	Parameters            map[string]string
+	ExplicitParameters    map[string]bool
 	Revision              string
 	PreviousConfiguration map[string]string
 	Configuration         map[string]string
 	RestoreFromID         string
 	SwitchRequested       bool
 }
+
+var (
+	ErrTaskSecretConsumed    = errors.New("TASK_SECRET_CONSUMED")
+	ErrTaskSecretUnavailable = errors.New("TASK_SECRET_UNAVAILABLE")
+)
 
 type Executor func(
 	ctx context.Context,
@@ -396,6 +404,16 @@ func (m *Manager) submit(request InstallRequest, requestedBy int64) (*models.Sof
 	if err != nil {
 		return nil, fmt.Errorf("encode software task parameters: %w", err)
 	}
+	secretCiphertext := ""
+	if request.Operation == "install" && request.GeneratedSecret && request.Password != "" {
+		secretCiphertext, err = utils.EncryptCredential(
+			request.Password,
+			utils.CredentialPurposeSoftwareTaskSecret,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("encrypt software task secret: %w", err)
+		}
+	}
 	taskID := uuid.NewString()
 	now := time.Now()
 	queuedMessage := "任务已进入" + operationLabel(operation) + "队列"
@@ -415,6 +433,7 @@ func (m *Manager) submit(request InstallRequest, requestedBy int64) (*models.Sof
 		EventSeq:         1,
 		LogPath:          filepath.Join(m.logDir, "task_"+taskID+".log"),
 		ParametersJSON:   string(safeParameters),
+		SecretCiphertext: secretCiphertext,
 		CreatedAt:        now,
 		UpdatedAt:        now,
 	}
@@ -484,6 +503,62 @@ func (m *Manager) submit(request InstallRequest, requestedBy int64) (*models.Sof
 		)
 		return nil, errors.New("software task queue is full")
 	}
+}
+
+// ConsumeTaskSecret returns an automatically generated installation secret at
+// most once. The status check, decryption and consume marker are serialized in
+// one transaction so concurrent readers cannot receive the same credential.
+func (m *Manager) ConsumeTaskSecret(taskID string) (string, error) {
+	if m == nil || m.db == nil {
+		return "", ErrTaskSecretUnavailable
+	}
+	taskID = strings.TrimSpace(taskID)
+	if taskID == "" {
+		return "", gorm.ErrRecordNotFound
+	}
+	var password string
+	err := m.db.Transaction(func(tx *gorm.DB) error {
+		var task models.SoftwareTask
+		if err := tx.Select("id", "status", "secret_ciphertext", "secret_consumed_at").
+			First(&task, "id = ?", taskID).Error; err != nil {
+			return err
+		}
+		if task.Status != models.SoftwareTaskStatusSucceeded || task.SecretCiphertext == "" {
+			return ErrTaskSecretUnavailable
+		}
+		if task.SecretConsumedAt != nil {
+			return ErrTaskSecretConsumed
+		}
+		value, err := utils.DecryptCredential(
+			task.SecretCiphertext,
+			utils.CredentialPurposeSoftwareTaskSecret,
+		)
+		if err != nil {
+			return ErrTaskSecretUnavailable
+		}
+		result := tx.Model(&models.SoftwareTask{}).
+			Where("id = ? AND status = ? AND secret_ciphertext <> '' AND secret_consumed_at IS NULL",
+				taskID, models.SoftwareTaskStatusSucceeded).
+			Updates(map[string]any{"secret_consumed_at": time.Now()})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return ErrTaskSecretConsumed
+		}
+		password = value
+		return nil
+	})
+	return password, err
+}
+
+func (m *Manager) clearTaskSecret(taskID string) error {
+	if m == nil || m.db == nil || strings.TrimSpace(taskID) == "" {
+		return nil
+	}
+	return m.db.Model(&models.SoftwareTask{}).
+		Where("id = ? AND status <> ?", taskID, models.SoftwareTaskStatusSucceeded).
+		Updates(map[string]any{"secret_ciphertext": ""}).Error
 }
 
 func (m *Manager) worker() {
@@ -929,7 +1004,7 @@ func uninstallDataPolicy(parameters map[string]string) string {
 func uninstallDataDeletionConfirmed(parameters map[string]string) bool {
 	for key, value := range parameters {
 		switch strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(key), "-", "_"), ".", "_")) {
-		case "uninstall_confirm_data_deletion", "confirm_data_deletion":
+		case "uninstall_confirm_data_deletion", "confirm_data_deletion", "delete_data_confirm":
 			return strings.EqualFold(strings.TrimSpace(value), "true")
 		}
 	}

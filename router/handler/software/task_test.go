@@ -17,11 +17,15 @@ import (
 	"oneinstack/internal/services/softwaretask"
 	"oneinstack/router/input"
 	"oneinstack/router/middleware"
+	"oneinstack/utils"
 
 	"github.com/gin-gonic/gin"
 )
 
 func TestMySQLInstallationUsesServerSideDefaultsAndDoesNotPersistSecret(t *testing.T) {
+	if err := utils.ConfigureCredentialKey(bytes.Repeat([]byte{0x37}, 32)); err != nil {
+		t.Fatal(err)
+	}
 	if err := app.InitDB(filepath.Join(t.TempDir(), "mysql-defaults.db")); err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +53,7 @@ func TestMySQLInstallationUsesServerSideDefaultsAndDoesNotPersistSecret(t *testi
 	})
 
 	task, err := SubmitInstallationTask(input.InstallParams{
-		Key: "db", Version: "8.0",
+		Key: "db", Version: "8.0.45",
 	}, 7)
 	if err != nil {
 		t.Fatal(err)

@@ -14,6 +14,10 @@ type InstallParams struct {
 	// Parameters contains component-specific values declared by the signed
 	// package manifest. It is intentionally not persisted with task metadata.
 	Parameters map[string]string `json:"parameters,omitempty"`
+	// ExplicitParameters is an internal marker used to distinguish caller
+	// supplied values from manifest defaults. It is never accepted from or
+	// serialized into the HTTP contract.
+	ExplicitParameters map[string]bool `json:"-"`
 }
 
 // UnmarshalJSON keeps the legacy flat install form compatible with component

@@ -69,6 +69,7 @@ type Software struct {
 	RuntimeGroup            string    `json:"runtimeGroup,omitempty" gorm:"size:64;index"`
 	Version                 string    `json:"version"`
 	Params                  string    `json:"params"`
+	RuntimeParamsJSON       string    `json:"-" gorm:"column:runtime_params;type:text"`
 	Log                     string    `json:"log"`
 	Script                  string    `json:"script"`
 	HttpPort                string    `json:"http_prot"`

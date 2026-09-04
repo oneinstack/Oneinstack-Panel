@@ -10,6 +10,7 @@ import (
 	"oneinstack/router/input"
 	"oneinstack/router/output"
 	"oneinstack/utils"
+	"strconv"
 	"strings"
 	"time"
 
@@ -431,8 +432,12 @@ func EnsureManagedLocalMySQLConnection(port, username, password string) error {
 	if username == "" {
 		username = "root"
 	}
-	if username != "root" || port != "3306" {
-		return fmt.Errorf("managed local MySQL must use root on port 3306")
+	portNumber, err := strconv.Atoi(port)
+	if portNumber < 1 || portNumber > 65535 {
+		return fmt.Errorf("managed local MySQL port must be between 1 and 65535")
+	}
+	if username != "root" {
+		return fmt.Errorf("managed local MySQL must use root")
 	}
 	if strings.TrimSpace(password) == "" {
 		return fmt.Errorf("managed local MySQL credential is empty")

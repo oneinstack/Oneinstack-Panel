@@ -62,7 +62,7 @@ func SupportedComponentServices() []ComponentServiceDefinition {
 		{Component: "tengine", SoftwareKey: "tengine", DisplayName: "Tengine", ServiceName: "oneinstack-tengine", RuntimeGroup: "web-server", ManageScopes: []string{"web_service"}},
 		{Component: "caddy", SoftwareKey: "caddy", DisplayName: "Caddy", ServiceName: "oneinstack-caddy", RuntimeGroup: "web-server", ManageScopes: []string{"web_service"}},
 		{Component: "apache", SoftwareKey: "apache", DisplayName: "Apache HTTP Server", ServiceName: "oneinstack-httpd", RuntimeGroup: "web-server", ManageScopes: []string{"web_service"}},
-		{Component: "mysql", SoftwareKey: "db", DisplayName: "MySQL", ServiceName: "mysql", ManageScopes: []string{"database"}},
+		{Component: "mysql", SoftwareKey: "db", DisplayName: "MySQL", ServiceName: "mysql", RuntimeGroup: "database", ManageScopes: []string{"database"}},
 		{Component: "php", SoftwareKey: "php", DisplayName: "PHP-FPM", ServiceName: "php-fpm", ManageScopes: []string{"runtime"}},
 		{Component: "redis", SoftwareKey: "redis", DisplayName: "Redis", ServiceName: "redis-server", ManageScopes: []string{"cache"}},
 	}

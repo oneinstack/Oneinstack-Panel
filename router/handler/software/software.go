@@ -31,6 +31,11 @@ func RunInstallation(c *gin.Context) {
 	if err != nil {
 		var parameterErr *softwareService.InstallParameterError
 		if errors.As(err, &parameterErr) {
+			if userMessage := parameterErr.UserMessage(); userMessage != "" {
+				appErr := core.NewError(core.ErrInvalidParameter, userMessage)
+				core.HandleSimpleError(c, appErr)
+				return
+			}
 			appErr := core.NewErrorWithDetail(core.ErrInvalidParameter, "软件安装参数无效", parameterErr.Error())
 			appErr.Field = parameterErr.Field
 			core.HandleError(c, appErr)
@@ -156,10 +161,10 @@ func RemoveSoftware(c *gin.Context) {
 		parameters[key] = value
 	}
 	if req.DataPolicy != "" {
-		parameters["UNINSTALL_DATA_POLICY"] = req.DataPolicy
+		parameters["data-policy"] = req.DataPolicy
 	}
 	if req.ConfirmDataDeletion {
-		parameters["UNINSTALL_CONFIRM_DATA_DELETION"] = "true"
+		parameters["delete-data-confirm"] = "true"
 	}
 	task, err := manager.SubmitUninstallWithParameters(req.Name, req.Version, parameters, userID)
 	if err != nil {

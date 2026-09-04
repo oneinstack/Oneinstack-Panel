@@ -72,6 +72,7 @@ type ScriptInfo struct {
 
 type ParameterSpec struct {
 	Name     string
+	Env      string
 	Type     string
 	Required bool
 	Secret   bool
@@ -984,7 +985,7 @@ func secretParameterValues(scriptInfo *ScriptInfo) []string {
 	secretNames := make(map[string]struct{})
 	for _, spec := range scriptInfo.ParameterSpecs {
 		if spec.Secret || spec.Type == "password" {
-			secretNames[spec.Name] = struct{}{}
+			secretNames[parameterEnvironmentName(spec)] = struct{}{}
 		}
 	}
 	var values []string
@@ -1003,6 +1004,13 @@ func secretParameterValues(scriptInfo *ScriptInfo) []string {
 		}
 	}
 	return values
+}
+
+func parameterEnvironmentName(spec ParameterSpec) string {
+	if value := strings.TrimSpace(spec.Env); value != "" {
+		return value
+	}
+	return strings.ToUpper(strings.NewReplacer("-", "_", ".", "_").Replace(strings.TrimSpace(spec.Name)))
 }
 
 type redactingWriter struct {
@@ -1124,14 +1132,15 @@ func validateParameters(scriptInfo *ScriptInfo) error {
 		scriptInfo.Params = make(map[string]string)
 	}
 	for _, spec := range scriptInfo.ParameterSpecs {
-		switch spec.Name {
+		switch strings.ToUpper(strings.NewReplacer("-", "_", ".", "_").Replace(spec.Name)) {
 		case "PATH", "LD_PRELOAD", "LD_LIBRARY_PATH", "BASH_ENV", "ENV", "SHELLOPTS", "IFS", "CDPATH":
 			return fmt.Errorf("component parameter %s is reserved", spec.Name)
 		}
-		value := scriptInfo.Params[spec.Name]
+		envName := parameterEnvironmentName(spec)
+		value := scriptInfo.Params[envName]
 		if value == "" && spec.Default != "" {
 			value = spec.Default
-			scriptInfo.Params[spec.Name] = value
+			scriptInfo.Params[envName] = value
 		}
 		// Required parameters describe the inputs needed to create or configure a
 		// component. They must not prevent an uninstall or a read-only status
@@ -1212,7 +1221,7 @@ func effectiveSoftwarePort(params *input.InstallParams, scriptInfo *ScriptInfo) 
 			if !strings.EqualFold(strings.TrimSpace(spec.Type), "port") {
 				continue
 			}
-			if port := strings.TrimSpace(scriptInfo.Params[spec.Name]); port != "" {
+			if port := strings.TrimSpace(scriptInfo.Params[parameterEnvironmentName(spec)]); port != "" {
 				return port
 			}
 		}
@@ -1269,6 +1278,7 @@ func (sm *ScriptManager) updateSoftwareInstallInfo(
 					"install_version":           version,
 					"installed_package_version": packageVersion,
 					"http_port":                 strings.TrimSpace(port),
+					"runtime_params":            persistedRuntimeParameters(params, port),
 					"is_update":                 false,
 					"install_time":              time.Now(),
 				})
@@ -1288,9 +1298,87 @@ func (sm *ScriptManager) updateSoftwareInstallInfo(
 			"install_version":           "",
 			"installed_package_version": "",
 			"http_port":                 "",
+			"runtime_params":            "",
 			"is_update":                 false,
 			"status":                    models.Soft_Status_Default,
 		}).Error
+}
+
+func persistedRuntimeParameters(params *input.InstallParams, port string) string {
+	if params == nil {
+		return ""
+	}
+	values := make(map[string]string)
+	if strings.EqualFold(strings.TrimSpace(params.Key), "db") ||
+		strings.EqualFold(strings.TrimSpace(params.Key), "mysql") {
+		values["mysql-port"] = strings.TrimSpace(port)
+		values["mysql-bind-address"] = "127.0.0.1"
+		values["install-dir"] = "/usr/local/mysql"
+		values["data-dir"] = "/data/mysql"
+		values["log-dir"] = "/data/mysql"
+		values["run-user"] = "mysql"
+		values["run-group"] = "mysql"
+		values["component-state-dir"] = "/var/lib/oneinstack/components"
+	}
+	for key, value := range params.Parameters {
+		if isSecretInstallParameter(key) || strings.TrimSpace(value) == "" {
+			continue
+		}
+		canonical, ok := canonicalRuntimeParameterName(key)
+		if !ok {
+			continue
+		}
+		values[canonical] = strings.TrimSpace(value)
+	}
+	if strings.TrimSpace(port) != "" {
+		if strings.EqualFold(strings.TrimSpace(params.Key), "db") ||
+			strings.EqualFold(strings.TrimSpace(params.Key), "mysql") {
+			values["mysql-port"] = strings.TrimSpace(port)
+		} else {
+			values["port"] = strings.TrimSpace(port)
+		}
+	}
+	if len(values) == 0 {
+		return ""
+	}
+	encoded, err := json.Marshal(values)
+	if err != nil {
+		return ""
+	}
+	return string(encoded)
+}
+
+func isSecretInstallParameter(key string) bool {
+	name := compactInstallParameterName(key)
+	return name == "password" || strings.HasSuffix(name, "password") || name == "pwd"
+}
+
+func compactInstallParameterName(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	return strings.NewReplacer("-", "", "_", "", ".", "", " ", "").Replace(value)
+}
+
+func canonicalRuntimeParameterName(key string) (string, bool) {
+	switch compactInstallParameterName(key) {
+	case "port", "mysqlport":
+		return "mysql-port", true
+	case "mysqlbindaddress":
+		return "mysql-bind-address", true
+	case "installdir":
+		return "install-dir", true
+	case "datadir":
+		return "data-dir", true
+	case "logdir":
+		return "log-dir", true
+	case "runuser":
+		return "run-user", true
+	case "rungroup":
+		return "run-group", true
+	case "componentstatedir":
+		return "component-state-dir", true
+	default:
+		return "", false
+	}
 }
 
 // findSoftwareStateRow resolves the catalog row that owns the durable

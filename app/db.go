@@ -21,7 +21,7 @@ import (
 )
 
 var bundledCatalogVersions = map[string][]string{
-	"db":        {"8.0"},
+	"db":        {"8.0.45"},
 	"redis":     {"7.4.8"},
 	"webserver": {"1.28.2"},
 	"php":       {"8.1", "8.2", "8.3"},
@@ -644,15 +644,28 @@ func initSoftware() error {
 // syncCenterSoftwareCatalog adds versions backed by the production Center
 // packages without rewriting installed or legacy catalog rows.
 func syncCenterSoftwareCatalog() error {
-	// MySQL installation is deliberately parameter-free in the store. Panel
-	// fixes the local account to root, the port to 3306, and generates the
-	// initial password server-side so secrets never have to be typed into the
-	// software card.
+	// Keep the local bootstrap catalog compatible with the signed Center
+	// manifest. The password is intentionally absent; the task pipeline either
+	// consumes an explicit password or generates and encrypts one server-side.
+	const mysqlCatalogParametersJSON = `[
+  {"key":"software-version","name":"软件版本","rule":"exact:8.0.45","required":"true","type":"input","default":"8.0.45"},
+  {"key":"mysql-port","name":"MySQL端口","rule":"port","required":"false","type":"port","default":"3306"},
+  {"key":"mysql-bind-address","name":"绑定地址","required":"false","type":"input","default":"127.0.0.1"},
+  {"key":"install-dir","name":"安装目录","required":"false","type":"path","default":"/usr/local/mysql"},
+  {"key":"data-dir","name":"数据目录","required":"false","type":"path","default":"/data/mysql"},
+  {"key":"log-dir","name":"日志目录","required":"false","type":"path","default":"/data/mysql"},
+  {"key":"run-user","name":"运行用户","required":"false","type":"username","default":"mysql"},
+  {"key":"run-group","name":"运行用户组","required":"false","type":"username","default":"mysql"},
+  {"key":"mysql-password","name":"MySQL root密码","required":"false","type":"password"},
+  {"key":"migrate-external-mysql","name":"接管外部MySQL","required":"false","type":"boolean","default":"false"},
+  {"key":"migrate-external-confirm","name":"确认接管外部MySQL","required":"false","type":"boolean","default":"false"},
+  {"key":"component-state-dir","name":"组件状态目录","required":"false","type":"path","default":"/var/lib/oneinstack/components"}
+]`
 	if err := db.Model(&models.Software{}).
 		Where("`key` = ?", "db").
 		Updates(map[string]any{
 			"name":   "MySQL",
-			"params": "",
+			"params": mysqlCatalogParametersJSON,
 		}).Error; err != nil {
 		return fmt.Errorf("normalize MySQL catalog parameters: %w", err)
 	}
@@ -664,7 +677,7 @@ func syncCenterSoftwareCatalog() error {
 		name    string
 		version string
 	}{
-		{key: "db", name: "MySQL", version: "8.0"},
+		{key: "db", name: "MySQL", version: "8.0.45"},
 		{key: "webserver", name: "Nginx", version: "1.28.2"},
 		{key: "redis", name: "Redis", version: "7.4.8"},
 		{key: "php", name: "PHP", version: "8.1"},
@@ -695,6 +708,18 @@ func syncCenterSoftwareCatalog() error {
 		template.Log = ""
 		template.IsUpdate = false
 		template.CatalogChannel = "stable"
+		if item.key == "db" {
+			template.Component = "mysql"
+			template.ServiceName = "mysql"
+			template.RuntimeGroup = "database"
+			template.CatalogManaged = true
+			template.CatalogVisible = true
+			template.Installable = true
+			template.Recommended = true
+			template.VersionLine = "8.0.x"
+			template.AllowCustomVersion = false
+			template.Params = mysqlCatalogParametersJSON
+		}
 		if err := db.Create(&template).Error; err != nil {
 			return fmt.Errorf("create %s %s catalog entry: %w", item.name, item.version, err)
 		}

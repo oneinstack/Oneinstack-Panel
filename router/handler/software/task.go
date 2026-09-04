@@ -108,12 +108,13 @@ func getTaskManager() (*softwaretask.Manager, error) {
 					return err
 				}
 				params := &input.InstallParams{
-					Key:        request.Key,
-					Version:    request.Version,
-					Port:       request.Port,
-					Username:   request.Username,
-					Pwd:        request.Password,
-					Parameters: request.Parameters,
+					Key:                request.Key,
+					Version:            request.Version,
+					Port:               request.Port,
+					Username:           request.Username,
+					Pwd:                request.Password,
+					Parameters:         request.Parameters,
+					ExplicitParameters: request.ExplicitParameters,
 				}
 				if _, err := installer.InstallTask(ctx, params, logPath, reporter); err != nil {
 					return err
@@ -149,12 +150,13 @@ func getTaskManager() (*softwaretask.Manager, error) {
 			request softwaretask.InstallRequest,
 		) error {
 			return softwareService.NewInstaller().ValidateInstallParams(ctx, &input.InstallParams{
-				Key:        request.Key,
-				Version:    request.Version,
-				Port:       request.Port,
-				Username:   request.Username,
-				Pwd:        request.Password,
-				Parameters: request.Parameters,
+				Key:                request.Key,
+				Version:            request.Version,
+				Port:               request.Port,
+				Username:           request.Username,
+				Pwd:                request.Password,
+				Parameters:         request.Parameters,
+				ExplicitParameters: request.ExplicitParameters,
 			})
 		})
 		taskManager.SetRecoveryInspector(func(
@@ -237,10 +239,22 @@ func SubmitInstallationTask(
 	req input.InstallParams,
 	requestedBy int64,
 ) (*models.SoftwareTask, error) {
+	explicitParameters := explicitInstallParameters(req)
 	softwareService.NormalizeInstallParams(&req)
+	generatedSecret := false
 	if slices.Contains(models.DatabaseSoftwareKeys, req.Key) {
-		req.Port = "3306"
-		req.Username = "root"
+		if strings.TrimSpace(req.Port) == "" {
+			req.Port = "3306"
+		}
+		if strings.TrimSpace(req.Username) == "" {
+			req.Username = "root"
+		}
+		if req.Username != "root" {
+			return nil, &softwareService.InstallParameterError{
+				Field:   "username",
+				Message: "MySQL 管理账户必须使用 root",
+			}
+		}
 		if strings.TrimSpace(req.Pwd) == "" {
 			username, password, found, err := storageService.ManagedLocalMySQLCredential(req.Port)
 			if err != nil {
@@ -259,11 +273,22 @@ func SubmitInstallationTask(
 				if installed > 0 {
 					return nil, fmt.Errorf("MySQL is installed but its managed root credential is unavailable")
 				}
-				password, err := utils.GenerateSecurePassword(24)
-				if err != nil {
-					return nil, err
+				dataInitialized, inspectErr := mysqlDataDirectoryInitialized(req)
+				if inspectErr != nil {
+					return nil, inspectErr
 				}
-				req.Pwd = password
+				migrationRequested := strings.EqualFold(
+					installTaskParameterValue(req.Parameters, "migrate-external-mysql", "migrateExternalMysql"),
+					"true",
+				)
+				if !dataInitialized && !migrationRequested {
+					password, err := utils.GenerateSecurePassword(24)
+					if err != nil {
+						return nil, err
+					}
+					req.Pwd = password
+					generatedSecret = true
+				}
 			}
 		}
 	}
@@ -272,13 +297,78 @@ func SubmitInstallationTask(
 		return nil, err
 	}
 	return manager.Submit(softwaretask.InstallRequest{
-		Key:        req.Key,
-		Version:    req.Version,
-		Port:       req.Port,
-		Username:   req.Username,
-		Password:   req.Pwd,
-		Parameters: req.Parameters,
+		Key:                req.Key,
+		Version:            req.Version,
+		Port:               req.Port,
+		Username:           req.Username,
+		Password:           req.Pwd,
+		GeneratedSecret:    generatedSecret,
+		Parameters:         req.Parameters,
+		ExplicitParameters: explicitParameters,
 	}, requestedBy)
+}
+
+func explicitInstallParameters(req input.InstallParams) map[string]bool {
+	result := make(map[string]bool)
+	if strings.TrimSpace(req.Port) != "" {
+		result["port"] = true
+	}
+	if strings.TrimSpace(req.Username) != "" {
+		result["username"] = true
+	}
+	if req.Pwd != "" {
+		result["mysql-password"] = true
+	}
+	for key := range req.Parameters {
+		result[key] = true
+	}
+	return result
+}
+
+func mysqlDataDirectoryInitialized(req input.InstallParams) (bool, error) {
+	dataDir := installTaskParameterValue(req.Parameters, "data-dir", "dataDir", "DATA_DIR")
+	if dataDir == "" {
+		dataDir = "/data/mysql"
+	}
+	cleaned := filepath.Clean(dataDir)
+	if !filepath.IsAbs(dataDir) || cleaned != dataDir {
+		return false, &softwareService.InstallParameterError{
+			Field:   "data-dir",
+			Message: "必须是规范化的绝对路径",
+		}
+	}
+	switch cleaned {
+	case "/", "/usr", "/usr/local", "/etc", "/var", "/data", "/home", "/root":
+		return false, &softwareService.InstallParameterError{
+			Field:   "data-dir",
+			Message: "目录范围过宽",
+		}
+	}
+	info, err := os.Stat(filepath.Join(cleaned, "mysql"))
+	if err == nil {
+		return info.IsDir(), nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	return false, errors.New("无法在安装前检查 MySQL 数据目录")
+}
+
+func installTaskParameterValue(parameters map[string]string, names ...string) string {
+	for _, name := range names {
+		target := compactTaskParameterName(name)
+		for key, value := range parameters {
+			if compactTaskParameterName(key) == target && strings.TrimSpace(value) != "" {
+				return strings.TrimSpace(value)
+			}
+		}
+	}
+	return ""
+}
+
+func compactTaskParameterName(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	return strings.NewReplacer("-", "", "_", "", ".", "", " ", "").Replace(value)
 }
 
 func GetSoftwareTask(c *gin.Context) {
@@ -296,6 +386,40 @@ func GetSoftwareTask(c *gin.Context) {
 		return
 	}
 	core.HandleSuccess(c, task)
+}
+
+// GetSoftwareTaskSecret reveals an automatically generated installation
+// password once, after the task has succeeded and the caller passes the same
+// task access check as the task status endpoint. Explicit passwords are never
+// stored here and therefore cannot be revealed by this endpoint.
+func GetSoftwareTaskSecret(c *gin.Context) {
+	manager, ok := taskManagerForRequest(c)
+	if !ok {
+		return
+	}
+	task, err := manager.Get(c.Param("id"))
+	if err != nil {
+		handleTaskLookupError(c, err)
+		return
+	}
+	if !canAccessTask(c, task) {
+		core.HandleError(c, core.NewError(core.ErrForbidden, "无权读取该软件任务凭据"))
+		return
+	}
+	secret, err := manager.ConsumeTaskSecret(task.ID)
+	if errors.Is(err, softwaretask.ErrTaskSecretConsumed) {
+		core.HandleError(c, core.NewErrorWithDetail(core.ErrConflict, "任务凭据已消费", "TASK_SECRET_CONSUMED"))
+		return
+	}
+	if errors.Is(err, softwaretask.ErrTaskSecretUnavailable) {
+		core.HandleError(c, core.NewErrorWithDetail(core.ErrConflict, "任务凭据不可用", "TASK_SECRET_UNAVAILABLE"))
+		return
+	}
+	if err != nil {
+		handleTaskLookupError(c, err)
+		return
+	}
+	core.HandleSuccess(c, gin.H{"password": secret})
 }
 
 func ListSoftwareTasks(c *gin.Context) {

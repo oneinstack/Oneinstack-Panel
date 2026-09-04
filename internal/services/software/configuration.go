@@ -28,6 +28,7 @@ type ConfigurationField struct {
 	Key         string   `json:"key"`
 	Label       string   `json:"label"`
 	Type        string   `json:"type"`
+	Default     string   `json:"default,omitempty"`
 	Unit        string   `json:"unit,omitempty"`
 	Description string   `json:"description,omitempty"`
 	Min         *int     `json:"min,omitempty"`
@@ -44,6 +45,17 @@ type ComponentConfiguration struct {
 	Fields        []ConfigurationField `json:"fields"`
 	Values        map[string]string    `json:"values"`
 	PackageSource string               `json:"packageSource"`
+	Runtime       *ComponentRuntime    `json:"runtime,omitempty"`
+}
+
+type ComponentRuntime struct {
+	Port        string `json:"port"`
+	BindAddress string `json:"bindAddress"`
+	InstallDir  string `json:"installDir"`
+	DataDir     string `json:"dataDir"`
+	LogDir      string `json:"logDir"`
+	RunUser     string `json:"runUser"`
+	RunGroup    string `json:"runGroup"`
 }
 
 type ConfigurationChange struct {
@@ -92,6 +104,10 @@ func integerField(key, label, unit, description string, min, max int) Configurat
 	}
 }
 
+func intPointer(value int) *int {
+	return &value
+}
+
 func componentConfigurationDefinition(component string) (configurationDefinition, error) {
 	definition, err := NormalizeServiceComponent(component)
 	if err != nil {
@@ -111,11 +127,12 @@ func componentConfigurationDefinition(component string) (configurationDefinition
 				Key:         "workerProcesses",
 				Label:       "工作进程数",
 				Type:        "worker_processes",
+				Default:     "auto",
 				Description: "建议保持 auto；手动设置范围为 1–99。",
 			},
-			integerField("workerConnections", "单进程连接数", "", "每个工作进程允许的最大连接数。", 512, 65535),
-			integerField("keepaliveTimeout", "长连接超时", "秒", "客户端 Keep-Alive 空闲超时。", 5, 300),
-			integerField("clientMaxBodySize", "请求体上限", "MB", "上传请求允许的最大请求体。", 1, 10240),
+			{Key: "workerConnections", Label: "单进程连接数", Type: "integer", Default: "4096", Min: intPointer(512), Max: intPointer(65535)},
+			{Key: "keepaliveTimeout", Label: "长连接超时", Type: "integer", Unit: "秒", Default: "65", Min: intPointer(5), Max: intPointer(300)},
+			{Key: "clientMaxBodySize", Label: "请求体上限", Type: "integer", Unit: "MB", Default: "1", Min: intPointer(1), Max: intPointer(10240)},
 		}
 		result.Environment = map[string]string{
 			"workerProcesses":   "ONEINSTACK_CONFIG_WORKER_PROCESSES",
@@ -126,11 +143,11 @@ func componentConfigurationDefinition(component string) (configurationDefinition
 	case "mysql":
 		result.ApplyMode = "restart"
 		result.Fields = []ConfigurationField{
-			integerField("maxConnections", "最大连接数", "", "MySQL 同时接受的客户端连接上限。", 10, 100000),
-			integerField("maxAllowedPacket", "数据包上限", "MB", "单个通信数据包允许的最大大小。", 1, 1024),
-			integerField("innodbBufferPoolSize", "InnoDB 缓冲池", "MB", "建议根据服务器内存和数据库负载设置。", 128, 1048576),
-			{Key: "slowQueryLog", Label: "慢查询日志", Type: "boolean", Description: "记录执行时间超过阈值的 SQL。"},
-			integerField("longQueryTime", "慢查询阈值", "秒", "超过该时长的查询会进入慢查询日志。", 1, 600),
+			{Key: "maxConnections", Label: "最大连接数", Type: "integer", Default: "300", Min: intPointer(10), Max: intPointer(100000)},
+			{Key: "maxAllowedPacket", Label: "数据包上限", Type: "integer", Unit: "MB", Default: "64", Min: intPointer(1), Max: intPointer(1024)},
+			{Key: "innodbBufferPoolSize", Label: "InnoDB 缓冲池", Type: "integer", Unit: "MB", Default: "128", Min: intPointer(128), Max: intPointer(1048576)},
+			{Key: "slowQueryLog", Label: "慢查询日志", Type: "boolean", Default: "false", Description: "记录执行时间超过阈值的 SQL。"},
+			{Key: "longQueryTime", Label: "慢查询阈值", Type: "integer", Unit: "秒", Default: "10", Min: intPointer(1), Max: intPointer(600)},
 		}
 		result.Environment = map[string]string{
 			"maxConnections":       "ONEINSTACK_CONFIG_MAX_CONNECTIONS",
@@ -142,14 +159,14 @@ func componentConfigurationDefinition(component string) (configurationDefinition
 	case "php":
 		result.ApplyMode = "reload"
 		result.Fields = []ConfigurationField{
-			integerField("memoryLimit", "脚本内存上限", "MB", "单个 PHP 请求允许使用的最大内存。", 32, 8192),
-			integerField("uploadMaxFilesize", "单文件上传上限", "MB", "单个上传文件允许的最大大小。", 1, 2048),
-			integerField("postMaxSize", "POST 数据上限", "MB", "必须不小于单文件上传上限。", 1, 4096),
-			integerField("maxExecutionTime", "脚本执行超时", "秒", "单个 PHP 脚本的最长执行时间。", 10, 3600),
-			integerField("pmMaxChildren", "最大子进程数", "", "PHP-FPM 可同时运行的最大工作进程数。", 1, 10000),
-			integerField("pmStartServers", "启动进程数", "", "PHP-FPM 启动时创建的工作进程数。", 1, 10000),
-			integerField("pmMinSpareServers", "最小空闲进程", "", "PHP-FPM 保持的最少空闲工作进程。", 1, 10000),
-			integerField("pmMaxSpareServers", "最大空闲进程", "", "PHP-FPM 保持的最多空闲工作进程。", 1, 10000),
+			{Key: "memoryLimit", Label: "脚本内存上限", Type: "integer", Unit: "MB", Default: "256", Min: intPointer(32), Max: intPointer(8192)},
+			{Key: "uploadMaxFilesize", Label: "单文件上传上限", Type: "integer", Unit: "MB", Default: "2", Min: intPointer(1), Max: intPointer(2048)},
+			{Key: "postMaxSize", Label: "POST 数据上限", Type: "integer", Unit: "MB", Default: "8", Min: intPointer(1), Max: intPointer(4096)},
+			{Key: "maxExecutionTime", Label: "脚本执行超时", Type: "integer", Unit: "秒", Default: "30", Min: intPointer(10), Max: intPointer(3600)},
+			{Key: "pmMaxChildren", Label: "最大子进程数", Type: "integer", Default: "32", Min: intPointer(1), Max: intPointer(10000)},
+			{Key: "pmStartServers", Label: "启动进程数", Type: "integer", Default: "4", Min: intPointer(1), Max: intPointer(10000)},
+			{Key: "pmMinSpareServers", Label: "最小空闲进程", Type: "integer", Default: "2", Min: intPointer(1), Max: intPointer(10000)},
+			{Key: "pmMaxSpareServers", Label: "最大空闲进程", Type: "integer", Default: "8", Min: intPointer(1), Max: intPointer(10000)},
 		}
 		result.Environment = map[string]string{
 			"memoryLimit":       "ONEINSTACK_CONFIG_MEMORY_LIMIT",
@@ -164,20 +181,21 @@ func componentConfigurationDefinition(component string) (configurationDefinition
 	case "redis":
 		result.ApplyMode = "restart"
 		result.Fields = []ConfigurationField{
-			integerField("maxmemory", "最大内存", "MB", "0 表示不设置 Redis 内存上限。", 0, 1048576),
+			{Key: "maxmemory", Label: "最大内存", Type: "integer", Unit: "MB", Default: "0", Min: intPointer(0), Max: intPointer(1048576)},
 			{
 				Key:         "maxmemoryPolicy",
 				Label:       "内存淘汰策略",
 				Type:        "select",
+				Default:     "noeviction",
 				Description: "达到内存上限后 Redis 处理新写入的方式。",
 				Options: []string{
 					"noeviction", "allkeys-lru", "allkeys-lfu", "allkeys-random",
 					"volatile-lru", "volatile-lfu", "volatile-random", "volatile-ttl",
 				},
 			},
-			{Key: "appendonly", Label: "AOF 持久化", Type: "boolean", Description: "将写操作追加到 AOF 文件。"},
-			integerField("timeout", "空闲连接超时", "秒", "0 表示不主动断开空闲客户端。", 0, 86400),
-			integerField("tcpKeepalive", "TCP Keepalive", "秒", "TCP 保活探测间隔；0 表示关闭。", 0, 3600),
+			{Key: "appendonly", Label: "AOF 持久化", Type: "boolean", Default: "true", Description: "将写操作追加到 AOF 文件。"},
+			{Key: "timeout", Label: "空闲连接超时", Type: "integer", Unit: "秒", Default: "0", Min: intPointer(0), Max: intPointer(86400)},
+			{Key: "tcpKeepalive", Label: "TCP Keepalive", Type: "integer", Unit: "秒", Default: "300", Min: intPointer(0), Max: intPointer(3600)},
 		}
 		result.Environment = map[string]string{
 			"maxmemory":       "ONEINSTACK_CONFIG_MAXMEMORY",
@@ -211,6 +229,7 @@ func manifestConfigurationDefinition(
 			Key:         field.Key,
 			Label:       field.Label,
 			Type:        field.Type,
+			Default:     field.Default,
 			Unit:        field.Unit,
 			Description: field.Description,
 			Min:         field.Min,
@@ -231,16 +250,27 @@ func NormalizeConfigurationValues(component string, values map[string]string) (m
 }
 
 func normalizeConfigurationValues(definition configurationDefinition, values map[string]string) (map[string]string, error) {
-	if len(values) != len(definition.Fields) {
-		return nil, errors.New("configuration must contain every managed field and no unknown fields")
-	}
-	result := make(map[string]string, len(values))
+	// Fields with a declared default may be omitted or submitted as an empty
+	// value. Unknown fields remain rejected so callers cannot bypass the managed
+	// configuration schema.
+	knownFields := make(map[string]struct{}, len(definition.Fields))
 	for _, field := range definition.Fields {
-		value, exists := values[field.Key]
-		if !exists {
+		knownFields[field.Key] = struct{}{}
+	}
+	for key := range values {
+		if _, exists := knownFields[key]; !exists {
+			return nil, errors.New("configuration must contain every managed field and no unknown fields")
+		}
+	}
+	result := make(map[string]string, len(definition.Fields))
+	for _, field := range definition.Fields {
+		value := strings.TrimSpace(values[field.Key])
+		if value == "" && strings.TrimSpace(field.Default) != "" {
+			value = strings.TrimSpace(field.Default)
+		}
+		if value == "" {
 			return nil, fmt.Errorf("configuration field %s is required", field.Key)
 		}
-		value = strings.TrimSpace(value)
 		if strings.ContainsAny(value, "\x00\r\n") || len(value) > 128 {
 			return nil, fmt.Errorf("configuration field %s contains invalid data", field.Key)
 		}
@@ -345,7 +375,11 @@ func (installer *Installer) InspectServiceConfiguration(
 	if err != nil {
 		return ComponentConfiguration{}, err
 	}
-	params := (&serviceInstallParams{key: definition.SoftwareKey, version: strings.TrimSpace(version)}).input()
+	params := installedServiceInstallParams(
+		definition.SoftwareKey,
+		definition.Component,
+		strings.TrimSpace(version),
+	)
 	installer.setScriptParams(scriptInfo, params)
 	scriptInfo.Params["ONEINSTACK_CONFIG_OPERATION"] = "get"
 	output, err := installer.scriptManager.ExecuteProbe(ctx, scriptInfo, maxConfigurationProbeBytes)
@@ -394,7 +428,11 @@ func (installer *Installer) ApplyServiceConfigurationTask(
 		return "", err
 	}
 	reportPackageResolution(observer, scriptInfo)
-	params := (&serviceInstallParams{key: definition.SoftwareKey, version: strings.TrimSpace(version)}).input()
+	params := installedServiceInstallParams(
+		definition.SoftwareKey,
+		definition.Component,
+		strings.TrimSpace(version),
+	)
 	installer.setScriptParams(scriptInfo, params)
 	scriptInfo.Params["ONEINSTACK_CONFIG_OPERATION"] = "apply"
 	scriptInfo.Params["ONEINSTACK_CONFIG_REVISION"] = revision
@@ -449,6 +487,13 @@ func parseComponentConfiguration(
 		"revision":   {},
 		"apply_mode": {},
 	}
+	var runtime *ComponentRuntime
+	if definition.Component == "mysql" {
+		runtime = &ComponentRuntime{}
+		for _, key := range []string{"runtime.port", "runtime.bindAddress", "runtime.installDir", "runtime.dataDir", "runtime.logDir", "runtime.runUser", "runtime.runGroup"} {
+			allowed[key] = struct{}{}
+		}
+	}
 	for _, field := range definition.Fields {
 		if !configurationKeyPattern.MatchString(field.Key) {
 			return ComponentConfiguration{}, errors.New("managed configuration schema contains an invalid key")
@@ -497,6 +542,21 @@ func parseComponentConfiguration(
 	if err != nil {
 		return ComponentConfiguration{}, fmt.Errorf("component configuration output is invalid: %w", err)
 	}
+	if runtime != nil {
+		runtime.Port = fields["runtime.port"]
+		runtime.BindAddress = fields["runtime.bindAddress"]
+		runtime.InstallDir = fields["runtime.installDir"]
+		runtime.DataDir = fields["runtime.dataDir"]
+		runtime.LogDir = fields["runtime.logDir"]
+		runtime.RunUser = fields["runtime.runUser"]
+		runtime.RunGroup = fields["runtime.runGroup"]
+		if port, parseErr := strconv.Atoi(runtime.Port); parseErr != nil || port < 1 || port > 65535 {
+			return ComponentConfiguration{}, errors.New("component runtime port is invalid")
+		}
+		if runtime.BindAddress == "" || runtime.InstallDir == "" || runtime.DataDir == "" || runtime.LogDir == "" || runtime.RunUser == "" || runtime.RunGroup == "" {
+			return ComponentConfiguration{}, errors.New("component runtime identity is incomplete")
+		}
+	}
 	return ComponentConfiguration{
 		Component:   definition.Component,
 		SoftwareKey: definition.SoftwareKey,
@@ -505,6 +565,7 @@ func parseComponentConfiguration(
 		ApplyMode:   definition.ApplyMode,
 		Fields:      append([]ConfigurationField(nil), definition.Fields...),
 		Values:      values,
+		Runtime:     runtime,
 	}, nil
 }
 
@@ -548,4 +609,57 @@ func PreviewConfiguration(
 	}
 	preview.HasChanges = len(preview.Changes) > 0
 	return preview, nil
+}
+
+// PreviewConfigurationWithContext performs the pure configuration preview and
+// additionally checks changed managed port fields against the current host.
+// The port is checked only when it changes, because the current service is
+// expected to be listening on its existing port.
+func PreviewConfigurationWithContext(
+	ctx context.Context,
+	current ComponentConfiguration,
+	revision string,
+	values map[string]string,
+) (ConfigurationPreview, error) {
+	preview, err := PreviewConfiguration(current, revision, values)
+	if err != nil {
+		return ConfigurationPreview{}, err
+	}
+	if err := validateConfigurationPortChanges(ctx, current, preview); err != nil {
+		return ConfigurationPreview{}, err
+	}
+	return preview, nil
+}
+
+func validateConfigurationPortChanges(
+	ctx context.Context,
+	current ComponentConfiguration,
+	preview ConfigurationPreview,
+) error {
+	for _, field := range current.Fields {
+		if field.Type != "port" && !strings.EqualFold(field.Key, "port") &&
+			!strings.EqualFold(field.Key, "listenPort") {
+			continue
+		}
+		before := strings.TrimSpace(current.Values[field.Key])
+		after := strings.TrimSpace(preview.Values[field.Key])
+		if before == after {
+			continue
+		}
+		port, err := strconv.Atoi(after)
+		if err != nil {
+			return &InstallParameterError{
+				Field:   field.Key,
+				Message: "must be a valid port between 1 and 65535",
+			}
+		}
+		if err := validatePortAvailable(ctx, port); err != nil {
+			var parameterErr *InstallParameterError
+			if errors.As(err, &parameterErr) {
+				return &InstallParameterError{Field: field.Key, Message: parameterErr.Message}
+			}
+			return err
+		}
+	}
+	return nil
 }

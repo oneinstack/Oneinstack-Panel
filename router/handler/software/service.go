@@ -199,13 +199,11 @@ func PreviewComponentServiceConfiguration(c *gin.Context) {
 		core.HandleError(c, core.WrapError(err, core.ErrInternalError, "读取当前组件配置失败"))
 		return
 	}
-	preview, err := softwareService.PreviewConfiguration(current, request.Revision, request.Values)
+	preview, err := softwareService.PreviewConfigurationWithContext(
+		c.Request.Context(), current, request.Revision, request.Values,
+	)
 	if err != nil {
-		message := "配置参数校验失败"
-		if errors.Is(err, softwareService.ErrConfigurationConflict) {
-			message = "配置已被其他操作修改，请刷新后重试"
-		}
-		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, message))
+		handleConfigurationPreviewError(c, err, "配置参数校验失败")
 		return
 	}
 	localizeConfigurationPreview(c.GetString("locale"), &preview)
@@ -231,13 +229,11 @@ func ApplyComponentServiceConfiguration(c *gin.Context) {
 		core.HandleError(c, core.WrapError(err, core.ErrInternalError, "读取当前组件配置失败"))
 		return
 	}
-	preview, err := softwareService.PreviewConfiguration(current, request.Revision, request.Values)
+	preview, err := softwareService.PreviewConfigurationWithContext(
+		c.Request.Context(), current, request.Revision, request.Values,
+	)
 	if err != nil {
-		message := "配置参数校验失败"
-		if errors.Is(err, softwareService.ErrConfigurationConflict) {
-			message = "配置已被其他操作修改，请刷新后重试"
-		}
-		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, message))
+		handleConfigurationPreviewError(c, err, "配置参数校验失败")
 		return
 	}
 	if !preview.HasChanges {
@@ -344,6 +340,24 @@ func localizeConfigurationPreview(locale string, preview *softwareService.Config
 	}
 }
 
+func handleConfigurationPreviewError(c *gin.Context, err error, message string) {
+	var parameterErr *softwareService.InstallParameterError
+	if errors.As(err, &parameterErr) {
+		if userMessage := parameterErr.UserMessage(); userMessage != "" {
+			core.HandleSimpleError(c, core.NewError(core.ErrInvalidParameter, userMessage))
+			return
+		}
+		appErr := core.NewErrorWithDetail(core.ErrInvalidParameter, "组件配置参数无效", parameterErr.Error())
+		appErr.Field = parameterErr.Field
+		core.HandleError(c, appErr)
+		return
+	}
+	if errors.Is(err, softwareService.ErrConfigurationConflict) {
+		message = "配置已被其他操作修改，请刷新后重试"
+	}
+	core.HandleError(c, core.WrapError(err, core.ErrBadRequest, message))
+}
+
 func RestoreComponentServiceConfiguration(c *gin.Context) {
 	history, current, preview, ok := configurationRestorePreview(c)
 	if !ok {
@@ -439,13 +453,11 @@ func configurationRestorePreview(
 			softwareService.ConfigurationPreview{},
 			false
 	}
-	preview, err := softwareService.PreviewConfiguration(
-		current,
-		current.Revision,
-		history.Before,
+	preview, err := softwareService.PreviewConfigurationWithContext(
+		c.Request.Context(), current, current.Revision, history.Before,
 	)
 	if err != nil {
-		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "该历史配置与当前版本不兼容"))
+		handleConfigurationPreviewError(c, err, "该历史配置与当前版本不兼容")
 		return softwareService.ConfigurationHistoryEntry{},
 			softwareService.ComponentConfiguration{},
 			softwareService.ConfigurationPreview{},

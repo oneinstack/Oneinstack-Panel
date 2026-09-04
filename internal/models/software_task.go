@@ -59,6 +59,8 @@ type SoftwareTask struct {
 	EventSeq         int64      `json:"eventSeq" gorm:"not null;default:0"`
 	LogPath          string     `json:"-" gorm:"size:1024"`
 	ParametersJSON   string     `json:"-" gorm:"type:text"`
+	SecretCiphertext string     `json:"-" gorm:"type:text"`
+	SecretConsumedAt *time.Time `json:"-"`
 	StartedAt        *time.Time `json:"startedAt,omitempty"`
 	HeartbeatAt      *time.Time `json:"heartbeatAt,omitempty"`
 	FinishedAt       *time.Time `json:"finishedAt,omitempty"`

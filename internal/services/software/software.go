@@ -214,6 +214,7 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 				"MAX(CASE WHEN catalog_visible = 1 AND installable = 1 THEN 1 ELSE 0 END) as installable," +
 				"MAX(CASE WHEN catalog_visible = 1 AND recommended = 1 THEN version ELSE '' END) as recommended_version," +
 				"MAX(CASE WHEN installed = 1 THEN http_port ELSE '' END) as http_port," +
+				"MAX(CASE WHEN installed = 1 THEN runtime_params ELSE '' END) as runtime_params," +
 				"MAX(CASE WHEN catalog_managed = 1 THEN 1 ELSE 0 END) as catalog_managed," +
 				"MAX(manage_scopes) as manage_scopes," +
 				"MAX(service_name) as service_name," +
@@ -293,6 +294,7 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 	for _, item := range paginated.Data {
 		keys = append(keys, item.Key)
 		versionLines[item.Key] = []string{}
+		versionOptions[item.Key] = []output.VersionOption{}
 	}
 	if len(keys) > 0 {
 		var versionRows []models.Software
@@ -342,7 +344,7 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 	}
 
 	// 转换版本格式
-	var groupedResults []output.Software
+	groupedResults := make([]output.Software, 0, len(paginated.Data))
 	for i, item := range paginated.Data {
 		port := strings.TrimSpace(item.HttpPort)
 		if item.Installed && port == "" {
@@ -374,7 +376,7 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 			Tags:                    item.Tags,
 			ManageScopes:            decodeManageScopes(item.ManageScopesJSON),
 			ServiceName:             item.ServiceName,
-			Versions:                strings.Split(item.Versions, ","),
+			Versions:                splitSoftwareVersions(item.Versions),
 		})
 		// Do not expose a stale Center recommendation as an upgrade target.
 		// The catalog may temporarily recommend an older version than the
@@ -397,8 +399,11 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 			groupedResults[i].IsUpdate = false
 			groupedResults[i].UpdateReason = ""
 		}
-		var params []*output.SoftParam
+		params := make([]*output.SoftParam, 0)
 		_ = json.Unmarshal([]byte(item.Params), &params)
+		if params == nil {
+			params = make([]*output.SoftParam, 0)
+		}
 		installParameterValues := hydrateNginxInstallParameters(item.Component, item.Key, params)
 		if recommendedVersion := strings.TrimSpace(groupedResults[i].RecommendedVersion); recommendedVersion != "" {
 			for _, parameter := range params {
@@ -408,6 +413,7 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 			}
 		}
 		groupedResults[i].Params = params
+		groupedResults[i].Runtime = mysqlRuntimeInfo(item)
 		if port := strings.TrimSpace(installParameterValues["port"]); port != "" {
 			groupedResults[i].Port = port
 		}
@@ -427,6 +433,48 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 		Page:     paginated.Page,
 		PageSize: paginated.PageSize,
 	}, nil
+}
+
+func splitSoftwareVersions(value string) []string {
+	result := make([]string, 0)
+	for _, version := range strings.Split(value, ",") {
+		version = strings.TrimSpace(version)
+		if version != "" {
+			result = append(result, version)
+		}
+	}
+	return result
+}
+
+func mysqlRuntimeInfo(item models.Softwares) *output.SoftwareRuntime {
+	if strings.ToLower(strings.TrimSpace(item.Component)) != "mysql" &&
+		strings.ToLower(strings.TrimSpace(item.Key)) != "db" {
+		return nil
+	}
+	if !item.Installed {
+		return nil
+	}
+	runtime := &output.SoftwareRuntime{Status: "not_running"}
+	if checkMySQL(&item.Software) {
+		runtime.Status = "running"
+	}
+	runtime.Port = strings.TrimSpace(item.HttpPort)
+	var values map[string]string
+	if strings.TrimSpace(item.RuntimeParamsJSON) != "" {
+		_ = json.Unmarshal([]byte(item.RuntimeParamsJSON), &values)
+	}
+	if values != nil {
+		if runtime.Port == "" {
+			runtime.Port = installParameterValue(values, "port", "mysql-port", "mysqlPort")
+		}
+		runtime.BindAddress = installParameterValue(values, "mysql-bind-address", "mysqlBindAddress")
+		runtime.InstallDir = installParameterValue(values, "install-dir", "installDir")
+		runtime.DataDir = installParameterValue(values, "data-dir", "dataDir")
+		runtime.LogDir = installParameterValue(values, "log-dir", "logDir")
+		runtime.RunUser = installParameterValue(values, "run-user", "runUser")
+		runtime.RunGroup = installParameterValue(values, "run-group", "runGroup")
+	}
+	return runtime
 }
 
 func softwareUpdateReason(item models.Softwares) string {
