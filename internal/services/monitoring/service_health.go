@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -76,6 +77,7 @@ func (manager *Manager) CheckServiceHealth(ctx context.Context) error {
 		return errors.New("component service health collector returned too many observations")
 	}
 	seen := make(map[string]struct{}, len(observations))
+	states := make([]models.ComponentHealthState, 0, len(observations))
 	for index := range observations {
 		observation := observations[index]
 		if err := normalizeComponentHealthObservation(&observation, manager.now()); err != nil {
@@ -85,14 +87,16 @@ func (manager *Manager) CheckServiceHealth(ctx context.Context) error {
 			return fmt.Errorf("duplicate component health observation %s", observation.Component)
 		}
 		seen[observation.Component] = struct{}{}
-		event, notify, err := manager.evaluateServiceHealth(&observation)
+		state, event, notify, err := manager.evaluateServiceHealth(&observation)
 		if err != nil {
 			return err
 		}
+		states = append(states, *state)
 		if event != nil && notify {
 			manager.deliver(ctx, event)
 		}
 	}
+	manager.setServiceHealthSnapshot(states)
 	return nil
 }
 
@@ -146,12 +150,13 @@ func normalizeComponentHealthObservation(
 
 func (manager *Manager) evaluateServiceHealth(
 	observation *ComponentHealthObservation,
-) (*models.MonitorAlertEvent, bool, error) {
+) (*models.ComponentHealthState, *models.MonitorAlertEvent, bool, error) {
 	now := observation.CheckedAt
+	var state models.ComponentHealthState
 	var event *models.MonitorAlertEvent
 	notify := false
 	err := manager.db.Transaction(func(tx *gorm.DB) error {
-		state := models.ComponentHealthState{
+		state = models.ComponentHealthState{
 			Component:   observation.Component,
 			HealthState: models.MonitorStateNormal,
 		}
@@ -261,12 +266,12 @@ func (manager *Manager) evaluateServiceHealth(
 		return tx.Save(&state).Error
 	})
 	if err != nil {
-		return nil, false, err
+		return nil, nil, false, err
 	}
 	if stateSilenced(manager.db, observation.Component, now) {
 		notify = false
 	}
-	return event, notify, nil
+	return &state, event, notify, nil
 }
 
 func stateSilenced(database *gorm.DB, component string, now time.Time) bool {
@@ -319,15 +324,25 @@ func newServiceHealthEvent(
 }
 
 func (manager *Manager) ListServiceHealth(
+	ctx context.Context,
 	includeNotInstalled bool,
 ) ([]models.ComponentHealthState, error) {
-	query := manager.db.Order("installed DESC").Order("display_name ASC")
-	if !includeNotInstalled {
-		query = query.Where("installed = ?", true)
+	if ctx == nil {
+		ctx = context.Background()
 	}
+	if states, ok := manager.serviceHealthSnapshot(includeNotInstalled); ok {
+		return states, nil
+	}
+
 	var states []models.ComponentHealthState
-	err := query.Find(&states).Error
-	return states, err
+	err := manager.db.WithContext(ctx).
+		Order("installed DESC").Order("display_name ASC").
+		Find(&states).Error
+	if err != nil {
+		return nil, err
+	}
+	manager.cacheServiceHealthSnapshot(states)
+	return filterServiceHealthStates(states, includeNotInstalled), nil
 }
 
 func (manager *Manager) SilenceServiceHealth(
@@ -355,5 +370,77 @@ func (manager *Manager) SilenceServiceHealth(
 	if result.RowsAffected == 0 {
 		return gorm.ErrRecordNotFound
 	}
+	manager.updateServiceHealthSnapshotSilence(component, until)
 	return nil
+}
+
+func (manager *Manager) setServiceHealthSnapshot(states []models.ComponentHealthState) {
+	ordered := append([]models.ComponentHealthState(nil), states...)
+	sortServiceHealthStates(ordered)
+	manager.healthSnapshotMu.Lock()
+	manager.healthSnapshot = ordered
+	manager.healthSnapshotReady = true
+	manager.healthSnapshotMu.Unlock()
+}
+
+func (manager *Manager) cacheServiceHealthSnapshot(states []models.ComponentHealthState) {
+	ordered := append([]models.ComponentHealthState(nil), states...)
+	sortServiceHealthStates(ordered)
+	manager.healthSnapshotMu.Lock()
+	if !manager.healthSnapshotReady {
+		manager.healthSnapshot = ordered
+		manager.healthSnapshotReady = true
+	}
+	manager.healthSnapshotMu.Unlock()
+}
+
+func (manager *Manager) serviceHealthSnapshot(includeNotInstalled bool) ([]models.ComponentHealthState, bool) {
+	manager.healthSnapshotMu.RLock()
+	if !manager.healthSnapshotReady {
+		manager.healthSnapshotMu.RUnlock()
+		return nil, false
+	}
+	states := append([]models.ComponentHealthState(nil), manager.healthSnapshot...)
+	manager.healthSnapshotMu.RUnlock()
+	return filterServiceHealthStates(states, includeNotInstalled), true
+}
+
+func (manager *Manager) updateServiceHealthSnapshotSilence(component string, until *time.Time) {
+	manager.healthSnapshotMu.Lock()
+	defer manager.healthSnapshotMu.Unlock()
+	if !manager.healthSnapshotReady {
+		return
+	}
+	for index := range manager.healthSnapshot {
+		if manager.healthSnapshot[index].Component != component {
+			continue
+		}
+		manager.healthSnapshot[index].SilencedUntil = until
+		return
+	}
+}
+
+func filterServiceHealthStates(
+	states []models.ComponentHealthState,
+	includeNotInstalled bool,
+) []models.ComponentHealthState {
+	filtered := make([]models.ComponentHealthState, 0, len(states))
+	for _, state := range states {
+		if includeNotInstalled || state.Installed {
+			filtered = append(filtered, state)
+		}
+	}
+	return filtered
+}
+
+func sortServiceHealthStates(states []models.ComponentHealthState) {
+	sort.SliceStable(states, func(left, right int) bool {
+		if states[left].Installed != states[right].Installed {
+			return states[left].Installed
+		}
+		if states[left].DisplayName != states[right].DisplayName {
+			return states[left].DisplayName < states[right].DisplayName
+		}
+		return states[left].Component < states[right].Component
+	})
 }

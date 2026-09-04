@@ -38,6 +38,20 @@ type ChannelInput struct {
 	ClearSecret bool   `json:"clearSecret"`
 }
 
+// ChannelValidationError identifies a notification-channel field that the
+// caller can correct without exposing submitted secrets or runtime details.
+type ChannelValidationError struct {
+	Field   string
+	Message string
+}
+
+func (err *ChannelValidationError) Error() string {
+	if err == nil {
+		return "通知通道参数无效"
+	}
+	return err.Message
+}
+
 type webhookConfig struct {
 	URL    string `json:"url"`
 	Secret string `json:"secret,omitempty"`
@@ -281,10 +295,14 @@ func notificationPurpose(id string) string {
 func validateChannelInput(input ChannelInput, allowEmptyURL bool) error {
 	name := strings.TrimSpace(input.Name)
 	if name == "" || len(name) > 120 {
-		return errors.New("channel name must contain 1 to 120 characters")
+		return &ChannelValidationError{
+			Field: "name", Message: "通道名称长度必须在 1 到 120 个字符之间",
+		}
 	}
 	if input.Type != "webhook" {
-		return errors.New("only webhook notification channels are supported")
+		return &ChannelValidationError{
+			Field: "type", Message: "通知通道类型无效，目前仅支持 Webhook",
+		}
 	}
 	if !allowEmptyURL || strings.TrimSpace(input.WebhookURL) != "" {
 		_, err := validateWebhookURL(input.WebhookURL)
@@ -296,20 +314,30 @@ func validateChannelInput(input ChannelInput, allowEmptyURL bool) error {
 func validateWebhookURL(value string) (*url.URL, error) {
 	parsed, err := url.Parse(strings.TrimSpace(value))
 	if err != nil || parsed.Host == "" {
-		return nil, errors.New("webhook URL is invalid")
+		return nil, &ChannelValidationError{
+			Field: "webhookUrl", Message: "Webhook URL 格式不正确，请填写完整的 HTTPS 地址",
+		}
 	}
 	if parsed.Scheme != "https" {
-		return nil, errors.New("webhook URL must use HTTPS")
+		return nil, &ChannelValidationError{
+			Field: "webhookUrl", Message: "Webhook URL 必须使用公网 HTTPS 地址",
+		}
 	}
 	if parsed.User != nil || parsed.Fragment != "" {
-		return nil, errors.New("webhook URL cannot contain credentials or a fragment")
+		return nil, &ChannelValidationError{
+			Field: "webhookUrl", Message: "Webhook URL 不能包含用户名、密码或片段标识（#）",
+		}
 	}
 	host := strings.TrimSuffix(strings.ToLower(parsed.Hostname()), ".")
 	if host == "" || host == "localhost" || strings.HasSuffix(host, ".localhost") {
-		return nil, errors.New("webhook host is not allowed")
+		return nil, &ChannelValidationError{
+			Field: "webhookUrl", Message: "Webhook URL 不能使用 localhost 或本地域名",
+		}
 	}
 	if address, parseErr := netip.ParseAddr(host); parseErr == nil && !publicWebhookAddress(address) {
-		return nil, errors.New("webhook address must be public")
+		return nil, &ChannelValidationError{
+			Field: "webhookUrl", Message: "Webhook URL 目标地址必须是公网可访问地址，不能使用内网、回环或保留 IP",
+		}
 	}
 	return parsed, nil
 }

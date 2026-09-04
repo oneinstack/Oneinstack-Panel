@@ -145,19 +145,22 @@ type Summary struct {
 }
 
 type Manager struct {
-	db             *gorm.DB
-	collector      Collector
-	sender         Sender
-	retentionDays  int
-	alertRetention int
-	scheduler      *cron.Cron
-	now            func() time.Time
-	mu             sync.Mutex
-	healthMu       sync.Mutex
-	serviceHealth  ServiceHealthCollector
-	background     sync.WaitGroup
-	startOnce      sync.Once
-	stopOnce       sync.Once
+	db                  *gorm.DB
+	collector           Collector
+	sender              Sender
+	retentionDays       int
+	alertRetention      int
+	scheduler           *cron.Cron
+	now                 func() time.Time
+	mu                  sync.Mutex
+	healthMu            sync.Mutex
+	healthSnapshotMu    sync.RWMutex
+	healthSnapshot      []models.ComponentHealthState
+	healthSnapshotReady bool
+	serviceHealth       ServiceHealthCollector
+	background          sync.WaitGroup
+	startOnce           sync.Once
+	stopOnce            sync.Once
 }
 
 var defaultManager struct {

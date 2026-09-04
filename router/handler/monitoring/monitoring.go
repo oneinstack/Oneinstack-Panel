@@ -35,7 +35,7 @@ func ServiceHealth(c *gin.Context) {
 		return
 	}
 	includeNotInstalled := strings.EqualFold(strings.TrimSpace(c.Query("includeNotInstalled")), "true")
-	result, err := manager.ListServiceHealth(includeNotInstalled)
+	result, err := manager.ListServiceHealth(c.Request.Context(), includeNotInstalled)
 	writeResult(c, result, err)
 }
 
@@ -50,7 +50,7 @@ func CheckServiceHealth(c *gin.Context) {
 		writeResult(c, nil, err)
 		return
 	}
-	result, err := manager.ListServiceHealth(false)
+	result, err := manager.ListServiceHealth(ctx, false)
 	writeResult(c, result, err)
 }
 
@@ -316,7 +316,7 @@ func CreateChannel(c *gin.Context) {
 	}
 	result, err := manager.CreateChannel(input)
 	if err != nil {
-		writeBadRequest(c, err)
+		writeChannelBadRequest(c, err)
 		return
 	}
 	core.HandleSuccess(c, result)
@@ -338,7 +338,7 @@ func UpdateChannel(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		writeBadRequest(c, err)
+		writeChannelBadRequest(c, err)
 		return
 	}
 	core.HandleSuccess(c, result)
@@ -450,6 +450,17 @@ func writeResult(c *gin.Context, result interface{}, err error) {
 
 func writeBadRequest(c *gin.Context, err error) {
 	core.HandleError(c, core.NewErrorWithDetail(core.ErrBadRequest, monitoringParameterMessage(c), err.Error()))
+}
+
+func writeChannelBadRequest(c *gin.Context, err error) {
+	var validationErr *monitorservice.ChannelValidationError
+	if errors.As(err, &validationErr) {
+		appErr := core.NewErrorWithDetail(core.ErrInvalidParameter, validationErr.Message, validationErr.Message)
+		appErr.Field = validationErr.Field
+		core.HandleError(c, appErr)
+		return
+	}
+	writeBadRequest(c, err)
 }
 
 func monitoringOperationMessage(c *gin.Context) string {
