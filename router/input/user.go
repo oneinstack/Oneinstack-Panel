@@ -52,6 +52,10 @@ type AccessMenuRequest struct {
 	Permissions     []string `json:"permissions"`
 }
 
+type AccessMenuStatusRequest struct {
+	Enabled *bool `json:"enabled"`
+}
+
 type AccessResetUserPasswordRequest struct {
 	Password string `json:"password"`
 }

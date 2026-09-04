@@ -137,6 +137,24 @@ func UpdateMenu(c *gin.Context) {
 	core.HandleSuccess(c, menu)
 }
 
+func SetMenuStatus(c *gin.Context) {
+	var request input.AccessMenuStatusRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		handleRBACError(c, err, "设置菜单状态")
+		return
+	}
+	if request.Enabled == nil {
+		handleRBACError(c, accessservice.ErrMenuEnabledRequired, "设置菜单状态")
+		return
+	}
+	menu, err := accessservice.NewService(app.DB()).SetMenuEnabled(c.Param("key"), *request.Enabled)
+	if err != nil {
+		handleRBACError(c, err, "设置菜单状态")
+		return
+	}
+	core.HandleSuccess(c, menu)
+}
+
 func DeleteMenu(c *gin.Context) {
 	if err := accessservice.NewService(app.DB()).DeleteMenu(c.Param("key")); err != nil {
 		handleRBACError(c, err, "删除菜单")
@@ -346,7 +364,8 @@ func handleRBACError(c *gin.Context, err error, operation string) {
 		errors.Is(err, accessservice.ErrPermissionNotFound), errors.Is(err, accessservice.ErrMenuKeyInvalid),
 		errors.Is(err, accessservice.ErrMenuTypeInvalid), errors.Is(err, accessservice.ErrMenuParentInvalid),
 		errors.Is(err, accessservice.ErrMenuCycle), errors.Is(err, accessservice.ErrMenuTargetInvalid),
-		errors.Is(err, accessservice.ErrMenuPermissionRequired), errors.Is(err, accessservice.ErrMenuFeatureInvalid),
+		errors.Is(err, accessservice.ErrMenuPermissionRequired), errors.Is(err, accessservice.ErrMenuEnabledRequired),
+		errors.Is(err, accessservice.ErrMenuFeatureInvalid),
 		errors.Is(err, accessservice.ErrMenuIconInvalid), errors.Is(err, accessservice.ErrMenuNameInvalid):
 		core.HandleError(c, core.NewError(core.ErrInvalidParameter, "角色或菜单参数不合法"))
 	case errors.Is(err, accessservice.ErrRoleExists), errors.Is(err, accessservice.ErrMenuExists),

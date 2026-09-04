@@ -43,6 +43,7 @@ var (
 	ErrMenuCycle                     = errors.New("menu hierarchy contains a cycle")
 	ErrMenuTargetInvalid             = errors.New("menu target is not registered")
 	ErrMenuPermissionRequired        = errors.New("menu permission is required")
+	ErrMenuEnabledRequired           = errors.New("menu enabled is required")
 	ErrMenuHasChildren               = errors.New("menu has child nodes")
 	ErrMenuFeatureInvalid            = errors.New("menu feature is invalid")
 	ErrMenuIconInvalid               = errors.New("menu icon is invalid")
@@ -523,6 +524,41 @@ func (service *Service) UpdateMenu(key string, input MenuInput) (*MenuNode, erro
 		}
 		updatedID = menu.ID
 		return replaceMenuPermissions(tx, menu.ID, permissionCodes)
+	}); err != nil {
+		return nil, err
+	}
+	nodes, err := service.loadMenuTree()
+	if err != nil {
+		return nil, err
+	}
+	return findMenuNode(nodes, updatedID), nil
+}
+
+func (service *Service) SetMenuEnabled(key string, enabled bool) (*MenuNode, error) {
+	if service.db == nil {
+		return nil, errors.New("database is not initialized")
+	}
+	key = strings.TrimSpace(key)
+	if !menuKeyPattern.MatchString(key) {
+		return nil, ErrMenuKeyInvalid
+	}
+	var updatedID uint64
+	if err := service.db.Transaction(func(tx *gorm.DB) error {
+		var menu models.Menu
+		if err := tx.Where("key = ?", key).First(&menu).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrMenuNotFound
+			}
+			return err
+		}
+		if menu.Builtin {
+			return ErrMenuBuiltin
+		}
+		if err := tx.Model(&menu).Update("enabled", enabled).Error; err != nil {
+			return err
+		}
+		updatedID = menu.ID
+		return nil
 	}); err != nil {
 		return nil, err
 	}

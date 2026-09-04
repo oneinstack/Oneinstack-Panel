@@ -200,6 +200,7 @@ func SetupRouter() *gin.Engine {
 		accessg.GET("/menus", authzHandler.ListMenus)
 		accessg.POST("/menus", authzHandler.CreateMenu)
 		accessg.PUT("/menus/:key", authzHandler.UpdateMenu)
+		accessg.POST("/menus/:key/status", authzHandler.SetMenuStatus)
 		accessg.DELETE("/menus/:key", authzHandler.DeleteMenu)
 		accessg.POST("/users", authzHandler.CreateUser)
 		accessg.DELETE("/users/:id", authzHandler.DeleteUser)
