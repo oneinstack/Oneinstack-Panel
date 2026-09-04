@@ -838,18 +838,35 @@ func (m *Manager) validateCatalogInstall(key, version string) error {
 	var catalogRow models.Software
 	result := m.db.Where("`key` = ? AND version = ?", key, version).First(&catalogRow)
 	if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+		var candidates []models.Software
 		result = m.db.Where(
 			"`key` = ? AND catalog_channel = ? AND allow_custom_version = ? AND version_line <> ''",
 			key, state.Channel, true,
-		).Order("version_order ASC, id ASC").First(&catalogRow)
-		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
-			return fmt.Errorf("software %s %s is not published by Center", key, version)
-		}
+		).Order("catalog_visible DESC, version_order ASC, id ASC").Find(&candidates)
 		if result.Error != nil {
 			return fmt.Errorf("read Center custom-version policy: %w", result.Error)
 		}
-		if !scriptregistry.SupportsSoftwareVersion([]string{catalogRow.VersionLine}, version) {
-			return fmt.Errorf("software %s version %s is outside the published version line %s", key, version, catalogRow.VersionLine)
+		if len(candidates) == 0 {
+			return fmt.Errorf("software %s %s is not published by Center", key, version)
+		}
+		matched := false
+		for _, candidate := range candidates {
+			if !scriptregistry.SupportsSoftwareVersion([]string{candidate.VersionLine}, version) {
+				continue
+			}
+			catalogRow = candidate
+			matched = true
+			break
+		}
+		if !matched {
+			versionLines := make([]string, 0, len(candidates))
+			for _, candidate := range candidates {
+				line := strings.TrimSpace(candidate.VersionLine)
+				if line != "" {
+					versionLines = append(versionLines, line)
+				}
+			}
+			return fmt.Errorf("software %s version %s is outside the published version lines %s", key, version, strings.Join(versionLines, ", "))
 		}
 	} else if result.Error != nil {
 		return fmt.Errorf("read Center software catalog entry: %w", result.Error)

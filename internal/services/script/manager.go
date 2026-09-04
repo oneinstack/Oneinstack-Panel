@@ -21,6 +21,7 @@ import (
 
 	"oneinstack/app"
 	"oneinstack/internal/models"
+	"oneinstack/internal/services/scriptregistry"
 	"oneinstack/router/input"
 
 	"gorm.io/gorm"
@@ -315,17 +316,21 @@ func (sm *ScriptManager) ExecuteScriptTask(
 	if strings.EqualFold(scriptInfo.ActionName, "uninstall") ||
 		scriptInfo.Type == ScriptTypeUninstall {
 		sm.updateSoftwareStatus(params, models.Soft_Status_Default, logName)
-		sm.updateSoftwareInstallInfo(params, false, "", "", "")
+		if err := sm.updateSoftwareInstallInfo(params, false, "", "", ""); err != nil {
+			return logName, fmt.Errorf("persist software uninstall state: %w", err)
+		}
 		return logName, nil
 	}
 	sm.updateSoftwareStatus(params, models.Soft_Status_Suc, logName)
-	sm.updateSoftwareInstallInfo(
+	if err := sm.updateSoftwareInstallInfo(
 		params,
 		true,
 		params.Version,
 		scriptInfo.PackageVersion,
 		effectiveSoftwarePort(params, scriptInfo),
-	)
+	); err != nil {
+		return logName, fmt.Errorf("persist software install state: %w", err)
+	}
 	return logName, nil
 }
 
@@ -425,13 +430,15 @@ func (sm *ScriptManager) executeScriptAsync(scriptInfo *ScriptInfo, scriptPath s
 
 	// 更新最终状态
 	sm.updateSoftwareStatus(params, status, filepath.Base(logPath))
-	sm.updateSoftwareInstallInfo(
+	if err := sm.updateSoftwareInstallInfo(
 		params,
 		installed,
 		installVersion,
 		scriptInfo.PackageVersion,
 		effectiveSoftwarePort(params, scriptInfo),
-	)
+	); err != nil {
+		fmt.Printf("Update software install state failed: %v\n", err)
+	}
 }
 
 func (sm *ScriptManager) runInstallActions(scriptInfo *ScriptInfo, installPath string, output *os.File) error {
@@ -1170,8 +1177,18 @@ func validateParameters(scriptInfo *ScriptInfo) error {
 
 // updateSoftwareStatus 更新软件状态
 func (sm *ScriptManager) updateSoftwareStatus(params *input.InstallParams, status int, logFileName string) {
+	if params == nil || app.DB() == nil {
+		return
+	}
+	stateRow, err := findSoftwareStateRow(app.DB(), params)
+	if err != nil {
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			fmt.Printf("Find software state row failed: %v\n", err)
+		}
+		return
+	}
 	app.DB().Model(&models.Software{}).
-		Where("key = ? and version = ?", params.Key, params.Version).
+		Where("id = ?", stateRow.Id).
 		Updates(map[string]interface{}{
 			"status": status,
 			"log":    logFileName,
@@ -1211,7 +1228,10 @@ func (sm *ScriptManager) updateSoftwareInstallInfo(
 	installed bool,
 	version string,
 	packageVersions ...string,
-) {
+) error {
+	if params == nil || app.DB() == nil {
+		return errors.New("software install state database is unavailable")
+	}
 	packageVersion := ""
 	port := ""
 	if len(packageVersions) > 0 {
@@ -1221,9 +1241,13 @@ func (sm *ScriptManager) updateSoftwareInstallInfo(
 		port = strings.TrimSpace(packageVersions[1])
 	}
 	if installed {
-		if err := app.DB().Transaction(func(tx *gorm.DB) error {
+		return app.DB().Transaction(func(tx *gorm.DB) error {
+			stateRow, err := findSoftwareStateRow(tx, params)
+			if err != nil {
+				return fmt.Errorf("find software state row: %w", err)
+			}
 			if err := tx.Model(&models.Software{}).
-				Where("`key` = ? AND version <> ?", params.Key, params.Version).
+				Where("`key` = ? AND id <> ?", params.Key, stateRow.Id).
 				Updates(map[string]interface{}{
 					"installed":                 false,
 					"install_version":           "",
@@ -1232,8 +1256,8 @@ func (sm *ScriptManager) updateSoftwareInstallInfo(
 				}).Error; err != nil {
 				return err
 			}
-			return tx.Model(&models.Software{}).
-				Where("`key` = ? AND version = ?", params.Key, params.Version).
+			result := tx.Model(&models.Software{}).
+				Where("id = ?", stateRow.Id).
 				Updates(map[string]interface{}{
 					"installed":                 true,
 					"install_version":           version,
@@ -1241,13 +1265,17 @@ func (sm *ScriptManager) updateSoftwareInstallInfo(
 					"http_port":                 strings.TrimSpace(port),
 					"is_update":                 false,
 					"install_time":              time.Now(),
-				}).Error
-		}); err != nil {
-			fmt.Printf("Update software install state failed: %v\n", err)
-		}
-		return
+				})
+			if result.Error != nil {
+				return result.Error
+			}
+			if result.RowsAffected == 0 {
+				return errors.New("software state row was not updated")
+			}
+			return nil
+		})
 	}
-	if err := app.DB().Model(&models.Software{}).
+	return app.DB().Model(&models.Software{}).
 		Where("`key` = ? AND installed = ?", params.Key, true).
 		Updates(map[string]interface{}{
 			"installed":                 false,
@@ -1256,9 +1284,41 @@ func (sm *ScriptManager) updateSoftwareInstallInfo(
 			"http_port":                 "",
 			"is_update":                 false,
 			"status":                    models.Soft_Status_Default,
-		}).Error; err != nil {
-		fmt.Printf("Update software install state failed: %v\n", err)
+		}).Error
+}
+
+// findSoftwareStateRow resolves the catalog row that owns the durable
+// installation state. Custom versions are recorded in the matching catalog
+// version-line row, while exact catalog versions keep their existing row.
+func findSoftwareStateRow(db *gorm.DB, params *input.InstallParams) (models.Software, error) {
+	if db == nil || params == nil {
+		return models.Software{}, gorm.ErrRecordNotFound
 	}
+
+	var stateRow models.Software
+	result := db.
+		Where("`key` = ? AND version = ?", params.Key, params.Version).
+		First(&stateRow)
+	if result.Error == nil {
+		return stateRow, nil
+	}
+	if !errors.Is(result.Error, gorm.ErrRecordNotFound) {
+		return models.Software{}, result.Error
+	}
+
+	var candidates []models.Software
+	if err := db.
+		Where("`key` = ? AND catalog_managed = ? AND allow_custom_version = ? AND version_line <> ''", params.Key, true, true).
+		Order("catalog_visible DESC, version_order ASC, id ASC").
+		Find(&candidates).Error; err != nil {
+		return models.Software{}, err
+	}
+	for _, candidate := range candidates {
+		if scriptregistry.SupportsSoftwareVersion([]string{candidate.VersionLine}, params.Version) {
+			return candidate, nil
+		}
+	}
+	return models.Software{}, gorm.ErrRecordNotFound
 }
 
 // CleanupTempFiles 清理临时文件

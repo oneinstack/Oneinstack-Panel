@@ -15,6 +15,7 @@ type Software struct {
 	Versions                []string        `json:"versions"`
 	InstallVersion          string          `json:"install_version"`
 	VersionOptions          []VersionOption `json:"versionOptions,omitempty"`
+	VersionLines            []string        `json:"versionLines"`
 	Port                    string          `json:"port,omitempty"`
 	InstalledPackageVersion string          `json:"installedPackageVersion,omitempty"`
 	LatestPackageVersion    string          `json:"latestPackageVersion,omitempty"`

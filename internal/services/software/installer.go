@@ -367,6 +367,22 @@ func (installer *Installer) getInstallScript(ctx context.Context, params *input.
 			componentName = strings.ToLower(strings.TrimSpace(catalogRow.Component))
 			catalogManaged = catalogRow.CatalogManaged
 			catalogChannel = strings.ToLower(strings.TrimSpace(catalogRow.CatalogChannel))
+		} else {
+			var candidates []models.Software
+			if err := app.DB().
+				Where("`key` = ? AND catalog_managed = ? AND allow_custom_version = ? AND version_line <> '' AND component <> ''", params.Key, true, true).
+				Order("catalog_visible DESC, version_order ASC, id ASC").
+				Find(&candidates).Error; err == nil {
+				for _, candidate := range candidates {
+					if !scriptregistry.SupportsSoftwareVersion([]string{candidate.VersionLine}, params.Version) {
+						continue
+					}
+					componentName = strings.ToLower(strings.TrimSpace(candidate.Component))
+					catalogManaged = candidate.CatalogManaged
+					catalogChannel = strings.ToLower(strings.TrimSpace(candidate.CatalogChannel))
+					break
+				}
+			}
 		}
 	}
 

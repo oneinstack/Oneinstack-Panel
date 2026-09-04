@@ -288,9 +288,11 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 		return nil, err
 	}
 	versionOptions := make(map[string][]output.VersionOption)
+	versionLines := make(map[string][]string)
 	keys := make([]string, 0, len(paginated.Data))
 	for _, item := range paginated.Data {
 		keys = append(keys, item.Key)
+		versionLines[item.Key] = []string{}
 	}
 	if len(keys) > 0 {
 		var versionRows []models.Software
@@ -309,6 +311,10 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 				Installable:        row.Installable,
 				ReleaseNotes:       row.ReleaseNotes,
 			})
+			line := strings.TrimSpace(row.VersionLine)
+			if row.CatalogVisible && line != "" && !slices.Contains(versionLines[row.Key], line) {
+				versionLines[row.Key] = append(versionLines[row.Key], line)
+			}
 		}
 	}
 
@@ -354,6 +360,7 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 			Status:                  item.Status,
 			Resource:                item.Resource,
 			InstallVersion:          item.InstallVersion,
+			VersionLines:            versionLines[item.Key],
 			Port:                    port,
 			InstalledPackageVersion: item.InstalledPackageVersion,
 			LatestPackageVersion:    item.LatestPackageVersion,
