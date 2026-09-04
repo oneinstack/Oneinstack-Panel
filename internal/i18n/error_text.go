@@ -8,21 +8,24 @@ import (
 )
 
 var (
-	positiveIntegerPattern = regexp.MustCompile(`^(.+?)\s*必须是(?:有效的)?正整数$`)
-	nonNegativePattern     = regexp.MustCompile(`^(.+?)\s*必须是(?:大于等于 0 的|非负)整数$`)
-	rangePattern           = regexp.MustCompile(`^(.+?)\s*必须(?:是|为|在)\s*([0-9]+)\s*(?:到|至|-)\s*([0-9]+)\s*(个字符|个文件名|个域名|个|项|条|行|字节|秒|分钟|小时|天|年|KB|KiB|MB|MiB|GB|GiB)?\s*之间(?:的整数)?$`)
-	maxLengthPattern       = regexp.MustCompile(`^(.+?)\s*最长为\s*([0-9]+)\s*个字符$`)
-	lengthRangePattern     = regexp.MustCompile(`^(.+?)\s*长度必须为\s*([0-9]+)\s*(?:-|至|到)\s*([0-9]+)\s*个字符$`)
-	exceedsPattern         = regexp.MustCompile(`^(.+?)\s*(?:不能|不得)超过\s*([0-9]+)\s*(个字符|个文件名|个域名|个|项|条|行|字节|秒|分钟|小时|天|年|KB|KiB|MB|MiB|GB|GiB)$`)
-	rfc3339Pattern         = regexp.MustCompile(`^(.+?)\s*必须(?:使用\s*RFC3339\s*格式|是\s*RFC3339\s*时间)$`)
-	notBeforePattern       = regexp.MustCompile(`^(.+?)\s*不能早于\s*(.+)$`)
-	booleanPattern         = regexp.MustCompile(`^(.+?)\s*必须是\s*(true 或 false)$`)
-	supportedPattern       = regexp.MustCompile(`^(.+?)\s*不是支持的(.+)$`)
-	validHTTPStatusPattern = regexp.MustCompile(`^(.+?)\s*必须是有效的 HTTP 状态码$`)
-	retryAfterPattern      = regexp.MustCompile(`^请在 ([0-9]+) 秒后重试。?$`)
-	fail2banRatePattern    = regexp.MustCompile(`^(封禁|解封)预览请求过于频繁：(.+)$`)
-	confirmationPattern    = regexp.MustCompile(`^确认文本必须为 (.+)$`)
-	ruleExpiryPattern      = regexp.MustCompile(`^第 ([0-9]+) 条规则的过期时间格式错误$`)
+	positiveIntegerPattern            = regexp.MustCompile(`^(.+?)\s*必须是(?:有效的)?正整数$`)
+	nonNegativePattern                = regexp.MustCompile(`^(.+?)\s*必须是(?:大于等于 0 的|非负)整数$`)
+	rangePattern                      = regexp.MustCompile(`^(.+?)\s*必须(?:是|为|在)\s*([0-9]+)\s*(?:到|至|-)\s*([0-9]+)\s*(个字符|个文件名|个域名|个|项|条|行|字节|秒|分钟|小时|天|年|KB|KiB|MB|MiB|GB|GiB)?\s*之间(?:的整数)?$`)
+	maxLengthPattern                  = regexp.MustCompile(`^(.+?)\s*最长为\s*([0-9]+)\s*个字符$`)
+	lengthRangePattern                = regexp.MustCompile(`^(.+?)\s*长度必须为\s*([0-9]+)\s*(?:-|至|到)\s*([0-9]+)\s*个字符$`)
+	exceedsPattern                    = regexp.MustCompile(`^(.+?)\s*(?:不能|不得)超过\s*([0-9]+)\s*(个字符|个文件名|个域名|个|项|条|行|字节|秒|分钟|小时|天|年|KB|KiB|MB|MiB|GB|GiB)$`)
+	rfc3339Pattern                    = regexp.MustCompile(`^(.+?)\s*必须(?:使用\s*RFC3339\s*格式|是\s*RFC3339\s*时间)$`)
+	notBeforePattern                  = regexp.MustCompile(`^(.+?)\s*不能早于\s*(.+)$`)
+	booleanPattern                    = regexp.MustCompile(`^(.+?)\s*必须是\s*(true 或 false)$`)
+	supportedPattern                  = regexp.MustCompile(`^(.+?)\s*不是支持的(.+)$`)
+	validHTTPStatusPattern            = regexp.MustCompile(`^(.+?)\s*必须是有效的 HTTP 状态码$`)
+	retryAfterPattern                 = regexp.MustCompile(`^请在 ([0-9]+) 秒后重试。?$`)
+	fail2banRatePattern               = regexp.MustCompile(`^(封禁|解封)预览请求过于频繁：(.+)$`)
+	confirmationPattern               = regexp.MustCompile(`^确认文本必须为 (.+)$`)
+	ruleExpiryPattern                 = regexp.MustCompile(`^第 ([0-9]+) 条规则的过期时间格式错误$`)
+	softwareConfigurationFieldPattern = regexp.MustCompile(`^组件配置字段 ([A-Za-z0-9_-]+) (.+)$`)
+	portInUsePattern                  = regexp.MustCompile(`^监听端口 ([0-9]+) 已被占用，请更换未占用的端口后重试$`)
+	portAvailabilityPattern           = regexp.MustCompile(`^无法确认监听端口 ([0-9]+) 是否可用，请检查端口状态后重试$`)
 )
 
 var (
@@ -107,6 +110,37 @@ func translateContainerErrorText(text string) string {
 }
 
 func translateDynamicErrorText(text string) (string, bool) {
+	if matches := softwareConfigurationFieldPattern.FindStringSubmatch(text); len(matches) == 3 {
+		field, reason := matches[1], matches[2]
+		switch reason {
+		case "未填写，请补充该字段后重试。":
+			return fmt.Sprintf("Component configuration field %s is empty. Provide a value and retry.", field), true
+		case "包含不允许的内容（空字节、换行或长度超过 128 个字符），请修正后重试。":
+			return fmt.Sprintf("Component configuration field %s contains disallowed content (a NUL byte, a line break, or more than 128 characters). Correct it and retry.", field), true
+		case "的数值超出当前版本允许范围，请按照页面显示的最小值和最大值填写后重试。":
+			return fmt.Sprintf("The value of component configuration field %s is outside the range allowed by the current version. Use the minimum and maximum shown on the page and retry.", field), true
+		case "只能填写 true 或 false，请修正后重试。":
+			return fmt.Sprintf("Component configuration field %s must be true or false. Correct it and retry.", field), true
+		case "的取值不受当前组件版本支持，请从当前版本提供的选项中选择后重试。":
+			return fmt.Sprintf("The value of component configuration field %s is not supported by the current component version. Choose one of the options provided by the current version and retry.", field), true
+		case "必须是规范化的绝对路径，请使用以 / 开头且不含 .. 的路径后重试。":
+			return fmt.Sprintf("Component configuration field %s must be a normalized absolute path. Use a path that starts with / and does not contain .., then retry.", field), true
+		case "不能使用过于宽泛的系统目录，请指定更具体的目录后重试。":
+			return fmt.Sprintf("Component configuration field %s cannot use an overly broad system directory. Specify a more specific directory and retry.", field), true
+		case "使用了不受支持的字段类型，请刷新配置定义后重试。":
+			return fmt.Sprintf("Component configuration field %s uses an unsupported field type. Refresh the configuration definition and retry.", field), true
+		case "参数无效，请检查类型、格式和取值范围后重试。":
+			return fmt.Sprintf("Component configuration field %s is invalid. Check its type, format, and allowed range, then retry.", field), true
+		case "必须是 1 到 65535 之间的有效端口，请修正后重试。":
+			return fmt.Sprintf("Component configuration field %s must be a valid port from 1 to 65535. Correct it and retry.", field), true
+		}
+	}
+	if matches := portInUsePattern.FindStringSubmatch(text); len(matches) == 2 {
+		return fmt.Sprintf("The listening port %s is already in use. Choose an unused port and retry.", matches[1]), true
+	}
+	if matches := portAvailabilityPattern.FindStringSubmatch(text); len(matches) == 2 {
+		return fmt.Sprintf("The listening port %s could not be confirmed as available. Check the port status and retry.", matches[1]), true
+	}
 	if matches := composePostgresMountPattern.FindStringSubmatch(text); len(matches) == 2 {
 		return fmt.Sprintf("Service %s uses the legacy data-directory mount for PostgreSQL 18+. Official PostgreSQL 18+ images should mount data only at /var/lib/postgresql; the old path /var/lib/postgresql/data is treated as an unused mount.", matches[1]), true
 	}
@@ -874,22 +908,24 @@ var englishErrorTexts = map[string]string{
 	"读取数据库账号失败":       "Failed to read the database account",
 	"该数据库没有可读取的托管 MySQL 账号":   "The database has no readable Panel-managed MySQL account",
 	"数据库账号凭据无法解密，可能已损坏或密钥已变更": "The database account credential cannot be decrypted and may be damaged or encrypted with a different key",
-	"确认文本必须为 ":                  "The confirmation text must be ",
-	"令牌校验失败：":                   "Token validation failed: ",
-	"当前接口要求权限：":                 "The endpoint requires permission: ",
-	"读取当前用户权限失败：":               "Failed to load the current user permissions: ",
-	"请在 %d 秒后重试。":               "Retry after %d seconds.",
-	"未找到与当前 HTTP 方法和路径匹配的接口路由：": "No API route matches the current HTTP method and path: ",
-	"从回收站恢复文件或目录失败":             "Failed to restore the file or directory from the trash",
-	"网站配置发布失败":                  "Failed to publish the website configuration",
-	"网站配置更新失败":                  "Failed to update the website configuration",
-	"网站已停用，无法读取运行配置":            "The website is disabled, so its runtime configuration cannot be read",
-	"网站已停用，当前没有运行配置文件":          "The website is disabled and has no runtime configuration file",
+	"任务凭据已消费":     "The task credential has already been consumed",
+	"任务凭据不可用":     "The task credential is unavailable",
+	"确认文本必须为 ":    "The confirmation text must be ",
+	"令牌校验失败：":     "Token validation failed: ",
+	"当前接口要求权限：":   "The endpoint requires permission: ",
+	"读取当前用户权限失败：": "Failed to load the current user permissions: ",
+	"请在 %d 秒后重试。": "Retry after %d seconds.",
+	"未找到与当前 HTTP 方法和路径匹配的接口路由：":         "No API route matches the current HTTP method and path: ",
+	"从回收站恢复文件或目录失败":                     "Failed to restore the file or directory from the trash",
+	"网站配置发布失败":                          "Failed to publish the website configuration",
+	"网站配置更新失败":                          "Failed to update the website configuration",
+	"网站已停用，无法读取运行配置":                    "The website is disabled, so its runtime configuration cannot be read",
+	"网站已停用，当前没有运行配置文件":                  "The website is disabled and has no runtime configuration file",
 	"未检测到可用 Nginx，请先安装并确保服务可执行文件可被面板访问": "No usable Nginx installation was detected. Install Nginx and make sure its executable is accessible to the Panel process",
-	"数据库参数无效": "The database parameters are invalid",
-	"未检测到可用 MySQL 实例，请先安装或修复 MySQL": "No usable MySQL instance was detected. Install or repair MySQL first",
-	"配置参数校验失败":                      "Configuration parameter validation failed",
-	"配置已被其他操作修改，请刷新后重试":             "The configuration was modified by another operation. Refresh it before retrying",
+	"数据库参数无效":                           "The database parameters are invalid",
+	"未检测到可用 MySQL 实例，请先安装或修复 MySQL":     "No usable MySQL instance was detected. Install or repair MySQL first",
+	"配置参数校验失败":                          "Configuration parameter validation failed",
+	"配置已被其他操作修改，请刷新后重试":                 "The configuration was modified by another operation. Refresh it before retrying",
 	"未找到 Docker 可执行文件（docker），请安装 Docker CLI/Engine，并确认 docker 已加入面板进程的 PATH。":             "The Docker executable was not found. Install Docker CLI/Engine and make sure docker is available in the Panel process PATH.",
 	"Docker 客户端已安装，但无法连接 Docker 守护进程；请确认 Docker 服务已启动，并检查当前面板运行用户是否有访问 Docker socket 的权限。": "The Docker client is installed, but the daemon cannot be reached. Verify that Docker is running and that the Panel process user can access the Docker socket.",
 	"无法确认 Docker 运行时状态；请检查 Docker 是否安装、服务是否启动，以及面板进程的 PATH 和 Docker socket 权限。":            "The Docker runtime status could not be determined. Check the installation, service status, Panel process PATH, and Docker socket permissions.",
@@ -897,6 +933,20 @@ var englishErrorTexts = map[string]string{
 	"请确认 Docker 服务已启动，并检查面板运行用户是否有访问 Docker socket 的权限。":                                   "Verify that Docker is running and that the Panel process user can access the Docker socket.",
 	"请检查 Docker daemon、网络、代理和镜像仓库状态后重试。":                                                   "Check the Docker daemon, network, proxy, and image registry status, then retry.",
 	"请检查 Compose 项目状态、配置文件权限和 Docker 运行时后重试。":                                              "Check the Compose project state, configuration-file permissions, and Docker runtime, then retry.",
+
+	"检测到 PostgreSQL 初始化目录挂载；官方镜像只会在空数据目录首次启动时执行脚本，已有数据卷或后续升级请使用 migrate 服务确保业务表完成迁移":                                                       "A PostgreSQL initialization-directory mount was detected. The official image runs those scripts only on the first start with an empty data directory. Use a migrate service for existing volumes or later upgrades to ensure application tables are migrated.",
+	"检测到 PostgreSQL 服务，但未发现数据库迁移服务；POSTGRES_USER/POSTGRES_PASSWORD/POSTGRES_DB 只会初始化库和用户，不会创建业务表，请提供初始化 SQL 或 migrate 服务并让 backend 等待迁移完成": "A PostgreSQL service was detected without a database migration service. POSTGRES_USER/POSTGRES_PASSWORD/POSTGRES_DB initialize only the database and user, not application tables. Provide an initialization SQL script or a migrate service and make the backend wait for its completion.",
+	"检测到数据库迁移服务，但没有业务服务通过 depends_on.condition=service_completed_successfully 等待迁移完成；请先完成建表再启动 backend":                                    "A database migration service was detected, but no application service waits for it with depends_on.condition=service_completed_successfully. Complete the schema migration before starting the backend.",
+	"Compose 数据库迁移服务执行失败，业务表未完成初始化；请查看迁移服务日志并修复迁移命令":                                                                                       "The Compose database migration service failed, so application tables were not initialized. Check the migration-service logs and fix the migration command.",
+	"数据库迁移服务执行失败，业务表未完成初始化，请查看迁移服务日志后重试":                                                                                                   "The database migration service failed, so application tables were not initialized. Check the migration-service logs and retry.",
+	"数据库迁移顺序未配置，backend 必须等待 migrate 成功后再启动":                                                                                               "The database migration order is not configured. The backend must wait for migrate to succeed before starting.",
+	"通道名称长度必须在 1 到 120 个字符之间":                    "The channel name must contain between 1 and 120 characters",
+	"通知通道类型无效，目前仅支持 Webhook":                     "The notification channel type is invalid. Only Webhook is currently supported",
+	"Webhook URL 格式不正确，请填写完整的 HTTPS 地址":          "The Webhook URL has an invalid format. Enter a complete HTTPS URL",
+	"Webhook URL 必须使用公网 HTTPS 地址":                "The Webhook URL must be a publicly reachable HTTPS address",
+	"Webhook URL 不能包含用户名、密码或片段标识（#）":             "The Webhook URL cannot contain a username, password, or fragment identifier (#)",
+	"Webhook URL 不能使用 localhost 或本地域名":           "The Webhook URL cannot use localhost or a local domain",
+	"Webhook URL 目标地址必须是公网可访问地址，不能使用内网、回环或保留 IP": "The Webhook URL target must be publicly reachable; private, loopback, or reserved IP addresses are not allowed",
 	"规则不能为空": "The rule must not be empty",
 	"规则类型必须是 port、ip、region 或 auto_block":  "The rule type must be one of port, ip, region, or auto_block",
 	"规则方向必须是 in 或 out":                     "The rule direction must be either in or out",
@@ -1365,6 +1415,27 @@ var englishErrorTexts = map[string]string{
 }
 
 var englishOperationPreviewErrorTexts = map[string]string{
+	"组件配置预览缺少 component 字段，请提供组件标识后重试。":                                        "The component configuration preview is missing the component field. Provide a component identifier and retry.",
+	"当前组件不支持受管配置预览，请选择支持配置管理的已安装组件后重试。":                                        "The current component does not support managed configuration preview. Choose an installed component with configuration-management support and retry.",
+	"面板数据库尚未初始化，无法读取组件配置；请检查面板启动状态和数据库配置后重试。":                                  "The Panel database is not initialized, so the component configuration cannot be read. Check the Panel startup status and database configuration, then retry.",
+	"当前组件未安装，无法读取受管配置；请先安装组件并确认软件状态后重试。":                                       "The current component is not installed, so its managed configuration cannot be read. Install the component and confirm its software state, then retry.",
+	"当前组件缺少已安装版本信息，无法确定配置脚本；请刷新软件状态或重新同步安装信息后重试。":                              "The current component has no installed-version information, so its configuration script cannot be determined. Refresh the software state or synchronize the installation information again, then retry.",
+	"组件配置预览同时收到两个不一致的历史配置标识，请只保留一个标识，或确保两个标识完全一致后重试。":                          "The component configuration preview received two different history identifiers. Keep only one identifier, or make both identifiers identical, and retry.",
+	"恢复历史组件配置时不能同时提交 revision 或 values，请仅提交 component 与历史配置标识。":                "A historical component-configuration restore cannot include revision or values. Submit only component and the history identifier.",
+	"无法读取当前组件配置，组件可能未安装、版本信息缺失或配置脚本不可用；请刷新软件状态并确认组件安装后重试。":                     "The current component configuration could not be read. The component may be uninstalled, missing version information, or unavailable configuration scripts. Refresh the software state, confirm the installation, and retry.",
+	"无法读取当前组件配置，配置读取脚本或组件运行状态异常；请确认组件服务、配置脚本和运行权限后重试。":                         "The current component configuration could not be read because the configuration script or component runtime state is abnormal. Check the component service, configuration script, and process permissions, then retry.",
+	"要恢复的配置历史不存在、已被删除或不属于当前组件，请刷新配置历史后重新选择。":                                   "The configuration history to restore does not exist, was deleted, or belongs to another component. Refresh the configuration history and choose a record again.",
+	"读取配置历史失败，历史记录可能暂时不可用；请刷新配置历史后重试。":                                         "The configuration history could not be read and may be temporarily unavailable. Refresh the configuration history and retry.",
+	"只能恢复已成功发布的配置历史，当前记录尚未成功发布；请刷新列表后选择“已发布”记录。":                               "Only successfully published configuration history can be restored. The current record was not successfully published. Refresh the list and choose a published record.",
+	"当前组件配置已与所选历史记录的发布前内容一致，无需恢复；请刷新历史后选择确实不同的记录。":                             "The current component configuration already matches the selected history record's pre-publish content, so no restore is needed. Refresh the history and choose a record with different content.",
+	"当前组件配置版本已发生变化，当前请求基于旧版本；请重新读取当前配置后再预览。":                                   "The current component configuration version has changed, and this request is based on an older version. Reload the current configuration and create a new preview.",
+	"组件配置预览请求格式不正确，请检查 component、revision、values 和历史配置标识的类型与格式后重试。":            "The component configuration preview request has an invalid format. Check the types and formats of component, revision, values, and the history identifier, then retry.",
+	"组件配置预览校验失败，请检查当前配置版本、字段取值和组件状态后重试。":                                       "The component configuration preview validation failed. Check the current configuration version, field values, and component state, then retry.",
+	"组件配置参数无效，请检查类型、格式和取值范围后重试。":                                               "The component configuration parameters are invalid. Check their types, formats, and allowed ranges, then retry.",
+	"组件配置字段集合不完整或包含未知字段，请按照当前配置定义完整提交 values，不能增删字段后重试。":                       "The component configuration field set is incomplete or contains unknown fields. Submit values for exactly the fields defined by the current configuration, then retry.",
+	"组件配置字段 workerProcesses 必须是 auto 或 1 到 99 之间的整数，请修正后重试。":                   "The component configuration field workerProcesses must be auto or an integer from 1 to 99. Correct it and retry.",
+	"组件配置字段 postMaxSize 必须大于或等于 uploadMaxFilesize，请调整两个值的关系后重试。":               "The component configuration field postMaxSize must be greater than or equal to uploadMaxFilesize. Adjust the two values and retry.",
+	"PHP-FPM 进程数必须满足 min spare ≤ start ≤ max spare ≤ max children，请调整相关参数后重试。": "PHP-FPM process counts must satisfy min spare <= start <= max spare <= max children. Adjust the related parameters and retry.",
 	"action 必须是 create、update 或 delete": "action must be create, update, or delete",
 	"无法识别规则操作者":                         "The rule operator could not be identified",
 	"规则 ID 无效":                          "The rule ID is invalid",

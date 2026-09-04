@@ -505,7 +505,15 @@ func ErrorResponseForLocale(err *AppError, locale string) *APIResponse {
 	}
 	if response.Error != nil {
 		response.Error.Message = response.Message
-		response.Error.Detail = localizedErrorDetail(locale, response.Error.Detail, err.Code)
+		// When a handler deliberately supplies the same safe public text as
+		// message and detail, keep the two client-facing fields identical after
+		// locale conversion. Some clients read only one of these fields.
+		if err.PublicDetail && strings.TrimSpace(err.Detail) != "" &&
+			strings.TrimSpace(err.Detail) == strings.TrimSpace(err.Message) {
+			response.Error.Detail = response.Message
+		} else {
+			response.Error.Detail = localizedErrorDetail(locale, response.Error.Detail, err.Code)
+		}
 	}
 	for index := range response.Errors {
 		response.Errors[index].Message = localizedErrorMessage(locale, response.Errors[index].Message, response.Errors[index].Code)
@@ -631,6 +639,18 @@ func HandleSuccess(c *gin.Context, data interface{}) {
 func HandleError(c *gin.Context, err *AppError) {
 	statusCode := getHTTPStatusCode(err.Code)
 	c.JSON(statusCode, ErrorResponseForLocale(err, c.GetString("locale")))
+}
+
+// HandleSimpleError returns the standard top-level error envelope without
+// repeating the same message in error and errors fields. It is intended for
+// safe, actionable parameter errors where the top-level message is sufficient
+// for the client.
+func HandleSimpleError(c *gin.Context, err *AppError) {
+	statusCode := getHTTPStatusCode(err.Code)
+	response := ErrorResponseForLocale(err, c.GetString("locale"))
+	response.Error = nil
+	response.Errors = nil
+	c.JSON(statusCode, response)
 }
 
 // HandleErrorWithStatus 处理带状态码的错误响应
