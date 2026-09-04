@@ -64,6 +64,7 @@ func CreateTicket(c *gin.Context) {
 		Username:        account.Username,
 		ClientIP:        c.ClientIP(),
 		UserAgent:       c.GetHeader("User-Agent"),
+		Locale:          middleware.RequestLocale(c),
 		SourceSessionID: sourceSessionID,
 		SecurityVersion: account.EffectiveSecurityVersion(),
 	})
@@ -103,9 +104,16 @@ func OpenSSH(c *gin.Context) {
 		core.HandleError(c, core.NewError(core.ErrUnauthorized, "终端票据声明无效"))
 		return
 	}
+	locale := ticket.Locale
+	if locale == "" {
+		// Tickets issued before locale propagation remain usable and use the
+		// locale from the WebSocket upgrade request when available.
+		locale = middleware.RequestLocale(c)
+	}
 	err := sshservice.OpenWebShell(c, sshservice.CurrentTerminalPolicy(), sshservice.TerminalSessionClaims{
 		UserID: userID, Username: username, ClientIP: c.ClientIP(),
 		UserAgent:       c.GetHeader("User-Agent"),
+		Locale:          locale,
 		SourceSessionID: ticket.SourceSessionID,
 		SecurityVersion: ticket.SecurityVersion,
 	})

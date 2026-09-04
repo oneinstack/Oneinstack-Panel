@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"oneinstack/app"
+	"oneinstack/internal/i18n"
 	securityservice "oneinstack/internal/services/security"
 
 	"github.com/creack/pty"
@@ -77,7 +78,7 @@ func OpenWebShell(
 	)
 	if err != nil {
 		closeReason = "process_start_failed"
-		writeTerminalNotice(connection, &writeMu, "无法启动 root 终端会话")
+		writeTerminalNotice(connection, &writeMu, i18n.TerminalMessage(claims.Locale, i18n.TerminalRootStartFailed))
 		return fmt.Errorf("start root terminal: %w", err)
 	}
 	defer terminal.Close()
@@ -86,7 +87,7 @@ func OpenWebShell(
 	writeTerminalNotice(
 		connection,
 		&writeMu,
-		"\x1b[38;5;45m◆ Root 终端已连接\x1b[0m  \x1b[38;5;245m当前会话拥有完整系统权限，操作事件将写入审计日志。\x1b[0m\r\n",
+		terminalConnectedNotice(claims.Locale),
 	)
 
 	done := make(chan struct{})
@@ -139,7 +140,7 @@ func OpenWebShell(
 				writeTerminalNotice(
 					connection,
 					&writeMu,
-					"\r\n审计链不可写，本次命令未执行，终端已关闭。\r\n",
+					terminalNotice(claims.Locale, i18n.TerminalAuditUnavailable),
 				)
 				finish("audit_failed")
 				break
@@ -153,7 +154,7 @@ func OpenWebShell(
 				writeTerminalNotice(
 					connection,
 					&writeMu,
-					"\r\n审计链不可写，本次命令未执行，终端已关闭。\r\n",
+					terminalNotice(claims.Locale, i18n.TerminalAuditUnavailable),
 				)
 				finish("audit_failed")
 				break
@@ -190,7 +191,7 @@ func copyTerminalOutput(
 				writeTerminalNotice(
 					connection,
 					writeMu,
-					"\r\n终端输出已达到单会话上限，会话已关闭。\r\n",
+					terminalNotice(sessionLocale(session), i18n.TerminalOutputLimit),
 				)
 				finish("output_limit")
 				return
@@ -250,18 +251,34 @@ func enforceTerminalLifetime(
 			}
 		case <-idleTicker.C:
 			if session.IdleFor() >= idleTimeout {
-				writeTerminalNotice(connection, writeMu, "\r\n会话因长时间无输入已关闭。\r\n")
+				writeTerminalNotice(connection, writeMu, terminalNotice(sessionLocale(session), i18n.TerminalIdleTimeout))
 				finish("idle_timeout")
 				return
 			}
 		case <-sessionTicker.C:
 			if !sourceSessionValid(claims) {
-				writeTerminalNotice(connection, writeMu, "\r\n主登录会话已失效，终端已关闭。\r\n")
+				writeTerminalNotice(connection, writeMu, terminalNotice(claims.Locale, i18n.TerminalSourceSessionClosed))
 				finish("source_session_revoked")
 				return
 			}
 		}
 	}
+}
+
+func terminalConnectedNotice(locale string) string {
+	return "\x1b[38;5;45m◆ " + i18n.TerminalMessage(locale, i18n.TerminalRootConnectedTitle) +
+		"\x1b[0m  \x1b[38;5;245m" + i18n.TerminalMessage(locale, i18n.TerminalRootConnectedDetail) + "\x1b[0m\r\n"
+}
+
+func terminalNotice(locale, key string) string {
+	return "\r\n" + i18n.TerminalMessage(locale, key) + "\r\n"
+}
+
+func sessionLocale(session *TerminalSession) string {
+	if session == nil {
+		return i18n.LocaleZhCN
+	}
+	return session.claims.Locale
 }
 
 func sourceSessionValid(claims TerminalSessionClaims) bool {

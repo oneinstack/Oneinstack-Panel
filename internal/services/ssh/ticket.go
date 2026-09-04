@@ -20,6 +20,7 @@ type TicketClaims struct {
 	Username        string
 	ClientIP        string
 	UserAgent       string
+	Locale          string
 	SourceSessionID string
 	SecurityVersion uint64
 }
