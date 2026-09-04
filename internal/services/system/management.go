@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -120,7 +121,7 @@ func GetProcessDetail(ctx context.Context, pid int32) (ProcessDetail, error) {
 	detail := ProcessDetail{ProcessSummary: list.Items[0]}
 	detail.Executable, _ = p.ExeWithContext(ctx)
 	args, _ := p.CmdlineSliceWithContext(ctx)
-	detail.Command = sanitizeProcessCommand(strings.Join(args, " "))
+	detail.Command = sanitizeProcessCommand(args)
 	detail.CWD, _ = p.CwdWithContext(ctx)
 	all, _ := process.ProcessesWithContext(ctx)
 	for _, child := range all {
@@ -133,23 +134,102 @@ func GetProcessDetail(ctx context.Context, pid int32) (ProcessDetail, error) {
 	return detail, nil
 }
 
-func sanitizeProcessCommand(value string) string {
-	for _, marker := range []string{"password=", "token=", "secret=", "api_key="} {
-		for {
-			lower := strings.ToLower(value)
-			start := strings.Index(lower, marker)
-			if start < 0 {
-				break
-			}
-			end := strings.IndexAny(value[start+len(marker):], " \t\r\n")
-			if end < 0 {
-				value = value[:start] + marker + "[REDACTED]"
-			} else {
-				value = value[:start] + marker + "[REDACTED]" + value[start+len(marker)+end:]
-			}
+var processInlineSensitiveAssignment = regexp.MustCompile(`(?i)(^|[^[:alnum:]_-])((?:[[:alnum:]]+[-_])*(?:password|passwd|passphrase|pwd|token|secret|key|apikey|accesstoken|refreshtoken|authtoken|clientsecret|clientkey|privatekey|publickey|secretkey|encryptionkey|signingkey)(?:[-_][[:alnum:]]+)*)(=|:)(?:"[^"]*"|'[^']*'|[^[:space:]&;,}]+)`)
+
+func sanitizeProcessCommand(args []string) string {
+	sanitized := make([]string, len(args))
+	redactNext := false
+	for i, arg := range args {
+		if redactNext {
+			sanitized[i] = "[REDACTED]"
+			redactNext = false
+			continue
+		}
+
+		valueStart, hasValue, sensitive := processSensitiveArgument(arg)
+		if !sensitive {
+			sanitized[i] = redactInlineProcessArgument(arg)
+			continue
+		}
+		if hasValue {
+			sanitized[i] = arg[:valueStart] + "[REDACTED]"
+			continue
+		}
+
+		sanitized[i] = arg
+		if i+1 < len(args) {
+			redactNext = true
+		} else {
+			sanitized[i] += "=[REDACTED]"
 		}
 	}
-	return value
+	return strings.Join(sanitized, " ")
+}
+
+func processSensitiveArgument(arg string) (valueStart int, hasValue, sensitive bool) {
+	if arg == "-p" {
+		return 0, false, true
+	}
+	if strings.HasPrefix(arg, "-p") && !strings.HasPrefix(arg, "--") && len(arg) > 2 {
+		return 2, true, true
+	}
+
+	separator := strings.IndexAny(arg, "=:")
+	if separator > 0 && isSensitiveProcessArgumentName(arg[:separator]) {
+		return separator + 1, true, true
+	}
+	if strings.HasPrefix(arg, "--") && isSensitiveProcessArgumentName(arg[2:]) {
+		return 0, false, true
+	}
+	return 0, false, false
+}
+
+func isSensitiveProcessArgumentName(name string) bool {
+	name = strings.ToLower(strings.TrimLeft(strings.TrimSpace(name), "-"))
+	name = strings.ReplaceAll(name, "_", "-")
+	if name == "" {
+		return false
+	}
+
+	for _, word := range []string{"password", "passwd", "passphrase", "pwd", "token", "secret"} {
+		if strings.HasSuffix(name, word) || strings.HasPrefix(name, word+"-") || strings.Contains(name, "-"+word+"-") {
+			return true
+		}
+	}
+	for _, compactName := range []string{"apikey", "accesstoken", "refreshtoken", "authtoken", "clientsecret", "clientkey", "privatekey", "publickey", "secretkey", "encryptionkey", "signingkey"} {
+		if name == compactName {
+			return true
+		}
+	}
+	return strings.HasSuffix(name, "key") || strings.HasPrefix(name, "key-") || strings.Contains(name, "-key-")
+}
+
+func redactInlineProcessArgument(arg string) string {
+	matches := processInlineSensitiveAssignment.FindAllStringSubmatchIndex(arg, -1)
+	if len(matches) == 0 {
+		return arg
+	}
+
+	var builder strings.Builder
+	cursor := 0
+	for _, match := range matches {
+		if len(match) < 8 || match[0] < cursor {
+			continue
+		}
+		valueStart := match[7]
+		valueEnd := match[1]
+		if valueStart > len(arg) || valueEnd < valueStart {
+			continue
+		}
+		builder.WriteString(arg[cursor:valueStart])
+		builder.WriteString("[REDACTED]")
+		cursor = valueEnd
+	}
+	if cursor == 0 {
+		return arg
+	}
+	builder.WriteString(arg[cursor:])
+	return builder.String()
 }
 
 type DiskDevice struct {
