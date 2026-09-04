@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"net"
 	"net/http"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -55,6 +57,29 @@ type websiteConfigUpdatePayload struct {
 	Content   string `json:"content"`
 	Revision  string `json:"revision"`
 }
+
+type softwareConfigurationPayload struct {
+	Component          string            `json:"component"`
+	Revision           string            `json:"revision"`
+	Values             map[string]string `json:"values"`
+	RestoreFromID      string            `json:"restoreFromId,omitempty"`
+	RestoreFromHistory string            `json:"restoreFromHistoryId,omitempty"`
+}
+
+var (
+	errSoftwareConfigurationComponentRequired = errors.New("software configuration component is required")
+	errSoftwareConfigurationUnsupported       = errors.New("software configuration component is unsupported")
+	errSoftwareConfigurationDatabase          = errors.New("software configuration database is unavailable")
+	errSoftwareConfigurationNotInstalled      = errors.New("software configuration component is not installed")
+	errSoftwareConfigurationVersionMissing    = errors.New("software configuration install version is missing")
+	errSoftwareConfigurationCurrentRead       = errors.New("software configuration current state cannot be read")
+	errSoftwareConfigurationHistoryNotFound   = errors.New("software configuration history does not exist")
+	errSoftwareConfigurationHistoryRead       = errors.New("software configuration history cannot be read")
+	errSoftwareConfigurationHistoryState      = errors.New("software configuration history is not successfully published")
+	errSoftwareConfigurationRestoreIDs        = errors.New("software configuration restore source IDs do not match")
+	errSoftwareConfigurationRestoreValues     = errors.New("software configuration history restore has conflicting fields")
+	errSoftwareConfigurationNoChanges         = errors.New("software configuration has no changes")
+)
 
 var errUnsupportedWebsiteOperation = errors.New("unsupported website operation")
 
@@ -295,6 +320,14 @@ func Preview(c *gin.Context) {
 		}
 	}
 	payload := request.Payload
+	if operation == "software.configure" {
+		var err error
+		payload, err = normalizeSoftwareConfigurePayload(c.Request.Context(), payload)
+		if err != nil {
+			handleSoftwareConfigurationPreviewError(c, err)
+			return
+		}
+	}
 	if operation == "website.create" {
 		err := error(nil)
 		payload, err = normalizeWebsiteCreatePayload(payload)
@@ -332,6 +365,10 @@ func Preview(c *gin.Context) {
 	if err != nil {
 		var parameterErr *softwareService.InstallParameterError
 		if errors.As(err, &parameterErr) {
+			if userMessage := parameterErr.UserMessage(); userMessage != "" {
+				core.HandleSimpleError(c, core.NewError(core.ErrInvalidParameter, userMessage))
+				return
+			}
 			appErr := core.NewErrorWithDetail(core.ErrInvalidParameter, "软件安装参数无效", parameterErr.Error())
 			appErr.Field = parameterErr.Field
 			core.HandleError(c, appErr)
@@ -585,7 +622,7 @@ func Execute(c *gin.Context) {
 		core.HandleError(c, err)
 		return
 	}
-	if err := validatePreviewTarget(operation, resourceVersion); err != nil {
+	if err := validatePreviewTarget(c.Request.Context(), operation, resourceVersion); err != nil {
 		writeConsumeError(c, err)
 		return
 	}
@@ -606,7 +643,278 @@ func Execute(c *gin.Context) {
 	c.JSON(http.StatusAccepted, core.SuccessResponseForContext(c, result))
 }
 
-func validatePreviewTarget(operation, resourceVersion string) error {
+func inspectSoftwareConfigurationTarget(
+	ctx context.Context,
+	component string,
+) (softwareService.ComponentServiceDefinition, string, softwareService.ComponentConfiguration, error) {
+	database := app.DB()
+	if database == nil {
+		return softwareService.ComponentServiceDefinition{}, "", softwareService.ComponentConfiguration{}, errors.New("database is not initialized")
+	}
+	definition, err := softwareService.ResolveServiceComponent(database, component)
+	if err != nil {
+		return softwareService.ComponentServiceDefinition{}, "", softwareService.ComponentConfiguration{}, err
+	}
+	var installed models.Software
+	if err := database.
+		Where("installed = ?", true).
+		Where("(`key` = ? OR `component` = ?)", definition.SoftwareKey, definition.Component).
+		Order("install_time DESC").
+		First(&installed).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return softwareService.ComponentServiceDefinition{}, "", softwareService.ComponentConfiguration{}, errors.New("component is not installed")
+		}
+		return softwareService.ComponentServiceDefinition{}, "", softwareService.ComponentConfiguration{}, err
+	}
+	version := strings.TrimSpace(installed.InstallVersion)
+	if version == "" {
+		version = strings.TrimSpace(installed.Version)
+	}
+	if version == "" {
+		return softwareService.ComponentServiceDefinition{}, "", softwareService.ComponentConfiguration{}, errors.New("component install version is missing")
+	}
+	configuration, err := softwareService.NewInstaller().InspectServiceConfiguration(ctx, definition.Component, version)
+	if err != nil {
+		return softwareService.ComponentServiceDefinition{}, "", softwareService.ComponentConfiguration{}, err
+	}
+	return definition, version, configuration, nil
+}
+
+func normalizeSoftwareConfigurePayload(ctx context.Context, payload json.RawMessage) (json.RawMessage, error) {
+	var request softwareConfigurationPayload
+	if err := json.Unmarshal(payload, &request); err != nil {
+		return nil, err
+	}
+	request.Component = strings.TrimSpace(request.Component)
+	if request.Component == "" {
+		return nil, errSoftwareConfigurationComponentRequired
+	}
+	restoreFromID := strings.TrimSpace(request.RestoreFromID)
+	restoreFromHistoryID := strings.TrimSpace(request.RestoreFromHistory)
+	if restoreFromID != "" && restoreFromHistoryID != "" && restoreFromID != restoreFromHistoryID {
+		return nil, errSoftwareConfigurationRestoreIDs
+	}
+	if restoreFromID == "" {
+		restoreFromID = restoreFromHistoryID
+	}
+	definition, _, current, err := inspectSoftwareConfigurationTarget(ctx, request.Component)
+	if err != nil {
+		if strings.Contains(err.Error(), "unsupported component service") ||
+			strings.Contains(err.Error(), "does not support managed configuration") {
+			return nil, errSoftwareConfigurationUnsupported
+		}
+		switch err.Error() {
+		case "database is not initialized":
+			return nil, errSoftwareConfigurationDatabase
+		case "component is not installed":
+			return nil, errSoftwareConfigurationNotInstalled
+		case "component install version is missing":
+			return nil, errSoftwareConfigurationVersionMissing
+		}
+		return nil, fmt.Errorf("%w: %v", errSoftwareConfigurationCurrentRead, err)
+	}
+	if restoreFromID != "" {
+		if strings.TrimSpace(request.Revision) != "" || len(request.Values) != 0 {
+			return nil, errSoftwareConfigurationRestoreValues
+		}
+		history, err := softwareService.GetConfigurationHistory(app.DB(), definition.Component, restoreFromID)
+		if err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil, errSoftwareConfigurationHistoryNotFound
+			}
+			return nil, fmt.Errorf("%w: %v", errSoftwareConfigurationHistoryRead, err)
+		}
+		if history.Status != models.SoftwareConfigurationStatusSucceeded {
+			return nil, errSoftwareConfigurationHistoryState
+		}
+		request.Revision = current.Revision
+		request.Values = history.Before
+	}
+	preview, err := softwareService.PreviewConfigurationWithContext(
+		ctx, current, request.Revision, request.Values,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if !preview.HasChanges {
+		return nil, errSoftwareConfigurationNoChanges
+	}
+	normalized, err := json.Marshal(softwareConfigurationPayload{
+		Component:     definition.Component,
+		Revision:      preview.Revision,
+		Values:        preview.Values,
+		RestoreFromID: restoreFromID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("encode software configuration payload: %w", err)
+	}
+	return normalized, nil
+}
+
+func handleSoftwareConfigurationPreviewError(c *gin.Context, err error) {
+	var parameterErr *softwareService.InstallParameterError
+	if errors.As(err, &parameterErr) {
+		message := softwareConfigurationParameterMessage(parameterErr)
+		writeSoftwareConfigurationPreviewError(c, core.ErrInvalidParameter, message, parameterErr.Field)
+		return
+	}
+
+	code := core.ErrBadRequest
+	field := ""
+	message := ""
+	switch {
+	case errors.Is(err, errSoftwareConfigurationComponentRequired):
+		code = core.ErrInvalidParameter
+		message = "组件配置预览缺少 component 字段，请提供组件标识后重试。"
+	case errors.Is(err, errSoftwareConfigurationUnsupported):
+		code = core.ErrInvalidParameter
+		message = "当前组件不支持受管配置预览，请选择支持配置管理的已安装组件后重试。"
+	case errors.Is(err, errSoftwareConfigurationDatabase):
+		code = core.ErrConfigReadFailed
+		message = "面板数据库尚未初始化，无法读取组件配置；请检查面板启动状态和数据库配置后重试。"
+	case errors.Is(err, errSoftwareConfigurationNotInstalled):
+		code = core.ErrSoftwareNotFound
+		message = "当前组件未安装，无法读取受管配置；请先安装组件并确认软件状态后重试。"
+	case errors.Is(err, errSoftwareConfigurationVersionMissing):
+		code = core.ErrConfigReadFailed
+		message = "当前组件缺少已安装版本信息，无法确定配置脚本；请刷新软件状态或重新同步安装信息后重试。"
+	case errors.Is(err, errSoftwareConfigurationRestoreIDs):
+		code = core.ErrInvalidParameter
+		message = "组件配置预览同时收到两个不一致的历史配置标识，请只保留一个标识，或确保两个标识完全一致后重试。"
+	case errors.Is(err, errSoftwareConfigurationRestoreValues):
+		code = core.ErrInvalidParameter
+		message = "恢复历史组件配置时不能同时提交 revision 或 values，请仅提交 component 与历史配置标识。"
+	case errors.Is(err, errSoftwareConfigurationCurrentRead):
+		code = core.ErrConfigReadFailed
+		message = "无法读取当前组件配置，配置读取脚本或组件运行状态异常；请确认组件服务、配置脚本和运行权限后重试。"
+	case errors.Is(err, errSoftwareConfigurationHistoryNotFound):
+		code = core.ErrNotFound
+		message = "要恢复的配置历史不存在、已被删除或不属于当前组件，请刷新配置历史后重新选择。"
+	case errors.Is(err, errSoftwareConfigurationHistoryRead):
+		code = core.ErrConfigReadFailed
+		message = "读取配置历史失败，历史记录可能暂时不可用；请刷新配置历史后重试。"
+	case errors.Is(err, errSoftwareConfigurationHistoryState):
+		code = core.ErrResourceStateInvalid
+		message = "只能恢复已成功发布的配置历史，当前记录尚未成功发布；请刷新列表后选择“已发布”记录。"
+	case errors.Is(err, errSoftwareConfigurationNoChanges):
+		message = "当前组件配置已与所选历史记录的发布前内容一致，无需恢复；请刷新历史后选择确实不同的记录。"
+	case errors.Is(err, softwareService.ErrConfigurationConflict):
+		code = core.ErrConflict
+		message = "当前组件配置版本已发生变化，当前请求基于旧版本；请重新读取当前配置后再预览。"
+	case isSoftwareConfigurationJSONError(err):
+		code = core.ErrInvalidParameter
+		message = "组件配置预览请求格式不正确，请检查 component、revision、values 和历史配置标识的类型与格式后重试。"
+	default:
+		message, field = softwareConfigurationValidationMessage(err)
+		if message != "" {
+			code = core.ErrInvalidParameter
+		} else {
+			message = "组件配置预览校验失败，请检查当前配置版本、字段取值和组件状态后重试。"
+		}
+	}
+	writeSoftwareConfigurationPreviewError(c, code, message, field)
+}
+
+func writeSoftwareConfigurationPreviewError(c *gin.Context, code core.ErrorCode, message, field string) {
+	appErr := core.NewError(code, message)
+	appErr.Field = strings.TrimSpace(field)
+	core.HandleSimpleError(c, appErr)
+}
+
+func isSoftwareConfigurationJSONError(err error) bool {
+	return isJSONDecodeError(err) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)
+}
+
+func softwareConfigurationParameterMessage(err *softwareService.InstallParameterError) string {
+	if message := err.UserMessage(); message != "" {
+		return message
+	}
+	field := strings.TrimSpace(err.Field)
+	switch strings.TrimSpace(err.Message) {
+	case "must be a valid port between 1 and 65535":
+		return fmt.Sprintf("组件配置字段 %s 必须是 1 到 65535 之间的有效端口，请修正后重试。", field)
+	case "is required":
+		return fmt.Sprintf("组件配置字段 %s 未填写，请补充该字段后重试。", field)
+	default:
+		if field != "" {
+			return fmt.Sprintf("组件配置字段 %s 参数无效，请检查类型、格式和取值范围后重试。", field)
+		}
+		return "组件配置参数无效，请检查类型、格式和取值范围后重试。"
+	}
+}
+
+func softwareConfigurationValidationMessage(err error) (string, string) {
+	text := strings.TrimSpace(err.Error())
+	switch text {
+	case "configuration must contain every managed field and no unknown fields":
+		return "组件配置字段集合包含未知字段，请按照当前配置定义提交 values；缺少默认值的字段仍需填写。", ""
+	case "workerProcesses must be auto or an integer from 1 to 99":
+		return "组件配置字段 workerProcesses 必须是 auto 或 1 到 99 之间的整数，请修正后重试。", "workerProcesses"
+	case "postMaxSize must be greater than or equal to uploadMaxFilesize":
+		return "组件配置字段 postMaxSize 必须大于或等于 uploadMaxFilesize，请调整两个值的关系后重试。", "postMaxSize"
+	case "PHP-FPM process counts must satisfy min spare ≤ start ≤ max spare ≤ max children":
+		return "PHP-FPM 进程数必须满足 min spare ≤ start ≤ max spare ≤ max children，请调整相关参数后重试。", ""
+	}
+
+	const prefix = "configuration field "
+	if !strings.HasPrefix(text, prefix) {
+		return "", ""
+	}
+	rest := strings.TrimPrefix(text, prefix)
+	parts := strings.SplitN(rest, " ", 2)
+	if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" {
+		return "", ""
+	}
+	field, reason := parts[0], parts[1]
+	switch reason {
+	case "is required":
+		return fmt.Sprintf("组件配置字段 %s 未填写，请补充该字段后重试。", field), field
+	case "contains invalid data":
+		return fmt.Sprintf("组件配置字段 %s 包含不允许的内容（空字节、换行或长度超过 128 个字符），请修正后重试。", field), field
+	case "is outside the allowed range":
+		return fmt.Sprintf("组件配置字段 %s 的数值超出当前版本允许范围，请按照页面显示的最小值和最大值填写后重试。", field), field
+	case "must be true or false":
+		return fmt.Sprintf("组件配置字段 %s 只能填写 true 或 false，请修正后重试。", field), field
+	case "has an unsupported value":
+		return fmt.Sprintf("组件配置字段 %s 的取值不受当前组件版本支持，请从当前版本提供的选项中选择后重试。", field), field
+	case "must be a normalized absolute path":
+		return fmt.Sprintf("组件配置字段 %s 必须是规范化的绝对路径，请使用以 / 开头且不含 .. 的路径后重试。", field), field
+	case "is too broad":
+		return fmt.Sprintf("组件配置字段 %s 不能使用过于宽泛的系统目录，请指定更具体的目录后重试。", field), field
+	case "has an unsupported type":
+		return fmt.Sprintf("组件配置字段 %s 使用了不受支持的字段类型，请刷新配置定义后重试。", field), field
+	default:
+		return "", ""
+	}
+}
+
+func softwareConfigurationTargetVersion(component, revision string) string {
+	return fmt.Sprintf("software-config|component=%s|revision=%s", component, revision)
+}
+
+func validatePreviewTarget(ctx context.Context, operation, resourceVersion string) error {
+	if strings.HasPrefix(resourceVersion, "software-config|") {
+		if operation != "software.configure" {
+			return previewservice.ErrRequestChanged
+		}
+		parts := strings.Split(resourceVersion, "|")
+		if len(parts) != 3 || !strings.HasPrefix(parts[1], "component=") || !strings.HasPrefix(parts[2], "revision=") {
+			return previewservice.ErrRequestChanged
+		}
+		component := strings.TrimPrefix(parts[1], "component=")
+		revision := strings.TrimPrefix(parts[2], "revision=")
+		if component == "" || revision == "" {
+			return previewservice.ErrRequestChanged
+		}
+		_, _, current, err := inspectSoftwareConfigurationTarget(ctx, component)
+		if err != nil || !strings.EqualFold(current.Revision, revision) {
+			return previewservice.ErrRequestChanged
+		}
+		return nil
+	}
+	if operation == "software.configure" {
+		return previewservice.ErrRequestChanged
+	}
 	if strings.HasPrefix(resourceVersion, "website|") {
 		parts := strings.Split(resourceVersion, "|")
 		if len(parts) != 3 || !strings.HasPrefix(parts[1], "id=") || !strings.HasPrefix(parts[2], "revision=") {
@@ -860,8 +1168,18 @@ func buildDocument(ctx context.Context, operation string, payload json.RawMessag
 		if err := json.Unmarshal(payload, &value); err != nil {
 			return previewservice.Document{}, "", err
 		}
-		if err := softwareService.ValidateInstallationParams(ctx, &value); err != nil {
+		effectiveValues, err := softwareService.PreviewInstallationParams(ctx, &value)
+		if err != nil {
 			return previewservice.Document{}, "", err
+		}
+		document.EffectiveValues = make([]previewservice.EffectiveValue, 0, len(effectiveValues))
+		for _, value := range effectiveValues {
+			document.EffectiveValues = append(document.EffectiveValues, previewservice.EffectiveValue{
+				Key:       value.Key,
+				Value:     value.Value,
+				Sensitive: value.Sensitive,
+				Source:    value.Source,
+			})
 		}
 		document.Prechecks = append(document.Prechecks, previewservice.Precheck{
 			Name:    "安装参数",
@@ -878,9 +1196,19 @@ func buildDocument(ctx context.Context, operation string, payload json.RawMessag
 		document.Actions = []previewservice.Action{{Type: "service", Name: "执行组件服务动作", DisplayCommand: "systemctl <action> <component>", Service: "由组件参数确定"}}
 		document.Impact = previewservice.Impact{RestartService: true}
 	case "software.configure":
-		document.Files = []previewservice.FileChange{{Path: "组件受管配置文件", Action: "update", ChangeSummary: "应用组件配置并保存历史"}}
+		var value softwareConfigurationPayload
+		if err := json.Unmarshal(payload, &value); err != nil {
+			return previewservice.Document{}, "", err
+		}
+		changeSummary := "应用组件配置并保存历史"
+		if value.RestoreFromID != "" {
+			changeSummary = "恢复历史组件配置并保存历史"
+		}
+		document.Files = []previewservice.FileChange{{Path: "组件受管配置文件", Action: "update", ChangeSummary: changeSummary}}
 		document.Actions = []previewservice.Action{{Type: "command", Name: "校验并应用组件配置", DisplayCommand: "由组件配置动作执行"}}
+		document.EffectiveValues = effectiveConfigurationValues(value.Values)
 		document.Impact = previewservice.Impact{WriteFiles: true, ModifyDatabase: true, ReloadService: true}
+		return document, softwareConfigurationTargetVersion(value.Component, value.Revision), nil
 	case "firewall.rule_change":
 		var fields map[string]json.RawMessage
 		if err := json.Unmarshal(payload, &fields); err != nil {
@@ -952,6 +1280,26 @@ func buildDocument(ctx context.Context, operation string, payload json.RawMessag
 		document.Rollback = previewservice.Rollback{Supported: true, Summary: "可通过对应的解封或重新封禁任务恢复"}
 	}
 	return document, "", nil
+}
+
+func effectiveConfigurationValues(values map[string]string) []previewservice.EffectiveValue {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	result := make([]previewservice.EffectiveValue, 0, len(keys))
+	for _, key := range keys {
+		if strings.TrimSpace(values[key]) == "" {
+			continue
+		}
+		result = append(result, previewservice.EffectiveValue{
+			Key:    key,
+			Value:  values[key],
+			Source: "backend_normalized",
+		})
+	}
+	return result
 }
 
 func normalizeWebsiteCreatePayload(payload json.RawMessage) (json.RawMessage, error) {
@@ -1198,30 +1546,11 @@ func executeOperation(ctx context.Context, operation string, payload json.RawMes
 		}
 		return softwareTaskResult(task), nil
 	case "software.configure":
-		var value struct {
-			Component string            `json:"component"`
-			Revision  string            `json:"revision"`
-			Values    map[string]string `json:"values"`
-		}
+		var value softwareConfigurationPayload
 		if err := json.Unmarshal(payload, &value); err != nil {
 			return nil, err
 		}
-		definition, err := softwareService.NormalizeServiceComponent(value.Component)
-		if err != nil {
-			return nil, err
-		}
-		var installed models.Software
-		if err := app.DB().Where("`key` = ? AND installed = ?", definition.SoftwareKey, true).Order("install_time DESC").First(&installed).Error; err != nil {
-			return nil, err
-		}
-		version := strings.TrimSpace(installed.InstallVersion)
-		if version == "" {
-			version = strings.TrimSpace(installed.Version)
-		}
-		if version == "" {
-			return nil, errors.New("component install version is missing")
-		}
-		current, err := softwareService.NewInstaller().InspectServiceConfiguration(ctx, definition.Component, version)
+		definition, _, current, err := inspectSoftwareConfigurationTarget(ctx, value.Component)
 		if err != nil {
 			return nil, err
 		}
@@ -1229,7 +1558,7 @@ func executeOperation(ctx context.Context, operation string, payload json.RawMes
 		if err != nil {
 			return nil, err
 		}
-		task, err := manager.SubmitConfiguration(definition.Component, value.Revision, current.Values, value.Values, "", userID)
+		task, err := manager.SubmitConfiguration(definition.Component, value.Revision, current.Values, value.Values, value.RestoreFromID, userID)
 		if err != nil {
 			return nil, err
 		}
@@ -1555,6 +1884,10 @@ func writeExecutionError(c *gin.Context, err error) {
 	var parameterErr *softwareService.InstallParameterError
 	switch {
 	case errors.As(err, &parameterErr):
+		if userMessage := parameterErr.UserMessage(); userMessage != "" {
+			core.HandleSimpleError(c, core.NewError(core.ErrInvalidParameter, userMessage))
+			return
+		}
 		code, message = core.ErrInvalidParameter, "软件安装参数无效"
 		detail = parameterErr.Error()
 	case errors.Is(err, context.DeadlineExceeded):

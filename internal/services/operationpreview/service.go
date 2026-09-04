@@ -68,16 +68,27 @@ type Rollback struct {
 	Unrecoverable []string `json:"unrecoverable,omitempty"`
 }
 
+// EffectiveValue is a non-sensitive value that the operation will use after
+// backend normalization. Sensitive values deliberately omit Value and expose
+// only their source so a preview cannot disclose credentials.
+type EffectiveValue struct {
+	Key       string `json:"key"`
+	Value     string `json:"value,omitempty"`
+	Sensitive bool   `json:"sensitive,omitempty"`
+	Source    string `json:"source,omitempty"`
+}
+
 type Document struct {
-	PreviewID string       `json:"previewId"`
-	Operation string       `json:"operation"`
-	Review    Review       `json:"review"`
-	Files     []FileChange `json:"files"`
-	Actions   []Action     `json:"actions"`
-	Prechecks []Precheck   `json:"prechecks"`
-	Impact    Impact       `json:"impact"`
-	Rollback  Rollback     `json:"rollback"`
-	ExpiresAt time.Time    `json:"expiresAt"`
+	PreviewID       string           `json:"previewId"`
+	Operation       string           `json:"operation"`
+	Review          Review           `json:"review"`
+	EffectiveValues []EffectiveValue `json:"effectiveValues,omitempty"`
+	Files           []FileChange     `json:"files"`
+	Actions         []Action         `json:"actions"`
+	Prechecks       []Precheck       `json:"prechecks"`
+	Impact          Impact           `json:"impact"`
+	Rollback        Rollback         `json:"rollback"`
+	ExpiresAt       time.Time        `json:"expiresAt"`
 }
 
 type Service struct {
