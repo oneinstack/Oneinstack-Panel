@@ -230,6 +230,10 @@ func localizeResponseValue(locale string, value reflect.Value, field string, vis
 		}
 		return result
 	case reflect.String:
+		if isAccessURLField(field) {
+			localizedURL := strings.ReplaceAll(value.String(), "服务器IP", "your-server-ip")
+			return reflect.ValueOf(localizedURL).Convert(value.Type())
+		}
 		// Diagnostic error fields contain the actionable cause of a failed
 		// operation (for example, Docker's stderr). Keep them intact so
 		// response localization does not replace the cause with a generic
@@ -324,6 +328,15 @@ func isBackendMessageField(field string) bool {
 	switch strings.ToLower(strings.TrimSpace(field)) {
 	case "message", "errormessage", "error_message", "recoverymessage", "recovery_message",
 		"failuremessage", "failure_message", "statusmessage", "status_message", "rulename", "rule_name":
+		return true
+	default:
+		return false
+	}
+}
+
+func isAccessURLField(field string) bool {
+	switch strings.ToLower(strings.TrimSpace(field)) {
+	case "httpaccessurl", "httpsaccessurl", "panelaccessurl", "httpurl", "httpsurl":
 		return true
 	default:
 		return false
