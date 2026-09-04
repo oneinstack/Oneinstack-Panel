@@ -1175,6 +1175,12 @@ func validateParameters(scriptInfo *ScriptInfo) error {
 	return nil
 }
 
+// ValidateParameters exposes the component manifest validation for callers
+// that need to reject invalid installation requests before task creation.
+func ValidateParameters(scriptInfo *ScriptInfo) error {
+	return validateParameters(scriptInfo)
+}
+
 // updateSoftwareStatus 更新软件状态
 func (sm *ScriptManager) updateSoftwareStatus(params *input.InstallParams, status int, logFileName string) {
 	if params == nil || app.DB() == nil {

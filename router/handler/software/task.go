@@ -144,6 +144,19 @@ func getTaskManager() (*softwaretask.Manager, error) {
 				return nil
 			},
 		)
+		taskManager.SetInstallValidator(func(
+			ctx context.Context,
+			request softwaretask.InstallRequest,
+		) error {
+			return softwareService.NewInstaller().ValidateInstallParams(ctx, &input.InstallParams{
+				Key:        request.Key,
+				Version:    request.Version,
+				Port:       request.Port,
+				Username:   request.Username,
+				Pwd:        request.Password,
+				Parameters: request.Parameters,
+			})
+		})
 		taskManager.SetRecoveryInspector(func(
 			ctx context.Context,
 			task *models.SoftwareTask,

@@ -328,8 +328,15 @@ func Preview(c *gin.Context) {
 			return
 		}
 	}
-	document, resourceVersion, err := buildDocument(operation, payload)
+	document, resourceVersion, err := buildDocument(c.Request.Context(), operation, payload)
 	if err != nil {
+		var parameterErr *softwareService.InstallParameterError
+		if errors.As(err, &parameterErr) {
+			appErr := core.NewErrorWithDetail(core.ErrInvalidParameter, "软件安装参数无效", parameterErr.Error())
+			appErr.Field = parameterErr.Field
+			core.HandleError(c, appErr)
+			return
+		}
 		if handleWebsitePreviewError(c, operation, err) {
 			return
 		}
@@ -680,7 +687,7 @@ func requireServiceComponentPermission(c *gin.Context, operation string, payload
 	return nil
 }
 
-func buildDocument(operation string, payload json.RawMessage) (previewservice.Document, string, error) {
+func buildDocument(ctx context.Context, operation string, payload json.RawMessage) (previewservice.Document, string, error) {
 	if _, _, err := previewservice.NormalizePayload(payload); err != nil {
 		return previewservice.Document{}, "", err
 	}
@@ -849,6 +856,18 @@ func buildDocument(operation string, payload json.RawMessage) (previewservice.Do
 		document, version := websiteRuntimeDocument(operation, change)
 		return document, version, nil
 	case "software.install":
+		var value input.InstallParams
+		if err := json.Unmarshal(payload, &value); err != nil {
+			return previewservice.Document{}, "", err
+		}
+		if err := softwareService.ValidateInstallationParams(ctx, &value); err != nil {
+			return previewservice.Document{}, "", err
+		}
+		document.Prechecks = append(document.Prechecks, previewservice.Precheck{
+			Name:    "安装参数",
+			Status:  "passed",
+			Message: "版本、端口及组件清单参数校验通过",
+		})
 		document.Actions = []previewservice.Action{{Type: "component", Name: "执行受控软件安装动作", DisplayCommand: "由组件安装器按软件 key 和版本执行"}, {Type: "service", Name: "安装后验证服务状态", Service: "由组件探测器确定"}}
 		document.Impact = previewservice.Impact{WriteFiles: true, ModifyDatabase: true, RestartService: true}
 		document.Rollback = previewservice.Rollback{Supported: true, Summary: "任务失败时由软件任务执行器按组件策略回滚或保留失败现场"}
@@ -1533,7 +1552,11 @@ func writeExecutionError(c *gin.Context, err error) {
 	code, message := core.ErrConfigError, "执行已确认的操作预览失败"
 	detail := err.Error()
 	var applyErr *website.WebServerConfigApplyError
+	var parameterErr *softwareService.InstallParameterError
 	switch {
+	case errors.As(err, &parameterErr):
+		code, message = core.ErrInvalidParameter, "软件安装参数无效"
+		detail = parameterErr.Error()
 	case errors.Is(err, context.DeadlineExceeded):
 		code, message = core.ErrTaskTimeout, "操作超时，原配置已尝试恢复"
 		detail = "Web Server 配置校验或重载未在限定时间内完成，请检查服务状态和日志后重试。"

@@ -47,6 +47,11 @@ type Executor func(
 	reporter *Reporter,
 ) error
 
+// InstallValidator validates an installation request before it is persisted
+// and queued. It is intentionally separate from Executor so validation errors
+// are returned to the caller instead of becoming asynchronous task failures.
+type InstallValidator func(context.Context, InstallRequest) error
+
 type RecoveryInspection struct {
 	Status  string
 	Message string
@@ -68,6 +73,7 @@ type Manager struct {
 	db        *gorm.DB
 	logDir    string
 	executor  Executor
+	validator InstallValidator
 	inspector RecoveryInspector
 	queue     chan queuedTask
 
@@ -100,6 +106,14 @@ func NewManager(db *gorm.DB, logDir string, executor Executor) *Manager {
 		cancels:     make(map[string]context.CancelFunc),
 		subscribers: make(map[string]map[chan struct{}]struct{}),
 	}
+}
+
+// SetInstallValidator configures the pre-queue installation validator.
+func (m *Manager) SetInstallValidator(validator InstallValidator) {
+	if m == nil {
+		return
+	}
+	m.validator = validator
 }
 
 func (m *Manager) Start() error {
@@ -303,6 +317,11 @@ func (m *Manager) submit(request InstallRequest, requestedBy int64) (*models.Sof
 		}
 		if err := m.validateExclusiveDatabaseInstall(component); err != nil {
 			return nil, err
+		}
+		if m.validator != nil {
+			if err := m.validator(context.Background(), request); err != nil {
+				return nil, err
+			}
 		}
 	}
 

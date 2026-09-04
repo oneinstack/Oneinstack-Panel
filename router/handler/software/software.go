@@ -1,6 +1,7 @@
 package software
 
 import (
+	"errors"
 	"net/http"
 
 	"oneinstack/core"
@@ -28,6 +29,13 @@ func RunInstallation(c *gin.Context) {
 	}
 	task, err := SubmitInstallationTask(req, userID)
 	if err != nil {
+		var parameterErr *softwareService.InstallParameterError
+		if errors.As(err, &parameterErr) {
+			appErr := core.NewErrorWithDetail(core.ErrInvalidParameter, "软件安装参数无效", parameterErr.Error())
+			appErr.Field = parameterErr.Field
+			core.HandleError(c, appErr)
+			return
+		}
 		appErr := core.WrapError(err, core.ErrBadRequest, "创建安装任务失败")
 		core.HandleError(c, appErr)
 		return
