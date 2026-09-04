@@ -439,24 +439,13 @@ func configurationRestorePreview(
 			softwareService.ConfigurationPreview{},
 			false
 	}
-	restoreValues, err := softwareService.NormalizeConfigurationValues(
-		definition.Component,
+	preview, err := softwareService.PreviewConfiguration(
+		current,
+		current.Revision,
 		history.Before,
 	)
 	if err != nil {
 		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "该历史配置与当前版本不兼容"))
-		return softwareService.ConfigurationHistoryEntry{},
-			softwareService.ComponentConfiguration{},
-			softwareService.ConfigurationPreview{},
-			false
-	}
-	preview, err := softwareService.PreviewConfiguration(
-		current,
-		current.Revision,
-		restoreValues,
-	)
-	if err != nil {
-		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "生成配置恢复预览失败"))
 		return softwareService.ConfigurationHistoryEntry{},
 			softwareService.ComponentConfiguration{},
 			softwareService.ConfigurationPreview{},
