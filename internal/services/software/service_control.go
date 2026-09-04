@@ -33,12 +33,13 @@ var (
 )
 
 type ComponentServiceDefinition struct {
-	Component    string   `json:"component"`
-	SoftwareKey  string   `json:"softwareKey"`
-	DisplayName  string   `json:"displayName"`
-	ServiceName  string   `json:"serviceName"`
-	RuntimeGroup string   `json:"runtimeGroup,omitempty"`
-	ManageScopes []string `json:"manageScopes,omitempty"`
+	Component     string   `json:"component"`
+	SoftwareKey   string   `json:"softwareKey"`
+	DisplayName   string   `json:"displayName"`
+	ServiceName   string   `json:"serviceName"`
+	RuntimeGroup  string   `json:"runtimeGroup,omitempty"`
+	ManageScopes  []string `json:"manageScopes,omitempty"`
+	readinessPort string
 }
 
 type ComponentServiceProbe struct {
@@ -165,6 +166,7 @@ func serviceDefinitionFromRow(
 ) (ComponentServiceDefinition, error) {
 	if legacyErr == nil {
 		definition := legacy
+		definition.readinessPort = normalizeServicePort(row.HttpPort)
 		if strings.TrimSpace(row.Key) != "" {
 			definition.SoftwareKey = strings.ToLower(strings.TrimSpace(row.Key))
 		}
@@ -212,7 +214,7 @@ func serviceDefinitionFromRow(
 	return ComponentServiceDefinition{
 		Component: component, SoftwareKey: softwareKey, DisplayName: displayName,
 		ServiceName: serviceName, RuntimeGroup: strings.TrimSpace(row.RuntimeGroup),
-		ManageScopes: decodeManageScopes(row.ManageScopesJSON),
+		ManageScopes: decodeManageScopes(row.ManageScopesJSON), readinessPort: normalizeServicePort(row.HttpPort),
 	}, nil
 }
 
@@ -262,17 +264,14 @@ func verifyServiceActionReady(
 
 	readyCtx, cancel := context.WithTimeout(ctx, serviceReadyTimeout)
 	defer cancel()
-	switch strings.ToLower(strings.TrimSpace(definition.Component)) {
-	case "php":
+	if strings.EqualFold(strings.TrimSpace(definition.Component), "php") {
 		if err := waitForPHPFPMReady(readyCtx); err != nil {
 			return fmt.Errorf("%s action verification failed: PHP-FPM socket is not ready: %w", action, err)
 		}
-	case "nginx", "openresty", "tengine", "caddy", "apache":
-		if definition.RuntimeGroup != webServerRuntimeGroup {
-			break
-		}
-		if err := waitForWebServerListener(readyCtx); err != nil {
-			return fmt.Errorf("%s action verification failed: Web server listener is not ready: %w", action, err)
+	}
+	if ports := serviceReadinessPorts(definition); len(ports) > 0 {
+		if err := waitForServiceListener(readyCtx, ports); err != nil {
+			return fmt.Errorf("%s action verification failed: service listener is not ready: %w", action, err)
 		}
 	}
 	return nil
@@ -315,8 +314,7 @@ func waitForPHPFPMReady(ctx context.Context) error {
 	return lastErr
 }
 
-func waitForWebServerListener(ctx context.Context) error {
-	ports := []int{80, 443}
+func waitForServiceListener(ctx context.Context, ports []int) error {
 	var lastErr error
 	for {
 		for _, port := range ports {
@@ -341,6 +339,41 @@ func waitForWebServerListener(ctx context.Context) error {
 		lastErr = errors.New("ports 80 and 443 are not accepting TCP connections")
 	}
 	return lastErr
+}
+
+// serviceReadinessPorts returns the listener ports that should be checked
+// after a managed service action. Component installation records provide the
+// generic port source, while Nginx additionally reads its current managed
+// configuration so a post-install port change is detected immediately.
+func serviceReadinessPorts(definition ComponentServiceDefinition) []int {
+	if strings.EqualFold(strings.TrimSpace(definition.Component), "nginx") ||
+		strings.EqualFold(strings.TrimSpace(definition.SoftwareKey), "webserver") {
+		if values := detectNginxInstallParameters(); values != nil {
+			if port, ok := parseServicePort(values["port"]); ok {
+				return []int{port}
+			}
+		}
+	}
+	if port, ok := parseServicePort(definition.readinessPort); ok {
+		return []int{port}
+	}
+	if definition.RuntimeGroup == webServerRuntimeGroup {
+		return []int{80, 443}
+	}
+	return nil
+}
+
+func normalizeServicePort(value string) string {
+	port, ok := parseServicePort(value)
+	if !ok {
+		return ""
+	}
+	return strconv.Itoa(port)
+}
+
+func parseServicePort(value string) (int, bool) {
+	port, err := strconv.Atoi(strings.TrimSpace(value))
+	return port, err == nil && port >= 1 && port <= 65535
 }
 
 func waitForReadinessRetry(ctx context.Context) bool {
