@@ -32,17 +32,19 @@ const (
 )
 
 var (
-	ErrComposeUnavailable       = errors.New("docker compose unavailable")
-	ErrComposeConfigInvalid     = errors.New("compose configuration invalid")
-	ErrComposeProjectNotFound   = errors.New("compose project not found")
-	ErrComposeProjectConflict   = errors.New("compose project conflict")
-	ErrComposeProjectBusy       = errors.New("compose project busy")
-	ErrComposePreviewStale      = errors.New("compose preview is stale")
-	ErrComposeMultiFile         = errors.New("compose multi-file edit unsupported")
-	ErrComposeOperationFailed   = errors.New("compose operation failed")
-	ErrComposeOperationTimeout  = errors.New("compose operation timed out")
-	ErrComposeConfigUnavailable = errors.New("compose configuration unavailable")
-	ErrComposeTemplateNotFound  = errors.New("compose template not found")
+	ErrComposeUnavailable           = errors.New("docker compose unavailable")
+	ErrComposeConfigInvalid         = errors.New("compose configuration invalid")
+	ErrComposeProjectNotFound       = errors.New("compose project not found")
+	ErrComposeProjectConflict       = errors.New("compose project conflict")
+	ErrComposeProjectBusy           = errors.New("compose project busy")
+	ErrComposePreviewStale          = errors.New("compose preview is stale")
+	ErrComposeMultiFile             = errors.New("compose multi-file edit unsupported")
+	ErrComposeOperationFailed       = errors.New("compose operation failed")
+	ErrComposeOperationTimeout      = errors.New("compose operation timed out")
+	ErrComposeConfigUnavailable     = errors.New("compose configuration unavailable")
+	ErrComposeTemplateNotFound      = errors.New("compose template not found")
+	ErrComposeDatabaseMigration     = errors.New("compose database migration failed")
+	ErrComposeMigrationOrderInvalid = errors.New("compose database migration order invalid")
 )
 
 var composeProjectNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`)
@@ -617,6 +619,9 @@ func validateComposeContent(content, workingDir string) (ComposeConfigSummary, e
 			}
 		}
 	}
+	if err := validateComposeDatabaseInitialization(document, &summary); err != nil {
+		return ComposeConfigSummary{}, err
+	}
 	sort.Slice(summary.Services, func(i, j int) bool { return summary.Services[i].Name < summary.Services[j].Name })
 	sort.Strings(summary.Warnings)
 	summary.Networks = mapKeys(document["networks"])
@@ -865,6 +870,248 @@ func composeScalarString(value any) string {
 	default:
 		return ""
 	}
+}
+
+// composeServiceMap returns the service definitions from a Compose document.
+// Keeping this parsing in the Panel lets the task runner reason about the
+// lifecycle of a one-shot migration service without accepting arbitrary shell
+// commands or inventing application-specific SQL.
+func composeServiceMap(document map[string]any) map[string]any {
+	services, _ := document["services"].(map[string]any)
+	return services
+}
+
+func composeMapValue(values map[string]any, key string) (any, bool) {
+	for candidate, value := range values {
+		if strings.EqualFold(strings.TrimSpace(candidate), key) {
+			return value, true
+		}
+	}
+	return nil, false
+}
+
+func isOfficialPostgresImage(image string) bool {
+	reference := strings.TrimSpace(image)
+	if at := strings.IndexByte(reference, '@'); at >= 0 {
+		reference = reference[:at]
+	}
+	if slash := strings.LastIndexByte(reference, '/'); slash >= 0 {
+		registry := strings.ToLower(strings.TrimSpace(reference[:slash]))
+		if registry != "docker.io" && registry != "docker.io/library" && registry != "registry-1.docker.io/library" {
+			return false
+		}
+		reference = reference[slash+1:]
+	}
+	if colon := strings.IndexByte(reference, ':'); colon >= 0 {
+		reference = reference[:colon]
+	}
+	return strings.EqualFold(reference, "postgres")
+}
+
+func isComposeDatabaseMigrationService(name string, service map[string]any) bool {
+	if labels, ok := composeMapValue(service, "labels"); ok {
+		switch values := labels.(type) {
+		case map[string]any:
+			for key, value := range values {
+				if (strings.EqualFold(strings.TrimSpace(key), "com.oneinstack.database-migration") ||
+					strings.EqualFold(strings.TrimSpace(key), "oneinstack.database-migration")) &&
+					strings.EqualFold(strings.TrimSpace(composeScalarString(value)), "true") {
+					return true
+				}
+			}
+		case []any:
+			for _, value := range values {
+				entry := composeScalarString(value)
+				key, rawValue, ok := strings.Cut(entry, "=")
+				if ok && (strings.EqualFold(strings.TrimSpace(key), "com.oneinstack.database-migration") ||
+					strings.EqualFold(strings.TrimSpace(key), "oneinstack.database-migration")) &&
+					strings.EqualFold(strings.TrimSpace(rawValue), "true") {
+					return true
+				}
+			}
+		case []string:
+			for _, entry := range values {
+				key, rawValue, ok := strings.Cut(entry, "=")
+				if ok && (strings.EqualFold(strings.TrimSpace(key), "com.oneinstack.database-migration") ||
+					strings.EqualFold(strings.TrimSpace(key), "oneinstack.database-migration")) &&
+					strings.EqualFold(strings.TrimSpace(rawValue), "true") {
+					return true
+				}
+			}
+		}
+	}
+
+	normalized := strings.ToLower(strings.TrimSpace(name))
+	normalized = strings.NewReplacer("_", "-", ".", "-").Replace(normalized)
+	switch normalized {
+	case "migrate", "migration", "migrations", "db-migrate", "db-migration", "database-migrate", "database-migration":
+		return true
+	default:
+		return false
+	}
+}
+
+func composeDatabaseMigrationServices(document map[string]any) map[string]struct{} {
+	result := make(map[string]struct{})
+	for name, raw := range composeServiceMap(document) {
+		service, ok := raw.(map[string]any)
+		if ok && isComposeDatabaseMigrationService(name, service) {
+			result[name] = struct{}{}
+		}
+	}
+	return result
+}
+
+func composeVolumeTarget(value any) string {
+	switch volume := value.(type) {
+	case string:
+		parts := strings.Split(volume, ":")
+		for index := 1; index < len(parts); index++ {
+			candidate := strings.TrimSpace(parts[index])
+			if strings.HasPrefix(candidate, "/") {
+				return candidate
+			}
+		}
+	case map[string]any:
+		return composeScalarString(volume["target"])
+	}
+	return ""
+}
+
+func composeHasPostgresInitMount(service map[string]any) bool {
+	volumes, ok := composeMapValue(service, "volumes")
+	if !ok {
+		return false
+	}
+	var items []any
+	switch typed := volumes.(type) {
+	case []any:
+		items = typed
+	case []string:
+		for _, item := range typed {
+			items = append(items, item)
+		}
+	}
+	for _, item := range items {
+		target := filepath.Clean(strings.TrimSpace(composeVolumeTarget(item)))
+		if target == "/docker-entrypoint-initdb.d" || strings.HasPrefix(target, "/docker-entrypoint-initdb.d"+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
+}
+
+func composeDependencyCondition(service map[string]any, dependency string) (string, bool) {
+	value, exists := composeMapValue(service, "depends_on")
+	if !exists {
+		return "", false
+	}
+	switch dependencies := value.(type) {
+	case []any:
+		for _, item := range dependencies {
+			if strings.EqualFold(strings.TrimSpace(composeScalarString(item)), dependency) {
+				return "service_started", true
+			}
+		}
+	case []string:
+		for _, item := range dependencies {
+			if strings.EqualFold(strings.TrimSpace(item), dependency) {
+				return "service_started", true
+			}
+		}
+	case map[string]any:
+		for name, raw := range dependencies {
+			if !strings.EqualFold(strings.TrimSpace(name), dependency) {
+				continue
+			}
+			if conditionMap, ok := raw.(map[string]any); ok {
+				if condition, found := composeMapValue(conditionMap, "condition"); found {
+					return strings.ToLower(strings.TrimSpace(composeScalarString(condition))), true
+				}
+			}
+			return "service_started", true
+		}
+	}
+	return "", false
+}
+
+func validateComposeDatabaseInitialization(document map[string]any, summary *ComposeConfigSummary) error {
+	if summary == nil {
+		return nil
+	}
+	postgresServices := make(map[string]struct{})
+	postgresInitMount := false
+	for name, raw := range composeServiceMap(document) {
+		service, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		image, _ := composeMapValue(service, "image")
+		if isOfficialPostgresImage(composeScalarString(image)) {
+			postgresServices[name] = struct{}{}
+			postgresInitMount = postgresInitMount || composeHasPostgresInitMount(service)
+		}
+	}
+	if len(postgresServices) == 0 {
+		return nil
+	}
+
+	migrationServices := composeDatabaseMigrationServices(document)
+	if len(migrationServices) == 0 {
+		if postgresInitMount {
+			summary.Warnings = append(summary.Warnings,
+				"检测到 PostgreSQL 初始化目录挂载；官方镜像只会在空数据目录首次启动时执行脚本，已有数据卷或后续升级请使用 migrate 服务确保业务表完成迁移")
+			return nil
+		}
+		summary.Warnings = append(summary.Warnings,
+			"检测到 PostgreSQL 服务，但未发现数据库迁移服务；POSTGRES_USER/POSTGRES_PASSWORD/POSTGRES_DB 只会初始化库和用户，不会创建业务表，请提供初始化 SQL 或 migrate 服务并让 backend 等待迁移完成")
+		return nil
+	}
+
+	orderedService := false
+	for name, raw := range composeServiceMap(document) {
+		if _, isMigration := migrationServices[name]; isMigration {
+			continue
+		}
+		service, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		for migrationName := range migrationServices {
+			condition, depends := composeDependencyCondition(service, migrationName)
+			if depends && strings.EqualFold(condition, "service_completed_successfully") {
+				orderedService = true
+				break
+			}
+		}
+		if orderedService {
+			break
+		}
+	}
+	if !orderedService {
+		return composeError(ErrComposeMigrationOrderInvalid,
+			"检测到数据库迁移服务，但没有业务服务通过 depends_on.condition=service_completed_successfully 等待迁移完成；请先完成建表再启动 backend")
+	}
+
+	for migrationName := range migrationServices {
+		service, ok := composeServiceMap(document)[migrationName].(map[string]any)
+		if !ok {
+			continue
+		}
+		waitsForDatabase := false
+		for postgresName := range postgresServices {
+			condition, depends := composeDependencyCondition(service, postgresName)
+			if depends && strings.EqualFold(condition, "service_healthy") {
+				waitsForDatabase = true
+				break
+			}
+		}
+		if !waitsForDatabase {
+			summary.Warnings = append(summary.Warnings,
+				"数据库迁移服务 "+migrationName+" 未声明等待 PostgreSQL service_healthy；请为 PostgreSQL 配置 healthcheck，并在 migrate 的 depends_on 中使用 service_healthy")
+		}
+	}
+	return nil
 }
 
 func validateComposeDependencies(document map[string]any, workingDir string) error {
@@ -1922,6 +2169,97 @@ func (s *Service) applyComposeConfig(target ComposeProjectTarget, content string
 	return nil
 }
 
+func composeDatabaseMigrationServicesForTarget(target ComposeProjectTarget) map[string]struct{} {
+	if len(target.ConfigFiles) == 0 {
+		return nil
+	}
+	result := make(map[string]struct{})
+	for _, configFile := range target.ConfigFiles {
+		content, err := os.ReadFile(configFile)
+		if err != nil {
+			continue
+		}
+		var document map[string]any
+		if err := yaml.Unmarshal(content, &document); err != nil {
+			continue
+		}
+		for name := range composeDatabaseMigrationServices(document) {
+			result[name] = struct{}{}
+		}
+	}
+	return result
+}
+
+func composeServiceName(item map[string]any) string {
+	if value, ok := composeMapValue(item, "Service"); ok {
+		return strings.TrimSpace(composeScalarString(value))
+	}
+	return ""
+}
+
+func composeServiceState(item map[string]any) string {
+	value, _ := composeMapValue(item, "State")
+	state := strings.ToLower(strings.TrimSpace(composeScalarString(value)))
+	if state == "" {
+		value, _ = composeMapValue(item, "Status")
+		state = strings.ToLower(strings.TrimSpace(composeScalarString(value)))
+	}
+	if index := strings.IndexByte(state, '('); index >= 0 {
+		state = strings.TrimSpace(state[:index])
+	}
+	return state
+}
+
+func composeServiceExitCode(item map[string]any) (int, bool) {
+	for _, key := range []string{"ExitCode", "exitCode"} {
+		if value, ok := item[key]; ok {
+			if code, err := strconv.Atoi(strings.TrimSpace(composeScalarString(value))); err == nil {
+				return code, true
+			}
+		}
+	}
+	for _, key := range []string{"State", "Status"} {
+		value, ok := item[key]
+		if !ok {
+			continue
+		}
+		text := composeScalarString(value)
+		start := strings.IndexByte(text, '(')
+		if start < 0 {
+			continue
+		}
+		end := strings.IndexByte(text[start+1:], ')')
+		if end < 0 {
+			continue
+		}
+		code, err := strconv.Atoi(strings.TrimSpace(text[start+1 : start+1+end]))
+		if err == nil {
+			return code, true
+		}
+	}
+	return 0, false
+}
+
+func isComposeMigrationService(item map[string]any, migrationServices map[string]struct{}) bool {
+	name := composeServiceName(item)
+	if name != "" {
+		for migrationName := range migrationServices {
+			if strings.EqualFold(name, migrationName) {
+				return true
+			}
+		}
+	}
+	containerNameValue, _ := composeMapValue(item, "Name")
+	containerName := strings.ToLower(strings.TrimSpace(composeScalarString(containerNameValue)))
+	for migrationName := range migrationServices {
+		candidate := strings.ToLower(strings.TrimSpace(migrationName))
+		if containerName == candidate || strings.Contains(containerName, "-"+candidate+"-") {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Service) verifyComposeTask(ctx context.Context, operation string, target ComposeProjectTarget) error {
 	services, err := s.composeJSON(ctx, target, "ps", "--all", "--format", "json")
 	if err != nil {
@@ -1948,11 +2286,20 @@ func (s *Service) verifyComposeTask(ctx context.Context, operation string, targe
 		operation == models.ContainerTaskOperationComposeStart ||
 		operation == models.ContainerTaskOperationComposeRestart ||
 		operation == models.ContainerTaskOperationComposeUpdate {
+		migrationServices := composeDatabaseMigrationServicesForTarget(target)
 		for _, service := range services {
-			status := strings.ToLower(parseComposeStringField(service, "State"))
-			if status != "running" {
-				return composeError(ErrComposeOperationFailed, "Compose 项目启动后仍有服务未处于运行状态")
+			status := composeServiceState(service)
+			if status == "running" {
+				continue
 			}
+			if status == "exited" && isComposeMigrationService(service, migrationServices) {
+				if exitCode, ok := composeServiceExitCode(service); ok && exitCode == 0 {
+					continue
+				}
+				return composeError(ErrComposeDatabaseMigration,
+					"Compose 数据库迁移服务执行失败，业务表未完成初始化；请查看迁移服务日志并修复迁移命令")
+			}
+			return composeError(ErrComposeOperationFailed, "Compose 项目启动后仍有服务未处于运行状态")
 		}
 	}
 	return nil

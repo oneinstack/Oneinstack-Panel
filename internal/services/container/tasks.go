@@ -580,6 +580,10 @@ func (m *CreateTaskManager) composeLineEmitter(taskID, operation string) func(st
 
 func composeTaskFailure(err error) (string, string) {
 	switch {
+	case errors.Is(err, ErrComposeDatabaseMigration):
+		return "COMPOSE_DATABASE_MIGRATION_FAILED", "数据库迁移服务执行失败，业务表未完成初始化，请查看迁移服务日志后重试"
+	case errors.Is(err, ErrComposeMigrationOrderInvalid):
+		return "COMPOSE_MIGRATION_ORDER_INVALID", "数据库迁移顺序未配置，backend 必须等待 migrate 成功后再启动"
 	case errors.Is(err, ErrComposeConfigInvalid):
 		return "COMPOSE_CONFIG_INVALID", "Compose 配置校验失败"
 	case errors.Is(err, ErrComposeProjectNotFound):

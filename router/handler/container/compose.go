@@ -464,7 +464,7 @@ func badComposeRequest(c *gin.Context, err error) {
 
 func composeOperationError(c *gin.Context, err error) {
 	switch {
-	case errors.Is(err, containerService.ErrComposeConfigInvalid):
+	case errors.Is(err, containerService.ErrComposeConfigInvalid), errors.Is(err, containerService.ErrComposeMigrationOrderInvalid):
 		detail := composeErrorMessage(err)
 		core.HandleError(c, core.NewErrorWithDetail(core.ErrConfigValidateFailed, composeConfigErrorMessage(err), detail))
 	case errors.Is(err, containerService.ErrComposeProjectNotFound), errors.Is(err, containerService.ErrComposeTemplateNotFound):
@@ -473,6 +473,8 @@ func composeOperationError(c *gin.Context, err error) {
 		core.HandleError(c, core.NewErrorWithDetail(core.ErrConflict, "Compose 操作冲突", composeErrorMessage(err)))
 	case errors.Is(err, containerService.ErrComposeConfigUnavailable):
 		core.HandleError(c, core.NewErrorWithDetail(core.ErrConfigReadFailed, "Compose 配置不可用", composeErrorMessage(err)))
+	case errors.Is(err, containerService.ErrComposeDatabaseMigration):
+		core.HandleError(c, core.NewErrorWithDetail(core.ErrOperationFailed, "数据库迁移失败", composeErrorMessage(err)))
 	case errors.Is(err, containerService.ErrComposeOperationFailed):
 		core.HandleError(c, core.NewErrorWithDetail(core.ErrOperationFailed, "Docker Compose 操作失败", composeErrorMessage(err)))
 	case errors.Is(err, containerService.ErrComposeUnavailable):
