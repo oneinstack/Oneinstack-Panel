@@ -181,14 +181,24 @@ func ListSessions(c *gin.Context) {
 	if !ok {
 		return
 	}
+	page, err := strconv.Atoi(c.DefaultQuery("page", "1"))
+	if err != nil || page < 1 {
+		core.HandleError(c, core.NewFieldError(core.ErrInvalidParameter, "page 必须是大于等于 1 的整数", "page"))
+		return
+	}
+	pageSize, err := strconv.Atoi(c.DefaultQuery("pageSize", "20"))
+	if err != nil || pageSize < 1 || pageSize > 100 {
+		core.HandleError(c, core.NewFieldError(core.ErrInvalidParameter, "pageSize 必须是 1 到 100 之间的整数", "pageSize"))
+		return
+	}
 	currentID, _ := middleware.AuthenticatedSessionID(c)
-	records, err := securityservice.NewSessionManager(app.DB()).ListActive(userID)
+	result, err := securityservice.NewSessionManager(app.DB()).ListActive(userID, page, pageSize)
 	if err != nil {
 		handleSecurityError(c, err)
 		return
 	}
-	items := make([]gin.H, 0, len(records))
-	for _, record := range records {
+	items := make([]gin.H, 0, len(result.Items))
+	for _, record := range result.Items {
 		items = append(items, gin.H{
 			"id": record.ID, "username": record.Username,
 			"remoteIp": record.RemoteIP, "userAgent": record.UserAgent,
@@ -196,7 +206,10 @@ func ListSessions(c *gin.Context) {
 			"expiresAt": record.ExpiresAt, "current": record.ID == currentID,
 		})
 	}
-	core.HandleSuccess(c, items)
+	core.HandleSuccess(c, gin.H{
+		"items": items, "total": result.Total,
+		"page": result.Page, "pageSize": result.PageSize,
+	})
 }
 
 func RevokeSession(c *gin.Context) {

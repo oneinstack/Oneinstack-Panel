@@ -33,6 +33,13 @@ type NewSession struct {
 	ExpiresAt       time.Time
 }
 
+type SessionList struct {
+	Items    []models.UserSession `json:"items"`
+	Total    int64                `json:"total"`
+	Page     int                  `json:"page"`
+	PageSize int                  `json:"pageSize"`
+}
+
 func NewSessionManager(db *gorm.DB) *SessionManager {
 	return &SessionManager{db: db, now: time.Now}
 }
@@ -106,12 +113,33 @@ func (m *SessionManager) Validate(id string, userID int64, securityVersion uint6
 	return &record, nil
 }
 
-func (m *SessionManager) ListActive(userID int64) ([]models.UserSession, error) {
-	var records []models.UserSession
-	err := m.db.Where(
+func (m *SessionManager) ListActive(userID int64, page, pageSize int) (*SessionList, error) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 {
+		pageSize = 20
+	}
+	if pageSize > 100 {
+		pageSize = 100
+	}
+
+	query := m.db.Model(&models.UserSession{}).Where(
 		"user_id = ? AND revoked_at IS NULL AND expires_at > ?", userID, m.now().UTC(),
-	).Order("last_seen_at DESC").Find(&records).Error
-	return records, err
+	)
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		return nil, fmt.Errorf("count active sessions: %w", err)
+	}
+
+	var records []models.UserSession
+	if err := query.Order("last_seen_at DESC").
+		Offset((page - 1) * pageSize).
+		Limit(pageSize).
+		Find(&records).Error; err != nil {
+		return nil, fmt.Errorf("list active sessions: %w", err)
+	}
+	return &SessionList{Items: records, Total: total, Page: page, PageSize: pageSize}, nil
 }
 
 func (m *SessionManager) Revoke(userID int64, id, reason string) (bool, error) {
