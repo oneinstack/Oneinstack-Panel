@@ -3,6 +3,7 @@ package input
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 )
 
 type InstallParams struct {
@@ -25,8 +26,18 @@ type InstallParams struct {
 // silently discarded by encoding/json. The executor still applies a manifest
 // allowlist before exporting them to the action environment.
 func (p *InstallParams) UnmarshalJSON(data []byte) error {
-	type alias InstallParams
-	var decoded alias
+	// Keep the public request type string-based for the script environment, but
+	// accept JSON scalar values in the generic parameter map. Catalog metadata
+	// can declare a parameter as boolean or integer, and older clients may send
+	// those values using their native JSON types.
+	var decoded struct {
+		Key        string                     `json:"key"`
+		Version    string                     `json:"version"`
+		Port       string                     `json:"port"`
+		Username   string                     `json:"username"`
+		Pwd        string                     `json:"pwd"`
+		Parameters map[string]json.RawMessage `json:"parameters,omitempty"`
+	}
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		return err
 	}
@@ -35,7 +46,11 @@ func (p *InstallParams) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	parameters := make(map[string]string, len(decoded.Parameters)+len(values))
-	for key, value := range decoded.Parameters {
+	for key, raw := range decoded.Parameters {
+		value, err := decodeInstallParameterValue(raw)
+		if err != nil {
+			return fmt.Errorf("install parameter %s must be a string, boolean, or number", key)
+		}
 		parameters[key] = value
 	}
 	known := map[string]bool{"key": true, "version": true, "port": true, "username": true, "pwd": true, "parameters": true}
@@ -43,15 +58,37 @@ func (p *InstallParams) UnmarshalJSON(data []byte) error {
 		if known[key] {
 			continue
 		}
-		var value string
-		if err := json.Unmarshal(raw, &value); err != nil {
-			return fmt.Errorf("install parameter %s must be a string", key)
+		value, err := decodeInstallParameterValue(raw)
+		if err != nil {
+			return fmt.Errorf("install parameter %s must be a string, boolean, or number", key)
 		}
 		parameters[key] = value
 	}
-	decoded.Parameters = parameters
-	*p = InstallParams(decoded)
+	*p = InstallParams{
+		Key:        decoded.Key,
+		Version:    decoded.Version,
+		Port:       decoded.Port,
+		Username:   decoded.Username,
+		Pwd:        decoded.Pwd,
+		Parameters: parameters,
+	}
 	return nil
+}
+
+func decodeInstallParameterValue(raw json.RawMessage) (string, error) {
+	var stringValue string
+	if err := json.Unmarshal(raw, &stringValue); err == nil {
+		return stringValue, nil
+	}
+	var boolValue bool
+	if err := json.Unmarshal(raw, &boolValue); err == nil {
+		return strconv.FormatBool(boolValue), nil
+	}
+	var numberValue json.Number
+	if err := json.Unmarshal(raw, &numberValue); err == nil {
+		return numberValue.String(), nil
+	}
+	return "", fmt.Errorf("unsupported JSON scalar")
 }
 
 type RemoveParams struct {

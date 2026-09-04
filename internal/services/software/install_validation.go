@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -75,6 +76,12 @@ type EffectiveInstallParameter struct {
 	Source    string
 }
 
+var (
+	managedMySQLUsernamePattern         = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
+	managedMySQLDatabaseUsernamePattern = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
+	managedMySQLPasswordPattern         = regexp.MustCompile(`^[A-Za-z0-9_@%+=:,.!#?-]{12,128}$`)
+)
+
 // resolveInstallParams resolves the same package and parameter set used by
 // the installer, validates it without executing an action, and returns the
 // populated script metadata so preview callers can report effective values.
@@ -109,6 +116,9 @@ func (installer *Installer) resolveInstallParams(ctx context.Context, params *in
 	}
 	if params.Version == "" {
 		return nil, &InstallParameterError{Field: "version", Message: "is required"}
+	}
+	if err := ValidateManagedMySQLInstallParams(params); err != nil {
+		return nil, err
 	}
 	scriptInfo, err := installer.getInstallScript(ctx, params, "install")
 	if err != nil {
@@ -322,6 +332,62 @@ func isDatabaseInstallKey(key string) bool {
 	default:
 		return false
 	}
+}
+
+func isManagedMySQLInstallKey(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "db", "mysql":
+		return true
+	default:
+		return false
+	}
+}
+
+// ManagedMySQLDatabaseUsername resolves the SQL login account configured for
+// the managed MySQL component. It is deliberately separate from Username,
+// which represents the Linux service runtime account.
+func ManagedMySQLDatabaseUsername(params *input.InstallParams) string {
+	if params != nil {
+		if username := installParameterValue(
+			params.Parameters,
+			"mysql-username",
+			"mysqlUsername",
+			"database-username",
+			"databaseUsername",
+		); username != "" {
+			return username
+		}
+	}
+	return "root"
+}
+
+// ValidateManagedMySQLInstallParams validates the aliases shared by the
+// legacy flat install request and the Center MySQL component parameters.
+// The top-level username is the component's OS runtime account; the SQL
+// login account is configured separately through mysql-username.
+func ValidateManagedMySQLInstallParams(params *input.InstallParams) error {
+	if params == nil || !isManagedMySQLInstallKey(params.Key) {
+		return nil
+	}
+	if username := strings.TrimSpace(params.Username); username != "" && !managedMySQLUsernamePattern.MatchString(username) {
+		return &InstallParameterError{
+			Field:   "username",
+			Message: "MySQL 运行账户必须以小写字母或下划线开头，仅允许小写字母、数字、下划线和连字符，长度为 1-32 个字符",
+		}
+	}
+	if username := ManagedMySQLDatabaseUsername(params); !managedMySQLDatabaseUsernamePattern.MatchString(username) {
+		return &InstallParameterError{
+			Field:   "mysql-username",
+			Message: "MySQL 登录用户必须以小写字母或下划线开头，仅允许小写字母、数字、下划线和连字符，长度为 1-32 个字符",
+		}
+	}
+	if params.Pwd != "" && !managedMySQLPasswordPattern.MatchString(params.Pwd) {
+		return &InstallParameterError{
+			Field:   "pwd",
+			Message: "MySQL 密码必须为 12-128 个字符，仅允许字母、数字及 _ @ % + = : , . ! # ? -",
+		}
+	}
+	return nil
 }
 
 // ValidateInstallationParams validates an installation request using the

@@ -10,6 +10,7 @@ import (
 	"oneinstack/router/input"
 	"oneinstack/router/output"
 	"oneinstack/utils"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -25,6 +26,8 @@ var (
 	ErrConnectionUnavailable        = errors.New("database connection unavailable")
 	ErrConnectionTestFailed         = errors.New("database connection test failed")
 )
+
+var managedLocalMySQLUsernamePattern = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
 
 // IsConnectionError identifies connection failures from both the explicit
 // connection-test wrapper and storage operations that connect directly.
@@ -420,8 +423,8 @@ func TestConnectionContext(ctx context.Context, param *input.AddParam) error {
 	return testStorageConnectionContext(ctx, candidate)
 }
 
-// EnsureManagedLocalMySQLConnection records the root credential generated for
-// a fresh Panel-managed MySQL installation. Existing local connections are
+// EnsureManagedLocalMySQLConnection records the SQL login credential generated
+// for a fresh Panel-managed MySQL installation. Existing local connections are
 // preserved so upgrades never overwrite an administrator's credential.
 func EnsureManagedLocalMySQLConnection(port, username, password string) error {
 	port = strings.TrimSpace(port)
@@ -436,8 +439,8 @@ func EnsureManagedLocalMySQLConnection(port, username, password string) error {
 	if portNumber < 1 || portNumber > 65535 {
 		return fmt.Errorf("managed local MySQL port must be between 1 and 65535")
 	}
-	if username != "root" {
-		return fmt.Errorf("managed local MySQL must use root")
+	if !managedLocalMySQLUsernamePattern.MatchString(username) {
+		return fmt.Errorf("managed local MySQL username is invalid")
 	}
 	if strings.TrimSpace(password) == "" {
 		return fmt.Errorf("managed local MySQL credential is empty")
@@ -447,12 +450,45 @@ func EnsureManagedLocalMySQLConnection(port, username, password string) error {
 		Where("type = ? AND port = ? AND addr IN ?", "mysql", port, []string{"127.0.0.1", "localhost"}).
 		First(&existing)
 	if result.Error == nil {
-		connection, err := loadStorage(existing.ID)
-		if err != nil {
-			return fmt.Errorf("load managed local MySQL connection: %w", err)
+		// A user-maintained connection must not be overwritten or allowed to
+		// make a successful component installation fail. Only rotate the
+		// credential for the connection created by Panel itself.
+		if !strings.Contains(existing.Remark, "面板自动管理") {
+			return nil
 		}
-		if err := testStorageConnection(connection); err != nil {
-			return fmt.Errorf("verify existing managed local MySQL connection: %w", err)
+		candidate := &models.Storage{
+			Addr:     "127.0.0.1",
+			Port:     port,
+			Root:     username,
+			Password: password,
+			Type:     "mysql",
+		}
+		if err := testStorageConnection(candidate); err != nil {
+			return fmt.Errorf("verify managed local MySQL connection: %w", err)
+		}
+		encrypted, err := utils.EncryptCredential(
+			password,
+			utils.CredentialPurposeStoragePassword,
+		)
+		if err != nil {
+			return err
+		}
+		updated := app.DB().Model(&models.Storage{}).
+			Where("id = ?", existing.ID).
+			Updates(map[string]interface{}{
+				"addr":        candidate.Addr,
+				"port":        candidate.Port,
+				"root":        candidate.Root,
+				"password":    encrypted,
+				"remark":      "本机 MySQL（面板自动管理）",
+				"type":        candidate.Type,
+				"update_time": time.Now(),
+			})
+		if updated.Error != nil {
+			return fmt.Errorf("update managed local MySQL connection: %w", updated.Error)
+		}
+		if updated.RowsAffected == 0 {
+			return errors.New("managed local MySQL connection was not updated")
 		}
 		return nil
 	}
@@ -481,7 +517,51 @@ func EnsureManagedLocalMySQLConnection(port, username, password string) error {
 	return app.DB().Create(candidate).Error
 }
 
-// ManagedLocalMySQLCredential returns the existing encrypted-at-rest root
+// MoveManagedLocalMySQLConnection keeps the Panel-managed local connection in
+// sync after a successful MySQL listener-port change. User-created
+// connections are never rewritten.
+func MoveManagedLocalMySQLConnection(previousPort, port string) error {
+	previousPort = strings.TrimSpace(previousPort)
+	port = strings.TrimSpace(port)
+	if previousPort == "" || port == "" || previousPort == port {
+		return nil
+	}
+	var managed models.Storage
+	result := app.DB().
+		Where("type = ? AND port = ? AND addr IN ?", "mysql", previousPort, []string{"127.0.0.1", "localhost"}).
+		First(&managed)
+	if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+		return nil
+	}
+	if result.Error != nil {
+		return result.Error
+	}
+	if !strings.Contains(managed.Remark, "面板自动管理") {
+		return nil
+	}
+	var target models.Storage
+	targetResult := app.DB().
+		Where("type = ? AND port = ? AND addr IN ?", "mysql", port, []string{"127.0.0.1", "localhost"}).
+		First(&target)
+	if targetResult.Error == nil && target.ID != managed.ID {
+		return fmt.Errorf("local MySQL connection already exists on port %s", port)
+	}
+	if targetResult.Error != nil && !errors.Is(targetResult.Error, gorm.ErrRecordNotFound) {
+		return targetResult.Error
+	}
+	updated := app.DB().Model(&models.Storage{}).
+		Where("id = ? AND port = ?", managed.ID, previousPort).
+		Updates(map[string]interface{}{"port": port, "update_time": time.Now()})
+	if updated.Error != nil {
+		return updated.Error
+	}
+	if updated.RowsAffected == 0 {
+		return errors.New("managed local MySQL connection was not moved")
+	}
+	return nil
+}
+
+// ManagedLocalMySQLCredential returns the existing encrypted-at-rest SQL
 // credential for a Panel-managed local MySQL instance. Install retries and
 // binary repairs must reuse this credential: generating a new password while
 // retaining an existing data directory would record a password MySQL never
@@ -493,7 +573,7 @@ func ManagedLocalMySQLCredential(port string) (username, password string, found 
 	}
 	var existing models.Storage
 	result := app.DB().
-		Where("type = ? AND port = ? AND addr IN ?", "mysql", port, []string{"127.0.0.1", "localhost"}).
+		Where("type = ? AND port = ? AND addr IN ? AND remark LIKE ?", "mysql", port, []string{"127.0.0.1", "localhost"}, "%面板自动管理%").
 		Order("id ASC").
 		First(&existing)
 	if errors.Is(result.Error, gorm.ErrRecordNotFound) {
@@ -511,7 +591,7 @@ func ManagedLocalMySQLCredential(port string) (username, password string, found 
 		username = "root"
 	}
 	password = connection.Password
-	if username != "root" || strings.TrimSpace(password) == "" {
+	if !managedLocalMySQLUsernamePattern.MatchString(username) || strings.TrimSpace(password) == "" {
 		return "", "", false, fmt.Errorf("managed local MySQL credential is incomplete")
 	}
 	return username, password, true, nil
@@ -720,7 +800,7 @@ func normalizeConnectionParam(param *input.AddParam) {
 
 func storageConnectionOutput(item *models.Storage) output.StorageConnection {
 	return output.StorageConnection{
-		ID: item.ID, Addr: item.Addr, Port: item.Port, Root: item.Root,
+		ID: item.ID, Addr: item.Addr, Port: item.Port, Username: item.Root, Root: item.Root,
 		Remark: item.Remark, Type: item.Type,
 		PasswordConfigured: item.Password != "",
 		Managed:            strings.Contains(item.Remark, "面板自动管理"),

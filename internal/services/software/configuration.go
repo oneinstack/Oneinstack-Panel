@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -12,8 +13,12 @@ import (
 	"strings"
 
 	"oneinstack/app"
+	"oneinstack/internal/models"
 	"oneinstack/internal/services/script"
 	"oneinstack/internal/services/scriptregistry"
+	"oneinstack/router/input"
+
+	"gorm.io/gorm"
 )
 
 const maxConfigurationProbeBytes = 64 * 1024
@@ -439,7 +444,62 @@ func (installer *Installer) ApplyServiceConfigurationTask(
 	for key, value := range normalized {
 		scriptInfo.Params[definition.Environment[key]] = value
 	}
-	return installer.scriptManager.ExecuteScriptTask(ctx, scriptInfo, params, logPath, observer)
+	taskID, err := installer.scriptManager.ExecuteScriptTask(ctx, scriptInfo, params, logPath, observer)
+	if err != nil {
+		return "", err
+	}
+	if err := persistManagedMySQLConfiguration(params, normalized); err != nil {
+		return "", err
+	}
+	return taskID, nil
+}
+
+func persistManagedMySQLConfiguration(params *input.InstallParams, values map[string]string) error {
+	if params == nil || !isDatabaseInstallKey(params.Key) || app.DB() == nil {
+		return nil
+	}
+	var row models.Software
+	query := app.DB().Where("installed = ?", true)
+	if strings.TrimSpace(params.Key) != "" {
+		query = query.Where("(`key` = ? OR component = ?)", params.Key, "mysql")
+	}
+	if err := query.Order("id DESC").First(&row).Error; err != nil {
+		return err
+	}
+	runtime := make(map[string]string)
+	if strings.TrimSpace(row.RuntimeParamsJSON) != "" {
+		if err := json.Unmarshal([]byte(row.RuntimeParamsJSON), &runtime); err != nil {
+			return fmt.Errorf("decode MySQL runtime parameters: %w", err)
+		}
+	}
+	assign := func(key, persistedKey string) {
+		if value := strings.TrimSpace(values[key]); value != "" {
+			runtime[persistedKey] = value
+		}
+	}
+	assign("mysqlPort", "mysql-port")
+	assign("bindAddress", "mysql-bind-address")
+	assign("installDir", "install-dir")
+	assign("dataDir", "data-dir")
+	assign("logDir", "log-dir")
+	assign("runUser", "run-user")
+	assign("runGroup", "run-group")
+	encoded, err := json.Marshal(runtime)
+	if err != nil {
+		return fmt.Errorf("encode MySQL runtime parameters: %w", err)
+	}
+	updates := map[string]interface{}{"runtime_params": string(encoded)}
+	if port := strings.TrimSpace(values["mysqlPort"]); port != "" {
+		updates["http_port"] = port
+	}
+	result := app.DB().Model(&models.Software{}).Where("id = ?", row.Id).Updates(updates)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return errors.New("MySQL software runtime parameters were not updated")
+	}
+	return nil
 }
 
 func (installer *Installer) resolveConfigurationPackage(
@@ -660,6 +720,28 @@ func validateConfigurationPortChanges(
 			}
 			return err
 		}
+		if current.Component == "mysql" {
+			if err := validateManagedMySQLTargetPort(port, before); err != nil {
+				return &InstallParameterError{Field: field.Key, Message: err.Error()}
+			}
+		}
 	}
 	return nil
+}
+
+func validateManagedMySQLTargetPort(port int, currentPort string) error {
+	if app.DB() == nil || strconv.Itoa(port) == strings.TrimSpace(currentPort) {
+		return nil
+	}
+	var connection models.Storage
+	result := app.DB().
+		Where("type = ? AND port = ? AND addr IN ?", "mysql", strconv.Itoa(port), []string{"127.0.0.1", "localhost"}).
+		First(&connection)
+	if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+		return nil
+	}
+	if result.Error != nil {
+		return fmt.Errorf("check local MySQL connections: %w", result.Error)
+	}
+	return fmt.Errorf("local MySQL connection already uses port %d", port)
 }

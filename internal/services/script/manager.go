@@ -1313,6 +1313,7 @@ func persistedRuntimeParameters(params *input.InstallParams, port string) string
 		strings.EqualFold(strings.TrimSpace(params.Key), "mysql") {
 		values["mysql-port"] = strings.TrimSpace(port)
 		values["mysql-bind-address"] = "127.0.0.1"
+		values["mysql-username"] = "root"
 		values["install-dir"] = "/usr/local/mysql"
 		values["data-dir"] = "/data/mysql"
 		values["log-dir"] = "/data/mysql"
@@ -1364,6 +1365,8 @@ func canonicalRuntimeParameterName(key string) (string, bool) {
 		return "mysql-port", true
 	case "mysqlbindaddress":
 		return "mysql-bind-address", true
+	case "mysqlusername", "databaseusername":
+		return "mysql-username", true
 	case "installdir":
 		return "install-dir", true
 	case "datadir":

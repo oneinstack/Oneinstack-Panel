@@ -32,6 +32,7 @@ type InstallRequest struct {
 	Version               string
 	Port                  string
 	Username              string
+	DatabaseUsername      string
 	Password              string
 	GeneratedSecret       bool
 	Parameters            map[string]string
@@ -262,6 +263,7 @@ func (m *Manager) submit(request InstallRequest, requestedBy int64) (*models.Sof
 	request.Version = strings.TrimSpace(request.Version)
 	request.Port = strings.TrimSpace(request.Port)
 	request.Username = strings.TrimSpace(request.Username)
+	request.DatabaseUsername = strings.TrimSpace(request.DatabaseUsername)
 	if request.Operation != "install" && request.Operation != "uninstall" &&
 		!isRuntimeOperation(request.Operation) {
 		return nil, fmt.Errorf("unsupported software task operation: %s", request.Operation)
@@ -386,9 +388,10 @@ func (m *Manager) submit(request InstallRequest, requestedBy int64) (*models.Sof
 	}
 
 	safeParameterValues := map[string]any{
-		"port":     request.Port,
-		"username": request.Username,
-		"switch":   request.SwitchRequested,
+		"port":             request.Port,
+		"username":         request.Username,
+		"databaseUsername": request.DatabaseUsername,
+		"switch":           request.SwitchRequested,
 	}
 	if request.Operation == "uninstall" {
 		safeParameterValues["dataPolicy"] = uninstallDataPolicy(request.Parameters)

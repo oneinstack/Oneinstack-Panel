@@ -105,6 +105,13 @@ func getTaskManager() (*softwaretask.Manager, error) {
 						logPath,
 						reporter,
 					)
+					if err == nil && (strings.EqualFold(strings.TrimSpace(request.Key), "db") || strings.EqualFold(strings.TrimSpace(request.Key), "mysql")) {
+						previousPort := strings.TrimSpace(request.PreviousConfiguration["mysqlPort"])
+						targetPort := strings.TrimSpace(request.Configuration["mysqlPort"])
+						if err = storageService.MoveManagedLocalMySQLConnection(previousPort, targetPort); err != nil {
+							return fmt.Errorf("move managed local MySQL connection: %w", err)
+						}
+					}
 					return err
 				}
 				params := &input.InstallParams{
@@ -125,9 +132,11 @@ func getTaskManager() (*softwaretask.Manager, error) {
 					}
 				}
 				if slices.Contains(models.DatabaseSoftwareKeys, params.Key) && params.Pwd != "" {
+					// The managed SQL credential is separate from the Linux runtime
+					// account and follows the component's mysql-username parameter.
 					if err := storageService.EnsureManagedLocalMySQLConnection(
 						params.Port,
-						params.Username,
+						request.DatabaseUsername,
 						params.Pwd,
 					); err != nil {
 						return fmt.Errorf("register managed local MySQL connection: %w", err)
@@ -241,6 +250,10 @@ func SubmitInstallationTask(
 ) (*models.SoftwareTask, error) {
 	explicitParameters := explicitInstallParameters(req)
 	softwareService.NormalizeInstallParams(&req)
+	if err := softwareService.ValidateManagedMySQLInstallParams(&req); err != nil {
+		return nil, err
+	}
+	databaseUsername := softwareService.ManagedMySQLDatabaseUsername(&req)
 	generatedSecret := false
 	if slices.Contains(models.DatabaseSoftwareKeys, req.Key) {
 		if strings.TrimSpace(req.Port) == "" {
@@ -249,48 +262,46 @@ func SubmitInstallationTask(
 		if strings.TrimSpace(req.Username) == "" {
 			req.Username = "root"
 		}
-		if req.Username != "root" {
-			return nil, &softwareService.InstallParameterError{
-				Field:   "username",
-				Message: "MySQL 管理账户必须使用 root",
-			}
+		username, password, found, err := storageService.ManagedLocalMySQLCredential(req.Port)
+		if err != nil {
+			return nil, err
 		}
-		if strings.TrimSpace(req.Pwd) == "" {
-			username, password, found, err := storageService.ManagedLocalMySQLCredential(req.Port)
-			if err != nil {
-				return nil, err
-			}
-			if found {
-				req.Username = username
+		if found {
+			databaseUsername = username
+			if strings.TrimSpace(req.Pwd) == "" {
 				req.Pwd = password
-			} else {
-				var installed int64
-				if err := app.DB().Model(&models.Software{}).
-					Where("`key` IN ? AND installed = ?", models.DatabaseSoftwareKeys, true).
-					Count(&installed).Error; err != nil {
-					return nil, fmt.Errorf("check current MySQL installation: %w", err)
+			}
+		} else if strings.TrimSpace(req.Pwd) == "" {
+			var installed int64
+			if err := app.DB().Model(&models.Software{}).
+				Where("`key` IN ? AND installed = ?", models.DatabaseSoftwareKeys, true).
+				Count(&installed).Error; err != nil {
+				return nil, fmt.Errorf("check current MySQL installation: %w", err)
+			}
+			if installed > 0 {
+				return nil, fmt.Errorf("MySQL is installed but its managed SQL credential is unavailable")
+			}
+			dataInitialized, inspectErr := mysqlDataDirectoryInitialized(req)
+			if inspectErr != nil {
+				return nil, inspectErr
+			}
+			migrationRequested := strings.EqualFold(
+				installTaskParameterValue(req.Parameters, "migrate-external-mysql", "migrateExternalMysql"),
+				"true",
+			)
+			if !dataInitialized && !migrationRequested {
+				password, err := utils.GenerateSecurePassword(24)
+				if err != nil {
+					return nil, err
 				}
-				if installed > 0 {
-					return nil, fmt.Errorf("MySQL is installed but its managed root credential is unavailable")
-				}
-				dataInitialized, inspectErr := mysqlDataDirectoryInitialized(req)
-				if inspectErr != nil {
-					return nil, inspectErr
-				}
-				migrationRequested := strings.EqualFold(
-					installTaskParameterValue(req.Parameters, "migrate-external-mysql", "migrateExternalMysql"),
-					"true",
-				)
-				if !dataInitialized && !migrationRequested {
-					password, err := utils.GenerateSecurePassword(24)
-					if err != nil {
-						return nil, err
-					}
-					req.Pwd = password
-					generatedSecret = true
-				}
+				req.Pwd = password
+				generatedSecret = true
 			}
 		}
+		if req.Parameters == nil {
+			req.Parameters = make(map[string]string)
+		}
+		req.Parameters["mysql-username"] = databaseUsername
 	}
 	manager, err := getTaskManager()
 	if err != nil {
@@ -301,6 +312,7 @@ func SubmitInstallationTask(
 		Version:            req.Version,
 		Port:               req.Port,
 		Username:           req.Username,
+		DatabaseUsername:   databaseUsername,
 		Password:           req.Pwd,
 		GeneratedSecret:    generatedSecret,
 		Parameters:         req.Parameters,

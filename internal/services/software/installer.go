@@ -782,7 +782,7 @@ func (installer *Installer) setScriptParams(scriptInfo *script.ScriptInfo, param
 			}
 		}
 	}
-	if params.Username != "" && params.Key != "db" && params.Key != "mysql" {
+	if params.Username != "" && (!isManagedMySQLInstallKey(params.Key) || params.Username != "root") {
 		for _, parameter := range scriptInfo.ParameterSpecs {
 			name := strings.ToUpper(strings.NewReplacer("-", "_", ".", "_").Replace(strings.TrimSpace(parameter.Name)))
 			if name == "RUN_USER" || name == "USERNAME" || name == "USER" {

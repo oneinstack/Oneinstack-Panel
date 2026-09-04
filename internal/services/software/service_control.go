@@ -614,6 +614,13 @@ func parseComponentServiceProbe(
 		switch key {
 		case "component", "service", "load_state", "active_state", "sub_state",
 			"unit_file_state", "runtime_version", "can_reload":
+		case "port", "bind_address", "install_dir", "data_dir", "log_dir", "run_user", "run_group":
+			// The managed MySQL status script also reports its effective runtime
+			// metadata. These fields are intentionally accepted only for MySQL;
+			// they are not part of the public probe response.
+			if definition.Component != "mysql" {
+				return ComponentServiceProbe{}, fmt.Errorf("component status output contains unknown field %q", key)
+			}
 		default:
 			return ComponentServiceProbe{}, fmt.Errorf("component status output contains unknown field %q", key)
 		}

@@ -6,6 +6,7 @@ type StorageConnection struct {
 	ID                 int64     `json:"id"`
 	Addr               string    `json:"addr"`
 	Port               string    `json:"port"`
+	Username           string    `json:"username"`
 	Root               string    `json:"root"`
 	Remark             string    `json:"remark"`
 	Type               string    `json:"type"`

@@ -656,7 +656,8 @@ func syncCenterSoftwareCatalog() error {
   {"key":"log-dir","name":"日志目录","required":"false","type":"path","default":"/data/mysql"},
   {"key":"run-user","name":"运行用户","required":"false","type":"username","default":"mysql"},
   {"key":"run-group","name":"运行用户组","required":"false","type":"username","default":"mysql"},
-  {"key":"mysql-password","name":"MySQL root密码","required":"false","type":"password"},
+  {"key":"mysql-username","name":"MySQL 登录用户","required":"false","type":"username","default":"root"},
+  {"key":"mysql-password","name":"MySQL 管理密码","required":"false","type":"password"},
   {"key":"migrate-external-mysql","name":"接管外部MySQL","required":"false","type":"boolean","default":"false"},
   {"key":"migrate-external-confirm","name":"确认接管外部MySQL","required":"false","type":"boolean","default":"false"},
   {"key":"component-state-dir","name":"组件状态目录","required":"false","type":"path","default":"/var/lib/oneinstack/components"}
