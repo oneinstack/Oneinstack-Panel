@@ -676,12 +676,26 @@ func (m *Manager) refreshPackageAvailability(ctx context.Context, channel, revis
 	if resolveErr != nil {
 		return counts, resolveErr
 	}
-	for _, row := range rows {
-		key := packageVersionKey(row.Component, row.Version, row.CatalogChannel)
-		if row.Installable && strings.TrimSpace(packageVersions[key]) != "" {
-			counts.InstallableVersionCount++
-			installableProducts[row.Key] = struct{}{}
+	// Publishing a newer component package does not necessarily change the
+	// signed software catalog revision. Persist the host-resolved package
+	// version on every catalog row so a 304 response cannot leave stale data.
+	if err := m.db.Transaction(func(tx *gorm.DB) error {
+		for _, row := range rows {
+			key := packageVersionKey(row.Component, row.Version, row.CatalogChannel)
+			latestPackageVersion := strings.TrimSpace(packageVersions[key])
+			if err := tx.Model(&models.Software{}).
+				Where("id = ?", row.Id).
+				Update("latest_package_version", latestPackageVersion).Error; err != nil {
+				return err
+			}
+			if row.Installable && latestPackageVersion != "" {
+				counts.InstallableVersionCount++
+				installableProducts[row.Key] = struct{}{}
+			}
 		}
+		return nil
+	}); err != nil {
+		return counts, err
 	}
 	counts.InstallableProductCount = len(installableProducts)
 	return counts, nil
