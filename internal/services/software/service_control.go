@@ -446,7 +446,7 @@ func RuntimeGroupOwnerComponent(ctx context.Context, owner RuntimeGroupOwner) st
 // ActiveRuntimeGroupOwners checks the actual systemd units for a runtime
 // group, including legacy web units kept for safe migration detection.
 func ActiveRuntimeGroupOwners(ctx context.Context, runtimeGroup, excludeComponent string) []RuntimeGroupOwner {
-	if strings.TrimSpace(runtimeGroup) == "" {
+	if strings.TrimSpace(runtimeGroup) != "web-server" {
 		return nil
 	}
 	owners := []RuntimeGroupOwner{

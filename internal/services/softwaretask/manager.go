@@ -1102,7 +1102,7 @@ func (m *Manager) runtimeGroupForComponent(component string) string {
 }
 
 func activeRuntimeGroupOwners(ctx context.Context, runtimeGroup, excludeComponent string) []RuntimeGroupOwner {
-	if strings.TrimSpace(runtimeGroup) == "" {
+	if strings.TrimSpace(runtimeGroup) != "web-server" {
 		return nil
 	}
 	units := []RuntimeGroupOwner{
