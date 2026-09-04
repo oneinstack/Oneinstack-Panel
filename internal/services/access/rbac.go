@@ -551,9 +551,6 @@ func (service *Service) SetMenuEnabled(key string, enabled bool) (*MenuNode, err
 			}
 			return err
 		}
-		if menu.Builtin {
-			return ErrMenuBuiltin
-		}
 		if err := tx.Model(&menu).Update("enabled", enabled).Error; err != nil {
 			return err
 		}
@@ -1027,7 +1024,7 @@ func seedBuiltinMenus(tx *gorm.DB, permissionIDByCode map[string]uint64) error {
 			Columns: []clause.Column{{Name: "key"}},
 			DoUpdates: clause.AssignmentColumns([]string{
 				"parent_id", "type", "name", "name_en", "target_type", "target_key", "icon_key",
-				"sort", "enabled", "builtin", "super_admin_only", "feature_key", "updated_at",
+				"sort", "builtin", "super_admin_only", "feature_key", "updated_at",
 			}),
 		}).Create(&menu).Error; err != nil {
 			return err
