@@ -26,6 +26,7 @@ type componentServiceStatus struct {
 	Installed        bool      `json:"installed"`
 	RecordedVersion  string    `json:"recordedVersion,omitempty"`
 	RuntimeVersion   string    `json:"runtimeVersion,omitempty"`
+	VersionState     string    `json:"versionState"`
 	State            string    `json:"state"`
 	LoadState        string    `json:"loadState,omitempty"`
 	ActiveState      string    `json:"activeState,omitempty"`
@@ -570,6 +571,7 @@ func componentServiceStatusesFor(
 			CanReload:                  runtimeDefinition.Component == "nginx" || runtimeDefinition.Component == "openresty" || runtimeDefinition.Component == "tengine" || runtimeDefinition.Component == "caddy" || runtimeDefinition.Component == "apache" || runtimeDefinition.Component == "php",
 			SwitchAvailable:            runtimeDefinition.RuntimeGroup != "",
 			CheckedAt:                  now,
+			VersionState:               "unavailable",
 		}
 		if active, exists := activeByComponent[runtimeDefinition.Component]; exists {
 			status.Busy = true
@@ -609,6 +611,14 @@ func componentServiceStatusesFor(
 				return
 			}
 			status.RuntimeVersion = probe.RuntimeVersion
+			switch {
+			case status.RuntimeVersion == "":
+				status.VersionState = "unavailable"
+			case status.RecordedVersion != "" && status.RuntimeVersion == status.RecordedVersion:
+				status.VersionState = "matched"
+			default:
+				status.VersionState = "drifted"
+			}
 			status.LoadState = probe.LoadState
 			status.ActiveState = probe.ActiveState
 			status.SubState = probe.SubState

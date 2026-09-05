@@ -116,6 +116,7 @@ func NormalizeInstallParams(params *input.InstallParams) {
 	if params == nil {
 		return
 	}
+	params.Parameters = normalizeInstallParameterAliases(params.Parameters)
 	params.Version = strings.TrimSpace(params.Version)
 	params.Port = strings.TrimSpace(params.Port)
 	params.Username = strings.TrimSpace(params.Username)
@@ -133,7 +134,14 @@ func NormalizeInstallParams(params *input.InstallParams) {
 		)
 	}
 	if params.Port == "" {
-		params.Port = installParameterValue(params.Parameters, "port", "nginx-port", "nginxPort", "mysql-port", "mysqlPort")
+		portNames := []string{"port"}
+		switch strings.ToLower(strings.TrimSpace(params.Key)) {
+		case "db", "mysql", "mariadb", "percona":
+			portNames = append(portNames, "mysql-port", "mysqlPort")
+		case "webserver", "nginx", "openresty", "tengine":
+			portNames = append(portNames, "nginx-port", "nginxPort")
+		}
+		params.Port = installParameterValue(params.Parameters, portNames...)
 	}
 	if params.Username == "" {
 		params.Username = installParameterValue(params.Parameters, "username", "run-user", "runUser")
@@ -145,6 +153,68 @@ func NormalizeInstallParams(params *input.InstallParams) {
 		if params.Username == "" {
 			params.Username = "root"
 		}
+	}
+}
+
+// normalizeInstallParameterAliases keeps the generic parameter contract
+// stable across legacy uppercase/underscore/camelCase callers. Only known
+// lifecycle names are rewritten; undeclared component-specific parameters
+// remain available for signed-manifest validation.
+func normalizeInstallParameterAliases(parameters map[string]string) map[string]string {
+	if len(parameters) == 0 {
+		return parameters
+	}
+	result := make(map[string]string, len(parameters))
+	for key, value := range parameters {
+		canonical := canonicalInstallParameterName(key)
+		if canonical == "" {
+			canonical = strings.TrimSpace(key)
+		}
+		if canonical == "" {
+			continue
+		}
+		if canonical == "data-policy" && compactInstallParameterName(key) == "preservedata" {
+			if strings.EqualFold(strings.TrimSpace(value), "true") {
+				value = "preserve"
+			} else if strings.EqualFold(strings.TrimSpace(value), "false") {
+				value = "delete"
+			}
+		}
+		result[canonical] = strings.TrimSpace(value)
+	}
+	return result
+}
+
+func canonicalInstallParameterName(value string) string {
+	switch compactInstallParameterName(value) {
+	case "version", "softwareversion":
+		return "software-version"
+	case "installdir":
+		return "install-dir"
+	case "logdir":
+		return "log-dir"
+	case "socketpath", "socket":
+		return "socket-path"
+	case "runuser", "user":
+		return "run-user"
+	case "rungroup", "group":
+		return "run-group"
+	case "componentstatedir":
+		return "component-state-dir"
+	case "phpmemorylimit":
+		return "php-memory-limit"
+	case "migrateexternalphp":
+		return "migrate-external-php"
+	case "migrateexternalconfirm", "migrateexternalphpconfirm":
+		return "migrate-external-confirm"
+	case "datapolicy", "uninstalldatapolicy":
+		return "data-policy"
+	case "deletedataconfirm", "confirmdatadeletion", "uninstallconfirmdatadeletion":
+		return "delete-data-confirm"
+	case "preservedata":
+		return "data-policy"
+	default:
+		return ""
 	}
 }
 
@@ -365,13 +435,60 @@ func (installer *Installer) getUninstallScript(
 	if err != nil {
 		return nil, nil, err
 	}
+	installParameters := persistedUninstallParameters(softwareKey, params)
 	installParams := &input.InstallParams{
 		Key:        softwareKey,
 		Version:    params.Version,
-		Parameters: params.Parameters,
+		Parameters: installParameters,
+	}
+	if strings.TrimSpace(params.DataPolicy) != "" {
+		if installParams.Parameters == nil {
+			installParams.Parameters = make(map[string]string)
+		}
+		installParams.Parameters["data-policy"] = strings.TrimSpace(params.DataPolicy)
+	}
+	if params.ConfirmDataDeletion {
+		if installParams.Parameters == nil {
+			installParams.Parameters = make(map[string]string)
+		}
+		installParams.Parameters["delete-data-confirm"] = "true"
 	}
 	installer.setScriptParams(scriptInfo, installParams)
 	return scriptInfo, installParams, nil
+}
+
+func persistedUninstallParameters(softwareKey string, params *input.RemoveParams) map[string]string {
+	result := make(map[string]string)
+	if app.DB() != nil {
+		var row models.Software
+		if err := app.DB().Where("`key` = ? AND installed = ?", softwareKey, true).
+			Order("install_time DESC, id DESC").First(&row).Error; err == nil {
+			var persisted map[string]string
+			if strings.TrimSpace(row.RuntimeParamsJSON) != "" &&
+				json.Unmarshal([]byte(row.RuntimeParamsJSON), &persisted) == nil {
+				for key, value := range persisted {
+					result[key] = value
+				}
+			}
+		}
+	}
+	provided := map[string]string{}
+	if params != nil {
+		provided = normalizeInstallParameterAliases(params.Parameters)
+	}
+	for key, value := range provided {
+		// Runtime paths come from the Panel's installed-state record. Request
+		// parameters may supply them only for historical rows without such a
+		// record; policy and confirmation are always request-controlled.
+		if key == "data-policy" || key == "delete-data-confirm" {
+			result[key] = value
+			continue
+		}
+		if _, exists := result[key]; !exists {
+			result[key] = value
+		}
+	}
+	return result
 }
 
 // getInstallScript 获取安装脚本
@@ -493,6 +610,36 @@ func (installer *Installer) getInstallScript(ctx context.Context, params *input.
 			return scriptInfoFromPackage(componentPackage, actionName)
 		}
 		registryErr = resolveErr
+
+		// PHP was historically represented by its minor line in the bundled
+		// and early Center packages (for example, 8.3), while the catalog now
+		// records the exact patch selected for that line (8.3.30). Retry the
+		// package lookup with the line only for this compatibility boundary.
+		// If the returned manifest already supports the exact patch, retain the
+		// exact value for the action; otherwise tell the legacy script to use the
+		// line while keeping params.Version exact for task and install state.
+		if line := phpVersionLineForExact(params.Version); strings.EqualFold(params.Key, "php") && line != "" {
+			linePackage, lineErr := registry.ResolveChannel(ctx, componentName, line, catalogChannel)
+			if lineErr == nil {
+				if actionName == "upgrade" && linePackage.Manifest.Actions.Upgrade == "" {
+					actionName = "install"
+				}
+				lineInfo, infoErr := scriptInfoFromPackage(linePackage, actionName)
+				if infoErr != nil {
+					return nil, infoErr
+				}
+				if !scriptregistry.SupportsSoftwareVersion(linePackage.Manifest.Component.SoftwareVersions, params.Version) {
+					lineInfo.ScriptSoftwareVersion = line
+				}
+				return lineInfo, nil
+			}
+			registryErr = fmt.Errorf(
+				"exact version resolution failed: %v; version line %s resolution failed: %w",
+				resolveErr,
+				line,
+				lineErr,
+			)
+		}
 	}
 
 	// A Center catalog entry is a promise that the matching signed component
@@ -708,6 +855,10 @@ func componentForRemove(value string) (component string, softwareKey string, err
 // setScriptParams 设置脚本参数
 func (installer *Installer) setScriptParams(scriptInfo *script.ScriptInfo, params *input.InstallParams) {
 	scriptInfo.Version = params.Version
+	scriptVersion := strings.TrimSpace(scriptInfo.ScriptSoftwareVersion)
+	if scriptVersion == "" {
+		scriptVersion = params.Version
+	}
 	parameterEnvName := func(parameter script.ParameterSpec) string {
 		if value := strings.TrimSpace(parameter.Env); value != "" {
 			return value
@@ -755,7 +906,7 @@ func (installer *Installer) setScriptParams(scriptInfo *script.ScriptInfo, param
 			scriptInfo.Params["REDIS_PASSWORD"] = params.Pwd
 		}
 	case "php":
-		scriptInfo.Params["PHP_VERSION"] = params.Version
+		scriptInfo.Params["PHP_VERSION"] = scriptVersion
 	case "java":
 		scriptInfo.Params["JAVA_VERSION"] = params.Version
 	}
@@ -821,7 +972,7 @@ func (installer *Installer) setScriptParams(scriptInfo *script.ScriptInfo, param
 	}
 
 	// 通用参数
-	scriptInfo.Params["SOFTWARE_VERSION"] = params.Version
+	scriptInfo.Params["SOFTWARE_VERSION"] = scriptVersion
 }
 
 // ListAvailableScripts 列出可用的脚本

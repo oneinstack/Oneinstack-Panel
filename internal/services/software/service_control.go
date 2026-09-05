@@ -50,6 +50,10 @@ type ComponentServiceProbe struct {
 	SubState         string   `json:"subState"`
 	UnitFileState    string   `json:"unitFileState"`
 	RuntimeVersion   string   `json:"runtimeVersion,omitempty"`
+	RecordedVersion  string   `json:"recordedVersion,omitempty"`
+	VersionState     string   `json:"versionState,omitempty"`
+	Ownership        string   `json:"ownership,omitempty"`
+	SocketState      string   `json:"socketState,omitempty"`
 	CanReload        bool     `json:"canReload"`
 	AvailableActions []string `json:"availableActions"`
 	PackageSource    string   `json:"packageSource"`
@@ -63,7 +67,7 @@ func SupportedComponentServices() []ComponentServiceDefinition {
 		{Component: "caddy", SoftwareKey: "caddy", DisplayName: "Caddy", ServiceName: "oneinstack-caddy", RuntimeGroup: "web-server", ManageScopes: []string{"web_service"}},
 		{Component: "apache", SoftwareKey: "apache", DisplayName: "Apache HTTP Server", ServiceName: "oneinstack-httpd", RuntimeGroup: "web-server", ManageScopes: []string{"web_service"}},
 		{Component: "mysql", SoftwareKey: "db", DisplayName: "MySQL", ServiceName: "mysql", RuntimeGroup: "database", ManageScopes: []string{"database"}},
-		{Component: "php", SoftwareKey: "php", DisplayName: "PHP-FPM", ServiceName: "php-fpm", ManageScopes: []string{"runtime"}},
+		{Component: "php", SoftwareKey: "php", DisplayName: "PHP-FPM", ServiceName: "php-fpm", RuntimeGroup: "php-runtime", ManageScopes: []string{"runtime"}},
 		{Component: "redis", SoftwareKey: "redis", DisplayName: "Redis", ServiceName: "redis-server", ManageScopes: []string{"cache"}},
 	}
 }
@@ -265,7 +269,7 @@ func verifyServiceActionReady(
 	readyCtx, cancel := context.WithTimeout(ctx, serviceReadyTimeout)
 	defer cancel()
 	if strings.EqualFold(strings.TrimSpace(definition.Component), "php") {
-		if err := waitForPHPFPMReady(readyCtx); err != nil {
+		if err := waitForPHPFPMReady(readyCtx, managedPHPFPMReadinessSocket(definition)); err != nil {
 			return fmt.Errorf("%s action verification failed: PHP-FPM socket is not ready: %w", action, err)
 		}
 	}
@@ -277,8 +281,14 @@ func verifyServiceActionReady(
 	return nil
 }
 
-func waitForPHPFPMReady(ctx context.Context) error {
-	paths := []string{phpFPMDefaultSocket, "/run/php/php-fpm.sock"}
+func waitForPHPFPMReady(ctx context.Context, configuredSocket ...string) error {
+	paths := make([]string, 0, 4)
+	for _, configured := range configuredSocket {
+		if strings.TrimSpace(configured) != "" {
+			paths = append(paths, strings.TrimSpace(configured))
+		}
+	}
+	paths = append(paths, phpFPMDefaultSocket, "/run/php/php-fpm.sock")
 	if matches, err := filepath.Glob("/run/php/php*-fpm.sock"); err == nil {
 		paths = append(paths, matches...)
 	}
@@ -312,6 +322,11 @@ func waitForPHPFPMReady(ctx context.Context) error {
 		lastErr = errors.New("no supported PHP-FPM socket was found")
 	}
 	return lastErr
+}
+
+func managedPHPFPMReadinessSocket(definition ComponentServiceDefinition) string {
+	params := installedServiceInstallParams(definition.SoftwareKey, definition.Component, "")
+	return installParameterValue(params.Parameters, "socket-path", "socketPath", "SOCKET_PATH")
 }
 
 func waitForServiceListener(ctx context.Context, ports []int) error {
@@ -529,11 +544,11 @@ func (installer *Installer) inspectService(
 	if err != nil {
 		return ComponentServiceProbe{}, err
 	}
-	installParams := &serviceInstallParams{
-		key:     definition.SoftwareKey,
-		version: strings.TrimSpace(version),
-	}
-	params := installParams.input()
+	params := installedServiceInstallParams(
+		definition.SoftwareKey,
+		definition.Component,
+		strings.TrimSpace(version),
+	)
 	installer.setScriptParams(scriptInfo, params)
 	output, err := installer.scriptManager.ExecuteProbe(ctx, scriptInfo, maxServiceProbeBytes)
 	if err != nil {
@@ -542,9 +557,6 @@ func (installer *Installer) inspectService(
 	probe, err := parseComponentServiceProbe(output, definition)
 	if err != nil {
 		return ComponentServiceProbe{}, err
-	}
-	if probe.RuntimeVersion == "" && softwareVersionPattern.MatchString(strings.TrimSpace(version)) {
-		probe.RuntimeVersion = strings.TrimSpace(version)
 	}
 	probe.PackageSource = componentPackage.Source
 	probe.AvailableActions = availableServiceActions(componentPackage)
@@ -614,6 +626,10 @@ func parseComponentServiceProbe(
 		switch key {
 		case "component", "service", "load_state", "active_state", "sub_state",
 			"unit_file_state", "runtime_version", "can_reload":
+		case "recorded_version", "version_state", "ownership", "socket_state":
+			if definition.Component != "php" {
+				return ComponentServiceProbe{}, fmt.Errorf("component status output contains unknown field %q", key)
+			}
 		case "port", "bind_address", "install_dir", "data_dir", "log_dir", "run_user", "run_group":
 			// The managed MySQL status script also reports its effective runtime
 			// metadata. These fields are intentionally accepted only for MySQL;
@@ -653,19 +669,44 @@ func parseComponentServiceProbe(
 		!runtimeVersionPattern.MatchString(fields["runtime_version"]) {
 		return ComponentServiceProbe{}, fmt.Errorf("component status output contains invalid runtime version")
 	}
+	if fields["recorded_version"] != "" &&
+		!softwareVersionPattern.MatchString(fields["recorded_version"]) {
+		return ComponentServiceProbe{}, fmt.Errorf("component status output contains invalid recorded version")
+	}
+	if definition.Component == "php" {
+		switch fields["version_state"] {
+		case "matched", "drifted", "unavailable":
+		default:
+			return ComponentServiceProbe{}, fmt.Errorf("component status output contains invalid version state")
+		}
+		switch fields["ownership"] {
+		case "managed", "external", "unknown":
+		default:
+			return ComponentServiceProbe{}, fmt.Errorf("component status output contains invalid ownership")
+		}
+		switch fields["socket_state"] {
+		case "ready", "absent", "unknown":
+		default:
+			return ComponentServiceProbe{}, fmt.Errorf("component status output contains invalid socket state")
+		}
+	}
 	canReload, err := strconv.ParseBool(fields["can_reload"])
 	if err != nil {
 		return ComponentServiceProbe{}, fmt.Errorf("component status output contains invalid can_reload")
 	}
 	return ComponentServiceProbe{
-		Component:      definition.Component,
-		ServiceName:    definition.ServiceName,
-		LoadState:      fields["load_state"],
-		ActiveState:    fields["active_state"],
-		SubState:       fields["sub_state"],
-		UnitFileState:  fields["unit_file_state"],
-		RuntimeVersion: fields["runtime_version"],
-		CanReload:      canReload,
+		Component:       definition.Component,
+		ServiceName:     definition.ServiceName,
+		LoadState:       fields["load_state"],
+		ActiveState:     fields["active_state"],
+		SubState:        fields["sub_state"],
+		UnitFileState:   fields["unit_file_state"],
+		RuntimeVersion:  fields["runtime_version"],
+		RecordedVersion: fields["recorded_version"],
+		VersionState:    fields["version_state"],
+		Ownership:       fields["ownership"],
+		SocketState:     fields["socket_state"],
+		CanReload:       canReload,
 	}, nil
 }
 

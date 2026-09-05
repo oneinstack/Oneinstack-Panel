@@ -56,6 +56,7 @@ type ComponentConfiguration struct {
 type ComponentRuntime struct {
 	Port        string `json:"port"`
 	BindAddress string `json:"bindAddress"`
+	SocketPath  string `json:"socketPath"`
 	InstallDir  string `json:"installDir"`
 	DataDir     string `json:"dataDir"`
 	LogDir      string `json:"logDir"`
@@ -448,10 +449,65 @@ func (installer *Installer) ApplyServiceConfigurationTask(
 	if err != nil {
 		return "", err
 	}
-	if err := persistManagedMySQLConfiguration(params, normalized); err != nil {
-		return "", err
+	if err := persistManagedConfiguration(params, normalized); err != nil {
+		return "", fmt.Errorf("STATE_REPAIR_REQUIRED: persist managed component configuration: %w", err)
 	}
 	return taskID, nil
+}
+
+func persistManagedConfiguration(params *input.InstallParams, values map[string]string) error {
+	if params == nil || app.DB() == nil {
+		return nil
+	}
+	if strings.EqualFold(strings.TrimSpace(params.Key), "php") {
+		return persistManagedPHPConfiguration(params, values)
+	}
+	return persistManagedMySQLConfiguration(params, values)
+}
+
+func persistManagedPHPConfiguration(params *input.InstallParams, values map[string]string) error {
+	var row models.Software
+	query := app.DB().Where("installed = ?", true)
+	if strings.TrimSpace(params.Key) != "" {
+		query = query.Where("(`key` = ? OR component = ?)", params.Key, "php")
+	}
+	if err := query.Order("install_time DESC, id DESC").First(&row).Error; err != nil {
+		return err
+	}
+	runtime := make(map[string]string)
+	if strings.TrimSpace(row.RuntimeParamsJSON) != "" {
+		if err := json.Unmarshal([]byte(row.RuntimeParamsJSON), &runtime); err != nil {
+			return fmt.Errorf("decode PHP runtime parameters: %w", err)
+		}
+	}
+	assign := func(valueKey, runtimeKey string) {
+		if value := strings.TrimSpace(values[valueKey]); value != "" {
+			runtime[runtimeKey] = value
+		}
+	}
+	if value := strings.TrimSpace(values["memoryLimit"]); value != "" {
+		runtime["php-memory-limit"] = value + "M"
+	}
+	assign("uploadMaxFilesize", "php-upload-max-filesize")
+	assign("postMaxSize", "php-post-max-size")
+	assign("maxExecutionTime", "php-max-execution-time")
+	assign("pmMaxChildren", "php-pm-max-children")
+	assign("pmStartServers", "php-pm-start-servers")
+	assign("pmMinSpareServers", "php-pm-min-spare-servers")
+	assign("pmMaxSpareServers", "php-pm-max-spare-servers")
+	encoded, err := json.Marshal(runtime)
+	if err != nil {
+		return fmt.Errorf("encode PHP runtime parameters: %w", err)
+	}
+	result := app.DB().Model(&models.Software{}).Where("id = ?", row.Id).
+		Updates(map[string]interface{}{"runtime_params": string(encoded)})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return errors.New("PHP software runtime parameters were not updated")
+	}
+	return nil
 }
 
 func persistManagedMySQLConfiguration(params *input.InstallParams, values map[string]string) error {
@@ -548,9 +604,13 @@ func parseComponentConfiguration(
 		"apply_mode": {},
 	}
 	var runtime *ComponentRuntime
-	if definition.Component == "mysql" {
+	if definition.Component == "mysql" || definition.Component == "php" {
 		runtime = &ComponentRuntime{}
-		for _, key := range []string{"runtime.port", "runtime.bindAddress", "runtime.installDir", "runtime.dataDir", "runtime.logDir", "runtime.runUser", "runtime.runGroup"} {
+		runtimeKeys := []string{"runtime.port", "runtime.bindAddress", "runtime.installDir", "runtime.dataDir", "runtime.logDir", "runtime.runUser", "runtime.runGroup"}
+		if definition.Component == "php" {
+			runtimeKeys = append(runtimeKeys, "runtime.socketPath")
+		}
+		for _, key := range runtimeKeys {
 			allowed[key] = struct{}{}
 		}
 	}
@@ -605,16 +665,25 @@ func parseComponentConfiguration(
 	if runtime != nil {
 		runtime.Port = fields["runtime.port"]
 		runtime.BindAddress = fields["runtime.bindAddress"]
+		runtime.SocketPath = fields["runtime.socketPath"]
 		runtime.InstallDir = fields["runtime.installDir"]
 		runtime.DataDir = fields["runtime.dataDir"]
 		runtime.LogDir = fields["runtime.logDir"]
 		runtime.RunUser = fields["runtime.runUser"]
 		runtime.RunGroup = fields["runtime.runGroup"]
-		if port, parseErr := strconv.Atoi(runtime.Port); parseErr != nil || port < 1 || port > 65535 {
-			return ComponentConfiguration{}, errors.New("component runtime port is invalid")
-		}
-		if runtime.BindAddress == "" || runtime.InstallDir == "" || runtime.DataDir == "" || runtime.LogDir == "" || runtime.RunUser == "" || runtime.RunGroup == "" {
-			return ComponentConfiguration{}, errors.New("component runtime identity is incomplete")
+		if definition.Component == "mysql" {
+			if port, parseErr := strconv.Atoi(runtime.Port); parseErr != nil || port < 1 || port > 65535 {
+				return ComponentConfiguration{}, errors.New("component runtime port is invalid")
+			}
+			if runtime.BindAddress == "" || runtime.InstallDir == "" || runtime.DataDir == "" || runtime.LogDir == "" || runtime.RunUser == "" || runtime.RunGroup == "" {
+				return ComponentConfiguration{}, errors.New("component runtime identity is incomplete")
+			}
+		} else {
+			if runtime.Port != "" || runtime.BindAddress != "unix" || runtime.SocketPath == "" ||
+				!strings.HasPrefix(runtime.SocketPath, "/") || filepath.Clean(runtime.SocketPath) != runtime.SocketPath ||
+				runtime.InstallDir == "" || runtime.DataDir != "" || runtime.LogDir == "" || runtime.RunUser == "" || runtime.RunGroup == "" {
+				return ComponentConfiguration{}, errors.New("PHP component runtime identity is invalid")
+			}
 		}
 	}
 	return ComponentConfiguration{

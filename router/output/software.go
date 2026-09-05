@@ -1,5 +1,7 @@
 package output
 
+import "encoding/json"
+
 type Software struct {
 	Id                      int              `json:"id"`
 	Name                    string           `json:"name"`
@@ -14,7 +16,7 @@ type Software struct {
 	Installed               bool             `json:"installed"`
 	Versions                []string         `json:"versions"`
 	InstallVersion          string           `json:"install_version"`
-	VersionOptions          []VersionOption  `json:"versionOptions,omitempty"`
+	VersionOptions          []VersionOption  `json:"versionOptions"`
 	VersionLines            []string         `json:"versionLines"`
 	Port                    string           `json:"port,omitempty"`
 	InstalledPackageVersion string           `json:"installedPackageVersion,omitempty"`
@@ -61,4 +63,37 @@ type SoftParam struct {
 	Required string `json:"required"`
 	Types    string `json:"type"`
 	Default  string `json:"default,omitempty"`
+}
+
+// UnmarshalJSON accepts both the historical string form and the signed
+// catalog boolean form for required. The response keeps the existing string
+// shape so older Panel clients remain compatible.
+func (p *SoftParam) UnmarshalJSON(data []byte) error {
+	var decoded struct {
+		Key      string          `json:"key"`
+		Value    string          `json:"name"`
+		Rule     string          `json:"rule"`
+		Required json.RawMessage `json:"required"`
+		Types    string          `json:"type"`
+		Default  string          `json:"default"`
+	}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	required := ""
+	if len(decoded.Required) > 0 {
+		var booleanValue bool
+		if err := json.Unmarshal(decoded.Required, &booleanValue); err == nil {
+			required = map[bool]string{true: "true", false: "false"}[booleanValue]
+		} else {
+			if err := json.Unmarshal(decoded.Required, &required); err != nil {
+				return err
+			}
+		}
+	}
+	*p = SoftParam{
+		Key: decoded.Key, Value: decoded.Value, Rule: decoded.Rule,
+		Required: required, Types: decoded.Types, Default: decoded.Default,
+	}
+	return nil
 }

@@ -374,6 +374,9 @@ func Preview(c *gin.Context) {
 			core.HandleError(c, appErr)
 			return
 		}
+		if operation == "software.install" && handleSoftwareInstallPreviewError(c, err) {
+			return
+		}
 		if handleWebsitePreviewError(c, operation, err) {
 			return
 		}
@@ -412,6 +415,41 @@ func isJSONDecodeError(err error) bool {
 	var syntaxErr *json.SyntaxError
 	var typeErr *json.UnmarshalTypeError
 	return errors.As(err, &syntaxErr) || errors.As(err, &typeErr)
+}
+
+func handleSoftwareInstallPreviewError(c *gin.Context, err error) bool {
+	if err == nil {
+		return false
+	}
+	detail := strings.ToLower(strings.TrimSpace(err.Error()))
+	switch {
+	case strings.Contains(detail, "no compatible package"),
+		strings.Contains(detail, "no compatible bundled"),
+		strings.Contains(detail, "no compatible cached"),
+		strings.Contains(detail, "not published by center"),
+		strings.Contains(detail, "outside the published version lines"):
+		appErr := core.NewErrorWithDetail(
+			core.ErrSoftwareNotFound,
+			"当前主机没有可用的软件组件包",
+			"Center 当前未发布适配本机操作系统、版本和架构的组件包。",
+		)
+		appErr.Suggestion = "请在 Center 发布对应系统和架构的组件包，刷新软件目录后重试。"
+		core.HandleError(c, appErr)
+		return true
+	case strings.Contains(detail, "script center connectivity"),
+		strings.Contains(detail, "script center is not ready"),
+		strings.Contains(detail, "script center returned http"):
+		appErr := core.NewErrorWithDetail(
+			core.ErrServiceUnavailable,
+			"Center 当前不可用",
+			"Panel 无法访问 Center 或 Center 尚未就绪。",
+		)
+		appErr.Suggestion = "请检查 Panel 到 Center 的网络连通性和 Center 健康状态后重试。"
+		core.HandleError(c, appErr)
+		return true
+	default:
+		return false
+	}
 }
 
 func handleWebsitePreviewError(c *gin.Context, operation string, err error) bool {
@@ -1193,8 +1231,19 @@ func buildDocument(ctx context.Context, operation string, payload json.RawMessag
 		document.Actions = []previewservice.Action{{Type: "component", Name: "执行受控软件卸载动作", DisplayCommand: "由组件卸载器按软件 key 和版本执行"}}
 		document.Impact = previewservice.Impact{WriteFiles: true, ModifyDatabase: true, RestartService: true}
 	case "software.service_action":
+		var value struct {
+			Action string `json:"action"`
+		}
+		if err := json.Unmarshal(payload, &value); err != nil {
+			return previewservice.Document{}, "", err
+		}
 		document.Actions = []previewservice.Action{{Type: "service", Name: "执行组件服务动作", DisplayCommand: "systemctl <action> <component>", Service: "由组件参数确定"}}
-		document.Impact = previewservice.Impact{RestartService: true}
+		switch strings.ToLower(strings.TrimSpace(value.Action)) {
+		case "restart":
+			document.Impact.RestartService = true
+		case "reload":
+			document.Impact.ReloadService = true
+		}
 	case "software.configure":
 		var value softwareConfigurationPayload
 		if err := json.Unmarshal(payload, &value); err != nil {
@@ -1523,7 +1572,17 @@ func executeOperation(ctx context.Context, operation string, payload json.RawMes
 		if err != nil {
 			return nil, err
 		}
-		task, err := manager.SubmitUninstall(value.Name, value.Version, userID)
+		parameters := make(map[string]string, len(value.Parameters)+2)
+		for key, parameter := range value.Parameters {
+			parameters[key] = parameter
+		}
+		if strings.TrimSpace(value.DataPolicy) != "" {
+			parameters["data-policy"] = value.DataPolicy
+		}
+		if value.ConfirmDataDeletion {
+			parameters["delete-data-confirm"] = "true"
+		}
+		task, err := manager.SubmitUninstallWithParameters(value.Name, value.Version, parameters, userID)
 		if err != nil {
 			return nil, err
 		}
@@ -1883,6 +1942,9 @@ func writeExecutionError(c *gin.Context, err error) {
 	var applyErr *website.WebServerConfigApplyError
 	var parameterErr *softwareService.InstallParameterError
 	switch {
+	case strings.HasPrefix(strings.TrimSpace(detail), "RUNTIME_DEPENDENCY_BUSY:"):
+		code, message = core.ErrConflict, "RUNTIME_DEPENDENCY_BUSY"
+		detail = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(detail), "RUNTIME_DEPENDENCY_BUSY:"))
 	case errors.As(err, &parameterErr):
 		if userMessage := parameterErr.UserMessage(); userMessage != "" {
 			core.HandleSimpleError(c, core.NewError(core.ErrInvalidParameter, userMessage))

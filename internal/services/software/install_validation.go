@@ -10,8 +10,12 @@ import (
 	"strings"
 	"syscall"
 
+	"oneinstack/app"
+	"oneinstack/internal/models"
 	"oneinstack/internal/services/script"
 	"oneinstack/router/input"
+
+	"gorm.io/gorm"
 )
 
 // InstallParameterError identifies a safe, client-actionable installation
@@ -80,6 +84,8 @@ var (
 	managedMySQLUsernamePattern         = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
 	managedMySQLDatabaseUsernamePattern = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
 	managedMySQLPasswordPattern         = regexp.MustCompile(`^[A-Za-z0-9_@%+=:,.!#?-]{12,128}$`)
+	phpExactVersionPattern              = regexp.MustCompile(`^8\.[0-9]+\.[0-9]+$`)
+	phpVersionLinePattern               = regexp.MustCompile(`^8\.[0-9]+\.x$`)
 )
 
 // resolveInstallParams resolves the same package and parameter set used by
@@ -117,6 +123,19 @@ func (installer *Installer) resolveInstallParams(ctx context.Context, params *in
 	if params.Version == "" {
 		return nil, &InstallParameterError{Field: "version", Message: "is required"}
 	}
+	if strings.EqualFold(strings.TrimSpace(params.Key), "php") {
+		resolvedVersion, resolveErr := ResolvePHPVersionLine(app.DB(), params.Version)
+		if resolveErr != nil {
+			return nil, resolveErr
+		}
+		params.Version = resolvedVersion
+		if err := resolvePHPInstallVersion(params); err != nil {
+			return nil, err
+		}
+	}
+	if params.Version == "" {
+		return nil, &InstallParameterError{Field: "version", Message: "is required"}
+	}
 	if err := ValidateManagedMySQLInstallParams(params); err != nil {
 		return nil, err
 	}
@@ -134,11 +153,78 @@ func (installer *Installer) resolveInstallParams(ctx context.Context, params *in
 	return scriptInfo, nil
 }
 
+// resolvePHPInstallVersion validates the exact PHP patch shape after a
+// catalog version line has been resolved. The published Center component
+// version line is the source of truth for whether this patch is allowed;
+// package resolution performs that line check before the task is queued.
+func resolvePHPInstallVersion(params *input.InstallParams) error {
+	if params == nil || !strings.EqualFold(strings.TrimSpace(params.Key), "php") {
+		return nil
+	}
+	requested := strings.TrimSpace(params.Version)
+	if !phpExactVersionPattern.MatchString(requested) {
+		return &InstallParameterError{Field: "version", Message: "PHP 版本必须是 8.x.y 格式，并且属于 Center 已发布的版本线"}
+	}
+	return nil
+}
+
+func phpVersionLineForExact(version string) string {
+	version = strings.TrimSpace(version)
+	if !phpExactVersionPattern.MatchString(version) {
+		return ""
+	}
+	parts := strings.Split(version, ".")
+	return strings.Join(parts[:2], ".")
+}
+
+// ResolvePHPVersionLine resolves a PHP version line using the synced Center
+// catalog, with the signed component's current release policy as the offline
+// fallback. It is called before durable task creation so task fields never
+// retain an unresolved version line.
+func ResolvePHPVersionLine(db *gorm.DB, version string) (string, error) {
+	version = strings.TrimSpace(version)
+	if !phpVersionLinePattern.MatchString(version) {
+		return version, nil
+	}
+	if db != nil {
+		var row models.Software
+		result := db.Where(
+			"`key` = ? AND version_line = ? AND catalog_managed = ? AND catalog_visible = ? AND installable = ?",
+			"php", version, true, true, true,
+		).Order("recommended DESC, version_order ASC, id ASC").First(&row)
+		if result.Error == nil && strings.TrimSpace(row.Version) != "" {
+			return strings.TrimSpace(row.Version), nil
+		}
+		if result.Error != nil && !errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			return "", fmt.Errorf("read PHP version line from Center catalog: %w", result.Error)
+		}
+	}
+	resolved := map[string]string{
+		"8.1.x": "8.1.34",
+		"8.2.x": "8.2.30",
+		"8.3.x": "8.3.30",
+	}[version]
+	if resolved == "" {
+		return "", &InstallParameterError{
+			Field:   "version",
+			Message: fmt.Sprintf("PHP 版本线 %s 尚未由 Center 发布", version),
+		}
+	}
+	return resolved, nil
+}
+
 // validateResolvedInstallPort validates a port only when the resolved
 // component declares a port parameter or the caller supplied one explicitly.
 // Legacy scripts have no manifest metadata and many of them do not listen on
 // a TCP port, so a missing port must remain valid for that compatibility path.
 func validateResolvedInstallPort(ctx context.Context, params *input.InstallParams, scriptInfo *script.ScriptInfo) error {
+	// PHP-FPM is configured through its Unix socket in the managed PHP
+	// component. Ignore an accidental legacy/default TCP port from a generic
+	// manifest unless the caller explicitly supplied a port for PHP.
+	if params != nil && strings.EqualFold(strings.TrimSpace(params.Key), "php") &&
+		!explicitPHPInstallPort(params) {
+		return nil
+	}
 	port := ""
 	portDeclared := false
 	portRequired := false
@@ -180,6 +266,16 @@ func validateResolvedInstallPort(ctx context.Context, params *input.InstallParam
 		return nil
 	}
 	return validatePortAvailable(ctx, portNumber)
+}
+
+func explicitPHPInstallPort(params *input.InstallParams) bool {
+	if params == nil {
+		return false
+	}
+	if strings.TrimSpace(params.Port) != "" {
+		return true
+	}
+	return strings.TrimSpace(installParameterValue(params.Parameters, "port")) != ""
 }
 
 // ValidateInstallParams resolves the component package and validates its
