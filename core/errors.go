@@ -95,6 +95,7 @@ type AppError struct {
 	ValidationErrors ValidationErrors `json:"-"`
 	ValidationDetail bool             `json:"-"`
 	PublicDetail     bool             `json:"-"`
+	Suggestion       string           `json:"-"`
 }
 
 // Error 实现error接口
@@ -126,6 +127,7 @@ func NewErrorWithDetail(code ErrorCode, message, detail string) *AppError {
 		Message:      message,
 		Detail:       detail,
 		PublicDetail: true,
+		Suggestion:   errorSuggestion(detail),
 	}
 }
 
@@ -140,9 +142,10 @@ func NewErrorWithValidationErrors(code ErrorCode, message, detail string, valida
 // NewFieldError 创建字段验证错误
 func NewFieldError(code ErrorCode, message, field string) *AppError {
 	return &AppError{
-		Code:    code,
-		Message: message,
-		Field:   field,
+		Code:       code,
+		Message:    message,
+		Field:      field,
+		Suggestion: errorSuggestion(message),
 	}
 }
 
@@ -159,10 +162,11 @@ type APIResponse struct {
 // APIError is the machine-readable error envelope. Detail is intended for
 // diagnostics and is kept separate from the user-facing message.
 type APIError struct {
-	Code    ErrorCode `json:"code"`
-	Message string    `json:"message"`
-	Detail  string    `json:"detail,omitempty"`
-	Field   string    `json:"field,omitempty"`
+	Code       ErrorCode `json:"code"`
+	Message    string    `json:"message"`
+	Detail     string    `json:"detail,omitempty"`
+	Field      string    `json:"field,omitempty"`
+	Suggestion string    `json:"suggestion,omitempty"`
 }
 
 // SuccessResponse 成功响应
@@ -194,10 +198,11 @@ func ErrorResponse(err *AppError) *APIResponse {
 		Message: message,
 		Data:    nil,
 		Error: &APIError{
-			Code:    err.Code,
-			Message: message,
-			Detail:  safeErrorDetail(err),
-			Field:   err.Field,
+			Code:       err.Code,
+			Message:    message,
+			Detail:     safeErrorDetail(err),
+			Field:      err.Field,
+			Suggestion: err.Suggestion,
 		},
 	}
 	if len(err.ValidationErrors) > 0 {
@@ -513,6 +518,7 @@ func ErrorResponseForLocale(err *AppError, locale string) *APIResponse {
 			response.Error.Detail = response.Message
 		} else {
 			response.Error.Detail = localizedErrorDetail(locale, response.Error.Detail, err.Code)
+			response.Error.Suggestion = localizedErrorSuggestion(locale, response.Error.Suggestion, err.Code)
 		}
 	}
 	for index := range response.Errors {
@@ -535,6 +541,18 @@ func localizedErrorDetail(locale, detail string, code ErrorCode) string {
 		return translated
 	}
 	return defaultEnglishErrorDetail(code)
+}
+
+func localizedErrorSuggestion(locale, suggestion string, code ErrorCode) string {
+	suggestion = strings.TrimSpace(suggestion)
+	if suggestion == "" {
+		return ""
+	}
+	translated := i18n.LocalizeText(locale, suggestion)
+	if i18n.Canonical(locale) == i18n.LocaleEnUS && i18n.ContainsHan(translated) {
+		return "Review the suggested action and retry after the component state is confirmed."
+	}
+	return translated
 }
 
 func defaultEnglishErrorMessage(code ErrorCode) string {
@@ -701,9 +719,40 @@ func WrapError(err error, code ErrorCode, message string) *AppError {
 	}
 
 	return &AppError{
-		Code:    code,
-		Message: message,
-		Detail:  err.Error(),
+		Code:       code,
+		Message:    message,
+		Detail:     err.Error(),
+		Suggestion: errorSuggestion(err.Error()),
+	}
+}
+
+func errorSuggestion(detail string) string {
+	lower := strings.ToLower(strings.TrimSpace(detail))
+	switch {
+	case strings.Contains(lower, "version_unsupported"), strings.Contains(lower, "仅支持 8.1.x"):
+		return "请选择 8.1.x、8.2.x 或 8.3.x 版本线，并让 Panel 解析为精确 patch 版本。"
+	case strings.Contains(lower, "package_verify_failed"), strings.Contains(lower, "checksum"):
+		return "请检查 Center 包发布与 SHA-256 校验状态后重试。"
+	case strings.Contains(lower, "package_unavailable"), strings.Contains(lower, "resolve php"):
+		return "请确认 Center 已发布对应组件包且当前主机可以访问 Center。"
+	case strings.Contains(lower, "external_migration_required"):
+		return "请先核对外部 PHP-FPM 归属，再同时提交迁移开关和确认字段。"
+	case strings.Contains(lower, "external_service_conflict"):
+		return "请停止当前操作，核对 systemd、PID、可执行文件、socket 和配置归属。"
+	case strings.Contains(lower, "config_revision_conflict"), strings.Contains(lower, "changed since preview"):
+		return "请重新执行 configGet，使用最新 revision 生成预览后再应用。"
+	case strings.Contains(lower, "service_start_failed"), strings.Contains(lower, "service_not_ready"):
+		return "请核对 PHP-FPM 进程、配置语法、运行账号权限和 Unix socket。"
+	case strings.Contains(lower, "service_reload_failed"):
+		return "请核对候选配置语法和 PHP-FPM 进程状态，确认恢复后再重试。"
+	case strings.Contains(lower, "rollback_failed"):
+		return "请保留并核对回滚快照，确认旧二进制、配置、unit 和 socket 状态后人工恢复。"
+	case strings.Contains(lower, "state_repair_required"):
+		return "请先核对主机实际状态，再执行 Panel 状态修复；不要重新迁移外部服务。"
+	case strings.Contains(lower, "data_delete_confirm_required"):
+		return "仅在确认路径属于 PHP 组件且不会影响其他组件时，提交 DATA_POLICY=delete 和二次确认。"
+	default:
+		return ""
 	}
 }
 
