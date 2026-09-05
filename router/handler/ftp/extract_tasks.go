@@ -18,6 +18,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"gorm.io/gorm"
 )
 
 func submitExtractTask(input extractTaskInput, requestedBy int64, rootPath, archiveFormat string, settings fileSettings) (*models.FileArchiveTask, error) {
@@ -26,6 +27,10 @@ func submitExtractTask(input extractTaskInput, requestedBy int64, rootPath, arch
 	}
 	if err := StartArchiveTaskManager(); err != nil {
 		return nil, err
+	}
+	database := app.DB()
+	if database == nil {
+		return nil, fmt.Errorf("file archive task database is unavailable")
 	}
 	now := time.Now().UTC()
 	task := &models.FileArchiveTask{
@@ -36,36 +41,36 @@ func submitExtractTask(input extractTaskInput, requestedBy int64, rootPath, arch
 		Status: models.FileArchiveTaskStatusQueued, Message: "解压任务已进入队列", RequestedBy: requestedBy,
 		CreatedAt: now, UpdatedAt: now,
 	}
-	if err := app.DB().Create(task).Error; err != nil {
+	if err := database.Create(task).Error; err != nil {
 		return nil, fmt.Errorf("create extract task: %w", err)
 	}
-	archiveTaskQueue <- task.ID
+	archiveTaskQueue <- archiveTaskQueueItem{id: task.ID, database: database}
 	return task, nil
 }
 
-func runExtractTask(manager *filemanager.Manager, task *models.FileArchiveTask) {
-	reporter := newArchiveTaskProgressReporter(task)
+func runExtractTask(database *gorm.DB, manager *filemanager.Manager, task *models.FileArchiveTask) {
+	reporter := newArchiveTaskProgressReporter(database, task)
 	result, err := manager.ExtractWithProgress(task.SourcePath, task.TargetDir, filemanager.ExtractOptions{
 		Overwrite: task.Overwrite, MaxBytes: task.MaxExtractBytes, MaxEntries: task.MaxExtractFiles,
 		CapacityPolicy: filemanager.CapacityPolicy{QuotaBytes: task.QuotaBytes, MinFreeBytes: task.MinFreeBytes},
 	}, reporter.ReportExtract)
 	if err != nil {
-		failExtractTask(task, err)
+		failExtractTask(database, task, err)
 		return
 	}
-	finishExtractTask(task, result)
+	finishExtractTask(database, task, result)
 }
 
-func finishExtractTask(task *models.FileArchiveTask, result filemanager.OperationResult) {
+func finishExtractTask(database *gorm.DB, task *models.FileArchiveTask, result filemanager.OperationResult) {
 	now := time.Now().UTC()
-	_ = app.DB().Model(task).Updates(map[string]any{
+	_ = database.Model(task).Updates(map[string]any{
 		"status": models.FileArchiveTaskStatusSucceeded, "message": "文件解压完成", "result_path": result.Path,
 		"entries": result.Entries, "bytes": result.Bytes, "total_bytes": result.Bytes,
 		"processed_bytes": result.Bytes, "progress": 100, "current_path": "", "finished_at": now, "updated_at": now,
 	}).Error
 }
 
-func failExtractTask(task *models.FileArchiveTask, cause error) {
+func failExtractTask(database *gorm.DB, task *models.FileArchiveTask, cause error) {
 	now := time.Now().UTC()
 	code, message := extractTaskFailure(cause)
 	if code == "FILE_EXTRACT_TARGET_CONFLICT" {
@@ -76,7 +81,7 @@ func failExtractTask(task *models.FileArchiveTask, cause error) {
 		message = fmt.Sprintf("解压目标目录 %s 存在同名文件，未覆盖原文件；请选择其他目录或确认覆盖后重试", target)
 	}
 	log.Printf("file extract task failed task_id=%s code=%s cause=%v", task.ID, code, cause)
-	_ = app.DB().Model(task).Updates(map[string]any{
+	_ = database.Model(task).Updates(map[string]any{
 		"status": models.FileArchiveTaskStatusFailed, "message": message, "error_code": code,
 		"finished_at": now, "updated_at": now,
 	}).Error
