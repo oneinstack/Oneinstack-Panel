@@ -565,6 +565,9 @@ func scriptInfoFromPackage(componentPackage scriptregistry.Package, actionName s
 			"configApply": time.Duration(manifest.Timeouts.ConfigApply) * time.Second,
 		},
 	}
+	// Keep the lifecycle action available to every component action, including
+	// precheck. The same precheck script may run before install and upgrade.
+	result.Params["ONEINSTACK_ACTION"] = actionName
 	for _, parameter := range manifest.Parameters {
 		envName := strings.TrimSpace(parameter.Env)
 		if envName == "" {

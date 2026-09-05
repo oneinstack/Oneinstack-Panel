@@ -532,6 +532,14 @@ func (sm *ScriptManager) runInstallActionsContext(
 	if mainAction == "" {
 		mainAction = string(scriptInfo.Type)
 	}
+	if scriptInfo.Params == nil {
+		scriptInfo.Params = make(map[string]string)
+	}
+	// Expose the resolved lifecycle action to component scripts. The same
+	// precheck action runs before both install and upgrade, so scripts need the
+	// main action to distinguish an existing managed service from an external
+	// service that requires migration confirmation.
+	scriptInfo.Params["ONEINSTACK_ACTION"] = mainAction
 	actions := []struct {
 		name string
 		path string
@@ -786,7 +794,27 @@ func (sm *ScriptManager) runActionContext(
 	if logContext.stderr != nil {
 		cmd.Stderr = logContext.stderr
 	}
-	cmd.Env = os.Environ()
+	// Replace task-provided variables instead of appending duplicate names.
+	// On Unix, duplicate environment keys have implementation-dependent lookup
+	// behavior; a stale MYSQL_PASSWORD from the Panel process could otherwise
+	// override the password for the current installation task.
+	overrides := make(map[string]string, len(params))
+	for key, value := range params {
+		overrides[key] = value
+	}
+	cmd.Env = make([]string, 0, len(os.Environ())+len(params)+1)
+	for _, entry := range os.Environ() {
+		key, _, hasValue := strings.Cut(entry, "=")
+		if hasValue {
+			if _, overridden := overrides[key]; overridden {
+				continue
+			}
+		}
+		cmd.Env = append(cmd.Env, entry)
+	}
+	for key, value := range params {
+		cmd.Env = append(cmd.Env, key+"="+value)
+	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {
 		if cmd.Process == nil {
@@ -805,9 +833,6 @@ func (sm *ScriptManager) runActionContext(
 		return err
 	}
 	cmd.WaitDelay = processCancelGracePeriod
-	for key, value := range params {
-		cmd.Env = append(cmd.Env, key+"="+value)
-	}
 	progressReader, progressWriter, err := os.Pipe()
 	if err != nil {
 		return fmt.Errorf("create script progress pipe: %w", err)

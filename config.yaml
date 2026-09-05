@@ -80,7 +80,7 @@ scriptCenter:
     # keyId: Base64-encoded Ed25519 public key. Keep empty until Center is deployed.
     trustedKeys: {}
 updateCenter:
-    enabled: true
+    enabled: false
     centerUrl: 'https://www.example.com'
     manifestUrl: '' # 'https://updates.example.com/oneinstack/stable/manifest.json'
     channel: 'stable'

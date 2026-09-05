@@ -171,6 +171,14 @@ func validateResolvedInstallPort(ctx context.Context, params *input.InstallParam
 	if err != nil || portNumber < 1 || portNumber > 65535 {
 		return &InstallParameterError{Field: "port", Message: "must be a valid port between 1 and 65535"}
 	}
+	// A component precheck is authoritative for installation-time port
+	// ownership. A generic bind probe cannot distinguish an existing managed
+	// listener from an unrelated process or account for an explicit migration
+	// flow (for example, Nginx or MySQL takeover). Keep the generic probe only
+	// for legacy/component packages that do not provide a precheck action.
+	if scriptInfo != nil && strings.TrimSpace(scriptInfo.PrecheckPath) != "" {
+		return nil
+	}
 	return validatePortAvailable(ctx, portNumber)
 }
 
