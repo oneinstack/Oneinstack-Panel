@@ -12,12 +12,12 @@ import (
 
 func TestInitializeUsesApplicationDataDirectory(t *testing.T) {
 	originalBasePath := BASE_PATH
-	originalDB := db
+	originalDB := DB()
 	originalConfig := ONE_CONFIG
 	originalViper := ONE_VIP
 	t.Cleanup(func() {
 		BASE_PATH = originalBasePath
-		db = originalDB
+		setDB(originalDB)
 		ONE_CONFIG = originalConfig
 		ONE_VIP = originalViper
 	})
@@ -93,12 +93,12 @@ func TestInitDBMigratesPlaintextDatabaseCredentials(t *testing.T) {
 
 func TestInitializeAddsCenterBackedSoftwareVersions(t *testing.T) {
 	originalBasePath := BASE_PATH
-	originalDB := db
+	originalDB := DB()
 	originalConfig := ONE_CONFIG
 	originalViper := ONE_VIP
 	t.Cleanup(func() {
 		BASE_PATH = originalBasePath
-		db = originalDB
+		setDB(originalDB)
 		ONE_CONFIG = originalConfig
 		ONE_VIP = originalViper
 	})
@@ -141,12 +141,12 @@ func TestInitializeAddsCenterBackedSoftwareVersions(t *testing.T) {
 
 func TestInitUserValidatesCredentialsAndReportsSetupState(t *testing.T) {
 	originalBasePath := BASE_PATH
-	originalDB := db
+	originalDB := DB()
 	originalConfig := ONE_CONFIG
 	originalViper := ONE_VIP
 	t.Cleanup(func() {
 		BASE_PATH = originalBasePath
-		db = originalDB
+		setDB(originalDB)
 		ONE_CONFIG = originalConfig
 		ONE_VIP = originalViper
 	})

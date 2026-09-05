@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/spf13/viper"
 	"gorm.io/gorm"
@@ -12,6 +13,8 @@ import (
 
 var (
 	db         *gorm.DB
+	dbMu       sync.RWMutex
+	dbInitMu   sync.Mutex
 	ONE_CONFIG config.Server
 	ONE_VIP    *viper.Viper
 )
@@ -20,7 +23,15 @@ var BASE_PATH = resolveBasePath()
 var ENV = ""
 
 func DB() *gorm.DB {
+	dbMu.RLock()
+	defer dbMu.RUnlock()
 	return db
+}
+
+func setDB(database *gorm.DB) {
+	dbMu.Lock()
+	db = database
+	dbMu.Unlock()
 }
 
 func GetBasePath() string {

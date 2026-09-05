@@ -63,6 +63,9 @@ func Initialize() error {
 }
 
 func InitDB(dbPath string) error {
+	dbInitMu.Lock()
+	defer dbInitMu.Unlock()
+
 	gc := &gorm.Config{}
 	gc.Logger = logger.Default.LogMode(logger.Error)
 	if ENV == "debug" /*|| runtime.GOOS == "darwin" */ {
@@ -87,7 +90,7 @@ func InitDB(dbPath string) error {
 	// busy timeout serializes short task, audit, and session writes.
 	sqlDB.SetMaxOpenConns(8)
 	sqlDB.SetMaxIdleConns(4)
-	db = d
+	setDB(d)
 	// 检查是否存在用户，如果不存在提示创建管理员
 	err = createTables()
 	if err != nil {
