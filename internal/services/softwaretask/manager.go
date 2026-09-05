@@ -936,9 +936,11 @@ func (m *Manager) validateCatalogInstall(key, version string) error {
 	result := m.db.Where("`key` = ? AND version = ?", key, version).First(&catalogRow)
 	if errors.Is(result.Error, gorm.ErrRecordNotFound) {
 		var candidates []models.Software
+		// A published version line authorizes the component to resolve the
+		// requested official upstream version; an exact catalog row is optional.
 		result = m.db.Where(
-			"`key` = ? AND catalog_channel = ? AND allow_custom_version = ? AND version_line <> ''",
-			key, state.Channel, true,
+			"`key` = ? AND catalog_channel = ? AND version_line <> ''",
+			key, state.Channel,
 		).Order("catalog_visible DESC, version_order ASC, id ASC").Find(&candidates)
 		if result.Error != nil {
 			return fmt.Errorf("read Center custom-version policy: %w", result.Error)

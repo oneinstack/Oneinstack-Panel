@@ -390,8 +390,11 @@ func (installer *Installer) getInstallScript(ctx context.Context, params *input.
 			catalogChannel = strings.ToLower(strings.TrimSpace(catalogRow.CatalogChannel))
 		} else {
 			var candidates []models.Software
+			// Resolve a custom version through the published component version
+			// line. The component package remains responsible for official-source
+			// validation and artifact verification.
 			if err := app.DB().
-				Where("`key` = ? AND catalog_managed = ? AND allow_custom_version = ? AND version_line <> '' AND component <> ''", params.Key, true, true).
+				Where("`key` = ? AND catalog_managed = ? AND version_line <> '' AND component <> ''", params.Key, true).
 				Order("catalog_visible DESC, version_order ASC, id ASC").
 				Find(&candidates).Error; err == nil {
 				for _, candidate := range candidates {

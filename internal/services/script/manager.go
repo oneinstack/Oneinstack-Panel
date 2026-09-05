@@ -1429,8 +1429,11 @@ func findSoftwareStateRow(db *gorm.DB, params *input.InstallParams) (models.Soft
 	}
 
 	var candidates []models.Software
+	// The published version line owns custom-version state persistence. Do not
+	// require the legacy allow_custom_version flag here; older synced catalogs
+	// may have the line but not that derived flag.
 	if err := db.
-		Where("`key` = ? AND catalog_managed = ? AND allow_custom_version = ? AND version_line <> ''", params.Key, true, true).
+		Where("`key` = ? AND catalog_managed = ? AND version_line <> ''", params.Key, true).
 		Order("catalog_visible DESC, version_order ASC, id ASC").
 		Find(&candidates).Error; err != nil {
 		return models.Software{}, err
