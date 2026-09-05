@@ -15,6 +15,7 @@ import (
 
 	"oneinstack/internal/models"
 	"oneinstack/internal/services/scriptregistry"
+	softwareService "oneinstack/internal/services/software"
 	"oneinstack/utils"
 
 	"github.com/google/uuid"
@@ -264,6 +265,20 @@ func (m *Manager) submit(request InstallRequest, requestedBy int64) (*models.Sof
 	request.Port = strings.TrimSpace(request.Port)
 	request.Username = strings.TrimSpace(request.Username)
 	request.DatabaseUsername = strings.TrimSpace(request.DatabaseUsername)
+	request.Parameters = normalizeTaskInstallParameters(request.Parameters)
+	if request.Version == "" {
+		request.Version = taskInstallParameterValue(request.Parameters, "software-version")
+	}
+	if request.Operation == "install" && strings.EqualFold(request.Key, "php") {
+		resolved, resolveErr := softwareService.ResolvePHPVersionLine(m.db, request.Version)
+		if resolveErr != nil {
+			return nil, resolveErr
+		}
+		request.Version = resolved
+		if request.Version == "" {
+			return nil, errors.New("VERSION_UNSUPPORTED: PHP version line cannot be resolved")
+		}
+	}
 	if request.Operation != "install" && request.Operation != "uninstall" &&
 		!isRuntimeOperation(request.Operation) {
 		return nil, fmt.Errorf("unsupported software task operation: %s", request.Operation)
@@ -508,6 +523,78 @@ func (m *Manager) submit(request InstallRequest, requestedBy int64) (*models.Sof
 	}
 }
 
+func normalizeTaskInstallParameters(parameters map[string]string) map[string]string {
+	if len(parameters) == 0 {
+		return parameters
+	}
+	result := make(map[string]string, len(parameters))
+	for key, value := range parameters {
+		canonical := canonicalTaskInstallParameterName(key)
+		if canonical == "" {
+			canonical = strings.TrimSpace(key)
+		}
+		if canonical == "" {
+			continue
+		}
+		value = strings.TrimSpace(value)
+		if canonical == "data-policy" && compactTaskParameterName(key) == "preservedata" {
+			switch strings.ToLower(value) {
+			case "true":
+				value = "preserve"
+			case "false":
+				value = "delete"
+			}
+		}
+		result[canonical] = value
+	}
+	return result
+}
+
+func taskInstallParameterValue(parameters map[string]string, name string) string {
+	target := compactTaskParameterName(name)
+	for key, value := range parameters {
+		if compactTaskParameterName(key) == target && strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+func compactTaskParameterName(value string) string {
+	return strings.NewReplacer("-", "", "_", "", ".", "", " ", "").Replace(strings.ToLower(strings.TrimSpace(value)))
+}
+
+func canonicalTaskInstallParameterName(value string) string {
+	switch compactTaskParameterName(value) {
+	case "version", "softwareversion":
+		return "software-version"
+	case "installdir":
+		return "install-dir"
+	case "logdir":
+		return "log-dir"
+	case "socketpath", "socket":
+		return "socket-path"
+	case "runuser", "user":
+		return "run-user"
+	case "rungroup", "group":
+		return "run-group"
+	case "componentstatedir":
+		return "component-state-dir"
+	case "phpmemorylimit":
+		return "php-memory-limit"
+	case "migrateexternalphp":
+		return "migrate-external-php"
+	case "migrateexternalconfirm", "migrateexternalphpconfirm":
+		return "migrate-external-confirm"
+	case "datapolicy", "uninstalldatapolicy", "preservedata":
+		return "data-policy"
+	case "deletedataconfirm", "confirmdatadeletion", "uninstallconfirmdatadeletion":
+		return "delete-data-confirm"
+	default:
+		return ""
+	}
+}
+
 // ConsumeTaskSecret returns an automatically generated installation secret at
 // most once. The status check, decryption and consume marker are serialized in
 // one transaction so concurrent readers cannot receive the same credential.
@@ -676,8 +763,22 @@ func (m *Manager) run(item queuedTask) {
 		_ = reporter.finish(models.SoftwareTaskStatusCanceled, "ACTION_CANCELED", cancelMessage)
 		return
 	}
+	if isStateRepairRequired(err) {
+		_ = reporter.finishWithRecovery(
+			models.SoftwareTaskStatusFailed,
+			"STATE_REPAIR_REQUIRED",
+			"主机上的组件已完成校验，但 Panel 状态保存失败；未执行普通失败回滚",
+			"state_repair_required",
+			"请先核对主机运行版本、进程和 socket，再重试 Panel 状态修复；不会重新迁移外部服务",
+		)
+		return
+	}
 	code := classifyExecutionError(err)
 	_ = reporter.finish(models.SoftwareTaskStatusFailed, code, safeErrorMessage(err))
+}
+
+func isStateRepairRequired(err error) bool {
+	return err != nil && strings.Contains(strings.ToUpper(err.Error()), "STATE_REPAIR_REQUIRED")
 }
 
 func (m *Manager) finishCanceledBeforeExecution(task *models.SoftwareTask) {
@@ -1100,6 +1201,9 @@ func (m *Manager) runtimeGroupForComponent(component string) string {
 	if component == "nginx" || component == "openresty" || component == "tengine" || component == "caddy" || component == "apache" {
 		return "web-server"
 	}
+	if component == "php" {
+		return "php-runtime"
+	}
 	return ""
 }
 
@@ -1279,6 +1383,17 @@ func operationSuccessMessage(operation string) string {
 }
 
 func classifyExecutionError(err error) string {
+	if provider, ok := err.(interface{ ErrorCode() string }); ok {
+		if code := strings.TrimSpace(provider.ErrorCode()); code != "" {
+			return stableExecutionErrorCode(code)
+		}
+	}
+	var wrapped interface{ ErrorCode() string }
+	if errors.As(err, &wrapped) {
+		if code := strings.TrimSpace(wrapped.ErrorCode()); code != "" {
+			return stableExecutionErrorCode(code)
+		}
+	}
 	message := strings.ToLower(err.Error())
 	switch {
 	case errors.Is(err, context.DeadlineExceeded), strings.Contains(message, "timeout"), strings.Contains(message, "exceeded timeout"):
@@ -1348,7 +1463,73 @@ func safeErrorMessage(err error) string {
 			return message
 		}
 	}
+	if code := classifyExecutionErrorCode(err); code != "" {
+		if message := safeMessageForErrorCode(code); message != "" {
+			return message
+		}
+	}
 	return sanitizeErrorMessage(err.Error())
+}
+
+func classifyExecutionErrorCode(err error) string {
+	if err == nil {
+		return ""
+	}
+	var provider interface{ ErrorCode() string }
+	if errors.As(err, &provider) {
+		return stableExecutionErrorCode(provider.ErrorCode())
+	}
+	return ""
+}
+
+func stableExecutionErrorCode(code string) string {
+	switch strings.TrimSpace(code) {
+	case "SERVICE_NOT_READY", "RUNTIME_PERMISSION_FAILED":
+		return "SERVICE_START_FAILED"
+	case "CONFIG_UNAVAILABLE", "INVALID_PARAMETER":
+		return "CONFIG_APPLY_FAILED"
+	case "DOWNLOAD_FAILED":
+		return "PACKAGE_UNAVAILABLE"
+	default:
+		return strings.TrimSpace(code)
+	}
+}
+
+func safeMessageForErrorCode(code string) string {
+	switch strings.TrimSpace(code) {
+	case "DEPENDENCY_MISSING":
+		return "主机缺少 PHP 安装依赖，请检查系统软件源和网络；Rocky 9 请确认 CRB 仓库已启用"
+	case "BUILD_FAILED":
+		return "PHP 源码编译失败，请查看任务日志中的最后一个编译器错误"
+	case "VERSION_UNSUPPORTED":
+		return "请求的 PHP 版本不受支持，请选择 Center 已发布版本线内的精确 patch 版本"
+	case "PACKAGE_UNAVAILABLE":
+		return "组件安装包当前不可用，请稍后重试或检查 Center 发布状态"
+	case "PACKAGE_VERIFY_FAILED":
+		return "组件安装包校验失败，已拒绝继续安装"
+	case "EXTERNAL_MIGRATION_REQUIRED":
+		return "检测到外部 PHP-FPM，需同时提供迁移开关和确认后才能接管"
+	case "EXTERNAL_SERVICE_CONFLICT":
+		return "检测到归属不明的 PHP-FPM 服务，未执行停止或覆盖"
+	case "CONFIG_REVISION_CONFLICT":
+		return "配置已发生变化，请刷新当前配置后重试"
+	case "CONFIG_APPLY_FAILED":
+		return "PHP-FPM 配置校验或发布失败，已恢复原配置"
+	case "SERVICE_START_FAILED":
+		return "PHP-FPM 启动或 socket 就绪校验失败"
+	case "SERVICE_RELOAD_FAILED":
+		return "PHP-FPM 重载失败，已恢复原配置"
+	case "ROLLBACK_FAILED":
+		return "自动回滚失败，已保留回滚快照，需要人工恢复"
+	case "RUNTIME_VERSION_DRIFT":
+		return "实际 PHP 运行版本与 Panel 记录不一致"
+	case "STATE_REPAIR_REQUIRED":
+		return "主机状态已完成，但 Panel 状态保存失败，需要执行状态修复"
+	case "DATA_DELETE_CONFIRM_REQUIRED":
+		return "删除 PHP 组件数据需要明确的二次确认"
+	default:
+		return "组件动作执行失败，请检查任务状态和组件健康检查结果"
+	}
 }
 
 func sanitizeErrorMessage(message string) string {

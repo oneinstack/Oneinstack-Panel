@@ -246,6 +246,10 @@ func (r *Reporter) setPhase(phase string, phaseProgress *int, message, code stri
 }
 
 func (r *Reporter) finish(status, errorCode, message string) error {
+	return r.finishWithRecovery(status, errorCode, message, "", "")
+}
+
+func (r *Reporter) finishWithRecovery(status, errorCode, message, recoveryStatus, recoveryMessage string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	now := time.Now()
@@ -256,11 +260,13 @@ func (r *Reporter) finish(status, errorCode, message string) error {
 		level = "error"
 	}
 	update := taskUpdate{
-		status:     status,
-		phase:      status,
-		message:    message,
-		errorCode:  errorCode,
-		finishedAt: &now,
+		status:          status,
+		phase:           status,
+		message:         message,
+		errorCode:       errorCode,
+		finishedAt:      &now,
+		recoveryStatus:  recoveryStatus,
+		recoveryMessage: recoveryMessage,
 	}
 	if progress >= 0 {
 		update.progress = &progress

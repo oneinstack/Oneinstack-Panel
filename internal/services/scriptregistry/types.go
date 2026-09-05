@@ -22,6 +22,7 @@ var (
 	configurationKeyPattern    = regexp.MustCompile(`^[a-z][A-Za-z0-9]{0,63}$`)
 	runtimeGroupPattern        = regexp.MustCompile(`^[a-z][a-z0-9-]{1,63}$`)
 	serviceNamePattern         = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.@-]{0,127}$`)
+	buildIDPattern             = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 )
 
 type Manifest struct {
@@ -124,6 +125,7 @@ type Sources struct {
 type SourceRelease struct {
 	SoftwareVersion      string `json:"softwareVersion" yaml:"softwareVersion"`
 	Architecture         string `json:"architecture" yaml:"architecture"`
+	BuildID              string `json:"buildId,omitempty" yaml:"buildId,omitempty"`
 	URL                  string `json:"url" yaml:"url"`
 	SignatureURL         string `json:"signatureUrl" yaml:"signatureUrl"`
 	SHA256               string `json:"sha256" yaml:"sha256"`
@@ -353,6 +355,9 @@ func (m Manifest) validate() error {
 			case "amd64", "arm64":
 			default:
 				return fmt.Errorf("unsupported source architecture %q", source.Architecture)
+			}
+			if !buildIDPattern.MatchString(source.BuildID) {
+				return fmt.Errorf("invalid source buildId for %s %s", source.SoftwareVersion, source.Architecture)
 			}
 			key := source.SoftwareVersion + "\x00" + source.Architecture
 			if _, exists := seenSources[key]; exists {

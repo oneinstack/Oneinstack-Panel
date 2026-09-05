@@ -67,7 +67,11 @@ type ScriptInfo struct {
 	ActionName     string            // install/upgrade/uninstall
 	Timeouts       map[string]time.Duration
 	Version        string // 软件版本
-	PackageVersion string // 组件脚本包版本
+	// ScriptSoftwareVersion is the version representation expected by the
+	// component action. It is used only for legacy packages that declare a
+	// minor line such as 8.3 while the Panel records the resolved patch version.
+	ScriptSoftwareVersion string
+	PackageVersion        string // 组件脚本包版本
 }
 
 type ParameterSpec struct {
@@ -318,19 +322,20 @@ func (sm *ScriptManager) ExecuteScriptTask(
 		scriptInfo.Type == ScriptTypeUninstall {
 		sm.updateSoftwareStatus(params, models.Soft_Status_Default, logName)
 		if err := sm.updateSoftwareInstallInfo(params, false, "", "", ""); err != nil {
-			return logName, fmt.Errorf("persist software uninstall state: %w", err)
+			return logName, fmt.Errorf("STATE_REPAIR_REQUIRED: persist software uninstall state: %w", err)
 		}
 		return logName, nil
 	}
 	sm.updateSoftwareStatus(params, models.Soft_Status_Suc, logName)
-	if err := sm.updateSoftwareInstallInfo(
+	if err := sm.updateSoftwareInstallInfoWithRuntimeParameters(
 		params,
 		true,
 		params.Version,
+		runtimeParametersFromScriptInfo(scriptInfo),
 		scriptInfo.PackageVersion,
 		effectiveSoftwarePort(params, scriptInfo),
 	); err != nil {
-		return logName, fmt.Errorf("persist software install state: %w", err)
+		return logName, fmt.Errorf("STATE_REPAIR_REQUIRED: persist software install state: %w", err)
 	}
 	return logName, nil
 }
@@ -431,10 +436,11 @@ func (sm *ScriptManager) executeScriptAsync(scriptInfo *ScriptInfo, scriptPath s
 
 	// 更新最终状态
 	sm.updateSoftwareStatus(params, status, filepath.Base(logPath))
-	if err := sm.updateSoftwareInstallInfo(
+	if err := sm.updateSoftwareInstallInfoWithRuntimeParameters(
 		params,
 		installed,
 		installVersion,
+		runtimeParametersFromScriptInfo(scriptInfo),
 		scriptInfo.PackageVersion,
 		effectiveSoftwarePort(params, scriptInfo),
 	); err != nil {
@@ -452,6 +458,7 @@ type actionFailure struct {
 	action     string
 	cause      error
 	diagnostic string
+	errorCode  string
 }
 
 func (e *actionFailure) Error() string {
@@ -466,6 +473,13 @@ func (e *actionFailure) Unwrap() error {
 // wrapped error used for classification and cancellation checks.
 func (e *actionFailure) UserMessage() string {
 	return e.diagnostic
+}
+
+func (e *actionFailure) ErrorCode() string {
+	if e == nil {
+		return ""
+	}
+	return e.errorCode
 }
 
 type actionDiagnosticBuffer struct {
@@ -609,10 +623,12 @@ func (sm *ScriptManager) runInstallActionsContext(
 			},
 		); err != nil {
 			_ = diagnosticWriter.Flush()
+			diagnosticText := diagnostic.String()
 			failure := &actionFailure{
 				action:     action.name,
 				cause:      err,
-				diagnostic: summarizeActionDiagnostic(diagnostic.String()),
+				diagnostic: summarizeActionDiagnostic(diagnosticText),
+				errorCode:  extractScriptErrorCode(diagnosticText),
 			}
 			writeLifecycleLog(output, lifecycleLogEntry{
 				Timestamp:       time.Now().UTC().Format(time.RFC3339Nano),
@@ -980,6 +996,16 @@ func lifecycleErrorCode(action string, err error) string {
 	return action + "_" + suffix
 }
 
+var scriptErrorCodePattern = regexp.MustCompile(`(?m)^ERROR_CODE=([A-Z][A-Z0-9_]{1,63})$`)
+
+func extractScriptErrorCode(value string) string {
+	match := scriptErrorCodePattern.FindStringSubmatch(value)
+	if len(match) != 2 {
+		return ""
+	}
+	return match[1]
+}
+
 func sanitizeLifecycleValue(value string, limit int) string {
 	value = strings.TrimSpace(strings.Map(func(r rune) rune {
 		if unicode.IsControl(r) {
@@ -1269,6 +1295,16 @@ func (sm *ScriptManager) updateSoftwareInstallInfo(
 	version string,
 	packageVersions ...string,
 ) error {
+	return sm.updateSoftwareInstallInfoWithRuntimeParameters(params, installed, version, nil, packageVersions...)
+}
+
+func (sm *ScriptManager) updateSoftwareInstallInfoWithRuntimeParameters(
+	params *input.InstallParams,
+	installed bool,
+	version string,
+	runtimeParameters map[string]string,
+	packageVersions ...string,
+) error {
 	if params == nil || app.DB() == nil {
 		return errors.New("software install state database is unavailable")
 	}
@@ -1303,7 +1339,7 @@ func (sm *ScriptManager) updateSoftwareInstallInfo(
 					"install_version":           version,
 					"installed_package_version": packageVersion,
 					"http_port":                 strings.TrimSpace(port),
-					"runtime_params":            persistedRuntimeParameters(params, port),
+					"runtime_params":            persistedRuntimeParameters(params, port, runtimeParameters),
 					"is_update":                 false,
 					"install_time":              time.Now(),
 				})
@@ -1329,7 +1365,7 @@ func (sm *ScriptManager) updateSoftwareInstallInfo(
 		}).Error
 }
 
-func persistedRuntimeParameters(params *input.InstallParams, port string) string {
+func persistedRuntimeParameters(params *input.InstallParams, port string, effective ...map[string]string) string {
 	if params == nil {
 		return ""
 	}
@@ -1356,6 +1392,18 @@ func persistedRuntimeParameters(params *input.InstallParams, port string) string
 		}
 		values[canonical] = strings.TrimSpace(value)
 	}
+	for _, parameters := range effective {
+		for key, value := range parameters {
+			if isSecretInstallParameter(key) || strings.TrimSpace(value) == "" {
+				continue
+			}
+			canonical, ok := canonicalRuntimeParameterName(key)
+			if !ok {
+				continue
+			}
+			values[canonical] = strings.TrimSpace(value)
+		}
+	}
 	if strings.TrimSpace(port) != "" {
 		if strings.EqualFold(strings.TrimSpace(params.Key), "db") ||
 			strings.EqualFold(strings.TrimSpace(params.Key), "mysql") {
@@ -1372,6 +1420,26 @@ func persistedRuntimeParameters(params *input.InstallParams, port string) string
 		return ""
 	}
 	return string(encoded)
+}
+
+// runtimeParametersFromScriptInfo captures the values after manifest defaults
+// have been applied. This keeps the database record faithful to the actual
+// shell environment instead of recording only caller-supplied parameters.
+func runtimeParametersFromScriptInfo(info *ScriptInfo) map[string]string {
+	if info == nil {
+		return nil
+	}
+	result := make(map[string]string)
+	for _, spec := range info.ParameterSpecs {
+		envName := strings.TrimSpace(spec.Env)
+		if envName == "" {
+			envName = strings.ToUpper(strings.NewReplacer("-", "_", ".", "_").Replace(strings.TrimSpace(spec.Name)))
+		}
+		if value := strings.TrimSpace(info.Params[envName]); value != "" {
+			result[spec.Name] = value
+		}
+	}
+	return result
 }
 
 func isSecretInstallParameter(key string) bool {
@@ -1404,6 +1472,10 @@ func canonicalRuntimeParameterName(key string) (string, bool) {
 		return "run-group", true
 	case "componentstatedir":
 		return "component-state-dir", true
+	case "socketpath", "socket":
+		return "socket-path", true
+	case "phpmemorylimit":
+		return "php-memory-limit", true
 	default:
 		return "", false
 	}
