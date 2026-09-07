@@ -15,6 +15,7 @@ CGO_ENABLED ?= 0
 
 BUILD_DIR := dist
 PACKAGE_DIR := packages
+INSTALL_MIRROR_BASE_URL ?= https://mirrors.oneinstack.com/oneinstack
 LDFLAGS := -s -w \
 	-X oneinstack/internal/buildinfo.Version=$(VERSION) \
 	-X oneinstack/internal/buildinfo.BuildTime=$(BUILD_TIME) \
@@ -22,7 +23,7 @@ LDFLAGS := -s -w \
 	-X oneinstack/internal/buildinfo.WebVersion=$(WEB_VERSION)
 
 .PHONY: all
-all: quality package verify-release
+all: quality package verify-release install-manifest
 
 .PHONY: help
 help:
@@ -35,6 +36,7 @@ help:
 	@echo "  build-ui         Build the sibling frontend and refresh webui/app.zip"
 	@echo "  package          Build and package both supported Linux targets"
 	@echo "  verify-release   Verify package checksums and required contents"
+	@echo "  install-manifest Generate the immutable public install manifest"
 	@echo "  release          Run all release gates and create local packages"
 	@echo "  dev              Start the backend development server"
 	@echo "  clean            Remove generated local build and package output"
@@ -114,8 +116,12 @@ verify-release:
 	fi; \
 	./scripts/verify-release.sh "$$@"
 
+.PHONY: install-manifest
+install-manifest: package verify-release
+	./scripts/generate-install-manifest.sh "$(VERSION)" "$(PACKAGE_DIR)" "$(INSTALL_MIRROR_BASE_URL)"
+
 .PHONY: release
-release: quality package verify-release
+release: quality package verify-release install-manifest
 	@echo "Release packages are ready in $(PACKAGE_DIR)/"
 
 .PHONY: test-coverage

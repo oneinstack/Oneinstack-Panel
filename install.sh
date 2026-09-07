@@ -4,6 +4,7 @@ set -euo pipefail
 
 readonly SCRIPT_VERSION="3.0.0"
 readonly MANAGED_MARKER="# Managed by OneinStack Panel installer"
+readonly DEFAULT_INSTALL_MANIFEST_URL="https://mirrors.oneinstack.com/oneinstack/install-manifest.json"
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 action="install"
@@ -17,6 +18,12 @@ link_path_runtime="/usr/local/bin/one"
 binary_source="${script_dir}/one"
 config_source="${script_dir}/config.yaml"
 bundled_scripts_source="${script_dir}/script-registry/bundled"
+manifest_url="${ONEINSTACK_INSTALL_MANIFEST_URL:-${DEFAULT_INSTALL_MANIFEST_URL}}"
+manifest_url_explicit=false
+binary_source_explicit=false
+config_source_explicit=false
+release_work_dir=""
+release_tmp_base=""
 admin_user="admin"
 admin_user_explicit=false
 admin_password_file=""
@@ -48,6 +55,7 @@ OneinStack Panel 安装与卸载工具
   --lang LOCALE              CLI 语言：en-US（默认）或 zh-CN；支持简写 en/zh
   --binary PATH              发布包内的 one 二进制文件
   --config PATH              配置模板
+  --manifest-url URL         独立引导安装使用的 HTTPS 安装清单地址
   --install-dir PATH         安装目录，默认 /usr/local/one
   --admin-user USER          初始管理员用户名，默认 admin
   --admin-password-file PATH 从权限受控的文件读取初始密码
@@ -86,6 +94,7 @@ Install options:
   --lang LOCALE              CLI language: en-US (default) or zh-CN; aliases en/zh
   --binary PATH              Path to the one binary in the release package
   --config PATH              Configuration template
+  --manifest-url URL         HTTPS install manifest URL for standalone bootstrap
   --install-dir PATH         Installation directory, default /usr/local/one
   --admin-user USER          Initial administrator username, default admin
   --admin-password-file PATH Read the initial password from a restricted file
@@ -286,6 +295,13 @@ cleanup() {
   if [[ -n "$temporary_password_file" && -f "$temporary_password_file" ]]; then
     rm -f -- "$temporary_password_file"
   fi
+  if [[ -n "$release_work_dir" ]]; then
+    case "$release_work_dir" in
+      "${release_tmp_base}"/oneinstack-bootstrap.*)
+        rm -rf -- "$release_work_dir"
+        ;;
+    esac
+  fi
 }
 trap cleanup EXIT
 
@@ -337,12 +353,26 @@ parse_arguments() {
       --binary)
         require_value "$1" "${2:-}"
         binary_source="$2"
+        binary_source_explicit=true
         shift 2
         ;;
       --config)
         require_value "$1" "${2:-}"
         config_source="$2"
+        config_source_explicit=true
         shift 2
+        ;;
+      --manifest-url)
+        require_value "$1" "${2:-}"
+        manifest_url="$2"
+        manifest_url_explicit=true
+        shift 2
+        ;;
+      --manifest-url=*)
+        manifest_url="${1#*=}"
+        require_value "--manifest-url" "$manifest_url"
+        manifest_url_explicit=true
+        shift
         ;;
       --install-dir)
         require_value "$1" "${2:-}"
@@ -535,6 +565,292 @@ check_host() {
 
   command -v systemctl >/dev/null 2>&1 || die "系统缺少 systemctl"
   command -v prlimit >/dev/null 2>&1 || die "系统缺少 prlimit（util-linux），无法限制 Web 终端资源"
+}
+
+sha256_file() {
+  local file="$1"
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$file" | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$file" | awk '{print $1}'
+  else
+    die "系统缺少 sha256sum 或 shasum，无法校验发布包"
+  fi
+}
+
+validate_https_url() {
+  local value="$1"
+  [[ "$value" == https://* ]] || return 1
+  [[ "$value" != *'"'* && "$value" != *"'"* && "$value" != *\\* && "$value" != *' '* &&
+    "$value" != *$'\t'* && "$value" != *$'\r'* && "$value" != *$'\n'* ]]
+}
+
+download_remote_file() {
+  local url="$1"
+  local destination="$2"
+  if command -v curl >/dev/null 2>&1; then
+    curl --fail --location --silent --show-error --retry 2 \
+      --connect-timeout 15 --max-time 900 --output "$destination" "$url"
+  elif command -v wget >/dev/null 2>&1; then
+    wget --quiet --tries=3 --timeout=30 --output-document="$destination" "$url"
+  else
+    die "远程安装需要 curl 或 wget"
+  fi
+}
+
+append_cache_bust() {
+  local url="$1"
+  local value="$2"
+  local separator='?'
+  [[ "$url" == *\?* ]] && separator='&'
+  printf '%s%soneinstack_cache_bust=%s' "$url" "$separator" "$value"
+}
+
+manifest_root_string() {
+  local key="$1"
+  awk -v key="$key" '
+    index($0, "\"" key "\"") {
+      line=$0
+      prefix=".*\"" key "\"[[:space:]]*:[[:space:]]*\""
+      if (line ~ prefix) {
+        sub(prefix, "", line)
+        sub(/\"[,[:space:]]*$/, "", line)
+        print line
+        exit
+      }
+    }
+  ' "$manifest_file"
+}
+
+manifest_root_number() {
+  local key="$1"
+  awk -v key="$key" '
+    index($0, "\"" key "\"") {
+      line=$0
+      sub(".*\\\"" key "\\\"[[:space:]]*:[[:space:]]*", "", line)
+      sub(/,.*/, "", line)
+      gsub(/[[:space:]]/, "", line)
+      print line
+      exit
+    }
+  ' "$manifest_file"
+}
+
+manifest_target_string() {
+  local target="$1"
+  local key="$2"
+  awk -v target="$target" -v key="$key" '
+    $0 ~ "^[[:space:]]*\"" target "\"[[:space:]]*:[[:space:]]*\\{" {
+      in_target=1
+      next
+    }
+    in_target && index($0, "\"" key "\"") {
+      line=$0
+      prefix=".*\"" key "\"[[:space:]]*:[[:space:]]*\""
+      if (line ~ prefix) {
+        sub(prefix, "", line)
+        sub(/\"[,[:space:]]*$/, "", line)
+        print line
+        exit
+      }
+    }
+    in_target && $0 ~ /^[[:space:]]*}[,]?[[:space:]]*$/ { exit }
+  ' "$manifest_file"
+}
+
+manifest_target_number() {
+  local target="$1"
+  local key="$2"
+  awk -v target="$target" -v key="$key" '
+    $0 ~ "^[[:space:]]*\"" target "\"[[:space:]]*:[[:space:]]*\\{" {
+      in_target=1
+      next
+    }
+    in_target && index($0, "\"" key "\"") {
+      line=$0
+      sub(".*\\\"" key "\\\"[[:space:]]*:[[:space:]]*", "", line)
+      sub(/,.*/, "", line)
+      gsub(/[[:space:]]/, "", line)
+      print line
+      exit
+    }
+    in_target && $0 ~ /^[[:space:]]*}[,]?[[:space:]]*$/ { exit }
+  ' "$manifest_file"
+}
+
+print_integrity_failure() {
+  local version="$1"
+  local package_url="$2"
+  local expected_sha="$3"
+  local actual_sha="$4"
+  local retry_count="$5"
+  printf '[OneinStack] SHA-256 校验失败: version=%s package_url=%s expected_sha=%s actual_sha=%s retry_count=%s\n' \
+    "$version" "$package_url" "$expected_sha" "$actual_sha" "$retry_count" >&2
+}
+
+verify_downloaded_release() {
+  local archive_file="$1"
+  local checksum_file="$2"
+  local expected_sha="$3"
+  local expected_size="$4"
+  local version="$5"
+  local package_url="$6"
+  local retry_count="$7"
+  local sidecar_sha
+  local actual_sha
+  local actual_size
+
+  sidecar_sha="$(awk 'NF {print $1; exit}' "$checksum_file" | tr '[:upper:]' '[:lower:]')"
+  actual_sha="$(sha256_file "$archive_file" | tr '[:upper:]' '[:lower:]')"
+  actual_size="$(wc -c <"$archive_file" | tr -d '[:space:]')"
+  if [[ ! "$sidecar_sha" =~ ^[[:xdigit:]]{64}$ ||
+    "$sidecar_sha" != "$expected_sha" || "$actual_sha" != "$expected_sha" ||
+    "$actual_size" != "$expected_size" ]]; then
+    print_integrity_failure "$version" "$package_url" "$expected_sha" "$actual_sha" "$retry_count"
+    return 1
+  fi
+}
+
+download_release_pair() {
+  local archive_file="$1"
+  local checksum_file="$2"
+  local package_url="$3"
+  local checksum_url="$4"
+  local cache_bust="$5"
+  if [[ -n "$cache_bust" ]]; then
+    package_url="$(append_cache_bust "$package_url" "$cache_bust")"
+    checksum_url="$(append_cache_bust "$checksum_url" "$cache_bust")"
+  fi
+  download_remote_file "$package_url" "$archive_file" ||
+    die "无法下载发布包: ${package_url}"
+  download_remote_file "$checksum_url" "$checksum_file" ||
+    die "无法下载发布包校验文件: ${checksum_url}"
+}
+
+should_bootstrap_from_manifest() {
+  [[ "$action" == "install" ]] || return 1
+  [[ "$binary_source_explicit" == false && "$config_source_explicit" == false ]] || return 1
+  [[ "$manifest_url_explicit" == true ]] && return 0
+  [[ -f "$binary_source" || -e "$config_source" || -d "$bundled_scripts_source" ]] && return 1
+  return 0
+}
+
+bootstrap_from_manifest() {
+  local -a forwarded_arguments=()
+  local target_arch
+  local manifest_file
+  local release_extract_dir
+  local package_root
+  local archive_file
+  local checksum_file
+  local manifest_version
+  local manifest_schema
+  local manifest_platform
+  local artifact_file_name
+  local artifact_url
+  local checksum_url
+  local expected_sha
+  local expected_size
+  local retry_count=0
+  local cache_bust
+  local package_url
+  local checksum_download_url
+  local top_level
+  local status=0
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --manifest-url)
+        shift 2
+        ;;
+      --manifest-url=*)
+        shift
+        ;;
+      *)
+        forwarded_arguments+=("$1")
+        shift
+        ;;
+    esac
+  done
+
+  target_arch="${ONEINSTACK_ARCH:-$(uname -m)}"
+  case "$target_arch" in
+    x86_64|amd64) target_arch='amd64' ;;
+    aarch64|arm64) target_arch='arm64' ;;
+    *) die "不支持的 CPU 架构: ${target_arch}" ;;
+  esac
+
+  validate_https_url "$manifest_url" ||
+    die "安装清单地址必须使用 HTTPS: ${manifest_url}"
+  release_tmp_base="${TMPDIR:-/tmp}"
+  release_tmp_base="${release_tmp_base%/}"
+  release_work_dir="$(mktemp -d "${release_tmp_base}/oneinstack-bootstrap.XXXXXX")" ||
+    die "无法创建远程安装临时目录"
+  manifest_file="${release_work_dir}/install-manifest.json"
+  release_extract_dir="${release_work_dir}/extract"
+  mkdir -p -- "$release_extract_dir"
+
+  log "Downloading release manifest: ${manifest_url}"
+  download_remote_file "$manifest_url" "$manifest_file" ||
+    die "无法下载安装清单: ${manifest_url}"
+
+  manifest_schema="$(manifest_root_number schemaVersion)"
+  manifest_version="$(manifest_root_string version)"
+  manifest_platform="$(manifest_root_string platform)"
+  [[ "$manifest_schema" == '1' && "$manifest_platform" == 'linux' &&
+    "$manifest_version" =~ ^[A-Za-z0-9._+-]+$ ]] ||
+    die "安装清单格式无效或版本不安全"
+
+  artifact_file_name="$(manifest_target_string "linux-${target_arch}" fileName)"
+  artifact_url="$(manifest_target_string "linux-${target_arch}" url)"
+  checksum_url="$(manifest_target_string "linux-${target_arch}" checksumUrl)"
+  expected_sha="$(manifest_target_string "linux-${target_arch}" sha256 | tr '[:upper:]' '[:lower:]')"
+  expected_size="$(manifest_target_number "linux-${target_arch}" size)"
+  [[ "$artifact_file_name" == "one-linux-${target_arch}-${manifest_version}.tar.gz" &&
+    "$expected_sha" =~ ^[[:xdigit:]]{64}$ && "$expected_size" =~ ^[1-9][0-9]*$ &&
+    -n "$artifact_url" ]] ||
+    die "安装清单缺少 linux/${target_arch} 的完整固定版本信息"
+  [[ -n "$checksum_url" ]] || checksum_url="${artifact_url}.sha256"
+  validate_https_url "$artifact_url" ||
+    die "安装清单中的发布包地址必须使用 HTTPS"
+  validate_https_url "$checksum_url" ||
+    die "安装清单中的校验文件地址必须使用 HTTPS"
+
+  archive_file="${release_work_dir}/${artifact_file_name}"
+  checksum_file="${archive_file}.sha256"
+  package_url="$artifact_url"
+  checksum_download_url="$checksum_url"
+  download_release_pair "$archive_file" "$checksum_file" \
+    "$package_url" "$checksum_download_url" ""
+  if ! verify_downloaded_release "$archive_file" "$checksum_file" \
+    "$expected_sha" "$expected_size" "$manifest_version" "$artifact_url" "$retry_count"; then
+    retry_count=1
+    cache_bust="$(date -u '+%Y%m%dT%H%M%SZ')-$$"
+    log "Retrying package and checksum with one shared cache-bust parameter"
+    download_release_pair "$archive_file" "$checksum_file" \
+      "$package_url" "$checksum_download_url" "$cache_bust"
+    verify_downloaded_release "$archive_file" "$checksum_file" \
+      "$expected_sha" "$expected_size" "$manifest_version" "$artifact_url" "$retry_count" ||
+      die "发布包完整性校验失败，已重试一次"
+  fi
+
+  top_level="$(tar -tzf "$archive_file" | awk -F/ 'NF > 1 {print $1; exit}')"
+  [[ "$top_level" == "one-linux-${target_arch}-${manifest_version}" ]] ||
+    die "发布包目录与安装清单不一致"
+  tar -xzf "$archive_file" -C "$release_extract_dir" ||
+    die "无法解压已校验的发布包"
+  package_root="${release_extract_dir}/${top_level}"
+  [[ -x "${package_root}/install.sh" ]] ||
+    die "发布包缺少统一安装入口"
+
+  if [[ "$cli_language" == "zh-CN" ]]; then
+    log "已校验版本 ${manifest_version}，开始执行本地安装器"
+  else
+    log "Verified release ${manifest_version}; starting the bundled installer"
+  fi
+  "${package_root}/install.sh" "${forwarded_arguments[@]}" || status=$?
+  cleanup
+  exit "$status"
 }
 
 check_install_sources() {
@@ -1032,8 +1348,12 @@ run_uninstall() {
 }
 
 main() {
+  local -a original_arguments=("$@")
   select_cli_language "$@"
   parse_arguments "$@"
+  if should_bootstrap_from_manifest; then
+    bootstrap_from_manifest "${original_arguments[@]}"
+  fi
   prepare_paths
   check_host
 
@@ -1044,4 +1364,6 @@ main() {
   esac
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi
