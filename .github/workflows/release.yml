@@ -206,6 +206,22 @@ jobs:
           path: release
           merge-multiple: true
 
+      - name: Generate immutable install manifest
+        shell: bash
+        env:
+          INSTALL_MIRROR_BASE_URL: https://mirrors.oneinstack.com/oneinstack
+        run: |
+          ./scripts/generate-install-manifest.sh \
+            "${GITHUB_REF_NAME}" \
+            release \
+            "${INSTALL_MIRROR_BASE_URL}"
+
+      - name: Publish bootstrap script evidence
+        shell: bash
+        run: |
+          cp install.sh release/install.sh
+          (cd release && sha256sum install.sh > install.sh.sha256)
+
       - name: Create combined checksums
         shell: bash
         run: |
@@ -245,7 +261,7 @@ jobs:
             --output release/manifest.json
           rm -f -- "${signing_key}"
 
-      - name: Create or update release
+      - name: Create immutable release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -256,14 +272,14 @@ jobs:
           esac
 
           if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
-            gh release upload "${GITHUB_REF_NAME}" release/* --clobber
-          else
-            gh release create "${GITHUB_REF_NAME}" release/* \
-              --verify-tag \
-              --generate-notes \
-              --title "OneinStack Panel ${GITHUB_REF_NAME}" \
-              "${prerelease_args[@]}"
+            echo "Release ${GITHUB_REF_NAME} already exists; immutable release assets cannot be replaced" >&2
+            exit 1
           fi
+          gh release create "${GITHUB_REF_NAME}" release/* \
+            --verify-tag \
+            --generate-notes \
+            --title "OneinStack Panel ${GITHUB_REF_NAME}" \
+            "${prerelease_args[@]}"
 
       - name: Publish release to OneinStack Center
         shell: bash
