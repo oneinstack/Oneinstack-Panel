@@ -55,6 +55,38 @@ type ACMEIssuer struct {
 	HTTPClient *http.Client
 }
 
+const (
+	acmeHTTPTimeout           = 30 * time.Second
+	acmeDialTimeout           = 10 * time.Second
+	acmeTLSHandshakeTimeout   = 10 * time.Second
+	acmeResponseHeaderTimeout = 20 * time.Second
+	acmeRetryLimit            = 3
+	acmeAuthorizationTimeout  = 2 * time.Minute
+)
+
+var errACMEAuthorizationTimeout = errors.New("ACME authorization timed out")
+
+func (issuer *ACMEIssuer) httpClient() *http.Client {
+	if issuer != nil && issuer.HTTPClient != nil {
+		return issuer.HTTPClient
+	}
+	transport, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		return &http.Client{Timeout: acmeHTTPTimeout}
+	}
+	transport = transport.Clone()
+	dialer := &net.Dialer{Timeout: acmeDialTimeout, KeepAlive: 30 * time.Second}
+	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		if strings.HasPrefix(network, "tcp") {
+			network = "tcp4"
+		}
+		return dialer.DialContext(ctx, network, address)
+	}
+	transport.TLSHandshakeTimeout = acmeTLSHandshakeTimeout
+	transport.ResponseHeaderTimeout = acmeResponseHeaderTimeout
+	return &http.Client{Transport: transport, Timeout: acmeHTTPTimeout}
+}
+
 func (issuer *ACMEIssuer) Issue(
 	ctx context.Context,
 	request IssueRequest,
@@ -77,8 +109,9 @@ func (issuer *ACMEIssuer) Issue(
 	}
 	client := &acme.Client{
 		Key:          accountKey,
-		HTTPClient:   issuer.HTTPClient,
+		HTTPClient:   issuer.httpClient(),
 		DirectoryURL: request.DirectoryURL,
+		RetryBackoff: acmeRetryBackoff,
 		UserAgent:    "OneinStack-Panel/ACME",
 	}
 	_, err = client.Register(ctx, &acme.Account{
@@ -97,6 +130,7 @@ func (issuer *ACMEIssuer) Issue(
 	if err != nil {
 		return nil, fmt.Errorf("create ACME order: %w", err)
 	}
+	report(22, "证书订单已创建，正在读取域名验证信息")
 
 	challengeDirectory := filepath.Join(filepath.Clean(request.ChallengeRoot), ".well-known", "acme-challenge")
 	if request.ChallengeType == ChallengeHTTP01 {
@@ -145,10 +179,15 @@ func (issuer *ACMEIssuer) Issue(
 			}
 		}
 		report(25+(index*35/max(1, len(order.AuthzURLs))), "正在验证域名 "+authorization.Identifier.Value)
-		_, acceptErr := client.Accept(ctx, challenge)
+		authorizationCtx, cancelAuthorization := context.WithTimeout(ctx, acmeAuthorizationTimeout)
+		_, acceptErr := client.Accept(authorizationCtx, challenge)
 		if acceptErr == nil {
-			_, acceptErr = client.WaitAuthorization(ctx, authorizationURL)
+			_, acceptErr = client.WaitAuthorization(authorizationCtx, authorizationURL)
 		}
+		if errors.Is(acceptErr, context.DeadlineExceeded) && ctx.Err() == nil {
+			acceptErr = fmt.Errorf("%w: %v", errACMEAuthorizationTimeout, acceptErr)
+		}
+		cancelAuthorization()
 		var cleanupErr error
 		if request.ChallengeType == ChallengeHTTP01 {
 			cleanupErr = os.Remove(challengePath)
@@ -209,6 +248,57 @@ func (issuer *ACMEIssuer) Issue(
 			Bytes: keyDER,
 		}),
 	}, nil
+}
+
+func isACMENetworkTimeoutError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	lower := strings.ToLower(err.Error())
+	return strings.Contains(lower, "client.timeout exceeded") ||
+		strings.Contains(lower, "tls handshake timeout") ||
+		strings.Contains(lower, "i/o timeout")
+}
+
+func isACMEAuthorizationTimeoutError(err error) bool {
+	return err != nil && errors.Is(err, errACMEAuthorizationTimeout)
+}
+
+func isACMENetworkError(err error) bool {
+	if err == nil || isACMENetworkTimeoutError(err) {
+		return false
+	}
+	lower := strings.ToLower(err.Error())
+	for _, marker := range []string{
+		"no such host",
+		"dial tcp",
+		"network is unreachable",
+		"no route to host",
+		"connection refused",
+		"connection reset",
+		"broken pipe",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func acmeRetryBackoff(attempt int, _ *http.Request, response *http.Response) time.Duration {
+	if attempt >= acmeRetryLimit {
+		return -1
+	}
+	if response != nil && response.StatusCode == http.StatusTooManyRequests {
+		return 5 * time.Second
+	}
+	if attempt == 1 {
+		return time.Second
+	}
+	return 3 * time.Second
 }
 
 func validateIssueRequest(request IssueRequest) error {

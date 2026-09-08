@@ -9,6 +9,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/mail"
 	"os"
@@ -22,6 +23,7 @@ import (
 	"oneinstack/internal/models"
 
 	"github.com/google/uuid"
+	"golang.org/x/crypto/acme"
 	"gorm.io/gorm"
 )
 
@@ -31,6 +33,8 @@ const (
 )
 
 type DeploymentRollback = func(context.Context) error
+
+var errCertificateWebsiteBusy = errors.New("certificate website operation is busy")
 
 type Deployer interface {
 	EnsureChallenge(context.Context, int64) error
@@ -620,16 +624,18 @@ func (manager *Manager) run(taskID string) {
 		models.IsCertificateTaskTerminal(task.Status) {
 		return
 	}
-	lock := &models.CertificateOperationLock{
-		WebsiteID:  task.WebsiteID,
-		TaskID:     task.ID,
-		AcquiredAt: time.Now().UTC(),
-	}
-	if err := manager.db.Create(lock).Error; err != nil {
-		_ = manager.finish(task.ID, models.CertificateTaskStatusFailed, "WEBSITE_BUSY", "网站证书操作正在执行")
+	if err := manager.acquireOperationLock(&task); err != nil {
+		if errors.Is(err, errCertificateWebsiteBusy) {
+			manager.appendLog(task.ID, "任务失败[WEBSITE_BUSY]：网站证书操作冲突，请等待当前任务完成后重试")
+			_ = manager.finish(task.ID, models.CertificateTaskStatusFailed, "WEBSITE_BUSY", "网站证书操作冲突，请等待当前任务完成后重试")
+		} else {
+			log.Printf("certificate task %s acquire operation lock: %v", task.ID, err)
+			manager.appendLog(task.ID, "任务失败[CERTIFICATE_LOCK_FAILED]：证书操作锁获取失败，请稍后重试")
+			_ = manager.finish(task.ID, models.CertificateTaskStatusFailed, "CERTIFICATE_LOCK_FAILED", "证书操作锁获取失败，请稍后重试")
+		}
 		return
 	}
-	defer manager.db.Delete(&models.CertificateOperationLock{}, "website_id = ? AND task_id = ?", task.WebsiteID, task.ID)
+	defer manager.releaseOperationLock(task.WebsiteID, task.ID)
 
 	ctx, cancel := context.WithTimeout(context.Background(), manager.issueTimeout)
 	manager.cancelMu.Lock()
@@ -839,6 +845,71 @@ func (manager *Manager) run(taskID string) {
 	_ = manager.finish(task.ID, models.CertificateTaskStatusSucceeded, "", "证书签发和部署成功")
 }
 
+func (manager *Manager) acquireOperationLock(task *models.CertificateTask) error {
+	if task == nil {
+		return errors.New("certificate task is nil")
+	}
+	lock := &models.CertificateOperationLock{
+		WebsiteID:  task.WebsiteID,
+		TaskID:     task.ID,
+		AcquiredAt: time.Now().UTC(),
+	}
+
+	return manager.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(lock).Error; err == nil {
+			return nil
+		} else {
+			var existing models.CertificateOperationLock
+			if lookupErr := tx.First(&existing, "website_id = ?", task.WebsiteID).Error; lookupErr != nil {
+				return fmt.Errorf("create certificate operation lock: %w", err)
+			}
+			if existing.TaskID == task.ID {
+				return nil
+			}
+
+			var owner models.CertificateTask
+			ownerErr := tx.Select("status").First(&owner, "id = ?", existing.TaskID).Error
+			if ownerErr != nil && !errors.Is(ownerErr, gorm.ErrRecordNotFound) {
+				return fmt.Errorf("inspect certificate operation lock owner: %w", ownerErr)
+			}
+			if ownerErr == nil && !models.IsCertificateTaskTerminal(owner.Status) {
+				return errCertificateWebsiteBusy
+			}
+
+			result := tx.Delete(&models.CertificateOperationLock{},
+				"website_id = ? AND task_id = ?", existing.WebsiteID, existing.TaskID)
+			if result.Error != nil {
+				return fmt.Errorf("remove stale certificate operation lock: %w", result.Error)
+			}
+			if result.RowsAffected != 1 {
+				return errCertificateWebsiteBusy
+			}
+			if retryErr := tx.Create(lock).Error; retryErr != nil {
+				return fmt.Errorf("recreate certificate operation lock: %w", retryErr)
+			}
+			return nil
+		}
+	})
+}
+
+func (manager *Manager) releaseOperationLock(websiteID int64, taskID string) {
+	const maxAttempts = 3
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		result := manager.db.Delete(&models.CertificateOperationLock{},
+			"website_id = ? AND task_id = ?", websiteID, taskID)
+		if result.Error == nil {
+			return
+		}
+		lastErr = result.Error
+		if attempt < maxAttempts {
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+	log.Printf("release certificate operation lock website=%d task=%s after %d attempts: %v",
+		websiteID, taskID, maxAttempts, lastErr)
+}
+
 func (manager *Manager) issueACME(ctx context.Context, task *models.CertificateTask, report ProgressReporter) (*IssuedCertificate, *x509.Certificate, error) {
 	challengeType := defaultChallengeType(task.ChallengeType)
 	deployer := manager.currentDeployer()
@@ -880,7 +951,11 @@ func (manager *Manager) issueACME(ctx context.Context, task *models.CertificateT
 func (manager *Manager) runManagedACMETask(ctx context.Context, task *models.CertificateTask, report ProgressReporter) {
 	issued, metadata, err := manager.issueACME(ctx, task, report)
 	if err != nil {
-		manager.failTask(task, acmeTaskErrorCode(task, err), err)
+		code := acmeTaskErrorCode(task, err)
+		if problemType := acmeProblemType(err); problemType != "" {
+			log.Printf("certificate task %s ACME failed code=%s problem=%s", task.ID, code, problemType)
+		}
+		manager.failTask(task, code, err)
 		return
 	}
 	if err := ctx.Err(); err != nil {
@@ -952,6 +1027,8 @@ func acmeTaskErrorCode(task *models.CertificateTask, err error) string {
 	}
 	if task != nil && defaultChallengeType(task.ChallengeType) == ChallengeHTTP01 {
 		switch {
+		case isACMEAuthorizationTimeoutError(err):
+			return "ACME_AUTHORIZATION_TIMEOUT"
 		case isDNSLookupNotFoundError(lower):
 			return "HTTP01_DNS_NOT_FOUND"
 		case certificateHTTPResponseStatus(err.Error()) == 403:
@@ -964,10 +1041,60 @@ func acmeTaskErrorCode(task *models.CertificateTask, err error) string {
 			return "HTTP01_CHALLENGE_FAILED"
 		}
 	}
+	if strings.Contains(lower, "create acme order") {
+		return "ACME_ORDER_FAILED"
+	}
+	if strings.Contains(lower, "read acme authorization") {
+		return "ACME_AUTHORIZATION_FAILED"
+	}
+	if strings.Contains(lower, "validate domain") {
+		return "ACME_AUTHORIZATION_FAILED"
+	}
 	if strings.Contains(lower, "deployer") || strings.Contains(lower, "http-01 route") {
 		return "CHALLENGE_CONFIG_FAILED"
 	}
+	if isACMENetworkTimeoutError(err) {
+		return "ACME_NETWORK_TIMEOUT"
+	}
+	if isACMENetworkError(err) {
+		return "ACME_NETWORK_FAILED"
+	}
+	switch acmeProblemType(err) {
+	case "ratelimited":
+		return "ACME_RATE_LIMITED"
+	case "accountdoesnotexist", "unauthorized":
+		return "ACME_ACCOUNT_FAILED"
+	case "rejectedidentifier":
+		return "ACME_DOMAIN_REJECTED"
+	case "malformed":
+		return "ACME_ORDER_REJECTED"
+	case "serverinternal":
+		return "ACME_CA_FAILED"
+	}
 	return "ACME_ISSUE_FAILED"
+}
+
+func acmeProblemType(err error) string {
+	if err == nil {
+		return ""
+	}
+	var apiErr *acme.Error
+	if errors.As(err, &apiErr) {
+		problemType := strings.ToLower(strings.TrimSpace(apiErr.ProblemType))
+		if marker := strings.LastIndex(problemType, ":"); marker >= 0 {
+			return problemType[marker+1:]
+		}
+		return problemType
+	}
+	var orderErr *acme.OrderError
+	if errors.As(err, &orderErr) && orderErr.Problem != nil {
+		problemType := strings.ToLower(strings.TrimSpace(orderErr.Problem.ProblemType))
+		if marker := strings.LastIndex(problemType, ":"); marker >= 0 {
+			return problemType[marker+1:]
+		}
+		return problemType
+	}
+	return ""
 }
 
 func (manager *Manager) runManagedTask(ctx context.Context, task *models.CertificateTask, report ProgressReporter) {
@@ -1048,6 +1175,12 @@ func (manager *Manager) failTask(task *models.CertificateTask, code string, err 
 			code = "TASK_CANCELED"
 			message = "证书任务已取消"
 		}
+	} else if isACMEAuthorizationTimeoutError(err) {
+		code = "ACME_AUTHORIZATION_TIMEOUT"
+		message = "ACME 域名验证超时，请检查域名解析、80 端口和 HTTP-01 验证路由后重试"
+	} else if isACMENetworkTimeoutError(err) {
+		code = "ACME_NETWORK_TIMEOUT"
+		message = "连接 ACME 服务超时，请检查服务器 IPv4/IPv6 出站网络和防火墙后重试"
 	} else if errors.Is(err, context.DeadlineExceeded) {
 		code = "ACME_TIMEOUT"
 		message = "证书签发超时"
@@ -1192,6 +1325,28 @@ func SafeCertificateErrorDetail(err error) string {
 		return "现有证书不包含网站的全部域名，请重新上传或签发同时覆盖这些域名的证书。"
 	case strings.Contains(lower, "website is disabled"), strings.Contains(lower, "网站已停用"):
 		return "网站已停用，请先启用网站后再绑定证书。"
+	case isACMENetworkTimeoutError(err):
+		return "连接 ACME 服务超时，请检查服务器 IPv4/IPv6 出站网络和防火墙后重试。"
+	case isACMENetworkError(err):
+		return "无法连接 ACME 服务，请检查服务器出站网络、DNS、IPv4/IPv6 路由和防火墙后重试。"
+	case acmeProblemType(err) == "ratelimited":
+		return "ACME CA 已限制请求频率，请等待限制窗口结束后再重试，避免连续申请。"
+	case acmeProblemType(err) == "accountdoesnotexist":
+		return "ACME 账户不存在或账户密钥已变化，请检查 ACME 账户配置后重试。"
+	case acmeProblemType(err) == "unauthorized":
+		return "ACME 账户未获授权，请检查账户状态和 CA 服务要求后重试。"
+	case acmeProblemType(err) == "rejectedidentifier":
+		return "CA 拒绝了该域名，请检查域名格式、CAA 记录和 CA 对该域名的签发限制。"
+	case acmeProblemType(err) == "malformed":
+		return "ACME 订单参数被 CA 拒绝，请检查域名和账户邮箱后重试。"
+	case acmeProblemType(err) == "serverinternal":
+		return "CA 服务内部错误，请稍后重试。"
+	case strings.Contains(lower, "create acme order"):
+		return "ACME 证书订单创建失败，请检查 ACME 账号、CA 服务、域名和请求频率后重试。"
+	case strings.Contains(lower, "read acme authorization"):
+		return "ACME 域名授权读取失败，请检查 CA 服务状态和网络后重试。"
+	case strings.Contains(lower, "validate domain"):
+		return "ACME 域名验证失败，请检查域名解析、80 端口和 HTTP-01 验证路由后重试。"
 	case isDNSLookupNotFoundError(lower):
 		domain := certificateErrorDomain(err.Error())
 		if domain != "" {
@@ -1228,7 +1383,7 @@ func SafeCertificateErrorDetail(err error) string {
 		return "证书部署器未配置，请检查证书任务服务配置后重试。"
 	case strings.Contains(lower, "dns account"), strings.Contains(lower, "dns provider"), strings.Contains(lower, "cloudflare"), strings.Contains(lower, "aliyun"), strings.Contains(lower, "tencent"):
 		return "DNS 账号或 DNS 挑战处理失败，请检查账号凭据、权限及域名 DNS 托管是否匹配后重试。"
-	case strings.Contains(lower, "dns challenge"), strings.Contains(lower, "validate domain"), strings.Contains(lower, "acme server"), strings.Contains(lower, "create acme order"):
+	case strings.Contains(lower, "dns challenge"), strings.Contains(lower, "acme server"):
 		return "ACME 域名验证失败，请检查域名解析、验证方式和 CA 服务状态后重试。"
 	case strings.Contains(lower, "acme directory url is required"):
 		return "ACME 目录地址未配置，证书任务服务无法启动，请检查 ACME 配置后重试。"

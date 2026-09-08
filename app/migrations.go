@@ -27,6 +27,34 @@ func wrapDatabaseMigration(stage string, err error) error {
 	return fmt.Errorf("%w: %s: %v", ErrDatabaseMigration, stage, err)
 }
 
+// migrateCertificateBindingSchema repairs the certificate binding table from
+// panel versions that created it before force_https was part of the model.
+// AutoMigrate normally handles this change, but the explicit check keeps
+// existing SQLite databases recoverable when they were upgraded from an older
+// binary or when the automatic schema pass was skipped.
+func migrateCertificateBindingSchema() error {
+	if !db.Migrator().HasTable(&models.CertificateBinding{}) {
+		return wrapDatabaseMigration("inspect certificate_binding table", errors.New("certificate_binding table is missing"))
+	}
+	if db.Migrator().HasColumn(&models.CertificateBinding{}, "force_https") {
+		return nil
+	}
+	if err := db.Transaction(func(tx *gorm.DB) error {
+		if tx.Migrator().HasColumn(&models.CertificateBinding{}, "force_https") {
+			return nil
+		}
+		if err := tx.Exec(
+			"ALTER TABLE `certificate_binding` ADD COLUMN `force_https` INTEGER NOT NULL DEFAULT 0",
+		).Error; err != nil {
+			return wrapDatabaseMigration("add certificate_binding.force_https", err)
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	return nil
+}
+
 // migrateFileArchiveTasks performs the schema and legacy-data part of the
 // file archive task migration. The operation is safe to run repeatedly:
 // SQLite schema inspection is performed before ALTER TABLE and the data
