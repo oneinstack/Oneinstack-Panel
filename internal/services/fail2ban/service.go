@@ -7,11 +7,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -31,15 +33,18 @@ const (
 	managedConfigDir = "/etc/fail2ban/jail.d"
 	manualLogPath    = "/var/lib/oneinstack/fail2ban/manual.log"
 	eventFilePath    = "/var/lib/oneinstack/fail2ban/events.jsonl"
+	redisACLService  = "oneinstack-redis-acl-log.service"
+	sourceRoot       = "/usr/local/lib/oneinstack/fail2ban"
 )
 
 var (
-	ErrValidation       = errors.New("invalid fail2ban request")
-	ErrRevisionConflict = errors.New("fail2ban policy revision conflict")
-	ErrProtectedAddress = errors.New("protected address cannot be banned")
-	ErrUnavailable      = errors.New("fail2ban service is unavailable")
-	ErrConfigValidation = errors.New("Fail2ban 配置校验失败")
-	ErrReload           = errors.New("Fail2ban 重载失败")
+	ErrValidation        = errors.New("invalid fail2ban request")
+	ErrRevisionConflict  = errors.New("fail2ban policy revision conflict")
+	ErrProtectedAddress  = errors.New("protected address cannot be banned")
+	ErrUnavailable       = errors.New("fail2ban service is unavailable")
+	ErrConfigValidation  = errors.New("Fail2ban 配置校验失败")
+	ErrReload            = errors.New("Fail2ban 重载失败")
+	sourceVersionPattern = regexp.MustCompile(`^[0-9]+(?:\.[0-9]+){1,3}(?:[-+][0-9A-Za-z.-]+)?$`)
 )
 
 type Template struct {
@@ -384,7 +389,7 @@ func templateFilterName(template string) string {
 	case "mysql-auth":
 		return "mysqld-auth"
 	case "redis-auth":
-		return "redis"
+		return "oneinstack-redis-auth"
 	case "vsftpd-auth":
 		return "vsftpd"
 	default:
@@ -393,6 +398,11 @@ func templateFilterName(template string) string {
 }
 
 func detectionLogPath(template string, required bool) (string, error) {
+	if required && template == "redis-auth" {
+		if err := exec.Command("systemctl", "is-active", "--quiet", redisACLService).Run(); err != nil {
+			return "", validation("Redis 认证防护不可用：OneinStack Redis ACL 事件采集服务未运行，请先更新并验证 Fail2ban 组件")
+		}
+	}
 	filter := templateFilterName(template)
 	filterFound := false
 	for _, root := range []string{"/etc/fail2ban/filter.d", "/usr/share/fail2ban/filter.d"} {
@@ -402,7 +412,7 @@ func detectionLogPath(template string, required bool) (string, error) {
 		}
 	}
 	if required && !filterFound {
-		return "", validation(fmt.Sprintf("%s 防护不可用：未找到 Fail2ban 过滤器 %s，请先安装对应的 Fail2ban 过滤器包", templateDisplayName(template), filter))
+		return "", validation(fmt.Sprintf("%s 防护不可用：未找到 Fail2ban 过滤器 %s，请先安装 OneinStack Fail2ban 集成包", templateDisplayName(template), filter))
 	}
 
 	paths := detectionLogCandidates(template)
@@ -422,7 +432,7 @@ func detectionLogCandidates(template string) []string {
 	case "mysql-auth":
 		return []string{"/data/mysql/mysql-error.log", "/var/lib/mysql/mysql-error.log", "/var/log/mysql/error.log", "/var/log/mysqld.log"}
 	case "redis-auth":
-		return []string{"/usr/local/redis/var/redis.log", "/var/log/redis/redis-server.log", "/var/log/redis.log"}
+		return []string{"/var/lib/oneinstack/fail2ban/redis-auth.log", "/usr/local/redis/var/redis.log", "/var/log/redis/redis-server.log", "/var/log/redis.log"}
 	case "vsftpd-auth":
 		return []string{"/var/log/vsftpd.log", "/var/log/secure", "/var/log/auth.log"}
 	default:
@@ -458,7 +468,7 @@ func (s *Service) Status(ctx context.Context) (*Status, error) {
 	var managedPolicies int64
 	_ = s.db.Model(&models.Fail2banPolicy{}).Count(&managedPolicies).Error
 	result.ManagedPolicies = int(managedPolicies)
-	if _, err := exec.LookPath("fail2ban-client"); err != nil {
+	if _, err := fail2banClientPath(); err != nil {
 		result.Warning = "服务器尚未安装 Fail2ban 组件"
 		return result, nil
 	}
@@ -899,8 +909,95 @@ func (s *Service) DismissIncident(id string, userID int64) error {
 	return nil
 }
 
+func fail2banClientPath() (string, error) {
+	version := installedFail2banVersion()
+	if sourceVersionPattern.MatchString(version) {
+		managedPath := filepath.Join(sourceRoot, version, "bin", "fail2ban-client")
+		if info, err := os.Stat(managedPath); err == nil && info.Mode().IsRegular() && info.Mode()&0111 != 0 {
+			return managedPath, nil
+		}
+	}
+	return exec.LookPath("fail2ban-client")
+}
+
+func installedFail2banVersion() string {
+	database := app.DB()
+	if database == nil {
+		return ""
+	}
+	var row models.Software
+	if err := database.
+		Where("installed = ?", true).
+		Where("(`key` = ? OR component = ?)", "fail2ban", "fail2ban").
+		Order("install_time DESC, id DESC").
+		First(&row).Error; err != nil {
+		return ""
+	}
+	version := strings.TrimSpace(row.InstallVersion)
+	if version == "" {
+		version = strings.TrimSpace(row.Version)
+	}
+	return version
+}
+
+func fail2banClientEnvironment(version string) []string {
+	environment := os.Environ()
+	if !sourceVersionPattern.MatchString(version) {
+		return environment
+	}
+
+	sourcePrefix := filepath.Join(sourceRoot, version)
+	pathValue := filepath.Join(sourcePrefix, "bin")
+	if existing := os.Getenv("PATH"); existing != "" {
+		pathValue += string(os.PathListSeparator) + existing
+	}
+	environment = setEnvironmentValue(environment, "PATH", pathValue)
+
+	if pythonPath := fail2banPythonPath(version); pythonPath != "" {
+		if existing := os.Getenv("PYTHONPATH"); existing != "" {
+			pythonPath += string(os.PathListSeparator) + existing
+		}
+		environment = setEnvironmentValue(environment, "PYTHONPATH", pythonPath)
+	}
+	environment = setEnvironmentValue(environment, "PYTHONNOUSERSITE", "1")
+	return environment
+}
+
+func fail2banPythonPath(version string) string {
+	root := filepath.Join(sourceRoot, version, "lib")
+	pythonPath := ""
+	_ = filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if entry.IsDir() && (entry.Name() == "site-packages" || entry.Name() == "dist-packages") {
+			pythonPath = path
+			return fs.SkipDir
+		}
+		return nil
+	})
+	return pythonPath
+}
+
+func setEnvironmentValue(environment []string, key, value string) []string {
+	prefix := key + "="
+	for index, item := range environment {
+		if strings.HasPrefix(item, prefix) {
+			environment[index] = prefix + value
+			return environment
+		}
+	}
+	return append(environment, prefix+value)
+}
+
 func run(ctx context.Context, args ...string) (string, error) {
-	command := exec.CommandContext(ctx, "fail2ban-client", args...)
+	version := installedFail2banVersion()
+	clientPath, err := fail2banClientPath()
+	if err != nil {
+		return "", fmt.Errorf("fail2ban-client not found: %w", err)
+	}
+	command := exec.CommandContext(ctx, clientPath, args...)
+	command.Env = fail2banClientEnvironment(version)
 	output, err := command.CombinedOutput()
 	text := strings.TrimSpace(string(output))
 	if err != nil {
