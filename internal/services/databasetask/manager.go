@@ -313,12 +313,7 @@ func (m *Manager) run(item queuedTask) {
 	}
 	if err != nil {
 		status := models.DatabaseTaskStatusFailed
-		code := "DATABASE_OPERATION_FAILED"
-		message := err.Error()
-		if classifiedCode, classifiedMessage := classifyDatabaseTaskError(err); classifiedMessage != "" {
-			code = classifiedCode
-			message = classifiedMessage
-		}
+		code, message := classifyDatabaseTaskError(task.Operation, err)
 		if errors.Is(err, context.Canceled) || m.cancelRequested(task.ID) {
 			if m.stopping.Load() {
 				status = models.DatabaseTaskStatusInterrupted
@@ -338,16 +333,26 @@ func (m *Manager) run(item queuedTask) {
 	_ = m.finish(task.ID, models.DatabaseTaskStatusSucceeded, "", "数据库任务执行成功")
 }
 
-func classifyDatabaseTaskError(err error) (string, string) {
+func classifyDatabaseTaskError(operation string, err error) (string, string) {
 	if err == nil {
 		return "", ""
 	}
 	lower := strings.ToLower(err.Error())
+	stage := databaseTaskErrorStage(operation, lower)
 	switch {
 	case errors.Is(err, context.DeadlineExceeded),
 		strings.Contains(lower, "timed out"),
 		strings.Contains(lower, "timeout"):
 		return "DATABASE_CONNECTION_TIMEOUT", "目标数据库在 5 秒内未响应，请检查地址、端口、防火墙和数据库服务状态后重试。"
+	case isDatabasePrivilegeError(lower):
+		switch stage {
+		case "safety_backup":
+			return "DATABASE_SAFETY_BACKUP_FAILED", "恢复前安全备份失败：当前数据库账号没有导出所需权限，恢复操作尚未开始，原数据库未修改。请检查 SELECT、SHOW VIEW、TRIGGER、EVENT 等权限后重试。"
+		case "restore":
+			return "DATABASE_RESTORE_FAILED", "数据库恢复失败：当前数据库账号没有恢复所需权限，请检查账号权限后重试；恢复前安全备份已保留。"
+		default:
+			return "DATABASE_BACKUP_PERMISSION_DENIED", "数据库备份失败：当前数据库账号没有导出所需权限，请检查 SELECT、SHOW VIEW、TRIGGER、EVENT 等权限后重试。数据库内容不会因本次备份失败被删除或修改。"
+		}
 	case strings.Contains(lower, "access denied"),
 		strings.Contains(lower, "authentication failed"),
 		strings.Contains(lower, "wrongpass"),
@@ -369,12 +374,87 @@ func classifyDatabaseTaskError(err error) (string, string) {
 		strings.Contains(lower, "database connection unavailable"),
 		strings.Contains(lower, "database connection test failed"):
 		return "DATABASE_CONNECTION_FAILED", "无法连接到目标数据库，请检查地址、端口、登录凭据和网络访问策略后重试。"
+	case databaseClientMissing(lower):
+		if stage == "restore" {
+			return "DATABASE_CLIENT_MISSING", "数据库恢复失败：未找到 mysql 客户端，请安装 MySQL 客户端并确认组件路径或 PATH 配置后重试。"
+		}
+		if stage == "safety_backup" {
+			return "DATABASE_SAFETY_BACKUP_FAILED", "恢复前安全备份失败：未找到 mysqldump 客户端，恢复操作尚未开始，原数据库未修改。请安装 MySQL 客户端并确认组件路径或 PATH 配置后重试。"
+		}
+		return "DATABASE_CLIENT_MISSING", "数据库备份失败：未找到 mysqldump 客户端，请安装 MySQL 客户端并确认组件路径或 PATH 配置后重试。"
+	case strings.Contains(lower, "insufficient disk space for database backup"):
+		if stage == "safety_backup" {
+			return "DATABASE_SAFETY_BACKUP_FAILED", "恢复前安全备份失败：备份目录可用空间不足，恢复操作尚未开始，原数据库未修改。请释放磁盘空间后重试。"
+		}
+		return "DATABASE_BACKUP_STORAGE_INSUFFICIENT", "数据库备份失败：备份目录可用空间不足，数据库内容不会因本次备份失败被删除或修改。请释放磁盘空间后重试。"
+	case strings.Contains(lower, "create database backup file"),
+		strings.Contains(lower, "publish database backup file"),
+		strings.Contains(lower, "create mysql credential file"),
+		strings.Contains(lower, "write mysql credential file"):
+		if stage == "safety_backup" {
+			return "DATABASE_SAFETY_BACKUP_FAILED", "恢复前安全备份失败：无法创建或发布安全备份文件，恢复操作尚未开始，原数据库未修改。请检查备份目录权限和磁盘状态后重试。"
+		}
+		return "DATABASE_BACKUP_FILE_FAILED", "数据库备份失败：无法创建或发布备份文件，数据库内容不会因本次备份失败被删除或修改。请检查备份目录权限和磁盘状态后重试。"
+	case strings.Contains(lower, "register database backup metadata"),
+		strings.Contains(lower, "save database backup result"):
+		return "DATABASE_BACKUP_METADATA_FAILED", "数据库备份失败：无法保存备份记录，未登记的备份文件已清理。数据库内容不会因本次备份失败被删除或修改。请检查 Panel 数据库状态和任务日志后重试。"
+	case strings.Contains(lower, "verify restore source"),
+		strings.Contains(lower, "restore source does not belong"),
+		strings.Contains(lower, "open database backup"),
+		strings.Contains(lower, "open compressed database backup"),
+		strings.Contains(lower, "database backup integrity check failed"),
+		strings.Contains(lower, "database backup path does not match"):
+		return "DATABASE_RESTORE_SOURCE_INVALID", "数据库恢复失败：恢复源备份不存在、已损坏或与当前数据库不匹配；恢复操作尚未开始，原数据库未修改。请重新生成或选择其他备份。"
+	case strings.Contains(lower, "register pre-restore safety backup"),
+		strings.Contains(lower, "save pre-restore safety backup metadata"):
+		return "DATABASE_SAFETY_BACKUP_FAILED", "恢复前安全备份登记失败：恢复操作尚未开始，原数据库未修改。请检查 Panel 数据库状态和任务日志后重试。"
 	case strings.Contains(lower, "mysqldump failed"),
 		strings.Contains(lower, "mysql restore failed"):
-		return "DATABASE_OPERATION_FAILED", "数据库备份或恢复失败，请查看任务日志中的具体原因后重试。"
+		if stage == "safety_backup" {
+			return "DATABASE_SAFETY_BACKUP_FAILED", "恢复前安全备份失败：恢复操作尚未开始，原数据库未修改。请查看任务日志中的具体原因，修正后重试。"
+		}
+		if stage == "restore" {
+			return "DATABASE_RESTORE_FAILED", "数据库恢复失败：恢复过程未完成，恢复前安全备份已保留。请查看任务日志确认失败原因，并优先使用安全备份恢复。"
+		}
+		return "DATABASE_BACKUP_FAILED", "数据库备份失败：MySQL 导出未完成，数据库内容不会因本次备份失败被删除或修改。请查看任务日志末尾的具体错误，修正后重试。"
 	default:
-		return "", ""
+		if stage == "restore" {
+			return "DATABASE_RESTORE_FAILED", "数据库恢复失败：请查看任务日志确认失败阶段和具体原因；如果任务已生成恢复前安全备份，请优先使用该备份恢复。"
+		}
+		if stage == "safety_backup" {
+			return "DATABASE_SAFETY_BACKUP_FAILED", "恢复前安全备份失败：恢复操作尚未开始，原数据库未修改。请查看任务日志确认具体原因后重试。"
+		}
+		return "DATABASE_BACKUP_FAILED", "数据库备份失败：数据库内容不会因本次备份失败被删除或修改。请查看任务日志确认具体原因后重试。"
 	}
+}
+
+func databaseTaskErrorStage(operation, lower string) string {
+	if strings.Contains(lower, "create pre-restore safety backup") ||
+		strings.Contains(lower, "register pre-restore safety backup") {
+		return "safety_backup"
+	}
+	if operation == "restore" ||
+		strings.Contains(lower, "mysql restore") ||
+		strings.Contains(lower, "restore source") ||
+		strings.Contains(lower, "compressed database backup") {
+		return "restore"
+	}
+	return "backup"
+}
+
+func isDatabasePrivilegeError(lower string) bool {
+	return strings.Contains(lower, "command denied") ||
+		(strings.Contains(lower, "access denied") &&
+			(strings.Contains(lower, "to database") || strings.Contains(lower, "privilege")))
+}
+
+func databaseClientMissing(lower string) bool {
+	return strings.Contains(lower, "mysqldump command is not installed") ||
+		strings.Contains(lower, "find mysqldump") ||
+		strings.Contains(lower, "mysqldump is not an executable regular file") ||
+		strings.Contains(lower, "mysql command is not installed") ||
+		strings.Contains(lower, "find mysql") ||
+		strings.Contains(lower, "mysql is not an executable regular file")
 }
 
 func (m *Manager) runBackup(
@@ -404,11 +484,11 @@ func (m *Manager) runBackup(
 	)
 	if err != nil {
 		_ = os.Remove(destination)
-		return err
+		return fmt.Errorf("register database backup metadata: %w", err)
 	}
 	if err := m.db.Model(&models.DatabaseTask{}).Where("id = ?", task.ID).
 		Update("result_backup_id", backup.ID).Error; err != nil {
-		return err
+		return fmt.Errorf("save database backup result: %w", err)
 	}
 	report(98, "备份文件校验完成")
 	return nil
@@ -454,7 +534,7 @@ func (m *Manager) runRestore(
 	}
 	if err := m.db.Model(&models.DatabaseTask{}).Where("id = ?", task.ID).
 		Update("safety_backup_id", safetyBackup.ID).Error; err != nil {
-		return err
+		return fmt.Errorf("save pre-restore safety backup metadata: %w", err)
 	}
 
 	report(45, "安全备份已完成，开始恢复数据库")

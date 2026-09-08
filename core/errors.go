@@ -1,6 +1,7 @@
 package core
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"oneinstack/internal/i18n"
@@ -88,6 +89,7 @@ const (
 // AppError 应用错误结构
 type AppError struct {
 	Code             ErrorCode        `json:"code"`
+	StableCode       string           `json:"-"`
 	Message          string           `json:"message"`
 	MessageKey       string           `json:"messageKey,omitempty"`
 	Detail           string           `json:"-"`
@@ -163,6 +165,7 @@ type APIResponse struct {
 // diagnostics and is kept separate from the user-facing message.
 type APIError struct {
 	Code       ErrorCode `json:"code"`
+	StableCode string    `json:"stableCode,omitempty"`
 	Message    string    `json:"message"`
 	Detail     string    `json:"detail,omitempty"`
 	Field      string    `json:"field,omitempty"`
@@ -199,6 +202,7 @@ func ErrorResponse(err *AppError) *APIResponse {
 		Data:    nil,
 		Error: &APIError{
 			Code:       err.Code,
+			StableCode: strings.TrimSpace(err.StableCode),
 			Message:    message,
 			Detail:     safeErrorDetail(err),
 			Field:      err.Field,
@@ -718,12 +722,17 @@ func WrapError(err error, code ErrorCode, message string) *AppError {
 		return nil
 	}
 
-	return &AppError{
+	appError := &AppError{
 		Code:       code,
 		Message:    message,
 		Detail:     err.Error(),
 		Suggestion: errorSuggestion(err.Error()),
 	}
+	var provider interface{ ErrorCode() string }
+	if errors.As(err, &provider) {
+		appError.StableCode = strings.ToUpper(strings.TrimSpace(provider.ErrorCode()))
+	}
+	return appError
 }
 
 func errorSuggestion(detail string) string {

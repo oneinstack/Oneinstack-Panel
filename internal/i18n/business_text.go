@@ -239,6 +239,12 @@ func localizeResponseValue(locale string, value reflect.Value, field string, vis
 		// response localization does not replace the cause with a generic
 		// failure message. User-facing summary fields are localized below.
 		if isRawDiagnosticErrorField(field) {
+			// Some task models use errorMessage for a safe, persisted summary
+			// rather than raw diagnostics. Translate known summaries while
+			// preserving unknown diagnostic text verbatim.
+			if translated := LocalizeText(locale, value.String()); translated != value.String() {
+				return reflect.ValueOf(translated).Convert(value.Type())
+			}
 			return value
 		}
 		if isBackendErrorField(field) {
