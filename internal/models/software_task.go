@@ -35,37 +35,56 @@ const (
 // uninstall operation. Secret parameters and the internal log path are never
 // serialized by the management API.
 type SoftwareTask struct {
-	ID               string     `json:"id" gorm:"primaryKey;size:36"`
-	Operation        string     `json:"operation" gorm:"size:16;not null"`
-	Component        string     `json:"component" gorm:"size:64;not null;index:idx_software_task_component_created"`
-	SwitchRequested  bool       `json:"switchRequested,omitempty" gorm:"not null;default:false"`
-	SoftwareKey      string     `json:"softwareKey" gorm:"size:64;not null"`
-	RequestedVersion string     `json:"requestedVersion" gorm:"size:64;not null"`
-	ResolvedVersion  string     `json:"resolvedVersion,omitempty" gorm:"size:64"`
-	PackageSource    string     `json:"packageSource,omitempty" gorm:"size:32"`
-	Status           string     `json:"status" gorm:"size:32;not null;index:idx_software_task_status_created"`
-	Phase            string     `json:"phase" gorm:"size:32;not null"`
-	PhaseProgress    *int       `json:"phaseProgress,omitempty"`
-	Progress         int        `json:"progress" gorm:"not null;default:0"`
-	Message          string     `json:"message" gorm:"size:512"`
-	ErrorCode        string     `json:"errorCode,omitempty" gorm:"size:64"`
-	ErrorMessage     string     `json:"errorMessage,omitempty" gorm:"size:1024"`
-	FailurePhase     string     `json:"failurePhase,omitempty" gorm:"size:32"`
-	RollbackStatus   string     `json:"rollbackStatus" gorm:"size:32;not null"`
-	RecoveryStatus   string     `json:"recoveryStatus,omitempty" gorm:"size:32"`
-	RecoveryMessage  string     `json:"recoveryMessage,omitempty" gorm:"size:512"`
-	RequestedBy      int64      `json:"requestedBy" gorm:"not null;index:idx_software_task_user_created"`
-	CancelRequested  bool       `json:"cancelRequested" gorm:"not null;default:false"`
-	EventSeq         int64      `json:"eventSeq" gorm:"not null;default:0"`
-	LogPath          string     `json:"-" gorm:"size:1024"`
-	ParametersJSON   string     `json:"-" gorm:"type:text"`
-	SecretCiphertext string     `json:"-" gorm:"type:text"`
-	SecretConsumedAt *time.Time `json:"-"`
-	StartedAt        *time.Time `json:"startedAt,omitempty"`
-	HeartbeatAt      *time.Time `json:"heartbeatAt,omitempty"`
-	FinishedAt       *time.Time `json:"finishedAt,omitempty"`
-	CreatedAt        time.Time  `json:"createdAt" gorm:"index:idx_software_task_component_created,priority:2;index:idx_software_task_status_created,priority:2;index:idx_software_task_user_created,priority:2"`
-	UpdatedAt        time.Time  `json:"updatedAt"`
+	ID               string `json:"id" gorm:"primaryKey;size:36"`
+	Operation        string `json:"operation" gorm:"size:16;not null"`
+	Component        string `json:"component" gorm:"size:64;not null;index:idx_software_task_component_created"`
+	SwitchRequested  bool   `json:"switchRequested,omitempty" gorm:"not null;default:false"`
+	SoftwareKey      string `json:"softwareKey" gorm:"size:64;not null"`
+	RequestedVersion string `json:"requestedVersion" gorm:"size:64;not null"`
+	VersionLine      string `json:"versionLine,omitempty" gorm:"size:32"`
+	ResolvedVersion  string `json:"resolvedVersion,omitempty" gorm:"size:64"`
+	RuntimeVersion   string `json:"runtimeVersion,omitempty" gorm:"size:64"`
+	PackageSource    string `json:"packageSource,omitempty" gorm:"size:32"`
+	PackageURL       string `json:"packageURL,omitempty" gorm:"size:1024"`
+	PackageSHA256    string `json:"packageSHA256,omitempty" gorm:"size:64"`
+	// InstallMode and OfflinePackageID are server-owned execution metadata. Keep
+	// them out of the public task API while retaining them across restarts.
+	InstallMode          string     `json:"-" gorm:"size:16"`
+	OfflinePackageID     string     `json:"-" gorm:"size:128"`
+	OfflinePackagePath   string     `json:"-" gorm:"size:1024"`
+	PublisherFingerprint string     `json:"publisherFingerprint,omitempty" gorm:"size:128"`
+	TargetOS             string     `json:"targetOS,omitempty" gorm:"size:32"`
+	TargetOSVersion      string     `json:"targetOSVersion,omitempty" gorm:"size:32"`
+	TargetArch           string     `json:"targetArch,omitempty" gorm:"size:16"`
+	ReleaseRevision      string     `json:"releaseRevision,omitempty" gorm:"size:128"`
+	Status               string     `json:"status" gorm:"size:32;not null;index:idx_software_task_status_created"`
+	Phase                string     `json:"phase" gorm:"size:32;not null"`
+	PhaseProgress        *int       `json:"phaseProgress,omitempty"`
+	Progress             int        `json:"progress" gorm:"not null;default:0"`
+	Message              string     `json:"message" gorm:"size:512"`
+	ErrorCode            string     `json:"errorCode,omitempty" gorm:"size:64"`
+	ErrorMessage         string     `json:"errorMessage,omitempty" gorm:"size:1024"`
+	FailurePhase         string     `json:"failurePhase,omitempty" gorm:"size:32"`
+	RollbackStatus       string     `json:"rollbackStatus" gorm:"size:32;not null"`
+	RecoveryStatus       string     `json:"recoveryStatus,omitempty" gorm:"size:32"`
+	RecoveryMessage      string     `json:"recoveryMessage,omitempty" gorm:"size:512"`
+	RequestedBy          int64      `json:"requestedBy" gorm:"not null;index:idx_software_task_user_created"`
+	CancelRequested      bool       `json:"cancelRequested" gorm:"not null;default:false"`
+	EventSeq             int64      `json:"eventSeq" gorm:"not null;default:0"`
+	LogPath              string     `json:"-" gorm:"size:1024"`
+	ParametersJSON       string     `json:"-" gorm:"type:text"`
+	SecretCiphertext     string     `json:"-" gorm:"type:text"`
+	SecretConsumedAt     *time.Time `json:"-"`
+	CenterReportedAt     *time.Time `json:"-" gorm:"index:idx_software_task_center_report"`
+	CenterLogReportedAt  *time.Time `json:"-"`
+	CenterReportAttempts int        `json:"-" gorm:"not null;default:0"`
+	CenterReportError    string     `json:"-" gorm:"size:512"`
+	CenterReportNextAt   *time.Time `json:"-" gorm:"index:idx_software_task_center_report"`
+	StartedAt            *time.Time `json:"startedAt,omitempty"`
+	HeartbeatAt          *time.Time `json:"heartbeatAt,omitempty"`
+	FinishedAt           *time.Time `json:"finishedAt,omitempty"`
+	CreatedAt            time.Time  `json:"createdAt" gorm:"index:idx_software_task_component_created,priority:2;index:idx_software_task_status_created,priority:2;index:idx_software_task_user_created,priority:2"`
+	UpdatedAt            time.Time  `json:"updatedAt"`
 }
 
 func (SoftwareTask) TableName() string {

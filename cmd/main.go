@@ -19,6 +19,7 @@ import (
 	"oneinstack/internal/services/filemanager"
 	runtimelog "oneinstack/internal/services/log"
 	"oneinstack/internal/services/monitoring"
+	"oneinstack/internal/services/panelreport"
 	"oneinstack/internal/services/panelupdate"
 	safeservice "oneinstack/internal/services/safe"
 	"oneinstack/internal/services/software"
@@ -469,6 +470,40 @@ func startServer() error {
 	taskManager, err := softwareHandler.DefaultTaskManager()
 	if err != nil {
 		return fmt.Errorf("initialize software task manager: %w", err)
+	}
+	reportCenterURL := ""
+	if app.ONE_CONFIG.ScriptCenter.Enabled {
+		reportCenterURL = strings.TrimSpace(app.ONE_CONFIG.ScriptCenter.URL)
+	}
+	if reportCenterURL == "" {
+		reportCenterURL = strings.TrimSpace(app.ONE_CONFIG.UpdateCenter.CenterURL)
+	}
+	if reportCenterURL == "" {
+		reportCenterURL = strings.TrimSpace(app.ONE_CONFIG.Translation.CenterURL)
+	}
+	reportLogDir := strings.TrimSpace(os.Getenv("ONEINSTACK_INSTALL_LOG_DIR"))
+	if reportLogDir == "" {
+		reportLogDir = filepath.Join(app.GetBasePath(), "logs", "install")
+	}
+	operationReporter, reportErr := panelreport.New(app.DB(), panelreport.Config{
+		BaseURL:            reportCenterURL,
+		InstallDir:         app.GetBasePath(),
+		IdentityPath:       app.ONE_CONFIG.Translation.IdentityPath,
+		ActivationCodeFile: app.ONE_CONFIG.Translation.ActivationCodeFile,
+		LogDir:             reportLogDir,
+		Timeout:            time.Duration(app.ONE_CONFIG.Translation.ResponseTimeoutSeconds) * time.Second,
+	})
+	if reportErr != nil {
+		log.Printf("Panel operation reporting is disabled: %v", reportErr)
+	} else {
+		operationReporter.Start()
+		defer func() {
+			stopContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if stopErr := operationReporter.Stop(stopContext); stopErr != nil {
+				log.Printf("stop Panel operation reporter: %v", stopErr)
+			}
+		}()
 	}
 	taskCleaner, err := softwaretask.NewCleaner(
 		taskManager,
