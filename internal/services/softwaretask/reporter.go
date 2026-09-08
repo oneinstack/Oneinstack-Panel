@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"oneinstack/internal/models"
+	"oneinstack/internal/services/scriptregistry"
 
 	"gorm.io/gorm"
 )
@@ -144,6 +145,49 @@ func (r *Reporter) OnPackageResolved(version, source string) {
 		level:     "info",
 		code:      "package_resolved",
 		message:   message,
+	})
+}
+
+// OnPackageMetadataResolved persists the immutable package identity selected
+// during preview or execution. It is deliberately separate from the compact
+// progress event so the task API can distinguish the component package from
+// the software runtime version.
+func (r *Reporter) OnPackageMetadataResolved(pin scriptregistry.PackagePin) {
+	if r == nil || strings.TrimSpace(pin.ResolvedVersion) == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	_ = r.publishLocked(taskUpdate{
+		resolvedVersion:      pin.ResolvedVersion,
+		packageSource:        pin.PackageSource,
+		packageURL:           pin.PackageURL,
+		packageSHA256:        pin.PackageSHA256,
+		publisherFingerprint: pin.PublisherFingerprint,
+		targetOS:             pin.TargetOS,
+		targetOSVersion:      pin.TargetOSVersion,
+		targetArch:           pin.TargetArch,
+		releaseRevision:      pin.ReleaseRevision,
+	}, eventData{
+		eventType: "package",
+		level:     "info",
+		code:      "package_metadata_fixed",
+		message:   "已固定本次任务的组件脚本包",
+	})
+}
+
+func (r *Reporter) OnRuntimeVersion(version string) {
+	version = strings.TrimSpace(version)
+	if r == nil || version == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	_ = r.publishLocked(taskUpdate{runtimeVersion: version}, eventData{
+		eventType: "runtime",
+		level:     "info",
+		code:      "runtime_version_verified",
+		message:   "已验证主机实际运行版本 " + version,
 	})
 }
 
@@ -292,22 +336,30 @@ func (r *Reporter) finishWithRecovery(status, errorCode, message, recoveryStatus
 }
 
 type taskUpdate struct {
-	status          string
-	phase           string
-	phaseProgress   *int
-	progress        *int
-	message         string
-	errorCode       string
-	errorMessage    string
-	rollbackStatus  string
-	recoveryStatus  string
-	recoveryMessage string
-	startTask       bool
-	finishedAt      *time.Time
-	setFailurePhase bool
-	cancelRequested *bool
-	resolvedVersion string
-	packageSource   string
+	status               string
+	phase                string
+	phaseProgress        *int
+	progress             *int
+	message              string
+	errorCode            string
+	errorMessage         string
+	rollbackStatus       string
+	recoveryStatus       string
+	recoveryMessage      string
+	startTask            bool
+	finishedAt           *time.Time
+	setFailurePhase      bool
+	cancelRequested      *bool
+	resolvedVersion      string
+	packageSource        string
+	runtimeVersion       string
+	packageURL           string
+	packageSHA256        string
+	publisherFingerprint string
+	targetOS             string
+	targetOSVersion      string
+	targetArch           string
+	releaseRevision      string
 }
 
 type eventData struct {
@@ -378,6 +430,30 @@ func (r *Reporter) publishLocked(update taskUpdate, event eventData) error {
 		}
 		if update.packageSource != "" {
 			task.PackageSource = update.packageSource
+		}
+		if update.runtimeVersion != "" {
+			task.RuntimeVersion = update.runtimeVersion
+		}
+		if update.packageURL != "" {
+			task.PackageURL = update.packageURL
+		}
+		if update.packageSHA256 != "" {
+			task.PackageSHA256 = update.packageSHA256
+		}
+		if update.publisherFingerprint != "" {
+			task.PublisherFingerprint = update.publisherFingerprint
+		}
+		if update.targetOS != "" {
+			task.TargetOS = update.targetOS
+		}
+		if update.targetOSVersion != "" {
+			task.TargetOSVersion = update.targetOSVersion
+		}
+		if update.targetArch != "" {
+			task.TargetArch = update.targetArch
+		}
+		if update.releaseRevision != "" {
+			task.ReleaseRevision = update.releaseRevision
 		}
 		task.EventSeq++
 		if err := tx.Save(&task).Error; err != nil {

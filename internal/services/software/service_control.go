@@ -69,6 +69,8 @@ func SupportedComponentServices() []ComponentServiceDefinition {
 		{Component: "mysql", SoftwareKey: "db", DisplayName: "MySQL", ServiceName: "mysql", RuntimeGroup: "database", ManageScopes: []string{"database"}},
 		{Component: "php", SoftwareKey: "php", DisplayName: "PHP-FPM", ServiceName: "php-fpm", RuntimeGroup: "php-runtime", ManageScopes: []string{"runtime"}},
 		{Component: "redis", SoftwareKey: "redis", DisplayName: "Redis", ServiceName: "redis-server", ManageScopes: []string{"cache"}},
+		{Component: "firewalld", SoftwareKey: "firewalld", DisplayName: "firewalld", ServiceName: "firewalld", RuntimeGroup: "firewall", ManageScopes: []string{"security"}},
+		{Component: "fail2ban", SoftwareKey: "fail2ban", DisplayName: "Fail2ban", ServiceName: "fail2ban", ManageScopes: []string{"security"}},
 	}
 }
 
@@ -264,6 +266,12 @@ func verifyServiceActionReady(
 	}
 	if err := exec.CommandContext(ctx, "systemctl", "is-active", "--quiet", serviceName+".service").Run(); err != nil {
 		return fmt.Errorf("%s action verification failed: service %s is not active", action, serviceName)
+	}
+	if strings.EqualFold(strings.TrimSpace(definition.Component), "firewalld") {
+		if err := exec.CommandContext(ctx, "firewall-cmd", "--state").Run(); err != nil {
+			return fmt.Errorf("%s action verification failed: firewalld is not ready", action)
+		}
+		return nil
 	}
 
 	readyCtx, cancel := context.WithTimeout(ctx, serviceReadyTimeout)
@@ -461,21 +469,31 @@ func RuntimeGroupOwnerComponent(ctx context.Context, owner RuntimeGroupOwner) st
 // ActiveRuntimeGroupOwners checks the actual systemd units for a runtime
 // group, including legacy web units kept for safe migration detection.
 func ActiveRuntimeGroupOwners(ctx context.Context, runtimeGroup, excludeComponent string) []RuntimeGroupOwner {
-	if strings.TrimSpace(runtimeGroup) != "web-server" {
+	var owners []RuntimeGroupOwner
+	switch strings.TrimSpace(runtimeGroup) {
+	case "web-server":
+		owners = []RuntimeGroupOwner{
+			{Component: "nginx", ServiceName: "oneinstack-nginx"},
+			{Component: "openresty", ServiceName: "oneinstack-openresty"},
+			{Component: "tengine", ServiceName: "oneinstack-tengine"},
+			{Component: "caddy", ServiceName: "oneinstack-caddy"},
+			{Component: "apache", ServiceName: "oneinstack-httpd"},
+			{Component: "legacy-web", ServiceName: "nginx"},
+			{Component: "legacy-web", ServiceName: "httpd"},
+			{Component: "legacy-web", ServiceName: "apache2"},
+			{Component: "legacy-web", ServiceName: "openresty"},
+			{Component: "legacy-web", ServiceName: "tengine"},
+			{Component: "legacy-web", ServiceName: "caddy"},
+		}
+	case "firewall":
+		owners = []RuntimeGroupOwner{
+			{Component: "firewalld", ServiceName: "firewalld"},
+			{Component: "ufw", ServiceName: "ufw"},
+			{Component: "nftables", ServiceName: "nftables"},
+			{Component: "iptables", ServiceName: "iptables"},
+		}
+	default:
 		return nil
-	}
-	owners := []RuntimeGroupOwner{
-		{Component: "nginx", ServiceName: "oneinstack-nginx"},
-		{Component: "openresty", ServiceName: "oneinstack-openresty"},
-		{Component: "tengine", ServiceName: "oneinstack-tengine"},
-		{Component: "caddy", ServiceName: "oneinstack-caddy"},
-		{Component: "apache", ServiceName: "oneinstack-httpd"},
-		{Component: "legacy-web", ServiceName: "nginx"},
-		{Component: "legacy-web", ServiceName: "httpd"},
-		{Component: "legacy-web", ServiceName: "apache2"},
-		{Component: "legacy-web", ServiceName: "openresty"},
-		{Component: "legacy-web", ServiceName: "tengine"},
-		{Component: "legacy-web", ServiceName: "caddy"},
 	}
 	result := make([]RuntimeGroupOwner, 0, len(owners))
 	for _, owner := range owners {
@@ -627,7 +645,7 @@ func parseComponentServiceProbe(
 		case "component", "service", "load_state", "active_state", "sub_state",
 			"unit_file_state", "runtime_version", "can_reload":
 		case "recorded_version", "version_state", "ownership", "socket_state":
-			if definition.Component != "php" {
+			if definition.Component != "php" && definition.Component != "firewalld" {
 				return ComponentServiceProbe{}, fmt.Errorf("component status output contains unknown field %q", key)
 			}
 		case "port", "bind_address", "install_dir", "data_dir", "log_dir", "run_user", "run_group":
@@ -688,6 +706,16 @@ func parseComponentServiceProbe(
 		case "ready", "absent", "unknown":
 		default:
 			return ComponentServiceProbe{}, fmt.Errorf("component status output contains invalid socket state")
+		}
+	}
+	if definition.Component == "firewalld" {
+		if fields["version_state"] != "verified" {
+			return ComponentServiceProbe{}, fmt.Errorf("component status output contains invalid version state")
+		}
+		switch fields["ownership"] {
+		case "oneinstack", "external":
+		default:
+			return ComponentServiceProbe{}, fmt.Errorf("component status output contains invalid ownership")
 		}
 	}
 	canReload, err := strconv.ParseBool(fields["can_reload"])

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"oneinstack/internal/models"
+	safeservice "oneinstack/internal/services/safe"
 	"oneinstack/internal/services/scriptregistry"
 	softwareService "oneinstack/internal/services/software"
 	"oneinstack/utils"
@@ -43,6 +44,15 @@ type InstallRequest struct {
 	Configuration         map[string]string
 	RestoreFromID         string
 	SwitchRequested       bool
+	Confirmation          string
+	VersionLine           string
+	ResolvedPackage       *scriptregistry.PackagePin
+	// InstallMode and OfflinePackageID are populated only by trusted Panel
+	// installation entry points. They are not part of the generic parameter
+	// map and never enter the public task response.
+	InstallMode        string
+	OfflinePackageID   string
+	OfflinePackagePath string
 }
 
 var (
@@ -190,13 +200,23 @@ func (m *Manager) SubmitServiceAction(
 	action string,
 	requestedBy int64,
 ) (*models.SoftwareTask, error) {
-	return m.SubmitServiceActionWithSwitch(component, action, false, requestedBy)
+	return m.SubmitServiceActionWithConfirmation(component, action, false, "", requestedBy)
 }
 
 func (m *Manager) SubmitServiceActionWithSwitch(
 	component string,
 	action string,
 	switchRequested bool,
+	requestedBy int64,
+) (*models.SoftwareTask, error) {
+	return m.SubmitServiceActionWithConfirmation(component, action, switchRequested, "", requestedBy)
+}
+
+func (m *Manager) SubmitServiceActionWithConfirmation(
+	component string,
+	action string,
+	switchRequested bool,
+	confirmation string,
 	requestedBy int64,
 ) (*models.SoftwareTask, error) {
 	key, err := m.softwareKeyForService(component)
@@ -224,6 +244,7 @@ func (m *Manager) SubmitServiceActionWithSwitch(
 		Operation:       action,
 		Key:             key,
 		SwitchRequested: switchRequested,
+		Confirmation:    strings.TrimSpace(confirmation),
 	}, requestedBy)
 }
 
@@ -235,13 +256,30 @@ func (m *Manager) SubmitConfiguration(
 	restoreFromID string,
 	requestedBy int64,
 ) (*models.SoftwareTask, error) {
+	return m.SubmitConfigurationWithConfirmation(component, revision, previousValues, values, restoreFromID, "", requestedBy)
+}
+
+func (m *Manager) SubmitConfigurationWithConfirmation(
+	component string,
+	revision string,
+	previousValues map[string]string,
+	values map[string]string,
+	restoreFromID string,
+	confirmation string,
+	requestedBy int64,
+) (*models.SoftwareTask, error) {
 	key, err := m.softwareKeyForService(component)
 	if err != nil {
 		return nil, err
 	}
+	if strings.EqualFold(strings.TrimSpace(component), "firewalld") &&
+		strings.TrimSpace(confirmation) != safeservice.DisableConfirmation {
+		return nil, fmt.Errorf("FIREWALL_CONFIRMATION_REQUIRED: firewalld 配置变更需要输入确认文本 %s", safeservice.DisableConfirmation)
+	}
 	return m.submit(InstallRequest{
 		Operation:             "configure",
 		Key:                   key,
+		Confirmation:          strings.TrimSpace(confirmation),
 		Revision:              strings.TrimSpace(revision),
 		PreviousConfiguration: cloneConfigurationValues(previousValues),
 		Configuration:         cloneConfigurationValues(values),
@@ -266,6 +304,28 @@ func (m *Manager) submit(request InstallRequest, requestedBy int64) (*models.Sof
 	request.Username = strings.TrimSpace(request.Username)
 	request.DatabaseUsername = strings.TrimSpace(request.DatabaseUsername)
 	request.Parameters = normalizeTaskInstallParameters(request.Parameters)
+	if request.Operation == "install" {
+		request.InstallMode = strings.ToLower(strings.TrimSpace(request.InstallMode))
+		if request.InstallMode == "" {
+			request.InstallMode = "center"
+		}
+		if request.InstallMode != "center" && request.InstallMode != "offline" {
+			return nil, errors.New("invalid software install mode")
+		}
+		request.OfflinePackageID = strings.TrimSpace(request.OfflinePackageID)
+		request.OfflinePackagePath = strings.TrimSpace(request.OfflinePackagePath)
+		if request.InstallMode == "offline" && request.OfflinePackageID == "" {
+			return nil, errors.New("offline package identity is required")
+		}
+		if request.InstallMode == "offline" {
+			if request.OfflinePackagePath == "" || !filepath.IsAbs(request.OfflinePackagePath) || filepath.Clean(request.OfflinePackagePath) != request.OfflinePackagePath {
+				return nil, errors.New("offline package path is invalid")
+			}
+		}
+		if request.InstallMode == "center" {
+			request.OfflinePackageID = ""
+		}
+	}
 	if request.Version == "" {
 		request.Version = taskInstallParameterValue(request.Parameters, "software-version")
 	}
@@ -318,6 +378,12 @@ func (m *Manager) submit(request InstallRequest, requestedBy int64) (*models.Sof
 	component, err := m.componentForKey(request.Key)
 	if err != nil {
 		return nil, err
+	}
+	if request.VersionLine == "" {
+		var catalogRow models.Software
+		if result := m.db.Where("`key` = ? AND version = ?", request.Key, request.Version).Order("catalog_managed DESC, id DESC").First(&catalogRow); result.Error == nil {
+			request.VersionLine = strings.TrimSpace(catalogRow.VersionLine)
+		}
 	}
 	runtimeGroup := m.runtimeGroupForComponent(component)
 	if request.SwitchRequested && runtimeGroup == "" {
@@ -436,25 +502,30 @@ func (m *Manager) submit(request InstallRequest, requestedBy int64) (*models.Sof
 	now := time.Now()
 	queuedMessage := "任务已进入" + operationLabel(operation) + "队列"
 	task := &models.SoftwareTask{
-		ID:               taskID,
-		Operation:        operation,
-		Component:        component,
-		SwitchRequested:  request.SwitchRequested,
-		SoftwareKey:      request.Key,
-		RequestedVersion: request.Version,
-		Status:           models.SoftwareTaskStatusQueued,
-		Phase:            models.SoftwareTaskStatusQueued,
-		Progress:         0,
-		Message:          queuedMessage,
-		RollbackStatus:   models.SoftwareTaskRollbackNotRequired,
-		RequestedBy:      requestedBy,
-		EventSeq:         1,
-		LogPath:          filepath.Join(m.logDir, "task_"+taskID+".log"),
-		ParametersJSON:   string(safeParameters),
-		SecretCiphertext: secretCiphertext,
-		CreatedAt:        now,
-		UpdatedAt:        now,
+		ID:                 taskID,
+		Operation:          operation,
+		Component:          component,
+		SwitchRequested:    request.SwitchRequested,
+		SoftwareKey:        request.Key,
+		RequestedVersion:   request.Version,
+		VersionLine:        request.VersionLine,
+		Status:             models.SoftwareTaskStatusQueued,
+		Phase:              models.SoftwareTaskStatusQueued,
+		Progress:           0,
+		Message:            queuedMessage,
+		RollbackStatus:     models.SoftwareTaskRollbackNotRequired,
+		RequestedBy:        requestedBy,
+		EventSeq:           1,
+		LogPath:            filepath.Join(m.logDir, "task_"+taskID+".log"),
+		ParametersJSON:     string(safeParameters),
+		InstallMode:        request.InstallMode,
+		OfflinePackageID:   request.OfflinePackageID,
+		OfflinePackagePath: request.OfflinePackagePath,
+		SecretCiphertext:   secretCiphertext,
+		CreatedAt:          now,
+		UpdatedAt:          now,
 	}
+	applyPackagePinToTask(task, request.ResolvedPackage)
 	event := &models.SoftwareTaskEvent{
 		TaskID:    task.ID,
 		Seq:       1,
@@ -548,6 +619,21 @@ func normalizeTaskInstallParameters(parameters map[string]string) map[string]str
 		result[canonical] = value
 	}
 	return result
+}
+
+func applyPackagePinToTask(task *models.SoftwareTask, pin *scriptregistry.PackagePin) {
+	if task == nil || pin == nil {
+		return
+	}
+	task.ResolvedVersion = strings.TrimSpace(pin.ResolvedVersion)
+	task.PackageSource = strings.TrimSpace(pin.PackageSource)
+	task.PackageURL = strings.TrimSpace(pin.PackageURL)
+	task.PackageSHA256 = strings.TrimSpace(pin.PackageSHA256)
+	task.PublisherFingerprint = strings.TrimSpace(pin.PublisherFingerprint)
+	task.TargetOS = strings.TrimSpace(pin.TargetOS)
+	task.TargetOSVersion = strings.TrimSpace(pin.TargetOSVersion)
+	task.TargetArch = strings.TrimSpace(pin.TargetArch)
+	task.ReleaseRevision = strings.TrimSpace(pin.ReleaseRevision)
 }
 
 func taskInstallParameterValue(parameters map[string]string, name string) string {
@@ -1204,25 +1290,38 @@ func (m *Manager) runtimeGroupForComponent(component string) string {
 	if component == "php" {
 		return "php-runtime"
 	}
+	if component == "firewalld" {
+		return "firewall"
+	}
 	return ""
 }
 
 func activeRuntimeGroupOwners(ctx context.Context, runtimeGroup, excludeComponent string) []RuntimeGroupOwner {
-	if strings.TrimSpace(runtimeGroup) != "web-server" {
+	var units []RuntimeGroupOwner
+	switch strings.TrimSpace(runtimeGroup) {
+	case "web-server":
+		units = []RuntimeGroupOwner{
+			{Component: "nginx", ServiceName: "oneinstack-nginx"},
+			{Component: "openresty", ServiceName: "oneinstack-openresty"},
+			{Component: "tengine", ServiceName: "oneinstack-tengine"},
+			{Component: "caddy", ServiceName: "oneinstack-caddy"},
+			{Component: "apache", ServiceName: "oneinstack-httpd"},
+			{Component: "legacy-web", ServiceName: "nginx"},
+			{Component: "legacy-web", ServiceName: "httpd"},
+			{Component: "legacy-web", ServiceName: "apache2"},
+			{Component: "legacy-web", ServiceName: "openresty"},
+			{Component: "legacy-web", ServiceName: "tengine"},
+			{Component: "legacy-web", ServiceName: "caddy"},
+		}
+	case "firewall":
+		units = []RuntimeGroupOwner{
+			{Component: "firewalld", ServiceName: "firewalld"},
+			{Component: "ufw", ServiceName: "ufw"},
+			{Component: "nftables", ServiceName: "nftables"},
+			{Component: "iptables", ServiceName: "iptables"},
+		}
+	default:
 		return nil
-	}
-	units := []RuntimeGroupOwner{
-		{Component: "nginx", ServiceName: "oneinstack-nginx"},
-		{Component: "openresty", ServiceName: "oneinstack-openresty"},
-		{Component: "tengine", ServiceName: "oneinstack-tengine"},
-		{Component: "caddy", ServiceName: "oneinstack-caddy"},
-		{Component: "apache", ServiceName: "oneinstack-httpd"},
-		{Component: "legacy-web", ServiceName: "nginx"},
-		{Component: "legacy-web", ServiceName: "httpd"},
-		{Component: "legacy-web", ServiceName: "apache2"},
-		{Component: "legacy-web", ServiceName: "openresty"},
-		{Component: "legacy-web", ServiceName: "tengine"},
-		{Component: "legacy-web", ServiceName: "caddy"},
 	}
 	result := make([]RuntimeGroupOwner, 0, len(units))
 	for _, owner := range units {
@@ -1269,6 +1368,8 @@ func (m *Manager) softwareKeyForService(value string) (string, error) {
 		return "redis", nil
 	case "php", "php-fpm":
 		return "php", nil
+	case "firewalld":
+		return "firewalld", nil
 	default:
 		return "", fmt.Errorf("unsupported component service: %s", value)
 	}
@@ -1489,7 +1590,7 @@ func stableExecutionErrorCode(code string) string {
 	case "CONFIG_UNAVAILABLE", "INVALID_PARAMETER":
 		return "CONFIG_APPLY_FAILED"
 	case "DOWNLOAD_FAILED":
-		return "PACKAGE_UNAVAILABLE"
+		return "PACKAGE_DOWNLOAD_FAILED"
 	default:
 		return strings.TrimSpace(code)
 	}
@@ -1497,6 +1598,44 @@ func stableExecutionErrorCode(code string) string {
 
 func safeMessageForErrorCode(code string) string {
 	switch strings.TrimSpace(code) {
+	case "CENTER_UNAVAILABLE":
+		return "Center 当前不可用，Panel 未使用旧缓存或本地包替代"
+	case "CENTER_TIMEOUT":
+		return "Center 请求超时，请检查网络、Center 负载和请求超时配置"
+	case "CENTER_AUTH_FAILED":
+		return "Center 认证或信任校验失败，请检查 Panel 与 Center 的认证配置"
+	case "CATALOG_STALE":
+		return "Panel 软件目录已过期，请先刷新目录后重试"
+	case "PACKAGE_UNPUBLISHED":
+		return "Center 尚未发布适配当前主机的组件包"
+	case "PACKAGE_RESOLVE_FAILED":
+		return "无法解析当前主机适用的精确组件包"
+	case "PACKAGE_CHECKSUM_MISMATCH":
+		return "组件安装包 SHA-256 与 Center 元数据不一致"
+	case "PACKAGE_SIGNATURE_INVALID":
+		return "组件安装包签名或发布者指纹校验失败"
+	case "PACKAGE_DOWNLOAD_FAILED":
+		return "组件安装包下载失败，请检查 Panel 到 Center 的网络和 TLS"
+	case "HOST_PLATFORM_UNSUPPORTED":
+		return "当前主机发行版、版本、架构或 Panel 版本不受组件包支持"
+	case "HOST_DEPENDENCY_UNAVAILABLE":
+		return "主机缺少组件依赖，请修复系统软件源和包管理器"
+	case "HOST_PACKAGE_VERSION_UNAVAILABLE":
+		return "当前主机软件源没有请求的 firewalld 版本，请选择本机推荐版本"
+	case "HOST_REPOSITORY_UNAVAILABLE":
+		return "无法读取 firewalld 候选版本，请检查主机软件源并刷新包索引"
+	case "HOST_VERSION_PROBE_UNAVAILABLE":
+		return "无法探测主机 firewalld 版本，请更新组件包并刷新目录"
+	case "PANEL_PORT_NOT_PROTECTED":
+		return "Panel 端口未完成防护，未继续执行防火墙服务操作"
+	case "FIREWALL_BACKEND_CONFLICT":
+		return "检测到其他防火墙后端正在运行，未执行 firewalld 接管"
+	case "EXTERNAL_MIGRATION_FAILED":
+		return "UFW 切换失败，firewalld 未接管当前防火墙"
+	case "EXTERNAL_MIGRATION_UNSUPPORTED":
+		return "当前外部防火墙后端暂不支持自动切换到 firewalld"
+	case "FIREWALL_CONFIRMATION_REQUIRED":
+		return "停止或重启 firewalld 需要显式的高风险操作确认"
 	case "DEPENDENCY_MISSING":
 		return "主机缺少 PHP 安装依赖，请检查系统软件源和网络；Rocky 9 请确认 CRB 仓库已启用"
 	case "BUILD_FAILED":
@@ -1507,6 +1646,8 @@ func safeMessageForErrorCode(code string) string {
 		return "组件安装包当前不可用，请稍后重试或检查 Center 发布状态"
 	case "PACKAGE_VERIFY_FAILED":
 		return "组件安装包校验失败，已拒绝继续安装"
+	case "PACKAGE_CONTENT_INVALID":
+		return "组件安装包内容无效，已拒绝继续安装"
 	case "EXTERNAL_MIGRATION_REQUIRED":
 		return "检测到外部 PHP-FPM，需同时提供迁移开关和确认后才能接管"
 	case "EXTERNAL_SERVICE_CONFLICT":
@@ -1516,11 +1657,17 @@ func safeMessageForErrorCode(code string) string {
 	case "CONFIG_APPLY_FAILED":
 		return "PHP-FPM 配置校验或发布失败，已恢复原配置"
 	case "SERVICE_START_FAILED":
-		return "PHP-FPM 启动或 socket 就绪校验失败"
+		return "组件服务启动或就绪校验失败"
+	case "SERVICE_STOP_FAILED":
+		return "组件服务停止失败"
+	case "SERVICE_RESTART_FAILED":
+		return "组件服务重启或就绪校验失败"
 	case "SERVICE_RELOAD_FAILED":
-		return "PHP-FPM 重载失败，已恢复原配置"
+		return "组件服务重载失败，已恢复原配置"
 	case "ROLLBACK_FAILED":
 		return "自动回滚失败，已保留回滚快照，需要人工恢复"
+	case "RECOVERY_REQUIRED":
+		return "主机状态需要人工恢复，Panel 未继续覆盖现有资源"
 	case "RUNTIME_VERSION_DRIFT":
 		return "实际 PHP 运行版本与 Panel 记录不一致"
 	case "STATE_REPAIR_REQUIRED":

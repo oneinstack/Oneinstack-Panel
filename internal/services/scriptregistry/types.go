@@ -19,7 +19,7 @@ var (
 	softwareVersionLinePattern = regexp.MustCompile(`^v?[0-9]+(?:\.[0-9]+)*\.x$`)
 	parameterPattern           = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_-]{1,63}$`)
 	environmentPattern         = regexp.MustCompile(`^[A-Z][A-Z0-9_]{1,63}$`)
-	configurationKeyPattern    = regexp.MustCompile(`^[a-z][A-Za-z0-9]{0,63}$`)
+	configurationKeyPattern    = regexp.MustCompile(`^[a-z][A-Za-z0-9-]{0,63}$`)
 	runtimeGroupPattern        = regexp.MustCompile(`^[a-z][a-z0-9-]{1,63}$`)
 	serviceNamePattern         = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.@-]{0,127}$`)
 	buildIDPattern             = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
@@ -164,13 +164,18 @@ type ResolveRequest struct {
 }
 
 type Metadata struct {
-	Manifest    Manifest   `json:"manifest"`
-	SHA256      string     `json:"sha256"`
-	Signature   string     `json:"signature"`
-	KeyID       string     `json:"keyId"`
-	Size        int64      `json:"size"`
-	DownloadURL string     `json:"downloadUrl"`
-	PublishedAt *time.Time `json:"publishedAt,omitempty"`
+	Manifest             Manifest   `json:"manifest"`
+	SHA256               string     `json:"sha256"`
+	Signature            string     `json:"signature"`
+	KeyID                string     `json:"keyId"`
+	Size                 int64      `json:"size"`
+	DownloadURL          string     `json:"downloadUrl"`
+	PublisherFingerprint string     `json:"publisherFingerprint,omitempty"`
+	TargetOS             string     `json:"targetOS,omitempty"`
+	TargetOSVersion      string     `json:"targetOSVersion,omitempty"`
+	TargetArch           string     `json:"targetArch,omitempty"`
+	ReleaseRevision      string     `json:"releaseRevision,omitempty"`
+	PublishedAt          *time.Time `json:"publishedAt,omitempty"`
 }
 
 type APIError struct {
@@ -184,6 +189,26 @@ type Package struct {
 	Manifest Manifest
 	Root     string
 	Source   string
+	Metadata Metadata
+}
+
+// PackagePin is the immutable package identity captured during preview and
+// carried through the encrypted operation-preview payload.
+type PackagePin struct {
+	Component            string `json:"component"`
+	SoftwareVersion      string `json:"softwareVersion"`
+	Channel              string `json:"channel"`
+	ResolvedVersion      string `json:"resolvedVersion"`
+	PackageSource        string `json:"packageSource"`
+	PackageURL           string `json:"packageURL,omitempty"`
+	PackageSHA256        string `json:"packageSHA256"`
+	Signature            string `json:"signature,omitempty"`
+	KeyID                string `json:"keyId,omitempty"`
+	PublisherFingerprint string `json:"publisherFingerprint,omitempty"`
+	TargetOS             string `json:"targetOS,omitempty"`
+	TargetOSVersion      string `json:"targetOSVersion,omitempty"`
+	TargetArch           string `json:"targetArch,omitempty"`
+	ReleaseRevision      string `json:"releaseRevision,omitempty"`
 }
 
 func parseManifest(contents []byte) (Manifest, error) {
@@ -333,7 +358,7 @@ func (m Manifest) validate() error {
 				return fmt.Errorf("invalid configuration environment parameter %q", field.Env)
 			}
 			switch field.Type {
-			case "string", "integer", "boolean", "select", "port", "path", "worker_processes":
+			case "string", "integer", "boolean", "select", "port", "path", "worker_processes", "json":
 			default:
 				return fmt.Errorf("invalid configuration field type %q", field.Type)
 			}

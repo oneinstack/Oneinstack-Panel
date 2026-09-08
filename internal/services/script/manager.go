@@ -72,6 +72,7 @@ type ScriptInfo struct {
 	// minor line such as 8.3 while the Panel records the resolved patch version.
 	ScriptSoftwareVersion string
 	PackageVersion        string // 组件脚本包版本
+	PackagePin            *scriptregistry.PackagePin
 }
 
 type ParameterSpec struct {
@@ -366,6 +367,8 @@ func (sm *ScriptManager) ExecuteProbe(
 	}
 	var output bytes.Buffer
 	bounded := &boundedWriter{target: &output, remaining: maxBytes}
+	diagnostic := &actionDiagnosticBuffer{limit: actionDiagnosticLimit}
+	diagnosticWriter := newRedactingWriter(diagnostic, secretParameterValues(scriptInfo))
 	if err := sm.runActionContext(
 		ctx,
 		actionName,
@@ -375,8 +378,12 @@ func (sm *ScriptManager) ExecuteProbe(
 		scriptInfo.timeout(actionName),
 		bounded,
 		nil,
-		lifecycleLogContext{output: bounded, stderr: io.Discard},
+		lifecycleLogContext{output: bounded, stderr: diagnosticWriter},
 	); err != nil {
+		_ = diagnosticWriter.Flush()
+		if code := extractScriptErrorCode(diagnostic.String()); code != "" {
+			return nil, &probeFailure{code: code, cause: err}
+		}
 		return nil, fmt.Errorf("%s action failed: %w", actionName, err)
 	}
 	return output.Bytes(), nil
@@ -459,6 +466,35 @@ type actionFailure struct {
 	cause      error
 	diagnostic string
 	errorCode  string
+}
+
+// probeFailure carries only a stable component error code. Probe stderr is
+// intentionally kept out of the API because package-manager diagnostics may
+// contain repository URLs or other host details.
+type probeFailure struct {
+	code  string
+	cause error
+}
+
+func (e *probeFailure) Error() string {
+	if e == nil || e.code == "" {
+		return "component probe failed"
+	}
+	return e.code
+}
+
+func (e *probeFailure) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.cause
+}
+
+func (e *probeFailure) ErrorCode() string {
+	if e == nil {
+		return ""
+	}
+	return e.code
 }
 
 func (e *actionFailure) Error() string {
@@ -1188,8 +1224,10 @@ func validateParameters(scriptInfo *ScriptInfo) error {
 			return fmt.Errorf("component parameter %s is reserved", spec.Name)
 		}
 		envName := parameterEnvironmentName(spec)
+		readOnlyStatus := strings.EqualFold(scriptInfo.ActionName, "status")
 		value := scriptInfo.Params[envName]
-		if value == "" && spec.Default != "" {
+		if value == "" && spec.Default != "" &&
+			!(readOnlyStatus && spec.Type == "port" && spec.Default == "0") {
 			value = spec.Default
 			scriptInfo.Params[envName] = value
 		}
@@ -1197,7 +1235,6 @@ func validateParameters(scriptInfo *ScriptInfo) error {
 		// component. They must not prevent an uninstall or a read-only status
 		// probe: secret installation inputs are intentionally not retained, and
 		// neither action needs them to inspect an existing component.
-		readOnlyStatus := strings.EqualFold(scriptInfo.ActionName, "status")
 		if spec.Required && value == "" &&
 			!strings.EqualFold(scriptInfo.ActionName, "uninstall") && !readOnlyStatus {
 			return fmt.Errorf("component parameter %s is required", spec.Name)
@@ -1214,6 +1251,12 @@ func validateParameters(scriptInfo *ScriptInfo) error {
 				return fmt.Errorf("component parameter %s must be an integer", spec.Name)
 			}
 		case "port":
+			// Read-only status probes may use 0 as a manifest sentinel for
+			// "port not supplied". The probe must not be blocked by an
+			// installation-only port parameter that it does not consume.
+			if readOnlyStatus && !spec.Required && value == "0" {
+				continue
+			}
 			port, err := strconv.Atoi(value)
 			if err != nil || port < 1 || port > 65535 {
 				return fmt.Errorf("component parameter %s must be a valid port", spec.Name)

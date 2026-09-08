@@ -62,6 +62,7 @@ type softwareConfigurationPayload struct {
 	Component          string            `json:"component"`
 	Revision           string            `json:"revision"`
 	Values             map[string]string `json:"values"`
+	Confirmation       string            `json:"confirmation,omitempty"`
 	RestoreFromID      string            `json:"restoreFromId,omitempty"`
 	RestoreFromHistory string            `json:"restoreFromHistoryId,omitempty"`
 }
@@ -320,6 +321,17 @@ func Preview(c *gin.Context) {
 		}
 	}
 	payload := request.Payload
+	if operation == "software.install" {
+		var err error
+		payload, err = normalizeSoftwareInstallPreviewPayload(c.Request.Context(), payload)
+		if err != nil {
+			if handleSoftwareInstallPreviewError(c, err) {
+				return
+			}
+			core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "软件安装预览参数无效"))
+			return
+		}
+	}
 	if operation == "software.configure" {
 		var err error
 		payload, err = normalizeSoftwareConfigurePayload(c.Request.Context(), payload)
@@ -421,35 +433,333 @@ func handleSoftwareInstallPreviewError(c *gin.Context, err error) bool {
 	if err == nil {
 		return false
 	}
+	stableCode := softwareStableErrorCode(err)
+	if stableCode == "" {
+		return false
+	}
+	appErr := softwareStableAppError(stableCode)
+	var hostErr *softwareService.HostInstallationError
+	if errors.As(err, &hostErr) {
+		if hostErr.Info.RecommendedVersion != "" {
+			appErr.Detail += " Host repository recommendation: " + hostErr.Info.RecommendedVersion + "."
+		}
+		if hostErr.Info.ConflictingBackend != "" {
+			appErr.Detail += " Active backend: " + hostErr.Info.ConflictingBackend + "."
+		}
+	}
+	core.HandleError(c, appErr)
+	return true
+}
+
+func softwareStableErrorCode(err error) string {
+	if err == nil {
+		return ""
+	}
+	var provider interface{ ErrorCode() string }
+	if errors.As(err, &provider) {
+		if code := strings.TrimSpace(provider.ErrorCode()); code != "" {
+			return strings.ToUpper(code)
+		}
+	}
 	detail := strings.ToLower(strings.TrimSpace(err.Error()))
+	known := []string{
+		"CENTER_UNAVAILABLE", "CENTER_TIMEOUT", "CENTER_AUTH_FAILED", "CATALOG_STALE",
+		"PACKAGE_UNPUBLISHED", "PACKAGE_UNAVAILABLE", "PACKAGE_RESOLVE_FAILED",
+		"PACKAGE_CHECKSUM_MISMATCH", "PACKAGE_SIGNATURE_INVALID", "PACKAGE_DOWNLOAD_FAILED",
+		"PACKAGE_VERIFY_FAILED", "PACKAGE_CONTENT_INVALID", "DEPENDENCY_MISSING", "VERSION_UNSUPPORTED",
+		"HOST_PLATFORM_UNSUPPORTED", "HOST_DEPENDENCY_UNAVAILABLE", "SCRIPT_EXECUTION_FAILED",
+		"HOST_PACKAGE_VERSION_UNAVAILABLE", "HOST_REPOSITORY_UNAVAILABLE", "HOST_VERSION_PROBE_UNAVAILABLE", "HOST_VERSION_PROBE_FAILED",
+		"ROLLBACK_FAILED", "RECOVERY_REQUIRED", "PANEL_PORT_NOT_PROTECTED",
+		"EXTERNAL_SERVICE_CONFLICT", "FIREWALL_BACKEND_CONFLICT", "EXTERNAL_MIGRATION_FAILED", "EXTERNAL_MIGRATION_UNSUPPORTED", "FIREWALL_CONFIRMATION_REQUIRED", "SERVICE_START_FAILED",
+		"SERVICE_STOP_FAILED", "SERVICE_RESTART_FAILED", "SERVICE_RELOAD_FAILED", "PRECHECK_FAILED",
+		"CONFIGURE_FAILED", "VERIFY_FAILED", "UNINSTALL_FAILED", "ACTION_TIMEOUT", "ACTION_CANCELED",
+		"CONFIG_REVISION_CONFLICT", "CONFIG_APPLY_FAILED", "CONFIG_INVALID", "VERSION_MISMATCH",
+	}
+	for _, code := range known {
+		if strings.Contains(strings.ToUpper(detail), code) {
+			return code
+		}
+	}
 	switch {
 	case strings.Contains(detail, "no compatible package"),
 		strings.Contains(detail, "no compatible bundled"),
 		strings.Contains(detail, "no compatible cached"),
 		strings.Contains(detail, "not published by center"),
 		strings.Contains(detail, "outside the published version lines"):
-		appErr := core.NewErrorWithDetail(
-			core.ErrSoftwareNotFound,
-			"当前主机没有可用的软件组件包",
-			"Center 当前未发布适配本机操作系统、版本和架构的组件包。",
-		)
-		appErr.Suggestion = "请在 Center 发布对应系统和架构的组件包，刷新软件目录后重试。"
-		core.HandleError(c, appErr)
-		return true
+		return "PACKAGE_UNPUBLISHED"
 	case strings.Contains(detail, "script center connectivity"),
 		strings.Contains(detail, "script center is not ready"),
 		strings.Contains(detail, "script center returned http"):
-		appErr := core.NewErrorWithDetail(
-			core.ErrServiceUnavailable,
-			"Center 当前不可用",
-			"Panel 无法访问 Center 或 Center 尚未就绪。",
-		)
-		appErr.Suggestion = "请检查 Panel 到 Center 的网络连通性和 Center 健康状态后重试。"
-		core.HandleError(c, appErr)
-		return true
+		return "CENTER_UNAVAILABLE"
 	default:
-		return false
+		return ""
 	}
+}
+
+func softwareStableAppError(code string) *core.AppError {
+	type descriptor struct {
+		status     core.ErrorCode
+		message    string
+		detail     string
+		suggestion string
+		field      string
+	}
+	descriptors := map[string]descriptor{
+		"CENTER_UNAVAILABLE": {
+			status: core.ErrServiceUnavailable, message: "Center 当前不可用",
+			detail:     "The Panel could not reach Center or Center is not ready.",
+			suggestion: "请检查 Panel 到 Center 的网络连通性和 Center 健康状态后重试。",
+		},
+		"CENTER_TIMEOUT": {
+			status: core.ErrServiceUnavailable, message: "Center 请求超时",
+			detail:     "The Center request timed out before package resolution completed.",
+			suggestion: "请检查 Center 负载、网络延迟和请求超时配置后重试。",
+		},
+		"CENTER_AUTH_FAILED": {
+			status: core.ErrUnauthorized, message: "Center 认证失败",
+			detail:     "Center rejected the Panel authentication or publisher identity.",
+			suggestion: "请检查 Panel 与 Center 的认证配置和信任密钥后重试。",
+		},
+		"CATALOG_STALE": {
+			status: core.ErrServiceUnavailable, message: "Panel 软件目录已过期",
+			detail:     "The Panel software catalog is stale and cannot be used for installation.",
+			suggestion: "请先刷新软件目录，确认 Center 可用后再重试。",
+		},
+		"PACKAGE_UNPUBLISHED": {
+			status: core.ErrSoftwareNotFound, message: "Center 尚未发布适配当前主机的组件包",
+			detail:     "Center has not published a package matching the requested component version and host platform.",
+			suggestion: "请在 Center 发布当前系统、版本和架构的组件包，刷新软件目录后重试。",
+			field:      "requestedVersion",
+		},
+		"HOST_PLATFORM_UNSUPPORTED": {
+			status: core.ErrSoftwareNotFound, message: "当前主机平台不受组件包支持",
+			detail:     "The published firewalld package does not support the host distribution, version, architecture, or Panel version.",
+			suggestion: "请确认当前主机矩阵受支持，或让 Center 发布对应平台的组件包。",
+			field:      "targetOS",
+		},
+		"PACKAGE_RESOLVE_FAILED": {
+			status: core.ErrSoftwareNotFound, message: "无法解析当前主机适用的组件安装包",
+			detail:     "The package resolver could not find a package matching the requested version, channel, and host.",
+			suggestion: "请刷新软件目录并确认 Center 已发布当前系统和架构的组件包。",
+			field:      "requestedVersion",
+		},
+		"PACKAGE_UNAVAILABLE": {
+			status: core.ErrSoftwareNotFound, message: "组件安装包当前不可用",
+			detail:     "The resolved component package is not available from Center or the verified Panel cache.",
+			suggestion: "请确认 Center 包已发布且 Panel 缓存未被清理，然后重新预览。",
+		},
+		"HOST_PACKAGE_VERSION_UNAVAILABLE": {
+			status: core.ErrInvalidParameter, message: "当前主机软件源没有请求的 firewalld 版本",
+			detail:     "The requested firewalld version is unavailable in the host package repository.",
+			suggestion: "请刷新软件列表并选择本机推荐版本；手动指定的版本不会自动替换。",
+			field:      "software-version",
+		},
+		"HOST_REPOSITORY_UNAVAILABLE": {
+			status: core.ErrServiceUnavailable, message: "无法读取主机软件源中的 firewalld 候选版本",
+			detail:     "The host package repository metadata could not be queried.",
+			suggestion: "请检查当前系统的软件源并刷新包索引，再重新预览。",
+		},
+		"HOST_VERSION_PROBE_UNAVAILABLE": {
+			status: core.ErrServiceUnavailable, message: "无法探测当前主机适用的 firewalld 版本",
+			detail:     "The signed component installation probe is unavailable or failed.",
+			suggestion: "请发布支持主机版本探测的 firewalld 组件包（1.0.5 或以上），刷新软件目录后重试。",
+		},
+		"HOST_VERSION_PROBE_FAILED": {
+			status: core.ErrServiceUnavailable, message: "主机 firewalld 版本探测执行失败",
+			detail:     "The signed firewalld host probe could not be executed or returned invalid data.",
+			suggestion: "请检查 Panel 运行用户、组件缓存、bash 和主机包管理器后刷新软件列表重试。",
+		},
+		"PACKAGE_CHECKSUM_MISMATCH": {
+			status: core.ErrConfigError, message: "组件安装包摘要校验失败",
+			detail:     "The downloaded component package checksum does not match the signed Center metadata.",
+			suggestion: "请删除失效缓存、刷新目录并重新解析；不要使用未经 Center 校验的本地包。",
+			field:      "packageSHA256",
+		},
+		"PACKAGE_SIGNATURE_INVALID": {
+			status: core.ErrConfigError, message: "组件安装包签名校验失败",
+			detail:     "The component package signature or publisher fingerprint is not trusted by the Panel.",
+			suggestion: "请检查 Center 发布签名和 Panel 信任密钥，确认后重新发布并刷新目录。",
+			field:      "publisherFingerprint",
+		},
+		"PACKAGE_VERIFY_FAILED": {
+			status: core.ErrConfigError, message: "组件安装包校验失败",
+			detail:     "The component package checksum or signature verification failed.",
+			suggestion: "请刷新 Center 软件目录并重新解析已发布的组件包。",
+		},
+		"PACKAGE_CONTENT_INVALID": {
+			status: core.ErrConfigError, message: "组件安装包内容无效",
+			detail:     "The downloaded component package contents are invalid.",
+			suggestion: "请确认 Center 包构建完整并重新发布后重试。",
+		},
+		"PACKAGE_DOWNLOAD_FAILED": {
+			status: core.ErrServiceUnavailable, message: "组件安装包下载失败",
+			detail:     "The verified component package could not be downloaded from Center.",
+			suggestion: "请检查 Panel 到 Center 的网络、TLS 和下载权限后重试。",
+		},
+		"EXTERNAL_SERVICE_CONFLICT": {
+			status: core.ErrConflict, message: "检测到外部 firewalld 服务正在运行",
+			detail:     "An external firewalld service is active and was not taken over by Panel.",
+			suggestion: "请先确认服务归属并完成受控迁移，再重试安装。",
+		},
+		"HOST_DEPENDENCY_UNAVAILABLE": {
+			status: core.ErrServiceUnavailable, message: "主机缺少组件安装依赖",
+			detail:     "The host package manager could not provide the dependencies required by the component.",
+			suggestion: "请修复当前发行版的软件源和包管理器后重试。",
+		},
+		"DEPENDENCY_MISSING": {
+			status: core.ErrServiceUnavailable, message: "主机缺少组件依赖",
+			detail:     "The host does not provide all dependencies required by the component.",
+			suggestion: "请修复系统软件源并安装缺失依赖后重试。",
+		},
+		"VERSION_UNSUPPORTED": {
+			status: core.ErrInvalidParameter, message: "组件版本不受支持",
+			detail:     "The requested component version is outside the published support range.",
+			suggestion: "请从 Center 已发布的精确版本选项中选择版本。",
+			field:      "requestedVersion",
+		},
+		"PANEL_PORT_NOT_PROTECTED": {
+			status: core.ErrConflict, message: "Panel 端口未被保护，未启动 firewalld",
+			detail:     "The Panel management port was not protected before the firewall service action.",
+			suggestion: "请确认 Panel 端口配置正确并重试；远程防火墙操作前必须先保护管理端口。",
+		},
+		"FIREWALL_BACKEND_CONFLICT": {
+			status: core.ErrConflict, message: "检测到其他防火墙后端正在接管",
+			detail:     "Another firewall backend is active, so firewalld was not allowed to take over.",
+			suggestion: "请先备份现有规则并确认 SSH、Panel 及业务端口的放行规则，完成防火墙切换后再重试；修改版本无法解决此冲突。",
+		},
+		"EXTERNAL_MIGRATION_FAILED": {
+			status: core.ErrConflict, message: "UFW 切换失败",
+			detail:     "UFW could not be disabled safely before firewalld takeover.",
+			suggestion: "请检查 UFW 状态和 SSH、Panel 端口放行规则，确认后再重试。",
+		},
+		"EXTERNAL_MIGRATION_UNSUPPORTED": {
+			status: core.ErrConflict, message: "当前外部防火墙不支持自动切换",
+			detail:     "The detected external firewall backend does not have a safe automatic migration path.",
+			suggestion: "请先人工迁移或停止当前防火墙后，再重新安装 firewalld。",
+		},
+		"FIREWALL_CONFIRMATION_REQUIRED": {
+			status: core.ErrOperationNotConfirmed, message: "高风险防火墙操作需要二次确认",
+			detail:     "Stopping or restarting the firewall requires the explicit confirmation text.",
+			suggestion: "请在 confirmation 字段传入接口要求的确认文本后重试。",
+		},
+		"ROLLBACK_FAILED": {
+			status: core.ErrOperationFailed, message: "firewalld 回滚失败",
+			detail:     "The firewalld operation failed and automatic rollback also failed.",
+			suggestion: "请保留当前回滚快照，人工核对主机服务、软件包和配置后恢复。",
+		},
+		"RECOVERY_REQUIRED": {
+			status: core.ErrOperationFailed, message: "firewalld 需要人工恢复",
+			detail:     "The firewalld host state requires manual recovery before another operation.",
+			suggestion: "请先核对主机软件包、配置、服务状态和 Panel 任务记录，再执行恢复。",
+		},
+		"SERVICE_START_FAILED": {
+			status: core.ErrServiceUnavailable, message: "firewalld 启动失败",
+			detail:     "firewalld did not become ready after the start operation.",
+			suggestion: "请检查 firewalld 服务状态、系统日志和后端冲突后重试。",
+		},
+		"SERVICE_STOP_FAILED": {
+			status: core.ErrOperationFailed, message: "firewalld 停止失败",
+			detail:     "firewalld did not stop cleanly.",
+			suggestion: "请检查 firewalld 服务状态和系统日志后重试。",
+		},
+		"SERVICE_RESTART_FAILED": {
+			status: core.ErrServiceUnavailable, message: "firewalld 重启失败",
+			detail:     "firewalld did not become ready after the restart operation.",
+			suggestion: "请检查 firewalld 配置、服务日志和防火墙后端冲突后重试。",
+		},
+		"SERVICE_RELOAD_FAILED": {
+			status: core.ErrConfigApplyFailed, message: "firewalld 重载失败",
+			detail:     "firewalld configuration reload failed and the previous configuration was retained when possible.",
+			suggestion: "请检查规则和配置校验结果后重试。",
+		},
+		"CONFIG_INVALID": {
+			status: core.ErrConfigValidateFailed, message: "firewalld 配置校验失败",
+			detail:     "The firewalld configuration or managed rule payload is invalid.",
+			suggestion: "请检查区域、协议、端口、地址和受管规则字段后重试。",
+		},
+		"VERSION_MISMATCH": {
+			status: core.ErrConfigError, message: "主机实际 firewalld 版本与请求不一致",
+			detail:     "The installed firewalld runtime version does not match the requested version.",
+			suggestion: "请重新解析精确版本包并确认主机软件源没有提供其他版本。",
+			field:      "requestedVersion",
+		},
+		"SCRIPT_EXECUTION_FAILED": {
+			status: core.ErrOperationFailed, message: "组件脚本执行失败",
+			detail:     "The component script failed before the operation completed.",
+			suggestion: "请检查任务阶段、脱敏诊断和主机服务状态后重试。",
+		},
+		"PRECHECK_FAILED": {
+			status: core.ErrConfigError, message: "组件安装预检失败",
+			detail:     "The component host or dependency precheck failed.",
+			suggestion: "请检查发行版、架构、软件源和外部防火墙冲突后重试。",
+		},
+		"CONFIGURE_FAILED": {
+			status: core.ErrConfigApplyFailed, message: "组件配置阶段失败",
+			detail:     "The component configuration phase failed and rollback was attempted.",
+			suggestion: "请检查配置校验和回滚状态后重试。",
+		},
+		"VERIFY_FAILED": {
+			status: core.ErrConfigError, message: "组件运行态验证失败",
+			detail:     "The component package or service did not pass runtime verification.",
+			suggestion: "请检查实际版本、配置、服务状态和防火墙命令接口。",
+		},
+		"UNINSTALL_FAILED": {
+			status: core.ErrOperationFailed, message: "组件卸载失败",
+			detail:     "The managed component package could not be removed safely.",
+			suggestion: "请检查包管理器和服务状态；配置、日志与恢复快照已尽量保留。",
+		},
+		"ACTION_TIMEOUT": {
+			status: core.ErrTaskTimeout, message: "组件操作超时",
+			detail:     "The component operation did not complete within the configured timeout.",
+			suggestion: "请检查主机负载、包管理器和组件服务状态后重试。",
+		},
+		"ACTION_CANCELED": {
+			status: core.ErrTaskCanceled, message: "组件操作已取消",
+			detail:     "The component operation was canceled before completion.",
+			suggestion: "请确认组件状态后重新预览并执行。",
+		},
+		"CONFIG_REVISION_CONFLICT": {
+			status: core.ErrConflict, message: "组件配置已发生变化，请刷新后重试",
+			detail:     "The component configuration revision no longer matches the preview.",
+			suggestion: "请重新获取实际生效配置并重新预览。",
+			field:      "revision",
+		},
+		"CONFIG_APPLY_FAILED": {
+			status: core.ErrConfigApplyFailed, message: "组件配置应用失败",
+			detail:     "The component configuration could not be validated or applied.",
+			suggestion: "请检查配置字段、规则和服务状态后重试。",
+		},
+	}
+	selected, ok := descriptors[strings.ToUpper(strings.TrimSpace(code))]
+	if !ok {
+		selected = descriptor{
+			status: core.ErrOperationFailed, message: "firewalld 操作失败",
+			detail:     "The firewalld operation failed before it completed.",
+			suggestion: "请检查任务阶段和组件健康状态后重试。",
+		}
+	}
+	result := core.NewErrorWithDetail(selected.status, selected.message, selected.detail)
+	result.StableCode = strings.ToUpper(strings.TrimSpace(code))
+	result.Suggestion = selected.suggestion
+	result.Field = selected.field
+	return result
+}
+
+func normalizeSoftwareInstallPreviewPayload(ctx context.Context, payload json.RawMessage) (json.RawMessage, error) {
+	var request input.InstallParams
+	if err := json.Unmarshal(payload, &request); err != nil {
+		return nil, err
+	}
+	_, pin, err := softwareService.PreviewInstallationPackage(ctx, &request)
+	if err != nil {
+		return nil, err
+	}
+	request.ResolvedPackage = &pin
+	encoded, err := json.Marshal(request)
+	if err != nil {
+		return nil, fmt.Errorf("固定软件安装包: %w", err)
+	}
+	return encoded, nil
 }
 
 func handleWebsitePreviewError(c *gin.Context, operation string, err error) bool {
@@ -781,6 +1091,7 @@ func normalizeSoftwareConfigurePayload(ctx context.Context, payload json.RawMess
 		Component:     definition.Component,
 		Revision:      preview.Revision,
 		Values:        preview.Values,
+		Confirmation:  strings.TrimSpace(request.Confirmation),
 		RestoreFromID: restoreFromID,
 	})
 	if err != nil {
@@ -1206,7 +1517,7 @@ func buildDocument(ctx context.Context, operation string, payload json.RawMessag
 		if err := json.Unmarshal(payload, &value); err != nil {
 			return previewservice.Document{}, "", err
 		}
-		effectiveValues, err := softwareService.PreviewInstallationParams(ctx, &value)
+		effectiveValues, packagePin, err := softwareService.PreviewInstallationPackage(ctx, &value)
 		if err != nil {
 			return previewservice.Document{}, "", err
 		}
@@ -1217,6 +1528,24 @@ func buildDocument(ctx context.Context, operation string, payload json.RawMessag
 				Value:     value.Value,
 				Sensitive: value.Sensitive,
 				Source:    value.Source,
+			})
+		}
+		for key, value := range map[string]string{
+			"requestedVersion":     value.Version,
+			"resolvedVersion":      packagePin.ResolvedVersion,
+			"packageSource":        packagePin.PackageSource,
+			"packageURL":           packagePin.PackageURL,
+			"packageSHA256":        packagePin.PackageSHA256,
+			"publisherFingerprint": packagePin.PublisherFingerprint,
+			"targetOS":             packagePin.TargetOS,
+			"targetOSVersion":      packagePin.TargetOSVersion,
+			"targetArch":           packagePin.TargetArch,
+		} {
+			if strings.TrimSpace(value) == "" {
+				continue
+			}
+			document.EffectiveValues = append(document.EffectiveValues, previewservice.EffectiveValue{
+				Key: key, Value: value, Source: "center_resolve",
 			})
 		}
 		document.Prechecks = append(document.Prechecks, previewservice.Precheck{
@@ -1589,8 +1918,10 @@ func executeOperation(ctx context.Context, operation string, payload json.RawMes
 		return softwareTaskResult(task), nil
 	case "software.service_action":
 		var value struct {
-			Component string `json:"component"`
-			Action    string `json:"action"`
+			Component    string `json:"component"`
+			Action       string `json:"action"`
+			Switch       bool   `json:"switch,omitempty"`
+			Confirmation string `json:"confirmation,omitempty"`
 		}
 		if err := json.Unmarshal(payload, &value); err != nil {
 			return nil, err
@@ -1599,7 +1930,7 @@ func executeOperation(ctx context.Context, operation string, payload json.RawMes
 		if err != nil {
 			return nil, err
 		}
-		task, err := manager.SubmitServiceAction(value.Component, value.Action, userID)
+		task, err := manager.SubmitServiceActionWithConfirmation(value.Component, value.Action, value.Switch, value.Confirmation, userID)
 		if err != nil {
 			return nil, err
 		}
@@ -1617,7 +1948,15 @@ func executeOperation(ctx context.Context, operation string, payload json.RawMes
 		if err != nil {
 			return nil, err
 		}
-		task, err := manager.SubmitConfiguration(definition.Component, value.Revision, current.Values, value.Values, value.RestoreFromID, userID)
+		task, err := manager.SubmitConfigurationWithConfirmation(
+			definition.Component,
+			value.Revision,
+			current.Values,
+			value.Values,
+			value.RestoreFromID,
+			value.Confirmation,
+			userID,
+		)
 		if err != nil {
 			return nil, err
 		}
@@ -1937,6 +2276,10 @@ func writeConsumeError(c *gin.Context, err error) {
 }
 
 func writeExecutionError(c *gin.Context, err error) {
+	if stableCode := softwareStableErrorCode(err); stableCode != "" {
+		core.HandleError(c, softwareStableAppError(stableCode))
+		return
+	}
 	code, message := core.ErrConfigError, "执行已确认的操作预览失败"
 	detail := err.Error()
 	var applyErr *website.WebServerConfigApplyError

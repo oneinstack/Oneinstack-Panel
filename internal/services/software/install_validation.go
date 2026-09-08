@@ -13,6 +13,7 @@ import (
 	"oneinstack/app"
 	"oneinstack/internal/models"
 	"oneinstack/internal/services/script"
+	"oneinstack/internal/services/scriptregistry"
 	"oneinstack/router/input"
 
 	"gorm.io/gorm"
@@ -119,6 +120,9 @@ func (installer *Installer) resolveInstallParams(ctx context.Context, params *in
 	}
 	if strings.TrimSpace(params.Key) == "" {
 		return nil, &InstallParameterError{Field: "key", Message: "is required"}
+	}
+	if err := resolveFirewalldInstallParams(ctx, params); err != nil {
+		return nil, err
 	}
 	if params.Version == "" {
 		return nil, &InstallParameterError{Field: "version", Message: "is required"}
@@ -292,11 +296,23 @@ func (installer *Installer) ValidateInstallParams(ctx context.Context, params *i
 // manifest are included after default resolution. Password values are marked
 // sensitive and are never returned.
 func PreviewInstallationParams(ctx context.Context, params *input.InstallParams) ([]EffectiveInstallParameter, error) {
+	values, _, err := PreviewInstallationPackage(ctx, params)
+	return values, err
+}
+
+// PreviewInstallationPackage validates the installation and returns the
+// immutable package identity that must be embedded in the operation preview.
+// Catalog-managed firewalld installations are not allowed to proceed without
+// a Center-verified remote/cache package pin.
+func PreviewInstallationPackage(ctx context.Context, params *input.InstallParams) ([]EffectiveInstallParameter, scriptregistry.PackagePin, error) {
+	if err := ensureCenterCatalogFreshForFirewalld(ctx, params); err != nil {
+		return nil, scriptregistry.PackagePin{}, err
+	}
 	provided := installParameterPresence(params)
 	installer := NewInstaller()
 	scriptInfo, err := installer.resolveInstallParams(ctx, params)
 	if err != nil {
-		return nil, err
+		return nil, scriptregistry.PackagePin{}, err
 	}
 
 	values := make([]EffectiveInstallParameter, 0, len(scriptInfo.ParameterSpecs)+4)
@@ -322,7 +338,11 @@ func PreviewInstallationParams(ctx context.Context, params *input.InstallParams)
 	}
 
 	appendValue("key", params.Key, "request", false)
-	appendValue("version", params.Version, "request", false)
+	versionSource := "request"
+	if !installParameterWasProvided(provided, "version") && !installParameterWasProvided(provided, "software-version") {
+		versionSource = "server_resolved"
+	}
+	appendValue("version", params.Version, versionSource, false)
 	portSource := "request"
 	if !installParameterWasProvided(provided, "port") {
 		portSource = "server_default"
@@ -350,9 +370,39 @@ func PreviewInstallationParams(ctx context.Context, params *input.InstallParams)
 		} else if strings.TrimSpace(spec.Default) != "" {
 			source = "manifest_default"
 		}
+		if strings.EqualFold(params.Key, "firewalld") && spec.Name == "software-version" && versionSource == "server_resolved" {
+			source = versionSource
+		}
 		appendValue(spec.Name, value, source, sensitive)
 	}
-	return values, nil
+	var pin scriptregistry.PackagePin
+	if scriptInfo.PackagePin != nil {
+		pin = *scriptInfo.PackagePin
+	}
+	if strings.EqualFold(strings.TrimSpace(params.Key), "firewalld") &&
+		(pin.Component != "firewalld" || (pin.PackageSource != "remote" && pin.PackageSource != "cache") ||
+			pin.SoftwareVersion != strings.TrimSpace(params.Version) || pin.PackageSHA256 == "") {
+		return nil, scriptregistry.PackagePin{}, errors.New("PACKAGE_RESOLVE_FAILED: firewalld requires a Center-verified package pin")
+	}
+	return values, pin, nil
+}
+
+func ensureCenterCatalogFreshForFirewalld(ctx context.Context, params *input.InstallParams) error {
+	if params == nil || !strings.EqualFold(strings.TrimSpace(params.Key), "firewalld") ||
+		!app.ONE_CONFIG.ScriptCenter.Enabled || app.DB() == nil {
+		return nil
+	}
+	status, err := GetCatalogStatus()
+	if err != nil {
+		return fmt.Errorf("CATALOG_STALE: unable to read the Panel software catalog status: %w", err)
+	}
+	if !status.Stale {
+		return nil
+	}
+	if _, err := SyncCatalogNow(ctx); err != nil {
+		return fmt.Errorf("CATALOG_STALE: Panel software catalog refresh failed: %w", err)
+	}
+	return nil
 }
 
 func installParameterEnvironmentName(spec script.ParameterSpec) string {

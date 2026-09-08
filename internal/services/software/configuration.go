@@ -7,10 +7,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 
 	"oneinstack/app"
 	"oneinstack/internal/models"
@@ -25,7 +28,7 @@ const maxConfigurationProbeBytes = 64 * 1024
 
 var (
 	ErrConfigurationConflict = errors.New("configuration revision conflict")
-	configurationKeyPattern  = regexp.MustCompile(`^[a-z][A-Za-z0-9]{0,63}$`)
+	configurationKeyPattern  = regexp.MustCompile(`^[a-z][A-Za-z0-9-]{0,63}$`)
 	configurationHashPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 )
 
@@ -42,15 +45,30 @@ type ConfigurationField struct {
 }
 
 type ComponentConfiguration struct {
-	Component     string               `json:"component"`
-	SoftwareKey   string               `json:"softwareKey"`
-	DisplayName   string               `json:"displayName"`
-	Revision      string               `json:"revision"`
-	ApplyMode     string               `json:"applyMode"`
-	Fields        []ConfigurationField `json:"fields"`
-	Values        map[string]string    `json:"values"`
-	PackageSource string               `json:"packageSource"`
-	Runtime       *ComponentRuntime    `json:"runtime,omitempty"`
+	Component         string                      `json:"component"`
+	SoftwareKey       string                      `json:"softwareKey"`
+	DisplayName       string                      `json:"displayName"`
+	Revision          string                      `json:"revision"`
+	ApplyMode         string                      `json:"applyMode"`
+	Fields            []ConfigurationField        `json:"fields"`
+	Values            map[string]string           `json:"values"`
+	PackageSource     string                      `json:"packageSource"`
+	InstallParameters []ComponentInstallParameter `json:"installParameters,omitempty"`
+	Runtime           *ComponentRuntime           `json:"runtime,omitempty"`
+}
+
+// ComponentInstallParameter exposes the non-secret effective installation
+// parameters alongside the managed runtime configuration. Installation
+// parameters are read-only here; configuration apply continues to accept only
+// the fields declared by the component configuration schema.
+type ComponentInstallParameter struct {
+	Key         string `json:"key"`
+	Type        string `json:"type"`
+	Required    bool   `json:"required,omitempty"`
+	Secret      bool   `json:"secret,omitempty"`
+	Default     string `json:"default,omitempty"`
+	Value       string `json:"value,omitempty"`
+	Description string `json:"description,omitempty"`
 }
 
 type ComponentRuntime struct {
@@ -88,6 +106,19 @@ type configurationDefinition struct {
 	ApplyMode   string
 	Fields      []ConfigurationField
 	Environment map[string]string
+}
+
+type configurationProbeCall struct {
+	done          chan struct{}
+	configuration ComponentConfiguration
+	err           error
+}
+
+var firewalldConfigurationCalls = struct {
+	sync.Mutex
+	active map[string]*configurationProbeCall
+}{
+	active: make(map[string]*configurationProbeCall),
 }
 
 // SupportsManagedConfiguration reports whether the component has a complete
@@ -210,6 +241,32 @@ func componentConfigurationDefinition(component string) (configurationDefinition
 			"timeout":         "ONEINSTACK_CONFIG_TIMEOUT",
 			"tcpKeepalive":    "ONEINSTACK_CONFIG_TCP_KEEPALIVE",
 		}
+	case "fail2ban":
+		result.ApplyMode = "reload"
+		result.Fields = []ConfigurationField{
+			{Key: "maxRetry", Label: "最大重试次数", Type: "integer", Default: "5", Min: intPointer(1), Max: intPointer(100)},
+			{Key: "findTimeSeconds", Label: "统计窗口", Type: "integer", Unit: "秒", Default: "600", Min: intPointer(1), Max: intPointer(604800)},
+			{Key: "banTimeSeconds", Label: "封禁时长", Type: "integer", Unit: "秒", Default: "3600", Min: intPointer(60), Max: intPointer(31536000)},
+			{Key: "ignoreIps", Label: "忽略 IP", Type: "string", Default: "127.0.0.1/8 ::1", Description: "空格分隔的 IP 地址或网段，这些地址不会被 Fail2ban 封禁。"},
+		}
+		result.Environment = map[string]string{
+			"maxRetry":        "ONEINSTACK_CONFIG_MAX_RETRY",
+			"findTimeSeconds": "ONEINSTACK_CONFIG_FIND_TIME",
+			"banTimeSeconds":  "ONEINSTACK_CONFIG_BAN_TIME",
+			"ignoreIps":       "ONEINSTACK_CONFIG_IGNORE_IPS",
+		}
+	case "firewalld":
+		result.ApplyMode = "reload"
+		result.Fields = []ConfigurationField{
+			{Key: "default-zone", Label: "默认区域", Type: "string", Default: "public"},
+			{Key: "log-denied", Label: "拒绝日志", Type: "select", Default: "off", Options: []string{"off", "unicast", "broadcast", "multicast", "all"}},
+			{Key: "rules", Label: "受管规则", Type: "json", Default: `{"managed":{"zones":[],"directRules":[],"icmpBlocks":[],"forwardPorts":[]},"effective":{"defaultZone":"public","logDenied":"off","zones":[],"directRules":[]}}`},
+		}
+		result.Environment = map[string]string{
+			"default-zone": "ONEINSTACK_CONFIG_DEFAULT_ZONE",
+			"log-denied":   "ONEINSTACK_CONFIG_LOG_DENIED",
+			"rules":        "ONEINSTACK_CONFIG_RULES",
+		}
 	default:
 		return configurationDefinition{}, fmt.Errorf("component %s does not support managed configuration", component)
 	}
@@ -270,6 +327,11 @@ func normalizeConfigurationValues(definition configurationDefinition, values map
 	}
 	result := make(map[string]string, len(definition.Fields))
 	for _, field := range definition.Fields {
+		if definition.Component == "firewalld" {
+			if _, exists := values[field.Key]; !exists {
+				return nil, fmt.Errorf("configuration field %s is required and must be returned by configGet", field.Key)
+			}
+		}
 		value := strings.TrimSpace(values[field.Key])
 		if value == "" && strings.TrimSpace(field.Default) != "" {
 			value = strings.TrimSpace(field.Default)
@@ -277,7 +339,7 @@ func normalizeConfigurationValues(definition configurationDefinition, values map
 		if value == "" {
 			return nil, fmt.Errorf("configuration field %s is required", field.Key)
 		}
-		if strings.ContainsAny(value, "\x00\r\n") || len(value) > 128 {
+		if strings.ContainsAny(value, "\x00\r\n") || (field.Type != "json" && len(value) > 128) || (field.Type == "json" && len(value) > 512<<10) {
 			return nil, fmt.Errorf("configuration field %s contains invalid data", field.Key)
 		}
 		switch field.Type {
@@ -329,6 +391,22 @@ func normalizeConfigurationValues(definition configurationDefinition, values map
 				}
 				value = strconv.Itoa(number)
 			}
+		case "json":
+			var decoded any
+			decoder := json.NewDecoder(strings.NewReader(value))
+			decoder.UseNumber()
+			if err := decoder.Decode(&decoded); err != nil || decoded == nil {
+				return nil, fmt.Errorf("configuration field %s must contain valid JSON", field.Key)
+			}
+			var extra any
+			if err := decoder.Decode(&extra); err != io.EOF {
+				return nil, fmt.Errorf("configuration field %s must contain one JSON value", field.Key)
+			}
+			encoded, err := json.Marshal(decoded)
+			if err != nil {
+				return nil, fmt.Errorf("configuration field %s must contain valid JSON", field.Key)
+			}
+			value = string(encoded)
 		default:
 			return nil, fmt.Errorf("configuration field %s has an unsupported type", field.Key)
 		}
@@ -365,11 +443,55 @@ func (installer *Installer) InspectServiceConfiguration(
 	component string,
 	version string,
 ) (ComponentConfiguration, error) {
+	if strings.EqualFold(strings.TrimSpace(component), "firewalld") {
+		return installer.inspectFirewalldConfiguration(ctx, component, version)
+	}
+	return installer.inspectServiceConfiguration(ctx, component, version)
+}
+
+func (installer *Installer) inspectFirewalldConfiguration(
+	ctx context.Context,
+	component string,
+	version string,
+) (ComponentConfiguration, error) {
+	key := strings.ToLower(strings.TrimSpace(component)) + "|" + strings.TrimSpace(version)
+	firewalldConfigurationCalls.Lock()
+	if existing := firewalldConfigurationCalls.active[key]; existing != nil {
+		firewalldConfigurationCalls.Unlock()
+		select {
+		case <-existing.done:
+			return cloneComponentConfiguration(existing.configuration), existing.err
+		case <-ctx.Done():
+			return ComponentConfiguration{}, ctx.Err()
+		}
+	}
+	call := &configurationProbeCall{done: make(chan struct{})}
+	firewalldConfigurationCalls.active[key] = call
+	firewalldConfigurationCalls.Unlock()
+
+	configuration, err := installer.inspectServiceConfiguration(ctx, component, version)
+	firewalldConfigurationCalls.Lock()
+	call.configuration = cloneComponentConfiguration(configuration)
+	call.err = err
+	delete(firewalldConfigurationCalls.active, key)
+	close(call.done)
+	firewalldConfigurationCalls.Unlock()
+	if err != nil {
+		return ComponentConfiguration{}, err
+	}
+	return cloneComponentConfiguration(configuration), nil
+}
+
+func (installer *Installer) inspectServiceConfiguration(
+	ctx context.Context,
+	component string,
+	version string,
+) (ComponentConfiguration, error) {
 	definition, err := componentConfigurationDefinition(component)
 	if err != nil {
 		return ComponentConfiguration{}, err
 	}
-	componentPackage, err := installer.resolveConfigurationPackage(ctx, definition, version)
+	componentPackage, err := installer.resolveConfigurationPackage(definition, version)
 	if err != nil {
 		return ComponentConfiguration{}, err
 	}
@@ -397,7 +519,64 @@ func (installer *Installer) InspectServiceConfiguration(
 		return ComponentConfiguration{}, err
 	}
 	configuration.PackageSource = componentPackage.Source
+	configuration.InstallParameters = componentInstallParameters(componentPackage.Manifest.Parameters, scriptInfo.Params)
 	return configuration, nil
+}
+
+func cloneComponentConfiguration(configuration ComponentConfiguration) ComponentConfiguration {
+	clone := configuration
+	clone.Fields = append([]ConfigurationField(nil), configuration.Fields...)
+	for index := range clone.Fields {
+		clone.Fields[index].Options = append([]string(nil), configuration.Fields[index].Options...)
+		if configuration.Fields[index].Min != nil {
+			value := *configuration.Fields[index].Min
+			clone.Fields[index].Min = &value
+		}
+		if configuration.Fields[index].Max != nil {
+			value := *configuration.Fields[index].Max
+			clone.Fields[index].Max = &value
+		}
+	}
+	if configuration.Values != nil {
+		clone.Values = make(map[string]string, len(configuration.Values))
+		for key, value := range configuration.Values {
+			clone.Values[key] = value
+		}
+	}
+	clone.InstallParameters = append([]ComponentInstallParameter(nil), configuration.InstallParameters...)
+	if configuration.Runtime != nil {
+		runtime := *configuration.Runtime
+		clone.Runtime = &runtime
+	}
+	return clone
+}
+
+func componentInstallParameters(
+	parameters []scriptregistry.Parameter,
+	values map[string]string,
+) []ComponentInstallParameter {
+	result := make([]ComponentInstallParameter, 0, len(parameters))
+	for _, parameter := range parameters {
+		envName := strings.TrimSpace(parameter.Env)
+		if envName == "" {
+			envName = strings.ToUpper(strings.NewReplacer("-", "_", ".", "_").Replace(strings.TrimSpace(parameter.Name)))
+		}
+		secret := parameter.Secret || strings.EqualFold(strings.TrimSpace(parameter.Type), "password")
+		value := ""
+		if !secret {
+			value = strings.TrimSpace(values[envName])
+		}
+		result = append(result, ComponentInstallParameter{
+			Key:         parameter.Name,
+			Type:        parameter.Type,
+			Required:    parameter.Required,
+			Secret:      secret,
+			Default:     parameter.Default,
+			Value:       value,
+			Description: parameter.Description,
+		})
+	}
+	return result
 }
 
 func (installer *Installer) ApplyServiceConfigurationTask(
@@ -417,7 +596,7 @@ func (installer *Installer) ApplyServiceConfigurationTask(
 	if !configurationHashPattern.MatchString(revision) {
 		return "", errors.New("invalid configuration revision")
 	}
-	componentPackage, err := installer.resolveConfigurationPackage(ctx, definition, version)
+	componentPackage, err := installer.resolveConfigurationPackage(definition, version)
 	if err != nil {
 		return "", err
 	}
@@ -442,8 +621,17 @@ func (installer *Installer) ApplyServiceConfigurationTask(
 	installer.setScriptParams(scriptInfo, params)
 	scriptInfo.Params["ONEINSTACK_CONFIG_OPERATION"] = "apply"
 	scriptInfo.Params["ONEINSTACK_CONFIG_REVISION"] = revision
-	for key, value := range normalized {
-		scriptInfo.Params[definition.Environment[key]] = value
+	if definition.Component == "firewalld" {
+		configFile, err := writeFirewalldConfigurationFile(normalized)
+		if err != nil {
+			return "", err
+		}
+		defer os.Remove(configFile)
+		scriptInfo.Params["ONEINSTACK_CONFIG_FILE"] = configFile
+	} else {
+		for key, value := range normalized {
+			scriptInfo.Params[definition.Environment[key]] = value
+		}
 	}
 	taskID, err := installer.scriptManager.ExecuteScriptTask(ctx, scriptInfo, params, logPath, observer)
 	if err != nil {
@@ -455,6 +643,45 @@ func (installer *Installer) ApplyServiceConfigurationTask(
 	return taskID, nil
 }
 
+func writeFirewalldConfigurationFile(values map[string]string) (string, error) {
+	payload := make(map[string]json.RawMessage, 3)
+	for _, key := range []string{"default-zone", "log-denied"} {
+		value, err := json.Marshal(values[key])
+		if err != nil {
+			return "", fmt.Errorf("encode firewalld field %s: %w", key, err)
+		}
+		payload[key] = value
+	}
+	payload["rules"] = json.RawMessage(values["rules"])
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("encode firewalld configuration: %w", err)
+	}
+	file, err := os.CreateTemp("", "oneinstack-firewalld-config-*.json")
+	if err != nil {
+		return "", fmt.Errorf("create firewalld configuration candidate: %w", err)
+	}
+	name := file.Name()
+	removeOnError := true
+	defer func() {
+		_ = file.Close()
+		if removeOnError {
+			_ = os.Remove(name)
+		}
+	}()
+	if err := file.Chmod(0600); err != nil {
+		return "", fmt.Errorf("secure firewalld configuration candidate: %w", err)
+	}
+	if _, err := file.Write(encoded); err != nil {
+		return "", fmt.Errorf("write firewalld configuration candidate: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		return "", fmt.Errorf("close firewalld configuration candidate: %w", err)
+	}
+	removeOnError = false
+	return name, nil
+}
+
 func persistManagedConfiguration(params *input.InstallParams, values map[string]string) error {
 	if params == nil || app.DB() == nil {
 		return nil
@@ -462,7 +689,44 @@ func persistManagedConfiguration(params *input.InstallParams, values map[string]
 	if strings.EqualFold(strings.TrimSpace(params.Key), "php") {
 		return persistManagedPHPConfiguration(params, values)
 	}
+	if strings.EqualFold(strings.TrimSpace(params.Key), "firewalld") {
+		return persistManagedFirewalldConfiguration(params, values)
+	}
 	return persistManagedMySQLConfiguration(params, values)
+}
+
+func persistManagedFirewalldConfiguration(params *input.InstallParams, values map[string]string) error {
+	if params == nil || app.DB() == nil {
+		return nil
+	}
+	var row models.Software
+	query := app.DB().Where("installed = ?", true).
+		Where("(`key` = ? OR component = ?)", "firewalld", "firewalld")
+	if err := query.Order("install_time DESC, id DESC").First(&row).Error; err != nil {
+		return err
+	}
+	runtime := make(map[string]string)
+	if strings.TrimSpace(row.RuntimeParamsJSON) != "" {
+		if err := json.Unmarshal([]byte(row.RuntimeParamsJSON), &runtime); err != nil {
+			return fmt.Errorf("decode firewalld runtime parameters: %w", err)
+		}
+	}
+	for key, value := range values {
+		runtime[key] = value
+	}
+	encoded, err := json.Marshal(runtime)
+	if err != nil {
+		return fmt.Errorf("encode firewalld runtime parameters: %w", err)
+	}
+	result := app.DB().Model(&models.Software{}).Where("id = ?", row.Id).
+		Updates(map[string]interface{}{"runtime_params": string(encoded)})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return errors.New("firewalld software runtime parameters were not updated")
+	}
+	return nil
 }
 
 func persistManagedPHPConfiguration(params *input.InstallParams, values map[string]string) error {
@@ -559,7 +823,6 @@ func persistManagedMySQLConfiguration(params *input.InstallParams, values map[st
 }
 
 func (installer *Installer) resolveConfigurationPackage(
-	ctx context.Context,
 	definition configurationDefinition,
 	version string,
 ) (scriptregistry.Package, error) {
@@ -567,8 +830,7 @@ func (installer *Installer) resolveConfigurationPackage(
 	if err != nil {
 		return scriptregistry.Package{}, err
 	}
-	componentPackage, err := registry.ResolveInstalled(
-		ctx,
+	componentPackage, err := registry.ResolveInstalledLocal(
 		definition.Component,
 		strings.TrimSpace(version),
 		"configGet",
@@ -604,7 +866,7 @@ func parseComponentConfiguration(
 		"apply_mode": {},
 	}
 	var runtime *ComponentRuntime
-	if definition.Component == "mysql" || definition.Component == "php" {
+	if definition.Component == "mysql" || definition.Component == "php" || definition.Component == "firewalld" {
 		runtime = &ComponentRuntime{}
 		runtimeKeys := []string{"runtime.port", "runtime.bindAddress", "runtime.installDir", "runtime.dataDir", "runtime.logDir", "runtime.runUser", "runtime.runGroup"}
 		if definition.Component == "php" {
@@ -678,11 +940,19 @@ func parseComponentConfiguration(
 			if runtime.BindAddress == "" || runtime.InstallDir == "" || runtime.DataDir == "" || runtime.LogDir == "" || runtime.RunUser == "" || runtime.RunGroup == "" {
 				return ComponentConfiguration{}, errors.New("component runtime identity is incomplete")
 			}
-		} else {
+		} else if definition.Component == "php" {
 			if runtime.Port != "" || runtime.BindAddress != "unix" || runtime.SocketPath == "" ||
 				!strings.HasPrefix(runtime.SocketPath, "/") || filepath.Clean(runtime.SocketPath) != runtime.SocketPath ||
 				runtime.InstallDir == "" || runtime.DataDir != "" || runtime.LogDir == "" || runtime.RunUser == "" || runtime.RunGroup == "" {
 				return ComponentConfiguration{}, errors.New("PHP component runtime identity is invalid")
+			}
+		} else if definition.Component == "firewalld" {
+			port, parseErr := strconv.Atoi(runtime.Port)
+			if parseErr != nil || port < 0 || port > 65535 || runtime.BindAddress == "" ||
+				runtime.InstallDir == "" || !strings.HasPrefix(runtime.InstallDir, "/") || filepath.Clean(runtime.InstallDir) != runtime.InstallDir ||
+				runtime.DataDir == "" || !strings.HasPrefix(runtime.DataDir, "/") || filepath.Clean(runtime.DataDir) != runtime.DataDir ||
+				runtime.LogDir == "" || runtime.RunUser == "" || runtime.RunGroup == "" {
+				return ComponentConfiguration{}, errors.New("firewalld component runtime identity is invalid")
 			}
 		}
 	}

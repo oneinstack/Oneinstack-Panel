@@ -25,7 +25,7 @@ var bundledCatalogVersions = map[string][]string{
 	"redis":     {"7.4.8"},
 	"webserver": {"1.28.2"},
 	"php":       {"8.1", "8.2", "8.3"},
-	"firewalld": {"1.0.0"},
+	"firewalld": {"0.3.0", "1.3.0", "2.1.1"},
 }
 
 var ErrInitialAdminExists = errors.New("administrator user already exists")
@@ -212,6 +212,9 @@ func createTables() error {
 		return err
 	}
 	if err := migrateManagedCertificates(); err != nil {
+		return err
+	}
+	if err := migrateCertificateBindingSchema(); err != nil {
 		return err
 	}
 	err = db.AutoMigrate(&models.Remark{})
@@ -728,25 +731,77 @@ func syncCenterSoftwareCatalog() error {
 			return fmt.Errorf("create %s %s catalog entry: %w", item.name, item.version, err)
 		}
 	}
-	var firewallCount int64
-	if err := db.Model(&models.Software{}).
-		Where("`key` = ? AND version = ?", "firewalld", "1.0.0").
-		Count(&firewallCount).Error; err != nil {
-		return err
+	const firewalldCatalogParametersJSON = `[
+  {"key":"status-scope","name":"状态探测范围","rule":"string","required":"false","type":"input","default":"service"},
+  {"key":"software-version","name":"软件版本","rule":"","required":"true","type":"input","default":"2.1.1"},
+  {"key":"component-state-dir","name":"组件状态目录","rule":"path","required":"false","type":"path","default":"/var/lib/oneinstack/components"},
+  {"key":"panel-port","name":"Panel端口","rule":"port","required":"false","type":"port","default":"0"},
+  {"key":"migrate-external-firewall","name":"迁移外部防火墙后端","rule":"boolean","required":"false","type":"boolean","default":"true"},
+  {"key":"uninstall-data-policy","name":"卸载数据策略","rule":"select:preserve,delete","required":"false","type":"input","default":"preserve"},
+  {"key":"uninstall-confirm-data-deletion","name":"确认删除数据","rule":"boolean","required":"false","type":"boolean","default":"false"}
+]`
+	firewalldVersions := []struct {
+		version     string
+		line        string
+		order       int
+		recommended bool
+		notes       string
+	}{
+		{version: "0.3.0", line: "0.x", order: 1, notes: "firewalld 0.x 官方仓库精确版本"},
+		{version: "1.3.0", line: "1.x", order: 2, notes: "firewalld 1.x 官方仓库精确版本"},
+		{version: "2.1.1", line: "2.x", order: 3, recommended: true, notes: "推荐版本；其余发行版按兼容版本线解析官方仓库精确版本"},
 	}
-	if firewallCount == 0 {
-		if err := db.Create(&models.Software{
-			Name:           "firewalld",
-			Key:            "firewalld",
-			Describe:       "Linux 动态防火墙管理服务",
-			Status:         models.Soft_Status_Default,
-			Resource:       "local",
-			Installed:      false,
-			Version:        "1.0.0",
-			Tags:           "安全",
-			CatalogChannel: "stable",
-		}).Error; err != nil {
-			return fmt.Errorf("create firewalld catalog entry: %w", err)
+	for _, item := range firewalldVersions {
+		var row models.Software
+		result := db.Where("`key` = ? AND version = ?", "firewalld", item.version).First(&row)
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			row = models.Software{
+				Name: "firewalld", Key: "firewalld", Component: "firewalld",
+				Describe: "Linux 动态防火墙管理服务", Status: models.Soft_Status_Default,
+				Resource: "local", Installed: false, Version: item.version, Tags: "安全",
+			}
+		} else if result.Error != nil {
+			return fmt.Errorf("read firewalld catalog entry: %w", result.Error)
+		}
+		updates := map[string]any{
+			"name": "firewalld", "component": "firewalld", "service_name": "firewalld",
+			"runtime_group": "firewall", "manage_scopes": `["security"]`,
+			"describe": "Linux 动态防火墙管理服务", "tags": "安全", "resource": "local",
+			"catalog_managed": true, "catalog_visible": true, "installable": true,
+			"recommended": item.recommended, "version_line": item.line, "allow_custom_version": true,
+			"catalog_channel": "stable", "catalog_order": 50, "version_order": item.order,
+			"params": firewalldCatalogParametersJSON, "release_notes": item.notes,
+		}
+		if row.Id == 0 {
+			row.Name = "firewalld"
+			row.Key = "firewalld"
+			row.Component = "firewalld"
+			row.Version = item.version
+			row.Describe = "Linux 动态防火墙管理服务"
+			row.Status = models.Soft_Status_Default
+			row.Resource = "local"
+			row.Tags = "安全"
+			row.ServiceName = "firewalld"
+			row.RuntimeGroup = "firewall"
+			row.ManageScopesJSON = `["security"]`
+			row.CatalogManaged = true
+			row.CatalogVisible = true
+			row.Installable = true
+			row.Recommended = item.recommended
+			row.VersionLine = item.line
+			row.AllowCustomVersion = true
+			row.CatalogChannel = "stable"
+			row.CatalogOrder = 50
+			row.VersionOrder = item.order
+			row.Params = firewalldCatalogParametersJSON
+			row.ReleaseNotes = item.notes
+			if err := db.Create(&row).Error; err != nil {
+				return fmt.Errorf("create firewalld catalog entry %s: %w", item.version, err)
+			}
+			continue
+		}
+		if err := db.Model(&models.Software{}).Where("id = ?", row.Id).Updates(updates).Error; err != nil {
+			return fmt.Errorf("normalize firewalld catalog entry %s: %w", item.version, err)
 		}
 	}
 	return nil

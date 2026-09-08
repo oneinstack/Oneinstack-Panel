@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
+
+	"oneinstack/internal/services/scriptregistry"
 )
 
 type InstallParams struct {
@@ -19,6 +22,14 @@ type InstallParams struct {
 	// supplied values from manifest defaults. It is never accepted from or
 	// serialized into the HTTP contract.
 	ExplicitParameters map[string]bool `json:"-"`
+	// ResolvedPackage is populated only by the encrypted operation-preview
+	// payload. It pins execution to the package already resolved and verified.
+	ResolvedPackage *scriptregistry.PackagePin `json:"resolvedPackage,omitempty"`
+	// InstallMode and OfflinePackageID are server-owned fields. They are set by
+	// the installation entry point and are never accepted from JSON.
+	InstallMode        string `json:"-"`
+	OfflinePackageID   string `json:"-"`
+	OfflinePackagePath string `json:"-"`
 }
 
 // UnmarshalJSON keeps the legacy flat install form compatible with component
@@ -31,12 +42,13 @@ func (p *InstallParams) UnmarshalJSON(data []byte) error {
 	// can declare a parameter as boolean or integer, and older clients may send
 	// those values using their native JSON types.
 	var decoded struct {
-		Key        string                     `json:"key"`
-		Version    string                     `json:"version"`
-		Port       string                     `json:"port"`
-		Username   string                     `json:"username"`
-		Pwd        string                     `json:"pwd"`
-		Parameters map[string]json.RawMessage `json:"parameters,omitempty"`
+		Key             string                     `json:"key"`
+		Version         string                     `json:"version"`
+		Port            string                     `json:"port"`
+		Username        string                     `json:"username"`
+		Pwd             string                     `json:"pwd"`
+		Parameters      map[string]json.RawMessage `json:"parameters,omitempty"`
+		ResolvedPackage *scriptregistry.PackagePin `json:"resolvedPackage,omitempty"`
 	}
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		return err
@@ -47,16 +59,22 @@ func (p *InstallParams) UnmarshalJSON(data []byte) error {
 	}
 	parameters := make(map[string]string, len(decoded.Parameters)+len(values))
 	for key, raw := range decoded.Parameters {
+		if isServerOwnedInstallParameter(key) {
+			return fmt.Errorf("install parameter %s is server-managed", key)
+		}
 		value, err := decodeInstallParameterValue(raw)
 		if err != nil {
 			return fmt.Errorf("install parameter %s must be a string, boolean, or number", key)
 		}
 		parameters[key] = value
 	}
-	known := map[string]bool{"key": true, "version": true, "port": true, "username": true, "pwd": true, "parameters": true}
+	known := map[string]bool{"key": true, "version": true, "port": true, "username": true, "pwd": true, "parameters": true, "resolvedPackage": true}
 	for key, raw := range values {
 		if known[key] {
 			continue
+		}
+		if isServerOwnedInstallParameter(key) {
+			return fmt.Errorf("install parameter %s is server-managed", key)
 		}
 		value, err := decodeInstallParameterValue(raw)
 		if err != nil {
@@ -65,14 +83,20 @@ func (p *InstallParams) UnmarshalJSON(data []byte) error {
 		parameters[key] = value
 	}
 	*p = InstallParams{
-		Key:        decoded.Key,
-		Version:    decoded.Version,
-		Port:       decoded.Port,
-		Username:   decoded.Username,
-		Pwd:        decoded.Pwd,
-		Parameters: parameters,
+		Key:             decoded.Key,
+		Version:         decoded.Version,
+		Port:            decoded.Port,
+		Username:        decoded.Username,
+		Pwd:             decoded.Pwd,
+		Parameters:      parameters,
+		ResolvedPackage: decoded.ResolvedPackage,
 	}
 	return nil
+}
+
+func isServerOwnedInstallParameter(value string) bool {
+	compact := strings.NewReplacer("-", "", "_", "", ".", "", " ", "").Replace(strings.ToLower(strings.TrimSpace(value)))
+	return compact == "installmode" || compact == "offlinepackageid"
 }
 
 func decodeInstallParameterValue(raw json.RawMessage) (string, error) {

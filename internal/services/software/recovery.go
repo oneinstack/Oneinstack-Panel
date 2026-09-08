@@ -141,6 +141,8 @@ func recoveryProcessRunning(ctx context.Context, component string) (bool, error)
 		processNames = []string{"mysqld", "mysqld_safe"}
 	case "redis":
 		processNames = []string{"redis-server"}
+	case "firewalld":
+		processNames = []string{"firewalld"}
 	case "php":
 		processNames = []string{"php-fpm", "php-fpm8", "php-fpm7"}
 	default:

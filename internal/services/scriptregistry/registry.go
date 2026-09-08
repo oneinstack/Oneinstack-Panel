@@ -32,6 +32,27 @@ type Registry struct {
 	host    Host
 }
 
+type registryError struct {
+	code   string
+	detail string
+	cause  error
+}
+
+func (e *registryError) Error() string {
+	if strings.TrimSpace(e.detail) == "" {
+		return e.code
+	}
+	return e.code + ": " + e.detail
+}
+
+func (e *registryError) Unwrap() error { return e.cause }
+
+func (e *registryError) ErrorCode() string { return e.code }
+
+func newRegistryError(code, detail string, cause error) error {
+	return &registryError{code: strings.TrimSpace(code), detail: strings.TrimSpace(detail), cause: cause}
+}
+
 var ErrBatchUnsupported = errors.New("script center batch endpoint is unsupported")
 
 const packageBatchLimit = 512
@@ -84,6 +105,86 @@ func New(centerConfig config.ScriptCenter) (*Registry, error) {
 	}, nil
 }
 
+// ImportOfflineBundle validates and places an uploaded signed-package-shaped
+// bundle into the local component cache. It never contacts Center or a system
+// package repository. The returned digest is the immutable internal Bundle ID
+// used by the software task and by ResolveFixed during execution.
+func (r *Registry) ImportOfflineBundle(
+	ctx context.Context,
+	component string,
+	softwareVersion string,
+	source io.Reader,
+) (PackagePin, error) {
+	if r == nil {
+		return PackagePin{}, errors.New("script registry is not initialized")
+	}
+	if err := ctx.Err(); err != nil {
+		return PackagePin{}, err
+	}
+	component = strings.ToLower(strings.TrimSpace(component))
+	softwareVersion = strings.TrimSpace(softwareVersion)
+	if component == "" || softwareVersion == "" || source == nil {
+		return PackagePin{}, newRegistryError("PACKAGE_RESOLVE_FAILED", "offline bundle identity is incomplete", nil)
+	}
+	maxPackageBytes := r.config.MaxPackageBytes
+	if maxPackageBytes < 1 {
+		maxPackageBytes = 64 << 20
+	}
+	maxExpandedBytes := r.config.MaxExpandedBytes
+	if maxExpandedBytes < 1 {
+		maxExpandedBytes = 256 << 20
+	}
+	if err := os.MkdirAll(r.config.CachePath, 0750); err != nil {
+		return PackagePin{}, fmt.Errorf("create offline bundle cache: %w", err)
+	}
+	temporary, err := os.CreateTemp(r.config.CachePath, "offline-bundle-*.tar.gz")
+	if err != nil {
+		return PackagePin{}, fmt.Errorf("create offline bundle staging file: %w", err)
+	}
+	temporaryName := temporary.Name()
+	defer os.Remove(temporaryName)
+	if err := temporary.Chmod(0640); err != nil {
+		_ = temporary.Close()
+		return PackagePin{}, fmt.Errorf("secure offline bundle staging file: %w", err)
+	}
+	hash := sha256.New()
+	size, copyErr := io.Copy(io.MultiWriter(temporary, hash), io.LimitReader(source, maxPackageBytes+1))
+	closeErr := temporary.Close()
+	if copyErr != nil {
+		return PackagePin{}, fmt.Errorf("read offline bundle: %w", copyErr)
+	}
+	if closeErr != nil {
+		return PackagePin{}, fmt.Errorf("close offline bundle staging file: %w", closeErr)
+	}
+	if size < 1 || size > maxPackageBytes {
+		return PackagePin{}, newRegistryError("PACKAGE_UNAVAILABLE", "offline bundle size is outside the configured limit", nil)
+	}
+	digest := hex.EncodeToString(hash.Sum(nil))
+	destination := filepath.Join(r.config.CachePath, "components", component, "offline", digest)
+	if err := os.MkdirAll(filepath.Dir(destination), 0750); err != nil {
+		return PackagePin{}, fmt.Errorf("create offline bundle destination: %w", err)
+	}
+	manifest, err := extractPackage(temporaryName, destination, maxExpandedBytes)
+	if err != nil {
+		return PackagePin{}, newRegistryError("PACKAGE_UNAVAILABLE", "offline bundle contents are invalid", err)
+	}
+	if manifest.Component.ID != component || !manifest.supportsSoftwareVersion(softwareVersion) || !compatibleWithHost(manifest, r.host) {
+		_ = os.RemoveAll(destination)
+		return PackagePin{}, newRegistryError("HOST_PLATFORM_UNSUPPORTED", "offline bundle does not match the requested version or host", nil)
+	}
+	return PackagePin{
+		Component:       component,
+		SoftwareVersion: softwareVersion,
+		Channel:         manifest.Component.Channel,
+		ResolvedVersion: manifest.Component.Version,
+		PackageSource:   "offline",
+		PackageSHA256:   digest,
+		TargetOS:        r.host.SystemID,
+		TargetOSVersion: r.host.SystemVersion,
+		TargetArch:      r.host.Architecture,
+	}, nil
+}
+
 func (r *Registry) Resolve(ctx context.Context, component, softwareVersion string) (Package, error) {
 	var remoteErr error
 	if r.config.Enabled {
@@ -93,6 +194,12 @@ func (r *Registry) Resolve(ctx context.Context, component, softwareVersion strin
 		}
 		remoteErr = err
 	}
+	if strings.EqualFold(strings.TrimSpace(component), "firewalld") {
+		if remoteErr != nil {
+			return Package{}, remoteErr
+		}
+		return Package{}, newRegistryError("CENTER_UNAVAILABLE", "firewalld is catalog-managed and requires a published Center package", nil)
+	}
 	pkg, bundledErr := r.resolveBundled(component, softwareVersion)
 	if bundledErr == nil {
 		return pkg, nil
@@ -101,6 +208,57 @@ func (r *Registry) Resolve(ctx context.Context, component, softwareVersion strin
 		return Package{}, fmt.Errorf("remote package unavailable (%v); bundled package unavailable: %w", remoteErr, bundledErr)
 	}
 	return Package{}, bundledErr
+}
+
+// ResolveFixed resolves only the package captured by an installation preview.
+// It never contacts Center and never selects another package or digest.
+func (r *Registry) ResolveFixed(component, softwareVersion string, pin PackagePin) (Package, error) {
+	component = strings.ToLower(strings.TrimSpace(component))
+	if component == "" || pin.Component != component ||
+		strings.TrimSpace(pin.SoftwareVersion) != strings.TrimSpace(softwareVersion) ||
+		strings.TrimSpace(pin.ResolvedVersion) == "" ||
+		(strings.TrimSpace(pin.PackageSource) != "remote" && strings.TrimSpace(pin.PackageSource) != "cache" && strings.TrimSpace(pin.PackageSource) != "offline") {
+		return Package{}, newRegistryError("PACKAGE_RESOLVE_FAILED", "fixed package identity does not match the installation request", nil)
+	}
+	if len(pin.PackageSHA256) != sha256.Size*2 {
+		return Package{}, newRegistryError("PACKAGE_CHECKSUM_MISMATCH", "fixed package digest is invalid", nil)
+	}
+	if _, err := hex.DecodeString(pin.PackageSHA256); err != nil {
+		return Package{}, newRegistryError("PACKAGE_CHECKSUM_MISMATCH", "fixed package digest is invalid", err)
+	}
+	root := filepath.Join(r.config.CachePath, "components", component, pin.ResolvedVersion, strings.ToLower(pin.PackageSHA256))
+	if strings.EqualFold(strings.TrimSpace(pin.PackageSource), "offline") {
+		root = filepath.Join(r.config.CachePath, "components", component, "offline", strings.ToLower(pin.PackageSHA256))
+	}
+	manifest, err := validateDirectory(root)
+	if err != nil {
+		return Package{}, newRegistryError("PACKAGE_UNAVAILABLE", "the preview-fixed package is no longer cached", err)
+	}
+	if manifest.Component.ID != component || manifest.Component.Version != pin.ResolvedVersion ||
+		!manifest.supportsSoftwareVersion(softwareVersion) || !compatibleWithHost(manifest, r.host) {
+		return Package{}, newRegistryError("HOST_PLATFORM_UNSUPPORTED", "fixed package manifest no longer matches the installation request", nil)
+	}
+	if pin.Channel != "" && manifest.Component.Channel != pin.Channel {
+		return Package{}, newRegistryError("PACKAGE_RESOLVE_FAILED", "fixed package channel no longer matches the preview", nil)
+	}
+	if (pin.TargetOS != "" && !strings.EqualFold(pin.TargetOS, r.host.SystemID)) ||
+		(pin.TargetOSVersion != "" && pin.TargetOSVersion != r.host.SystemVersion) ||
+		(pin.TargetArch != "" && !strings.EqualFold(pin.TargetArch, r.host.Architecture)) {
+		return Package{}, newRegistryError("HOST_PLATFORM_UNSUPPORTED", "fixed package target platform no longer matches the host", nil)
+	}
+	metadata := Metadata{
+		Manifest:             manifest,
+		SHA256:               pin.PackageSHA256,
+		Signature:            pin.Signature,
+		KeyID:                pin.KeyID,
+		DownloadURL:          pin.PackageURL,
+		PublisherFingerprint: pin.PublisherFingerprint,
+		TargetOS:             pin.TargetOS,
+		TargetOSVersion:      pin.TargetOSVersion,
+		TargetArch:           pin.TargetArch,
+		ReleaseRevision:      pin.ReleaseRevision,
+	}
+	return Package{Manifest: manifest, Root: root, Source: pin.PackageSource, Metadata: metadata}, nil
 }
 
 // ResolveChannel resolves a new installation from the channel assigned to the
@@ -364,17 +522,21 @@ func (r *Registry) ResolveInstalled(
 	softwareVersion string,
 	requiredActions ...string,
 ) (Package, error) {
+	cached, cacheErr := r.resolveCachedInstalled(component, softwareVersion, requiredActions)
+	if cacheErr == nil {
+		return cached, nil
+	}
+
+	// Lifecycle and configuration probes should use the package that was
+	// already verified for the installed runtime before contacting Center.
+	// Besides avoiding an unnecessary network round trip, this keeps a slow or
+	// temporarily unavailable Center from delaying local service inspection.
 	current, currentErr := r.Resolve(ctx, component, softwareVersion)
 	if currentErr == nil && packageSupportsActions(current.Manifest, requiredActions) {
 		return current, nil
 	}
 	if currentErr == nil {
 		currentErr = fmt.Errorf("configured-channel package does not provide the required actions")
-	}
-
-	cached, cacheErr := r.resolveCachedInstalled(component, softwareVersion, requiredActions)
-	if cacheErr == nil {
-		return cached, nil
 	}
 
 	var fallbackErr error
@@ -396,6 +558,12 @@ func (r *Registry) ResolveInstalled(
 		}
 	}
 
+	if strings.EqualFold(strings.TrimSpace(component), "firewalld") {
+		return Package{}, fmt.Errorf(
+			"no verified package for installed firewalld %s (configured channel: %v; cache: %v; fallback channels: %v)",
+			softwareVersion, currentErr, cacheErr, fallbackErr,
+		)
+	}
 	bundled, bundledErr := r.resolveBundledInstalled(component, softwareVersion, requiredActions)
 	if bundledErr == nil {
 		return bundled, nil
@@ -429,6 +597,9 @@ func (r *Registry) ResolveInstalledUninstall(
 	if cacheErr == nil {
 		return cached, nil
 	}
+	if strings.EqualFold(strings.TrimSpace(component), "firewalld") {
+		return Package{}, fmt.Errorf("no verified uninstall package for installed firewalld %s (lifecycle: %v; cache: %v)", softwareVersion, err, cacheErr)
+	}
 	bundled, bundledErr := r.resolveBundledInstalled(component, softwareVersion, []string{"uninstall"}, false)
 	if bundledErr == nil {
 		return bundled, nil
@@ -456,6 +627,9 @@ func (r *Registry) ResolveInstalledLocal(
 	cached, cacheErr := r.resolveCachedInstalled(component, softwareVersion, requiredActions)
 	if cacheErr == nil {
 		return cached, nil
+	}
+	if strings.EqualFold(strings.TrimSpace(component), "firewalld") {
+		return Package{}, fmt.Errorf("no compatible local package for installed firewalld %s (cache: %v)", softwareVersion, cacheErr)
 	}
 	bundled, bundledErr := r.resolveBundledInstalled(component, softwareVersion, requiredActions)
 	if bundledErr == nil {
@@ -510,7 +684,7 @@ func (r *Registry) resolveCachedInstalled(
 			}
 			if selected.Root == "" ||
 				compareVersions(manifest.Component.Version, selected.Manifest.Component.Version) > 0 {
-				selected = Package{Manifest: manifest, Root: root, Source: "cache"}
+				selected = Package{Manifest: manifest, Root: root, Source: "cache", Metadata: Metadata{Manifest: manifest, SHA256: digestEntry.Name()}}
 			}
 		}
 	}
@@ -551,7 +725,7 @@ func (r *Registry) resolveBundledInstalled(
 		}
 		if selected.Root == "" ||
 			compareVersions(manifest.Component.Version, selected.Manifest.Component.Version) > 0 {
-			selected = Package{Manifest: manifest, Root: root, Source: "bundled"}
+			selected = Package{Manifest: manifest, Root: root, Source: "bundled", Metadata: Metadata{Manifest: manifest}}
 		}
 	}
 	if selected.Root == "" {
@@ -598,7 +772,10 @@ func (r *Registry) resolveRemoteMetadata(ctx context.Context, component, softwar
 	request.Header.Set("Content-Type", "application/json")
 	response, err := r.client.Do(request)
 	if err != nil {
-		return Metadata{}, fmt.Errorf("resolve package: %w", err)
+		if errors.Is(err, context.DeadlineExceeded) {
+			return Metadata{}, newRegistryError("CENTER_TIMEOUT", "Center resolve request timed out", err)
+		}
+		return Metadata{}, newRegistryError("CENTER_UNAVAILABLE", "Center resolve request failed", err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
@@ -611,10 +788,10 @@ func (r *Registry) resolveRemoteMetadata(ctx context.Context, component, softwar
 	if metadata.Manifest.Component.ID != component ||
 		!metadata.Manifest.supportsSoftwareVersion(softwareVersion) ||
 		metadata.Manifest.Component.Channel != r.config.Channel {
-		return Metadata{}, fmt.Errorf("script center returned a package that does not match the request")
+		return Metadata{}, newRegistryError("PACKAGE_RESOLVE_FAILED", "Center returned package metadata that does not match the request", nil)
 	}
 	if err := metadata.Manifest.validate(); err != nil {
-		return Metadata{}, err
+		return Metadata{}, newRegistryError("PACKAGE_RESOLVE_FAILED", "Center returned an invalid package manifest", err)
 	}
 	if err := r.verifyMetadata(metadata); err != nil {
 		return Metadata{}, err
@@ -629,45 +806,54 @@ func (r *Registry) checkReady(ctx context.Context) error {
 	}
 	response, err := r.client.Do(request)
 	if err != nil {
-		return fmt.Errorf("script center connectivity check failed: %w", err)
+		if errors.Is(err, context.DeadlineExceeded) {
+			return newRegistryError("CENTER_TIMEOUT", "Center readiness check timed out", err)
+		}
+		return newRegistryError("CENTER_UNAVAILABLE", "Center readiness check failed", err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("script center is not ready: HTTP %d", response.StatusCode)
+		if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
+			return newRegistryError("CENTER_AUTH_FAILED", "Center rejected the Panel identity", nil)
+		}
+		if response.StatusCode == http.StatusRequestTimeout || response.StatusCode == http.StatusGatewayTimeout {
+			return newRegistryError("CENTER_TIMEOUT", "Center readiness check timed out", nil)
+		}
+		return newRegistryError("CENTER_UNAVAILABLE", "Center is not ready", nil)
 	}
 	return nil
 }
 
 func (r *Registry) verifyMetadata(metadata Metadata) error {
 	if len(metadata.SHA256) != sha256.Size*2 {
-		return fmt.Errorf("invalid package digest")
+		return newRegistryError("PACKAGE_CHECKSUM_MISMATCH", "Center returned an invalid package digest", nil)
 	}
 	if _, err := hex.DecodeString(metadata.SHA256); err != nil {
-		return fmt.Errorf("invalid package digest: %w", err)
+		return newRegistryError("PACKAGE_CHECKSUM_MISMATCH", "Center returned an invalid package digest", err)
 	}
 	if metadata.Size < 1 || metadata.Size > r.config.MaxPackageBytes {
-		return fmt.Errorf("package size is outside the configured limit")
+		return newRegistryError("PACKAGE_UNAVAILABLE", "Center package size is outside the configured limit", nil)
 	}
 	publicKeyEncoded, trusted := r.config.TrustedKeys[metadata.KeyID]
 	if !trusted {
-		return fmt.Errorf("package signing key %s is not trusted", metadata.KeyID)
+		return newRegistryError("PACKAGE_SIGNATURE_INVALID", "Center package signing key is not trusted", nil)
 	}
 	publicKey, err := base64.StdEncoding.DecodeString(publicKeyEncoded)
 	if err != nil || len(publicKey) != ed25519.PublicKeySize {
-		return fmt.Errorf("trusted key %s is invalid", metadata.KeyID)
+		return newRegistryError("PACKAGE_SIGNATURE_INVALID", "Center trusted signing key is invalid", err)
 	}
 	signature, err := base64.StdEncoding.DecodeString(metadata.Signature)
 	if err != nil {
-		return fmt.Errorf("decode package signature: %w", err)
+		return newRegistryError("PACKAGE_SIGNATURE_INVALID", "Center package signature is invalid", err)
 	}
 	component := metadata.Manifest.Component
 	payload := signingPayload(component.ID, component.Version, metadata.SHA256, metadata.Size)
 	if !ed25519.Verify(ed25519.PublicKey(publicKey), payload, signature) {
-		return fmt.Errorf("package signature verification failed")
+		return newRegistryError("PACKAGE_SIGNATURE_INVALID", "Center package signature verification failed", nil)
 	}
 	downloadURL, err := url.Parse(metadata.DownloadURL)
 	if err != nil || downloadURL.Scheme != r.baseURL.Scheme || !strings.EqualFold(downloadURL.Host, r.baseURL.Host) {
-		return fmt.Errorf("package download URL is outside the configured script center")
+		return newRegistryError("PACKAGE_RESOLVE_FAILED", "Center package download URL is outside the configured Center", err)
 	}
 	return nil
 }
@@ -677,7 +863,8 @@ func (r *Registry) downloadAndPrepare(ctx context.Context, metadata Metadata) (P
 	destination := filepath.Join(r.config.CachePath, "components", component.ID, component.Version, metadata.SHA256)
 	if manifest, err := validateDirectory(destination); err == nil &&
 		manifest.Component.ID == component.ID && manifest.Component.Version == component.Version {
-		return Package{Manifest: manifest, Root: destination, Source: "cache"}, nil
+		metadata.Manifest = manifest
+		return Package{Manifest: manifest, Root: destination, Source: "cache", Metadata: metadata}, nil
 	}
 	if err := os.MkdirAll(filepath.Dir(destination), 0750); err != nil {
 		return Package{}, fmt.Errorf("create script cache directory: %w", err)
@@ -701,41 +888,48 @@ func (r *Registry) downloadAndPrepare(ctx context.Context, metadata Metadata) (P
 	response, err := r.client.Do(request)
 	if err != nil {
 		archive.Close()
-		return Package{}, fmt.Errorf("download package: %w", err)
+		if errors.Is(err, context.DeadlineExceeded) {
+			return Package{}, newRegistryError("CENTER_TIMEOUT", "Center package download timed out", err)
+		}
+		return Package{}, newRegistryError("PACKAGE_DOWNLOAD_FAILED", "Center package download failed", err)
 	}
 	if response.StatusCode != http.StatusOK {
 		response.Body.Close()
 		archive.Close()
-		return Package{}, fmt.Errorf("download package: HTTP %d", response.StatusCode)
+		if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
+			return Package{}, newRegistryError("CENTER_AUTH_FAILED", "Center rejected the package download", nil)
+		}
+		return Package{}, newRegistryError("PACKAGE_DOWNLOAD_FAILED", "Center package download returned an unexpected response", nil)
 	}
 	hash := sha256.New()
 	size, copyErr := io.Copy(io.MultiWriter(archive, hash), io.LimitReader(response.Body, r.config.MaxPackageBytes+1))
 	bodyCloseErr := response.Body.Close()
 	archiveCloseErr := archive.Close()
 	if copyErr != nil {
-		return Package{}, fmt.Errorf("download package: %w", copyErr)
+		return Package{}, newRegistryError("PACKAGE_DOWNLOAD_FAILED", "Center package download could not be read", copyErr)
 	}
 	if bodyCloseErr != nil {
-		return Package{}, fmt.Errorf("close package response: %w", bodyCloseErr)
+		return Package{}, newRegistryError("PACKAGE_DOWNLOAD_FAILED", "Center package response could not be closed", bodyCloseErr)
 	}
 	if archiveCloseErr != nil {
-		return Package{}, fmt.Errorf("close package download: %w", archiveCloseErr)
+		return Package{}, newRegistryError("PACKAGE_DOWNLOAD_FAILED", "Center package download could not be finalized", archiveCloseErr)
 	}
 	if size != metadata.Size || size > r.config.MaxPackageBytes {
-		return Package{}, fmt.Errorf("downloaded package size does not match signed metadata")
+		return Package{}, newRegistryError("PACKAGE_CHECKSUM_MISMATCH", "downloaded package size does not match Center metadata", nil)
 	}
 	if actual := hex.EncodeToString(hash.Sum(nil)); actual != strings.ToLower(metadata.SHA256) {
-		return Package{}, fmt.Errorf("downloaded package digest does not match signed metadata")
+		return Package{}, newRegistryError("PACKAGE_CHECKSUM_MISMATCH", "downloaded package digest does not match Center metadata", nil)
 	}
 	manifest, err := extractPackage(archiveName, destination, r.config.MaxExpandedBytes)
 	if err != nil {
-		return Package{}, err
+		return Package{}, newRegistryError("PACKAGE_UNAVAILABLE", "downloaded package contents are invalid", err)
 	}
 	if manifest.Component.ID != component.ID || manifest.Component.Version != component.Version {
 		_ = os.RemoveAll(destination)
-		return Package{}, fmt.Errorf("package manifest does not match signed metadata")
+		return Package{}, newRegistryError("PACKAGE_RESOLVE_FAILED", "downloaded package manifest does not match Center metadata", nil)
 	}
-	return Package{Manifest: manifest, Root: destination, Source: "remote"}, nil
+	metadata.Manifest = manifest
+	return Package{Manifest: manifest, Root: destination, Source: "remote", Metadata: metadata}, nil
 }
 
 func (r *Registry) resolveBundled(component, softwareVersion string) (Package, error) {
@@ -759,7 +953,7 @@ func (r *Registry) resolveBundled(component, softwareVersion string) (Package, e
 			continue
 		}
 		if selected.Root == "" || compareVersions(manifest.Component.Version, selected.Manifest.Component.Version) > 0 {
-			selected = Package{Manifest: manifest, Root: root, Source: "bundled"}
+			selected = Package{Manifest: manifest, Root: root, Source: "bundled", Metadata: Metadata{Manifest: manifest}}
 		}
 	}
 	if selected.Root == "" {
@@ -775,9 +969,40 @@ func (r *Registry) endpoint(apiPath string) string {
 func decodeAPIError(response *http.Response) error {
 	var envelope APIError
 	if err := decodeLimitedJSON(response.Body, &envelope); err == nil && envelope.Error.Message != "" {
-		return errors.New(envelope.Error.Message)
+		return newRegistryError(stableCenterErrorCode(envelope.Error.Code, response.StatusCode), envelope.Error.Message, nil)
 	}
-	return fmt.Errorf("script center returned HTTP %d", response.StatusCode)
+	return newRegistryError(stableCenterErrorCode("", response.StatusCode), "Center returned an unexpected error response", nil)
+}
+
+func stableCenterErrorCode(code string, status int) string {
+	switch strings.ToLower(strings.TrimSpace(code)) {
+	case "package_unpublished", "not_found":
+		return "PACKAGE_UNPUBLISHED"
+	case "host_platform_unsupported":
+		return "HOST_PLATFORM_UNSUPPORTED"
+	case "package_resolve_failed":
+		return "PACKAGE_RESOLVE_FAILED"
+	case "package_unavailable":
+		return "PACKAGE_UNAVAILABLE"
+	case "unauthorized", "authentication_failed", "auth_failed":
+		return "CENTER_AUTH_FAILED"
+	case "not_ready", "service_unavailable":
+		return "CENTER_UNAVAILABLE"
+	case "timeout", "request_timeout":
+		return "CENTER_TIMEOUT"
+	}
+	switch status {
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return "CENTER_AUTH_FAILED"
+	case http.StatusRequestTimeout, http.StatusGatewayTimeout:
+		return "CENTER_TIMEOUT"
+	case http.StatusNotFound:
+		return "PACKAGE_UNPUBLISHED"
+	case http.StatusServiceUnavailable:
+		return "CENTER_UNAVAILABLE"
+	default:
+		return "PACKAGE_RESOLVE_FAILED"
+	}
 }
 
 func decodeLimitedJSON(reader io.Reader, destination any) error {

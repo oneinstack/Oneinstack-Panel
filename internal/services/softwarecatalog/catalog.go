@@ -362,7 +362,7 @@ func (m *Manager) apply(document Document, packageVersions, publishedPackageVers
 			}
 			productCount++
 			productHasInstallableVersion := false
-			parameters, err := json.Marshal(product.Parameters)
+			parameters, err := json.Marshal(filterServerOwnedParameters(product.Parameters))
 			if err != nil {
 				return err
 			}
@@ -699,6 +699,21 @@ func (m *Manager) refreshPackageAvailability(ctx context.Context, channel, revis
 	}
 	counts.InstallableProductCount = len(installableProducts)
 	return counts, nil
+}
+
+func filterServerOwnedParameters(parameters []Parameter) []Parameter {
+	if len(parameters) == 0 {
+		return parameters
+	}
+	filtered := make([]Parameter, 0, len(parameters))
+	for _, parameter := range parameters {
+		compact := strings.NewReplacer("-", "", "_", "", ".", "", " ", "").Replace(strings.ToLower(strings.TrimSpace(parameter.Key)))
+		if compact == "installmode" || compact == "offlinepackageid" {
+			continue
+		}
+		filtered = append(filtered, parameter)
+	}
+	return filtered
 }
 
 func packageVersionKey(component, softwareVersion, channel string) string {

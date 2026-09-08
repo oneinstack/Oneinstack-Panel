@@ -78,6 +78,7 @@ type Software struct {
 	UrlPath                 string    `json:"url_path"`
 	InstallVersion          string    `json:"install_version"`
 	InstalledPackageVersion string    `json:"installedPackageVersion" gorm:"size:64"`
+	RuntimeVersion          string    `json:"runtimeVersion,omitempty" gorm:"size:64"`
 	LatestPackageVersion    string    `json:"latestPackageVersion" gorm:"size:64"`
 	IsUpdate                bool      `json:"is_update"`
 	CatalogManaged          bool      `json:"catalog_managed" gorm:"not null;default:false;index"`

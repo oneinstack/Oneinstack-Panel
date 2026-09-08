@@ -3,7 +3,9 @@ package software
 import (
 	"errors"
 	"net/http"
+	"strings"
 
+	"oneinstack/app"
 	"oneinstack/core"
 	"oneinstack/internal/i18n"
 	"oneinstack/internal/models"
@@ -46,15 +48,109 @@ func RunInstallation(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusAccepted, core.SuccessResponseForContext(c, gin.H{
-		"taskId":      task.ID,
-		"installName": task.ID,
-		"operation":   task.Operation,
-		"component":   task.Component,
-		"status":      task.Status,
-		"progress":    task.Progress,
-		"statusUrl":   "/v1/soft/tasks/" + task.ID,
-		"streamUrl":   "/v1/soft/tasks/" + task.ID + "/events",
+		"taskId":        task.ID,
+		"installName":   task.ID,
+		"operation":     task.Operation,
+		"component":     task.Component,
+		"installSource": taskInstallSource(task),
+		"summary":       "在线安装任务已创建",
+		"status":        task.Status,
+		"progress":      task.Progress,
+		"statusUrl":     "/v1/soft/tasks/" + task.ID,
+		"streamUrl":     "/v1/soft/tasks/" + task.ID + "/events",
 	}))
+}
+
+// RunOfflineInstallation accepts a Fail2ban component bundle and visible
+// installation fields. The server derives the offline mode and bundle ID;
+// neither is accepted as a client-provided parameter.
+func RunOfflineInstallation(c *gin.Context) {
+	maxPackageBytes := app.ONE_CONFIG.ScriptCenter.MaxPackageBytes
+	if maxPackageBytes < 1 {
+		maxPackageBytes = 64 << 20
+	}
+	if err := c.Request.ParseMultipartForm(maxPackageBytes); err != nil {
+		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "离线安装包请求格式不正确"))
+		return
+	}
+	for _, key := range []string{"install-mode", "installMode", "offline-package-id", "offlinePackageID"} {
+		if strings.TrimSpace(c.PostForm(key)) != "" {
+			core.HandleError(c, core.NewError(core.ErrInvalidParameter, key+" 由 Panel 后端生成，不允许手工填写"))
+			return
+		}
+	}
+	header, err := c.FormFile("bundle")
+	if err != nil {
+		header, err = c.FormFile("file")
+	}
+	if err != nil {
+		core.HandleError(c, core.WrapError(err, core.ErrInvalidParameter, "请上传 Fail2ban 离线 Bundle"))
+		return
+	}
+	if header.Size < 1 || header.Size > maxPackageBytes {
+		core.HandleError(c, core.NewError(core.ErrInvalidParameter, "离线 Bundle 大小超过限制"))
+		return
+	}
+	bundle, err := header.Open()
+	if err != nil {
+		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "无法读取离线 Bundle"))
+		return
+	}
+	defer bundle.Close()
+	parameters := make(map[string]string)
+	for _, key := range []string{
+		"default-maxretry",
+		"default-findtime",
+		"default-bantime",
+		"ignore-ip",
+		"component-state-dir",
+	} {
+		if value := c.PostForm(key); value != "" {
+			parameters[key] = value
+		}
+	}
+	version := strings.TrimSpace(c.PostForm("version"))
+	if version == "" {
+		version = strings.TrimSpace(c.PostForm("software-version"))
+	}
+	key := strings.TrimSpace(c.PostForm("key"))
+	if key == "" {
+		key = "fail2ban"
+	}
+	req := input.InstallParams{
+		Key:        key,
+		Version:    version,
+		Parameters: parameters,
+	}
+	userID, ok := middleware.AuthenticatedUserID(c)
+	if !ok {
+		core.HandleError(c, core.NewError(core.ErrUnauthorized, "无法识别当前用户"))
+		return
+	}
+	task, err := SubmitOfflineInstallationTask(req, bundle, userID)
+	if err != nil {
+		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "创建离线安装任务失败"))
+		return
+	}
+	c.JSON(http.StatusAccepted, core.SuccessResponseForContext(c, gin.H{
+		"taskId":        task.ID,
+		"installName":   task.ID,
+		"operation":     task.Operation,
+		"component":     task.Component,
+		"installSource": taskInstallSource(task),
+		"summary":       "离线安装任务已创建",
+		"status":        task.Status,
+		"progress":      task.Progress,
+		"statusUrl":     "/v1/soft/tasks/" + task.ID,
+		"streamUrl":     "/v1/soft/tasks/" + task.ID + "/events",
+	}))
+}
+
+func taskInstallSource(task *models.SoftwareTask) string {
+	if task != nil && strings.EqualFold(strings.TrimSpace(task.InstallMode), "offline") {
+		return "offline"
+	}
+	return "center"
 }
 
 func GetSoftware(c *gin.Context) {

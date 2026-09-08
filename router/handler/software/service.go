@@ -120,7 +120,7 @@ func RunComponentServiceAction(c *gin.Context) {
 		core.HandleError(c, core.WrapError(err, core.ErrInternalError, "软件任务服务不可用"))
 		return
 	}
-	task, err := manager.SubmitServiceActionWithSwitch(definition.Component, request.Action, request.Switch, userID)
+	task, err := manager.SubmitServiceActionWithConfirmation(definition.Component, request.Action, request.Switch, request.Confirmation, userID)
 	if err != nil {
 		message := err.Error()
 		if strings.HasPrefix(message, "RUNTIME_GROUP_BUSY:") {
@@ -145,6 +145,9 @@ func RunComponentServiceAction(c *gin.Context) {
 				"SWITCH_UNSUPPORTED",
 				strings.TrimSpace(strings.TrimPrefix(message, "SWITCH_UNSUPPORTED:")),
 			))
+			return
+		}
+		if handleFirewalldTaskCreationError(c, err) {
 			return
 		}
 		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "创建服务控制任务失败"))
@@ -251,15 +254,31 @@ func ApplyComponentServiceConfiguration(c *gin.Context) {
 		core.HandleError(c, core.WrapError(err, core.ErrInternalError, "软件任务服务不可用"))
 		return
 	}
-	task, err := manager.SubmitConfiguration(
-		definition.Component,
-		preview.Revision,
-		current.Values,
-		preview.Values,
-		"",
-		userID,
-	)
+	var task *models.SoftwareTask
+	if definition.Component == "firewalld" {
+		task, err = manager.SubmitConfigurationWithConfirmation(
+			definition.Component,
+			preview.Revision,
+			current.Values,
+			preview.Values,
+			"",
+			request.Confirmation,
+			userID,
+		)
+	} else {
+		task, err = manager.SubmitConfiguration(
+			definition.Component,
+			preview.Revision,
+			current.Values,
+			preview.Values,
+			"",
+			userID,
+		)
+	}
 	if err != nil {
+		if handleFirewalldTaskCreationError(c, err) {
+			return
+		}
 		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "创建组件配置任务失败"))
 		return
 	}
@@ -274,6 +293,22 @@ func ApplyComponentServiceConfiguration(c *gin.Context) {
 		"statusUrl":   "/v1/soft/tasks/" + task.ID,
 		"streamUrl":   "/v1/soft/tasks/" + task.ID + "/events",
 	}))
+}
+
+func handleFirewalldTaskCreationError(c *gin.Context, err error) bool {
+	if err == nil || !strings.HasPrefix(strings.TrimSpace(err.Error()), "FIREWALL_CONFIRMATION_REQUIRED:") {
+		return false
+	}
+	appErr := core.NewErrorWithDetail(
+		core.ErrOperationNotConfirmed,
+		"高风险防火墙操作需要二次确认",
+		"The requested firewalld operation requires explicit confirmation before the task can be queued.",
+	)
+	appErr.StableCode = "FIREWALL_CONFIRMATION_REQUIRED"
+	appErr.Field = "confirmation"
+	appErr.Suggestion = "请在 confirmation 字段传入接口要求的确认文本后重试。"
+	core.HandleError(c, appErr)
+	return true
 }
 
 func ListComponentServiceConfigurationHistory(c *gin.Context) {
@@ -566,7 +601,7 @@ func componentServiceStatusesFor(
 		status := componentServiceStatus{
 			ComponentServiceDefinition: runtimeDefinition,
 			State:                      "not_installed",
-			CanConfigure:               softwareService.SupportsManagedConfiguration(runtimeDefinition.Component),
+			CanConfigure:               false,
 			AvailableActions:           defaultServiceActions(runtimeDefinition.Component),
 			CanReload:                  runtimeDefinition.Component == "nginx" || runtimeDefinition.Component == "openresty" || runtimeDefinition.Component == "tengine" || runtimeDefinition.Component == "caddy" || runtimeDefinition.Component == "apache" || runtimeDefinition.Component == "php",
 			SwitchAvailable:            runtimeDefinition.RuntimeGroup != "",
@@ -582,6 +617,7 @@ func componentServiceStatusesFor(
 			continue
 		}
 		status.Installed = true
+		status.CanConfigure = softwareService.SupportsManagedConfiguration(runtimeDefinition.Component)
 		status.RecordedVersion = strings.TrimSpace(installed.InstallVersion)
 		if status.RecordedVersion == "" {
 			status.RecordedVersion = strings.TrimSpace(installed.Version)
@@ -628,10 +664,10 @@ func componentServiceStatusesFor(
 			status.PackageSource = probe.PackageSource
 			status.State = serviceState(probe.ActiveState)
 			if status.State == "unknown" {
-				// Some CentOS installations keep a compatible mysqld process
-				// without exposing a usable mysql.service state. Preserve the
-				// verified probe fields, but use the actual process as a narrow
-				// fallback so a healthy service is not shown as unknown.
+				// Some legacy distributions do not expose a usable systemd state
+				// while the component process is running. Preserve the verified
+				// probe fields, but use the actual process as a narrow fallback so
+				// a healthy service is not shown as unknown.
 				running, runningErr := softwareService.ComponentProcessRunning(probeCtx, definition.Component)
 				if runningErr == nil && running {
 					status.State = "running"

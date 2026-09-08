@@ -12,6 +12,7 @@ import (
 	"oneinstack/utils"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -365,6 +366,7 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 			VersionLines:            versionLines[item.Key],
 			Port:                    port,
 			InstalledPackageVersion: item.InstalledPackageVersion,
+			RuntimeVersion:          item.RuntimeVersion,
 			LatestPackageVersion:    item.LatestPackageVersion,
 			UpdateReason:            softwareUpdateReason(item),
 			RecommendedVersion:      item.RecommendedVersion,
@@ -376,6 +378,7 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 			Tags:                    item.Tags,
 			ManageScopes:            decodeManageScopes(item.ManageScopesJSON),
 			ServiceName:             item.ServiceName,
+			RuntimeGroup:            item.RuntimeGroup,
 			Versions:                splitSoftwareVersions(item.Versions),
 		})
 		// Do not expose a stale Center recommendation as an upgrade target.
@@ -412,7 +415,15 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 				}
 			}
 		}
+		if strings.EqualFold(strings.TrimSpace(item.Key), "firewalld") {
+			for _, parameter := range params {
+				if parameter != nil && strings.EqualFold(strings.TrimSpace(parameter.Key), "panel-port") {
+					parameter.Default = strconv.Itoa(configuredPanelPort())
+				}
+			}
+		}
 		groupedResults[i].Params = params
+		hydrateFirewalldInstallation(&groupedResults[i])
 		groupedResults[i].Runtime = mysqlRuntimeInfo(item)
 		if port := strings.TrimSpace(installParameterValues["port"]); port != "" {
 			groupedResults[i].Port = port

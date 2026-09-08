@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"mime"
 	"net/http"
 	"os"
@@ -20,6 +21,7 @@ import (
 	"oneinstack/internal/i18n"
 	"oneinstack/internal/models"
 	accessservice "oneinstack/internal/services/access"
+	"oneinstack/internal/services/scriptregistry"
 	softwareService "oneinstack/internal/services/software"
 	"oneinstack/internal/services/softwaretask"
 	storageService "oneinstack/internal/services/storage"
@@ -122,9 +124,18 @@ func getTaskManager() (*softwaretask.Manager, error) {
 					Pwd:                request.Password,
 					Parameters:         request.Parameters,
 					ExplicitParameters: request.ExplicitParameters,
+					ResolvedPackage:    request.ResolvedPackage,
+					InstallMode:        request.InstallMode,
+					OfflinePackageID:   request.OfflinePackageID,
+					OfflinePackagePath: request.OfflinePackagePath,
 				}
 				if _, err := installer.InstallTask(ctx, params, logPath, reporter); err != nil {
 					return err
+				}
+				if strings.EqualFold(strings.TrimSpace(params.Key), "firewalld") {
+					if runtimeVersion, runtimeErr := installer.RefreshInstalledRuntimeVersion(ctx, "firewalld", params.Version); runtimeErr == nil {
+						reporter.OnRuntimeVersion(runtimeVersion)
+					}
 				}
 				if isManagedWebServerKey(params.Key) {
 					if err := restoreManagedWebsiteConfigs(ctx); err != nil {
@@ -166,6 +177,10 @@ func getTaskManager() (*softwaretask.Manager, error) {
 				Pwd:                request.Password,
 				Parameters:         request.Parameters,
 				ExplicitParameters: request.ExplicitParameters,
+				ResolvedPackage:    request.ResolvedPackage,
+				InstallMode:        request.InstallMode,
+				OfflinePackageID:   request.OfflinePackageID,
+				OfflinePackagePath: request.OfflinePackagePath,
 			})
 		})
 		taskManager.SetRecoveryInspector(func(
@@ -248,8 +263,55 @@ func SubmitInstallationTask(
 	req input.InstallParams,
 	requestedBy int64,
 ) (*models.SoftwareTask, error) {
+	req.InstallMode = "center"
+	req.OfflinePackageID = ""
+	req.OfflinePackagePath = ""
+	return submitInstallationTask(req, requestedBy)
+}
+
+// SubmitOfflineInstallationTask imports and validates the uploaded component
+// bundle before creating the same durable installation task as an online
+// install. Bundle identity is generated from its SHA-256 and remains internal.
+func SubmitOfflineInstallationTask(
+	req input.InstallParams,
+	bundle io.Reader,
+	requestedBy int64,
+) (*models.SoftwareTask, error) {
+	softwareService.NormalizeInstallParams(&req)
+	registry, err := scriptregistry.New(app.ONE_CONFIG.ScriptCenter)
+	if err != nil {
+		return nil, err
+	}
+	if !strings.EqualFold(strings.TrimSpace(req.Key), "fail2ban") {
+		return nil, fmt.Errorf("offline installation currently supports fail2ban only")
+	}
+	pin, err := registry.ImportOfflineBundle(context.Background(), "fail2ban", req.Version, bundle)
+	if err != nil {
+		return nil, err
+	}
+	req.InstallMode = "offline"
+	req.OfflinePackageID = "sha256:" + pin.PackageSHA256
+	req.OfflinePackagePath = filepath.Join(app.ONE_CONFIG.ScriptCenter.CachePath, "components", "fail2ban", "offline", pin.PackageSHA256)
+	req.ResolvedPackage = &pin
+	return submitInstallationTask(req, requestedBy)
+}
+
+func submitInstallationTask(
+	req input.InstallParams,
+	requestedBy int64,
+) (*models.SoftwareTask, error) {
 	explicitParameters := explicitInstallParameters(req)
 	softwareService.NormalizeInstallParams(&req)
+	if req.InstallMode == "" {
+		req.InstallMode = "center"
+	}
+	if strings.EqualFold(strings.TrimSpace(req.Key), "firewalld") {
+		_, pin, err := softwareService.PreviewInstallationPackage(context.Background(), &req)
+		if err != nil {
+			return nil, err
+		}
+		req.ResolvedPackage = &pin
+	}
 	if err := softwareService.ValidateManagedMySQLInstallParams(&req); err != nil {
 		return nil, err
 	}
@@ -317,6 +379,10 @@ func SubmitInstallationTask(
 		GeneratedSecret:    generatedSecret,
 		Parameters:         req.Parameters,
 		ExplicitParameters: explicitParameters,
+		ResolvedPackage:    req.ResolvedPackage,
+		InstallMode:        req.InstallMode,
+		OfflinePackageID:   req.OfflinePackageID,
+		OfflinePackagePath: req.OfflinePackagePath,
 	}, requestedBy)
 }
 

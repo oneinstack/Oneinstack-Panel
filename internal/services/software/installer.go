@@ -3,6 +3,7 @@ package software
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"oneinstack/app"
 	"oneinstack/internal/models"
@@ -11,6 +12,7 @@ import (
 	"oneinstack/internal/services/scriptregistry"
 	"oneinstack/router/input"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -32,12 +34,19 @@ type packageResolutionObserver interface {
 	OnPackageResolved(version, source string)
 }
 
+type packageMetadataObserver interface {
+	OnPackageMetadataResolved(pin scriptregistry.PackagePin)
+}
+
 func reportPackageResolution(observer script.ExecutionObserver, info *script.ScriptInfo) {
 	if observer == nil || info == nil {
 		return
 	}
 	if reporter, ok := observer.(packageResolutionObserver); ok {
 		reporter.OnPackageResolved(info.PackageVersion, info.Source)
+	}
+	if reporter, ok := observer.(packageMetadataObserver); ok && info.PackagePin != nil {
+		reporter.OnPackageMetadataResolved(*info.PackagePin)
 	}
 }
 
@@ -55,6 +64,9 @@ func (installer *Installer) Install(params *input.InstallParams, async bool) (st
 
 func (installer *Installer) install(ctx context.Context, params *input.InstallParams, async bool) (string, error) {
 	NormalizeInstallParams(params)
+	if err := resolveFirewalldInstallParams(ctx, params); err != nil {
+		return "", err
+	}
 	actionName := "install"
 	if app.DB() != nil {
 		var installed int64
@@ -87,6 +99,9 @@ func (installer *Installer) InstallTask(
 	observer script.ExecutionObserver,
 ) (string, error) {
 	NormalizeInstallParams(params)
+	if err := resolveFirewalldInstallParams(ctx, params); err != nil {
+		return "", err
+	}
 	actionName := "install"
 	if app.DB() != nil {
 		var installed int64
@@ -331,6 +346,27 @@ func (installer *Installer) ServiceActionTask(
 		strings.TrimSpace(version),
 	)
 	installer.setScriptParams(scriptInfo, params)
+	preparedRuleID := int64(0)
+	preparedRuleCreated := false
+	keepPreparedRule := false
+	if definition.Component == "firewalld" && (action == "start" || action == "restart") {
+		if owners := ActiveRuntimeGroupOwners(ctx, "firewall", "firewalld"); len(owners) > 0 {
+			return "", fmt.Errorf("FIREWALL_BACKEND_CONFLICT: %s is already active", owners[0].ServiceName)
+		}
+		safe := safeservice.NewDefaultService()
+		if status, statusErr := safe.Status(ctx); statusErr == nil && status != nil && status.Enabled && status.Backend != safeservice.BackendFirewalld {
+			return "", fmt.Errorf("FIREWALL_BACKEND_CONFLICT: %s is already the active firewall backend", status.Backend)
+		}
+		preparedRuleID, preparedRuleCreated, err = safe.PreparePanelPort(ctx, configuredPanelPort())
+		if err != nil {
+			return "", fmt.Errorf("PANEL_PORT_NOT_PROTECTED: %w", err)
+		}
+		defer func() {
+			if preparedRuleCreated && !keepPreparedRule {
+				_ = safe.RollbackPreparedPanelPort(context.Background(), preparedRuleID)
+			}
+		}()
+	}
 	logName, err := installer.scriptManager.ExecuteScriptTask(ctx, scriptInfo, params, logPath, observer)
 	if err != nil {
 		return logName, err
@@ -338,7 +374,40 @@ func (installer *Installer) ServiceActionTask(
 	if err := verifyServiceActionReady(ctx, definition, action); err != nil {
 		return logName, err
 	}
+	keepPreparedRule = true
 	return logName, nil
+}
+
+// RefreshInstalledRuntimeVersion reads the component's status action after an
+// installation and persists the actual runtime version separately from the
+// Center component-package version.
+func (installer *Installer) RefreshInstalledRuntimeVersion(ctx context.Context, component, version string) (string, error) {
+	probe, err := installer.InspectServiceLocal(ctx, component, version)
+	if err != nil {
+		return "", err
+	}
+	runtimeVersion := strings.TrimSpace(probe.RuntimeVersion)
+	if runtimeVersion == "" || app.DB() == nil {
+		return runtimeVersion, nil
+	}
+	result := app.DB().Model(&models.Software{}).
+		Where("installed = ? AND (`key` = ? OR component = ?)", true, component, component).
+		Updates(map[string]interface{}{"runtime_version": runtimeVersion})
+	if result.Error != nil {
+		return "", result.Error
+	}
+	if result.RowsAffected == 0 {
+		return "", errors.New("installed software runtime version was not updated")
+	}
+	return runtimeVersion, nil
+}
+
+func configuredPanelPort() int {
+	port, err := strconv.Atoi(strings.TrimSpace(app.ONE_CONFIG.System.Port))
+	if err != nil || port < 1 || port > 65535 {
+		return 8089
+	}
+	return port
 }
 
 // SwitchServiceActionTask stops the active owner of a runtime group, starts
@@ -597,6 +666,37 @@ func (installer *Installer) getInstallScript(ctx context.Context, params *input.
 
 	registry, registryErr := scriptregistry.New(app.ONE_CONFIG.ScriptCenter)
 	if registryErr == nil {
+		installMode := strings.ToLower(strings.TrimSpace(params.InstallMode))
+		if installMode == "" {
+			installMode = "center"
+		}
+		if installMode != "center" && installMode != "offline" {
+			return nil, fmt.Errorf("invalid software install mode: %s", installMode)
+		}
+		if installMode == "offline" {
+			if params.ResolvedPackage == nil || !strings.EqualFold(strings.TrimSpace(params.ResolvedPackage.PackageSource), "offline") {
+				return nil, errors.New("offline installation requires a validated local package")
+			}
+			if expected := "sha256:" + strings.TrimSpace(params.ResolvedPackage.PackageSHA256); strings.TrimSpace(params.OfflinePackageID) != expected {
+				return nil, errors.New("offline package identity does not match the validated bundle")
+			}
+		}
+		if installMode == "center" && params.ResolvedPackage != nil && strings.EqualFold(strings.TrimSpace(params.ResolvedPackage.PackageSource), "offline") {
+			return nil, errors.New("offline package cannot be used by a Center installation")
+		}
+		if params.ResolvedPackage != nil {
+			fixedPackage, fixedErr := registry.ResolveFixed(componentName, params.Version, *params.ResolvedPackage)
+			if fixedErr != nil {
+				return nil, fmt.Errorf("resolve fixed %s %s package: %w", componentName, actionName, fixedErr)
+			}
+			if installMode == "offline" && filepath.Clean(strings.TrimSpace(params.OfflinePackagePath)) != filepath.Clean(fixedPackage.Root) {
+				return nil, errors.New("offline package path does not match the validated bundle")
+			}
+			if actionName == "upgrade" && fixedPackage.Manifest.Actions.Upgrade == "" {
+				actionName = "install"
+			}
+			return scriptInfoFromPackage(fixedPackage, actionName, params.Version)
+		}
 		componentPackage, resolveErr := registry.ResolveChannel(
 			ctx,
 			componentName,
@@ -607,7 +707,7 @@ func (installer *Installer) getInstallScript(ctx context.Context, params *input.
 			if actionName == "upgrade" && componentPackage.Manifest.Actions.Upgrade == "" {
 				actionName = "install"
 			}
-			return scriptInfoFromPackage(componentPackage, actionName)
+			return scriptInfoFromPackage(componentPackage, actionName, params.Version)
 		}
 		registryErr = resolveErr
 
@@ -624,7 +724,7 @@ func (installer *Installer) getInstallScript(ctx context.Context, params *input.
 				if actionName == "upgrade" && linePackage.Manifest.Actions.Upgrade == "" {
 					actionName = "install"
 				}
-				lineInfo, infoErr := scriptInfoFromPackage(linePackage, actionName)
+				lineInfo, infoErr := scriptInfoFromPackage(linePackage, actionName, line)
 				if infoErr != nil {
 					return nil, infoErr
 				}
@@ -683,7 +783,7 @@ func (installer *Installer) getInstallScript(ctx context.Context, params *input.
 	return nil, fmt.Errorf("resolve %s installer: %v; legacy fallback: %w", componentName, registryErr, fileErr)
 }
 
-func scriptInfoFromPackage(componentPackage scriptregistry.Package, actionName string) (*script.ScriptInfo, error) {
+func scriptInfoFromPackage(componentPackage scriptregistry.Package, actionName string, requestedSoftwareVersion ...string) (*script.ScriptInfo, error) {
 	actionPath, err := componentPackage.Action(actionName)
 	if err != nil {
 		return nil, err
@@ -714,6 +814,31 @@ func scriptInfoFromPackage(componentPackage scriptregistry.Package, actionName s
 			"configGet":   time.Duration(manifest.Timeouts.ConfigGet) * time.Second,
 			"configApply": time.Duration(manifest.Timeouts.ConfigApply) * time.Second,
 		},
+	}
+	softwareVersion := ""
+	if len(requestedSoftwareVersion) > 0 {
+		softwareVersion = strings.TrimSpace(requestedSoftwareVersion[0])
+	}
+	if softwareVersion == "" && len(manifest.Component.SoftwareVersions) == 1 {
+		softwareVersion = strings.TrimSpace(manifest.Component.SoftwareVersions[0])
+	}
+	if metadata := componentPackage.Metadata; metadata.SHA256 != "" && softwareVersion != "" {
+		result.PackagePin = &scriptregistry.PackagePin{
+			Component:            manifest.Component.ID,
+			SoftwareVersion:      softwareVersion,
+			Channel:              manifest.Component.Channel,
+			ResolvedVersion:      manifest.Component.Version,
+			PackageSource:        componentPackage.Source,
+			PackageURL:           metadata.DownloadURL,
+			PackageSHA256:        metadata.SHA256,
+			Signature:            metadata.Signature,
+			KeyID:                metadata.KeyID,
+			PublisherFingerprint: metadata.PublisherFingerprint,
+			TargetOS:             metadata.TargetOS,
+			TargetOSVersion:      metadata.TargetOSVersion,
+			TargetArch:           metadata.TargetArch,
+			ReleaseRevision:      metadata.ReleaseRevision,
+		}
 	}
 	// Keep the lifecycle action available to every component action, including
 	// precheck. The same precheck script may run before install and upgrade.
@@ -909,6 +1034,8 @@ func (installer *Installer) setScriptParams(scriptInfo *script.ScriptInfo, param
 		scriptInfo.Params["PHP_VERSION"] = scriptVersion
 	case "java":
 		scriptInfo.Params["JAVA_VERSION"] = params.Version
+	case "firewalld":
+		scriptInfo.Params["PANEL_PORT"] = strconv.Itoa(configuredPanelPort())
 	}
 
 	// Center can publish new database components without adding a hard-coded
@@ -964,6 +1091,13 @@ func (installer *Installer) setScriptParams(scriptInfo *script.ScriptInfo, param
 			manifestKeyCompact := strings.ReplaceAll(manifestKey, "_", "")
 			aliasMatch := parameterKey == "port" && strings.HasSuffix(manifestKey, "_port")
 			if (parameterKey == manifestKey || parameterKeyCompact == manifestKeyCompact || aliasMatch) && value != "" {
+				// firewalld uses panel-port=0 as the form-level sentinel for
+				// "use the Panel's configured listener". The manifest exposes
+				// the resolved value as a real port, so do not overwrite the
+				// derived configuredPanelPort() value with the invalid sentinel.
+				if params.Key == "firewalld" && manifestKey == "panel_port" && value == "0" {
+					continue
+				}
 				scriptInfo.Params[parameterEnvName(parameter)] = value
 				markExplicit(parameter.Name)
 				break
@@ -973,6 +1107,20 @@ func (installer *Installer) setScriptParams(scriptInfo *script.ScriptInfo, param
 
 	// 通用参数
 	scriptInfo.Params["SOFTWARE_VERSION"] = scriptVersion
+	installMode := strings.ToLower(strings.TrimSpace(params.InstallMode))
+	if installMode == "" {
+		installMode = "center"
+	}
+	if strings.EqualFold(strings.TrimSpace(params.Key), "fail2ban") {
+		scriptInfo.Params["FAIL2BAN_INSTALL_MODE"] = installMode
+		if installMode == "offline" {
+			offlinePath := strings.TrimSpace(params.OfflinePackagePath)
+			if offlinePath == "" {
+				offlinePath = scriptInfo.WorkingDir
+			}
+			scriptInfo.Params["FAIL2BAN_OFFLINE_PACKAGE_PATH"] = offlinePath
+		}
+	}
 }
 
 // ListAvailableScripts 列出可用的脚本

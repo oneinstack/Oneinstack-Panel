@@ -367,8 +367,7 @@ func InstallFirewall(c *gin.Context) {
 		return
 	}
 	task, err := softwarehandler.SubmitInstallationTask(input.InstallParams{
-		Key:     "firewalld",
-		Version: "1.0.0",
+		Key: "firewalld",
 	}, userID)
 	if err != nil {
 		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "创建 firewalld 安装任务失败"))
