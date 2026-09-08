@@ -1097,6 +1097,17 @@ func acmeProblemType(err error) string {
 	return ""
 }
 
+func acmeRateLimitRetryAfter(err error) (time.Duration, bool) {
+	if err == nil {
+		return 0, false
+	}
+	var apiErr *acme.Error
+	if !errors.As(err, &apiErr) {
+		return 0, false
+	}
+	return acme.RateLimit(apiErr)
+}
+
 func (manager *Manager) runManagedTask(ctx context.Context, task *models.CertificateTask, report ProgressReporter) {
 	catalog := NewCatalog(manager.db, manager.certificateRoot, manager.currentDeployer())
 	var (
@@ -1330,6 +1341,9 @@ func SafeCertificateErrorDetail(err error) string {
 	case isACMENetworkError(err):
 		return "无法连接 ACME 服务，请检查服务器出站网络、DNS、IPv4/IPv6 路由和防火墙后重试。"
 	case acmeProblemType(err) == "ratelimited":
+		if retryAfter, ok := acmeRateLimitRetryAfter(err); ok && retryAfter > 0 {
+			return fmt.Sprintf("ACME CA 已限制请求频率，请等待约 %s 后再重试，避免连续申请。", retryAfter.Round(time.Second))
+		}
 		return "ACME CA 已限制请求频率，请等待限制窗口结束后再重试，避免连续申请。"
 	case acmeProblemType(err) == "accountdoesnotexist":
 		return "ACME 账户不存在或账户密钥已变化，请检查 ACME 账户配置后重试。"
