@@ -135,6 +135,12 @@ var authorizationMenuRules = []menuVisibilityRule{
 		},
 	},
 	{
+		key: "menuManagement",
+		visible: func(has func(string) bool, access *accessservice.UserAccess) bool {
+			return access != nil && access.IsSuperAdmin
+		},
+	},
+	{
 		key: "approval",
 		visible: func(has func(string) bool, access *accessservice.UserAccess) bool {
 			return has(accessservice.PermissionApprovalRead)
@@ -295,6 +301,9 @@ func BuildAuthorizationMatrix(access *accessservice.UserAccess) AuthorizationMat
 	}
 	for operation, permission := range accessservice.OperationPermissions() {
 		actions[operation] = has(permission)
+	}
+	for action, permission := range accessservice.BuiltinButtonPermissions() {
+		actions[action] = has(permission)
 	}
 	firstAccessibleMenu := firstAccessibleMenu(menuTree)
 	if !hasDynamicMenu {
@@ -648,6 +657,7 @@ func isSensitiveOperation(method, path string) bool {
 			"/v1/sys/update/apply",
 			"/v1/sys/backups",
 			"/v1/soft/install",
+			"/v1/soft/install/offline",
 			"/v1/soft/remove",
 			"/v1/storage/addconn",
 			"/v1/storage/updateconn",

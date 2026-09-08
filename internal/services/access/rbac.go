@@ -419,7 +419,11 @@ func (service *Service) ListMenus() ([]MenuNode, error) {
 	if service.db == nil {
 		return nil, errors.New("database is not initialized")
 	}
-	return service.loadMenuTree()
+	nodes, err := service.loadMenuTree()
+	if err != nil {
+		return nil, err
+	}
+	return filterObsoleteBuiltinButtonMenus(nodes), nil
 }
 
 func (service *Service) CreateMenu(input MenuInput) (*MenuNode, error) {
@@ -797,6 +801,21 @@ func buildMenuTree(menus []models.Menu, permissionsByMenu map[uint64][]Permissio
 	return result
 }
 
+func filterObsoleteBuiltinButtonMenus(nodes []MenuNode) []MenuNode {
+	activeActions := builtinActionPermissionCatalog()
+	result := make([]MenuNode, 0, len(nodes))
+	for _, node := range nodes {
+		if node.Builtin && node.Type == models.MenuTypeButton && node.TargetType == models.MenuTargetAction {
+			if _, active := activeActions[node.TargetKey]; !active {
+				continue
+			}
+		}
+		node.Children = filterObsoleteBuiltinButtonMenus(node.Children)
+		result = append(result, node)
+	}
+	return result
+}
+
 func filterMenuTree(nodes []MenuNode, permissionSet map[string]struct{}, superAdmin bool) []MenuNode {
 	result := make([]MenuNode, 0, len(nodes))
 	for _, node := range nodes {
@@ -871,7 +890,7 @@ var builtinRouteTargets = map[string]struct{}{
 	"/home": {}, "/website": {}, "/database": {}, "/software": {}, "/container": {}, "/file": {},
 	"/terminal": {}, "/task": {}, "/monitor": {}, "/bastion": {}, "/runtime-log": {}, "/security": {},
 	"/certificate": {}, "/approval-center": {}, "/log": {}, "/config-snapshots": {},
-	"/system-management": {}, "/user-management": {}, "/setting": {},
+	"/system-management": {}, "/user-management": {}, "/menu-management": {}, "/setting": {},
 }
 
 var builtinStaticActionPermissions = map[string]string{
@@ -902,10 +921,7 @@ func registeredRouteTarget(target string) bool {
 }
 
 func registeredActionTarget(target string) bool {
-	if _, ok := builtinStaticActionPermissions[target]; ok {
-		return true
-	}
-	_, ok := operationPermissions[target]
+	_, ok := builtinActionPermissionCatalog()[target]
 	return ok
 }
 
@@ -924,29 +940,105 @@ type builtinMenuDefinition struct {
 	Permissions    []string
 }
 
+type builtinActionLabel struct {
+	Name   string
+	NameEn string
+}
+
+var builtinActionLabels = map[string]builtinActionLabel{
+	"audit.export":                    {Name: "导出审计日志", NameEn: "Export audit logs"},
+	"audit.verify":                    {Name: "校验审计日志", NameEn: "Verify audit logs"},
+	"certificate.issue":               {Name: "签发证书", NameEn: "Issue certificate"},
+	"container.compose.change":        {Name: "变更编排项目", NameEn: "Change Compose project"},
+	"container.compose.create":        {Name: "创建编排项目", NameEn: "Create Compose project"},
+	"container.compose.delete":        {Name: "删除编排项目", NameEn: "Delete Compose project"},
+	"container.compose.edit":          {Name: "编辑编排项目", NameEn: "Edit Compose project"},
+	"container.compose.restart":       {Name: "重启编排项目", NameEn: "Restart Compose project"},
+	"container.compose.start":         {Name: "启动编排项目", NameEn: "Start Compose project"},
+	"container.compose.stop":          {Name: "停止编排项目", NameEn: "Stop Compose project"},
+	"container.compose.update":        {Name: "更新编排项目", NameEn: "Update Compose project"},
+	"container.config.change":         {Name: "修改容器配置", NameEn: "Change container configuration"},
+	"container.create":                {Name: "创建容器", NameEn: "Create container"},
+	"container.dangerous.cleanup":     {Name: "清理容器资源", NameEn: "Clean up container resources"},
+	"container.delete":                {Name: "删除容器", NameEn: "Delete container"},
+	"container.force_action":          {Name: "强制操作容器", NameEn: "Force container action"},
+	"container.force_delete":          {Name: "强制删除容器", NameEn: "Force delete container"},
+	"container.force_stop":            {Name: "强制停止容器", NameEn: "Force stop container"},
+	"container.image.build":           {Name: "构建镜像", NameEn: "Build image"},
+	"container.image.build-cache":     {Name: "清理镜像构建缓存", NameEn: "Clean image build cache"},
+	"container.image.cleanup":         {Name: "清理镜像", NameEn: "Clean up images"},
+	"container.image.delete":          {Name: "删除镜像", NameEn: "Delete image"},
+	"container.image.import":          {Name: "导入镜像", NameEn: "Import image"},
+	"container.image.pull":            {Name: "拉取镜像", NameEn: "Pull image"},
+	"container.image.push":            {Name: "推送镜像", NameEn: "Push image"},
+	"container.image.tag":             {Name: "标记镜像", NameEn: "Tag image"},
+	"container.network.change":        {Name: "修改容器网络", NameEn: "Change container network"},
+	"container.pause":                 {Name: "暂停容器", NameEn: "Pause container"},
+	"container.registry.change":       {Name: "修改镜像仓库", NameEn: "Change image registry"},
+	"container.restart":               {Name: "重启容器", NameEn: "Restart container"},
+	"container.resume":                {Name: "恢复容器运行", NameEn: "Resume container"},
+	"container.runtime.install":       {Name: "安装容器运行时", NameEn: "Install container runtime"},
+	"container.start":                 {Name: "启动容器", NameEn: "Start container"},
+	"container.stop":                  {Name: "停止容器", NameEn: "Stop container"},
+	"container.terminal":              {Name: "访问容器终端", NameEn: "Access container terminal"},
+	"container.volume.change":         {Name: "修改存储卷", NameEn: "Change container volume"},
+	"database.connection.delete":      {Name: "删除数据库连接", NameEn: "Delete database connection"},
+	"database.credential.reveal":      {Name: "查看数据库凭据", NameEn: "Reveal database credentials"},
+	"database.restore":                {Name: "恢复数据库", NameEn: "Restore database"},
+	"fail2ban.ban":                    {Name: "封禁 IP", NameEn: "Ban IP address"},
+	"fail2ban.policy_change":          {Name: "修改 Fail2ban 策略", NameEn: "Change Fail2ban policy"},
+	"fail2ban.unban":                  {Name: "解除 IP 封禁", NameEn: "Unban IP address"},
+	"file.archive":                    {Name: "归档文件", NameEn: "Archive files"},
+	"file.create":                     {Name: "创建或上传文件", NameEn: "Create or upload files"},
+	"file.delete":                     {Name: "删除文件", NameEn: "Delete files"},
+	"file.edit":                       {Name: "编辑文件", NameEn: "Edit files"},
+	"file.modify":                     {Name: "修改文件属性", NameEn: "Change file attributes"},
+	"file.move":                       {Name: "移动或重命名文件", NameEn: "Move or rename files"},
+	"file.share.create":               {Name: "创建文件分享", NameEn: "Create file share"},
+	"file.share.revoke":               {Name: "撤销文件分享", NameEn: "Revoke file share"},
+	"firewall.ping":                   {Name: "修改 Ping 响应", NameEn: "Change ping response"},
+	"firewall.port_forward":           {Name: "修改端口转发", NameEn: "Change port forwarding"},
+	"firewall.rule_change":            {Name: "修改防火墙规则", NameEn: "Change firewall rules"},
+	"firewall.toggle":                 {Name: "启用或停用防火墙", NameEn: "Enable or disable firewall"},
+	"panel.network":                   {Name: "修改面板网络配置", NameEn: "Change panel network settings"},
+	"software.configure":              {Name: "配置软件", NameEn: "Configure software"},
+	"software.install":                {Name: "安装软件", NameEn: "Install software"},
+	"software.service_action":         {Name: "控制软件服务", NameEn: "Control software service"},
+	"software.uninstall":              {Name: "卸载软件", NameEn: "Uninstall software"},
+	"website.config.update":           {Name: "校验并发布网站配置", NameEn: "Validate and publish website configuration"},
+	"website.create":                  {Name: "创建网站", NameEn: "Create website"},
+	"website.delete":                  {Name: "安全删除网站", NameEn: "Safely delete website"},
+	"website.restore":                 {Name: "恢复整站备份", NameEn: "Restore full-site backup"},
+	"website.settings.update":         {Name: "发布网站设置", NameEn: "Publish website settings"},
+	"website.toggle":                  {Name: "切换网站状态", NameEn: "Toggle website status"},
+	"website.update":                  {Name: "设置网站", NameEn: "Website settings"},
+	"website.webserver.config.update": {Name: "更新网站 Web 服务配置", NameEn: "Update website web server configuration"},
+}
+
 func builtinMenuDefinitions() []builtinMenuDefinition {
 	return []builtinMenuDefinition{
-		{Key: "dashboard", Type: models.MenuTypePage, Name: "面板概览", NameEn: "Dashboard", TargetType: models.MenuTargetRoute, TargetKey: "/home", IconKey: "dashboard", Sort: 10, Permissions: []string{PermissionDashboardRead}},
+		{Key: "dashboard", Type: models.MenuTypePage, Name: "首页", NameEn: "Home", TargetType: models.MenuTargetRoute, TargetKey: "/home", IconKey: "dashboard", Sort: 10, Permissions: []string{PermissionDashboardRead}},
 		{Key: "website", Type: models.MenuTypePage, Name: "网站", NameEn: "Websites", TargetType: models.MenuTargetRoute, TargetKey: "/website", IconKey: "website", Sort: 20, Permissions: []string{PermissionWebsiteRead, PermissionWebsiteWrite, PermissionWebsiteApproval}},
 		{Key: "database", Type: models.MenuTypePage, Name: "数据库", NameEn: "Databases", TargetType: models.MenuTargetRoute, TargetKey: "/database", IconKey: "database", Sort: 30, Permissions: []string{PermissionDatabaseRead, PermissionDatabaseWrite, PermissionDatabaseApproval}},
 		{Key: "software", Type: models.MenuTypePage, Name: "软件商店", NameEn: "Software store", TargetType: models.MenuTargetRoute, TargetKey: "/software", IconKey: "software-store", Sort: 40, Permissions: []string{PermissionSoftwareRead, PermissionSoftwareWrite, PermissionServiceRead, PermissionServiceWrite}},
-		{Key: "container", Type: models.MenuTypePage, Name: "容器", NameEn: "Containers", TargetType: models.MenuTargetRoute, TargetKey: "/container", IconKey: "container-management", Sort: 50, Permissions: []string{PermissionContainerRead, PermissionContainerWrite, PermissionContainerDelete, PermissionContainerTerminal, PermissionContainerLogsRead, PermissionContainerImageWrite, PermissionContainerNetworkWrite, PermissionContainerVolumeWrite, PermissionContainerComposeWrite, PermissionContainerRegistryWrite, PermissionContainerConfigWrite, PermissionContainerRuntimeInstall, PermissionContainerDangerousCleanup, PermissionContainerForceAction}},
+		{Key: "container", Type: models.MenuTypePage, Name: "容器管理", NameEn: "Containers", TargetType: models.MenuTargetRoute, TargetKey: "/container", IconKey: "container-management", Sort: 50, Permissions: []string{PermissionContainerRead, PermissionContainerWrite, PermissionContainerDelete, PermissionContainerTerminal, PermissionContainerLogsRead, PermissionContainerImageWrite, PermissionContainerNetworkWrite, PermissionContainerVolumeWrite, PermissionContainerComposeWrite, PermissionContainerRegistryWrite, PermissionContainerConfigWrite, PermissionContainerRuntimeInstall, PermissionContainerDangerousCleanup, PermissionContainerForceAction}},
 		{Key: "file", Type: models.MenuTypePage, Name: "文件", NameEn: "Files", TargetType: models.MenuTargetRoute, TargetKey: "/file", IconKey: "file", Sort: 60, Permissions: []string{PermissionFileRead, PermissionFileWrite, PermissionFileCreate, PermissionFileEdit, PermissionFileMove, PermissionFileDelete, PermissionFileModify, PermissionFileArchive, PermissionFileShare}},
-		{Key: "terminal", Type: models.MenuTypePage, Name: "服务器终端", NameEn: "Secure terminal", TargetType: models.MenuTargetRoute, TargetKey: "/terminal", IconKey: "terminal", Sort: 70, FeatureKey: MenuFeatureTerminal, Permissions: []string{PermissionTerminalAccess}},
-		{Key: "operations", Type: models.MenuTypeDirectory, Name: "运维", NameEn: "Operations", IconKey: "operations", Sort: 80},
-		{Key: "monitoring", ParentKey: "operations", Type: models.MenuTypePage, Name: "监控", NameEn: "Monitoring", TargetType: models.MenuTargetRoute, TargetKey: "/monitor", IconKey: "monitoring", Sort: 10, Permissions: []string{PermissionMonitoringRead, PermissionMonitoringWrite}},
+		{Key: "terminal", Type: models.MenuTypePage, Name: "安全终端", NameEn: "Secure terminal", TargetType: models.MenuTargetRoute, TargetKey: "/terminal", IconKey: "terminal", Sort: 70, FeatureKey: MenuFeatureTerminal, Permissions: []string{PermissionTerminalAccess}},
+		{Key: "cron", Type: models.MenuTypePage, Name: "计划任务", NameEn: "Scheduled tasks", TargetType: models.MenuTargetRoute, TargetKey: "/task", IconKey: "scheduled-tasks", Sort: 80, Permissions: []string{PermissionCronRead, PermissionCronWrite}},
+		{Key: "operations", Type: models.MenuTypeDirectory, Name: "运维工具", NameEn: "Operations", IconKey: "operations", Sort: 90},
+		{Key: "monitoring", ParentKey: "operations", Type: models.MenuTypePage, Name: "监控告警", NameEn: "Monitoring", TargetType: models.MenuTargetRoute, TargetKey: "/monitor", IconKey: "monitoring", Sort: 10, Permissions: []string{PermissionMonitoringRead, PermissionMonitoringWrite}},
 		{Key: "bastion", ParentKey: "operations", Type: models.MenuTypePage, Name: "堡垒机", NameEn: "Bastion", TargetType: models.MenuTargetRoute, TargetKey: "/bastion", IconKey: "bastion", Sort: 20, FeatureKey: MenuFeatureBastion, Permissions: []string{PermissionBastionRead, PermissionBastionWrite}},
 		{Key: "runtimeLog", ParentKey: "operations", Type: models.MenuTypePage, Name: "运行日志", NameEn: "Runtime logs", TargetType: models.MenuTargetRoute, TargetKey: "/runtime-log", IconKey: "runtime-log", Sort: 30, Permissions: []string{PermissionRuntimeLogRead}},
-		{Key: "securityGroup", Type: models.MenuTypeDirectory, Name: "安全与审计", NameEn: "Security and audit", IconKey: "security-audit", Sort: 90},
+		{Key: "securityGroup", Type: models.MenuTypeDirectory, Name: "安全与审计", NameEn: "Security & audit", IconKey: "security-audit", Sort: 100},
 		{Key: "security", ParentKey: "securityGroup", Type: models.MenuTypePage, Name: "安全", NameEn: "Security", TargetType: models.MenuTargetRoute, TargetKey: "/security", IconKey: "security", Sort: 10, Permissions: []string{PermissionSecurityRead, PermissionSecurityWrite}},
-		{Key: "certificate", ParentKey: "securityGroup", Type: models.MenuTypePage, Name: "证书", NameEn: "Certificates", TargetType: models.MenuTargetRoute, TargetKey: "/certificate", IconKey: "certificate", Sort: 20, Permissions: []string{PermissionCertificateRead, PermissionCertificateWrite}},
+		{Key: "certificate", ParentKey: "securityGroup", Type: models.MenuTypePage, Name: "证书管理", NameEn: "Certificates", TargetType: models.MenuTargetRoute, TargetKey: "/certificate", IconKey: "certificate", Sort: 20, Permissions: []string{PermissionCertificateRead, PermissionCertificateWrite}},
 		{Key: "approval", ParentKey: "securityGroup", Type: models.MenuTypePage, Name: "审批中心", NameEn: "Approval center", TargetType: models.MenuTargetRoute, TargetKey: "/approval-center", IconKey: "approval-center", Sort: 30, Permissions: []string{PermissionApprovalRead}},
 		{Key: "audit", ParentKey: "securityGroup", Type: models.MenuTypePage, Name: "审计日志", NameEn: "Audit logs", TargetType: models.MenuTargetRoute, TargetKey: "/log", IconKey: "audit-log", Sort: 40, Permissions: []string{PermissionAuditRead}},
 		{Key: "configSnapshots", ParentKey: "securityGroup", Type: models.MenuTypePage, Name: "配置快照", NameEn: "Config snapshots", TargetType: models.MenuTargetRoute, TargetKey: "/config-snapshots", IconKey: "config-snapshots", Sort: 50, Permissions: []string{PermissionConfigSnapshotRead, PermissionConfigSnapshotWrite}},
-		{Key: "cron", Type: models.MenuTypePage, Name: "计划任务", NameEn: "Scheduled tasks", TargetType: models.MenuTargetRoute, TargetKey: "/task", IconKey: "scheduled-tasks", Sort: 100, Permissions: []string{PermissionCronRead, PermissionCronWrite}},
 		{Key: "systemGroup", Type: models.MenuTypeDirectory, Name: "系统设置", NameEn: "System settings", IconKey: "system-settings", Sort: 110},
 		{Key: "systemManagement", ParentKey: "systemGroup", Type: models.MenuTypePage, Name: "系统管理", NameEn: "System management", TargetType: models.MenuTargetRoute, TargetKey: "/system-management", IconKey: "system-management", Sort: 10, Permissions: []string{PermissionSystemRead, PermissionSystemWrite}},
 		{Key: "userManagement", ParentKey: "systemGroup", Type: models.MenuTypePage, Name: "用户管理", NameEn: "User management", TargetType: models.MenuTargetRoute, TargetKey: "/user-management", IconKey: "user-management", Sort: 20, SuperAdminOnly: true},
+		{Key: "menuManagement", ParentKey: "systemGroup", Type: models.MenuTypePage, Name: "菜单管理", NameEn: "Menu management", TargetType: models.MenuTargetRoute, TargetKey: "/menu-management", IconKey: "menu-management", Sort: 25, SuperAdminOnly: true},
 		{Key: "panelSettings", ParentKey: "systemGroup", Type: models.MenuTypePage, Name: "面板设置", NameEn: "Panel settings", TargetType: models.MenuTargetRoute, TargetKey: "/setting", IconKey: "panel-settings", Sort: 30, SuperAdminOnly: true},
 	}
 }
@@ -959,14 +1051,28 @@ func buttonParentKey(action string) string {
 		return "database"
 	case strings.HasPrefix(action, "certificate."):
 		return "certificate"
+	case strings.HasPrefix(action, "approval."):
+		return "approval"
+	case strings.HasPrefix(action, "config.snapshot."):
+		return "configSnapshots"
 	case strings.HasPrefix(action, "audit."):
 		return "audit"
 	case strings.HasPrefix(action, "software."):
 		return "software"
+	case strings.HasPrefix(action, "task."):
+		return "cron"
+	case strings.HasPrefix(action, "monitor."):
+		return "monitoring"
+	case strings.HasPrefix(action, "bastion."):
+		return "bastion"
+	case strings.HasPrefix(action, "security."):
+		return "security"
 	case strings.HasPrefix(action, "firewall."), strings.HasPrefix(action, "fail2ban."):
 		return "security"
 	case strings.HasPrefix(action, "panel."):
-		return "systemManagement"
+		return "panelSettings"
+	case strings.HasPrefix(action, "user."):
+		return "userManagement"
 	case strings.HasPrefix(action, "container."):
 		return "container"
 	case strings.HasPrefix(action, "file."):
@@ -978,13 +1084,7 @@ func buttonParentKey(action string) string {
 
 func seedBuiltinMenus(tx *gorm.DB, permissionIDByCode map[string]uint64) error {
 	definitions := builtinMenuDefinitions()
-	allActions := make(map[string]string, len(operationPermissions)+len(builtinStaticActionPermissions))
-	for action, permission := range operationPermissions {
-		allActions[action] = permission
-	}
-	for action, permission := range builtinStaticActionPermissions {
-		allActions[action] = permission
-	}
+	allActions := builtinActionPermissionCatalog()
 	actions := make([]string, 0, len(allActions))
 	for action := range allActions {
 		if buttonParentKey(action) != "" {
@@ -993,9 +1093,13 @@ func seedBuiltinMenus(tx *gorm.DB, permissionIDByCode map[string]uint64) error {
 	}
 	sort.Strings(actions)
 	for _, action := range actions {
+		label, ok := lookupBuiltinActionLabel(action)
+		if !ok {
+			return fmt.Errorf("built-in menu label is not registered for action %q", action)
+		}
 		definitions = append(definitions, builtinMenuDefinition{
 			Key: "button." + action, ParentKey: buttonParentKey(action), Type: models.MenuTypeButton,
-			Name: action, NameEn: action, TargetType: models.MenuTargetAction, TargetKey: action,
+			Name: label.Name, NameEn: label.NameEn, TargetType: models.MenuTargetAction, TargetKey: action,
 			Sort: 1000, Permissions: []string{allActions[action]},
 		})
 	}
@@ -1056,6 +1160,22 @@ func seedBuiltinMenus(tx *gorm.DB, permissionIDByCode map[string]uint64) error {
 			if err := tx.Where("menu_id = ?", stored.ID).Delete(&models.MenuPermission{}).Error; err != nil {
 				return err
 			}
+		}
+	}
+	return disableObsoleteBuiltinButtonMenus(tx, allActions)
+}
+
+func disableObsoleteBuiltinButtonMenus(tx *gorm.DB, activeActions map[string]string) error {
+	var menus []models.Menu
+	if err := tx.Where("builtin = ? AND type = ? AND target_type = ?", true, models.MenuTypeButton, models.MenuTargetAction).Find(&menus).Error; err != nil {
+		return err
+	}
+	for _, menu := range menus {
+		if _, active := activeActions[menu.TargetKey]; active {
+			continue
+		}
+		if err := tx.Model(&models.Menu{}).Where("id = ?", menu.ID).Update("enabled", false).Error; err != nil {
+			return err
 		}
 	}
 	return nil
