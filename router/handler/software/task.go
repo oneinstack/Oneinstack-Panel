@@ -282,16 +282,19 @@ func SubmitOfflineInstallationTask(
 	if err != nil {
 		return nil, err
 	}
-	if !strings.EqualFold(strings.TrimSpace(req.Key), "fail2ban") {
-		return nil, fmt.Errorf("offline installation currently supports fail2ban only")
+	componentKey := strings.ToLower(strings.TrimSpace(req.Key))
+	switch componentKey {
+	case "fail2ban", "docker", "docker-compose":
+	default:
+		return nil, fmt.Errorf("offline installation is not supported for component %s", componentKey)
 	}
-	pin, err := registry.ImportOfflineBundle(context.Background(), "fail2ban", req.Version, bundle)
+	pin, err := registry.ImportOfflineBundle(context.Background(), componentKey, req.Version, bundle)
 	if err != nil {
 		return nil, err
 	}
 	req.InstallMode = "offline"
 	req.OfflinePackageID = "sha256:" + pin.PackageSHA256
-	req.OfflinePackagePath = filepath.Join(app.ONE_CONFIG.ScriptCenter.CachePath, "components", "fail2ban", "offline", pin.PackageSHA256)
+	req.OfflinePackagePath = filepath.Join(app.ONE_CONFIG.ScriptCenter.CachePath, "components", componentKey, "offline", pin.PackageSHA256)
 	req.ResolvedPackage = &pin
 	return submitInstallationTask(req, requestedBy)
 }

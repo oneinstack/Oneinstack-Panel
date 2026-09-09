@@ -972,6 +972,10 @@ func componentForRemove(value string) (component string, softwareKey string, err
 		return "php", "php", nil
 	case "firewalld":
 		return "firewalld", "firewalld", nil
+	case "docker":
+		return "docker", "docker", nil
+	case "docker-compose":
+		return "docker-compose", "docker-compose", nil
 	default:
 		return "", "", fmt.Errorf("unsupported software for uninstall: %s", value)
 	}
@@ -1119,6 +1123,19 @@ func (installer *Installer) setScriptParams(scriptInfo *script.ScriptInfo, param
 				offlinePath = scriptInfo.WorkingDir
 			}
 			scriptInfo.Params["FAIL2BAN_OFFLINE_PACKAGE_PATH"] = offlinePath
+		}
+	}
+	componentKey := strings.ToLower(strings.TrimSpace(params.Key))
+	if componentKey == "docker" || componentKey == "docker-compose" {
+		// Installation mode and offline root are server-owned values. They are
+		// injected only after the signed package has been fixed by Panel.
+		scriptInfo.Params["ONEINSTACK_INSTALL_MODE"] = installMode
+		if installMode == "offline" {
+			offlinePath := strings.TrimSpace(params.OfflinePackagePath)
+			if offlinePath == "" {
+				offlinePath = scriptInfo.WorkingDir
+			}
+			scriptInfo.Params["ONEINSTACK_OFFLINE_PACKAGE_PATH"] = offlinePath
 		}
 	}
 }
