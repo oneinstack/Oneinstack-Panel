@@ -2279,12 +2279,27 @@ func (s *Service) Config(ctx context.Context) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	basic := dockerBasicConfig(values)
+	if runtime.Available {
+		if out, infoErr := s.run(ctx, "info", "--format", "{{.DockerRootDir}}|{{.Driver}}|{{.CgroupDriver}}"); infoErr == nil {
+			parts := strings.SplitN(strings.TrimSpace(out), "|", 3)
+			if len(parts) > 0 && strings.TrimSpace(parts[0]) != "" {
+				basic["dataRoot"] = strings.TrimSpace(parts[0])
+			}
+			if len(parts) > 1 && strings.TrimSpace(parts[1]) != "" {
+				basic["storageDriver"] = strings.TrimSpace(parts[1])
+			}
+			if len(parts) > 2 && strings.TrimSpace(parts[2]) != "" {
+				basic["cgroupDriver"] = strings.TrimSpace(parts[2])
+			}
+		}
+	}
 	return map[string]any{
 		"runtime":    runtime,
 		"configPath": dockerConfigPath(),
 		"exists":     exists,
 		"raw":        raw,
-		"basic":      dockerBasicConfig(values),
+		"basic":      basic,
 		"values":     values,
 	}, nil
 }
@@ -2482,17 +2497,30 @@ func validateStringList(value any, field string) error {
 
 func dockerBasicConfig(values map[string]any) map[string]any {
 	result := map[string]any{
-		"registryMirrors":    values["registry-mirrors"],
-		"insecureRegistries": values["insecure-registries"],
-		"ipv6":               values["ipv6"],
-		"iptables":           values["iptables"],
-		"liveRestore":        values["live-restore"],
-		"socketPath":         firstSocket(values["hosts"]),
-		"logDriver":          values["log-driver"],
-		"logOpts":            values["log-opts"],
-		"cgroupDriver":       cgroupDriver(values["exec-opts"]),
+		"dataRoot":           valueOrDefault(values["data-root"], "/var/lib/docker"),
+		"registryMirrors":    valueOrDefault(values["registry-mirrors"], []any{}),
+		"insecureRegistries": valueOrDefault(values["insecure-registries"], []any{}),
+		"ipv6":               valueOrDefault(values["ipv6"], false),
+		"iptables":           valueOrDefault(values["iptables"], true),
+		"liveRestore":        valueOrDefault(values["live-restore"], false),
+		"hosts":              valueOrDefault(values["hosts"], []any{"unix:///var/run/docker.sock"}),
+		"socketPath":         valueOrDefault(firstSocket(values["hosts"]), "unix:///var/run/docker.sock"),
+		"logDriver":          valueOrDefault(values["log-driver"], "json-file"),
+		"logOpts":            valueOrDefault(values["log-opts"], map[string]any{}),
+		"cgroupDriver":       valueOrDefault(cgroupDriver(values["exec-opts"]), "systemd"),
+		"storageDriver":      values["storage-driver"],
 	}
 	return result
+}
+
+func valueOrDefault(value, fallback any) any {
+	if value == nil {
+		return fallback
+	}
+	if text, ok := value.(string); ok && strings.TrimSpace(text) == "" {
+		return fallback
+	}
+	return value
 }
 
 func firstSocket(value any) string {
