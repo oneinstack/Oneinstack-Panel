@@ -321,11 +321,12 @@ func Preview(c *gin.Context) {
 		}
 	}
 	payload := request.Payload
+	installPreviewPayload := request.Payload
 	if operation == "software.install" {
 		var err error
 		payload, err = normalizeSoftwareInstallPreviewPayload(c.Request.Context(), payload)
 		if err != nil {
-			if handleSoftwareInstallPreviewError(c, err) {
+			if handleSoftwareInstallPreviewError(c, err, installPreviewPayload, userID) {
 				return
 			}
 			core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "软件安装预览参数无效"))
@@ -386,7 +387,7 @@ func Preview(c *gin.Context) {
 			core.HandleError(c, appErr)
 			return
 		}
-		if operation == "software.install" && handleSoftwareInstallPreviewError(c, err) {
+		if operation == "software.install" && handleSoftwareInstallPreviewError(c, err, payload, userID) {
 			return
 		}
 		if handleWebsitePreviewError(c, operation, err) {
@@ -429,7 +430,7 @@ func isJSONDecodeError(err error) bool {
 	return errors.As(err, &syntaxErr) || errors.As(err, &typeErr)
 }
 
-func handleSoftwareInstallPreviewError(c *gin.Context, err error) bool {
+func handleSoftwareInstallPreviewError(c *gin.Context, err error, payload json.RawMessage, requestedBy int64) bool {
 	if err == nil {
 		return false
 	}
@@ -446,6 +447,16 @@ func handleSoftwareInstallPreviewError(c *gin.Context, err error) bool {
 		if hostErr.Info.ConflictingBackend != "" {
 			appErr.Detail += " Active backend: " + hostErr.Info.ConflictingBackend + "."
 		}
+	}
+	var request input.InstallParams
+	if requestedBy > 0 && json.Unmarshal(payload, &request) == nil {
+		_ = software.RecordInstallPreviewFailure(
+			request,
+			requestedBy,
+			"resolving",
+			stableCode,
+			appErr.Message,
+		)
 	}
 	core.HandleError(c, appErr)
 	return true

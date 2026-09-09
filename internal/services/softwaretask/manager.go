@@ -178,6 +178,88 @@ func (m *Manager) Submit(request InstallRequest, requestedBy int64) (*models.Sof
 	return m.submit(request, requestedBy)
 }
 
+// RecordPreviewFailure persists a failure that happened while resolving an
+// installation package during the synchronous preview step. It deliberately
+// stores only the same safe fields used by the durable task reporter; no
+// installation parameters, secrets, package URLs, or log paths are retained.
+func (m *Manager) RecordPreviewFailure(
+	request InstallRequest,
+	requestedBy int64,
+	failurePhase string,
+	errorCode string,
+	errorMessage string,
+) (*models.SoftwareTask, error) {
+	if m == nil || m.db == nil {
+		return nil, errors.New("software task database is not initialized")
+	}
+	request.Key = strings.ToLower(strings.TrimSpace(request.Key))
+	request.Version = strings.TrimSpace(request.Version)
+	if request.Key == "" || request.Version == "" {
+		return nil, errors.New("software key and version are required")
+	}
+	if requestedBy <= 0 {
+		return nil, errors.New("authenticated user is required")
+	}
+
+	component := request.Key
+	if resolved, err := m.componentForKey(request.Key); err == nil {
+		if resolved = strings.ToLower(strings.TrimSpace(resolved)); resolved != "" {
+			component = resolved
+		}
+	}
+	failurePhase = sanitizeRecoveryValue(failurePhase, 32, "resolving")
+	errorCode = strings.ToUpper(sanitizeRecoveryValue(errorCode, 64, "PACKAGE_RESOLVE_FAILED"))
+	errorMessage = sanitizeErrorMessage(strings.TrimSpace(errorMessage))
+	if errorMessage == "" {
+		errorMessage = "无法解析当前主机适用的组件安装包"
+	}
+
+	now := time.Now()
+	taskID := uuid.NewString()
+	task := &models.SoftwareTask{
+		ID:               taskID,
+		Operation:        "install",
+		Component:        component,
+		SoftwareKey:      request.Key,
+		RequestedVersion: request.Version,
+		Status:           models.SoftwareTaskStatusFailed,
+		Phase:            models.SoftwareTaskStatusFailed,
+		Progress:         0,
+		Message:          errorMessage,
+		ErrorCode:        errorCode,
+		ErrorMessage:     errorMessage,
+		FailurePhase:     failurePhase,
+		RollbackStatus:   models.SoftwareTaskRollbackNotRequired,
+		RequestedBy:      requestedBy,
+		EventSeq:         1,
+		StartedAt:        &now,
+		FinishedAt:       &now,
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}
+	event := &models.SoftwareTaskEvent{
+		TaskID:    task.ID,
+		Seq:       1,
+		Type:      "terminal",
+		Level:     "error",
+		Status:    models.SoftwareTaskStatusFailed,
+		Phase:     models.SoftwareTaskStatusFailed,
+		Progress:  0,
+		Code:      errorCode,
+		Message:   errorMessage,
+		CreatedAt: now,
+	}
+	if err := m.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(task).Error; err != nil {
+			return err
+		}
+		return tx.Create(event).Error
+	}); err != nil {
+		return nil, fmt.Errorf("record software preview failure: %w", err)
+	}
+	return task, nil
+}
+
 func (m *Manager) SubmitUninstall(name, version string, requestedBy int64) (*models.SoftwareTask, error) {
 	return m.SubmitUninstallWithParameters(name, version, nil, requestedBy)
 }

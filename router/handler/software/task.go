@@ -256,6 +256,39 @@ func DefaultTaskManager() (*softwaretask.Manager, error) {
 	return getTaskManager()
 }
 
+// RecordInstallPreviewFailure records package-resolution failures from the
+// synchronous install preview without entering the execution queue. The
+// caller intentionally supplies only safe, user-visible error fields.
+func RecordInstallPreviewFailure(
+	req input.InstallParams,
+	requestedBy int64,
+	failurePhase string,
+	errorCode string,
+	errorMessage string,
+) error {
+	version := strings.TrimSpace(req.Version)
+	if version == "" {
+		for key, value := range req.Parameters {
+			compact := strings.NewReplacer("-", "", "_", "", ".", "", " ", "").Replace(strings.ToLower(strings.TrimSpace(key)))
+			if compact == "softwareversion" || compact == "version" {
+				version = strings.TrimSpace(value)
+				if version != "" {
+					break
+				}
+			}
+		}
+	}
+	manager, err := getTaskManager()
+	if err != nil {
+		return err
+	}
+	_, err = manager.RecordPreviewFailure(softwaretask.InstallRequest{
+		Key:     req.Key,
+		Version: version,
+	}, requestedBy, failurePhase, errorCode, errorMessage)
+	return err
+}
+
 // SubmitInstallationTask exposes the same durable installation pipeline used
 // by the software store to other trusted panel modules. Callers still provide
 // a fixed, validated software key and version; no shell command is accepted.
