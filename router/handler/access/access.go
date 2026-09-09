@@ -32,7 +32,9 @@ func Matrix(c *gin.Context) {
 		core.HandleError(c, core.NewError(core.ErrUnauthorized, "登录状态无效"))
 		return
 	}
-	core.HandleSuccess(c, middleware.BuildAuthorizationMatrix(access))
+	matrix := middleware.BuildAuthorizationMatrix(access)
+	matrix.MenuTree = accessservice.LocalizeMenuTree(c.GetString("locale"), matrix.MenuTree)
+	core.HandleSuccess(c, matrix)
 }
 
 func ListRoles(c *gin.Context) {
@@ -51,6 +53,7 @@ func GetRole(c *gin.Context) {
 		handleRBACError(c, err, "读取角色详情")
 		return
 	}
+	role.MenuTree = accessservice.LocalizeMenuTree(c.GetString("locale"), role.MenuTree)
 	localizeRole(c.GetString("locale"), &role.RoleSummary)
 	core.HandleSuccess(c, role)
 }
@@ -66,6 +69,7 @@ func CreateRole(c *gin.Context) {
 		handleRBACError(c, err, "创建角色")
 		return
 	}
+	localizeRoleDetail(c.GetString("locale"), role)
 	core.HandleSuccess(c, role)
 }
 
@@ -80,6 +84,7 @@ func UpdateRole(c *gin.Context) {
 		handleRBACError(c, err, "更新角色")
 		return
 	}
+	localizeRoleDetail(c.GetString("locale"), role)
 	core.HandleSuccess(c, role)
 }
 
@@ -97,6 +102,7 @@ func ListPermissions(c *gin.Context) {
 		handleRBACError(c, err, "读取权限清单")
 		return
 	}
+	accessservice.LocalizePermissionSummaries(c.GetString("locale"), permissions)
 	core.HandleSuccess(c, permissions)
 }
 
@@ -106,6 +112,7 @@ func ListMenus(c *gin.Context) {
 		handleRBACError(c, err, "读取菜单清单")
 		return
 	}
+	accessservice.LocalizeMenuTree(c.GetString("locale"), menus)
 	core.HandleSuccess(c, menus)
 }
 
@@ -292,13 +299,14 @@ func buildMeResponse(locale string, access *accessservice.UserAccess) gin.H {
 		})
 	}
 	matrix := middleware.BuildAuthorizationMatrix(access)
+	menuTree := accessservice.LocalizeMenuTree(locale, matrix.MenuTree)
 	return gin.H{
 		"id":                  access.UserID,
 		"username":            access.Username,
 		"isAdmin":             access.IsSuperAdmin,
 		"isSuperAdmin":        access.IsSuperAdmin,
 		"firstAccessibleMenu": matrix.FirstAccessibleMenu,
-		"menuTree":            matrix.MenuTree,
+		"menuTree":            menuTree,
 		"roles":               roles,
 		"permissions":         access.Permissions,
 		"scopes": gin.H{
@@ -312,6 +320,14 @@ func buildMeResponse(locale string, access *accessservice.UserAccess) gin.H {
 			"terminal":   matrix.Menu["terminal"],
 		},
 	}
+}
+
+func localizeRoleDetail(locale string, role *accessservice.RoleDetail) {
+	if role == nil {
+		return
+	}
+	role.MenuTree = accessservice.LocalizeMenuTree(locale, role.MenuTree)
+	localizeRole(locale, &role.RoleSummary)
 }
 
 func roleInput(request input.AccessRoleRequest) accessservice.RoleInput {

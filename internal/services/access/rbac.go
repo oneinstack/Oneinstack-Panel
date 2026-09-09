@@ -53,6 +53,7 @@ var (
 type PermissionSummary struct {
 	Code        string `json:"code"`
 	Name        string `json:"name"`
+	NameEn      string `json:"nameEn,omitempty"`
 	Description string `json:"description,omitempty"`
 	Module      string `json:"module,omitempty"`
 	Action      string `json:"action,omitempty"`
@@ -116,14 +117,106 @@ func permissionAction(code string) string {
 	return parts[len(parts)-1]
 }
 
+var builtinPermissionEnglishNames = map[string]string{
+	PermissionDashboardRead:             "View dashboard",
+	PermissionRuntimeLogRead:            "View runtime logs",
+	PermissionFileRead:                  "View files",
+	PermissionFileWrite:                 "Modify files (deprecated)",
+	PermissionFileCreate:                "Create or upload files",
+	PermissionFileEdit:                  "Edit files",
+	PermissionFileMove:                  "Move or rename files",
+	PermissionFileDelete:                "Delete files",
+	PermissionFileModify:                "Modify file attributes",
+	PermissionFileArchive:               "Archive files",
+	PermissionFileShare:                 "Share files",
+	PermissionFileScopeRoot:             "Access the full file-system root",
+	PermissionFileScopeWebsites:         "Access website directories",
+	PermissionFileScopeBackups:          "Access backup directories",
+	PermissionWebsiteRead:               "View websites",
+	PermissionWebsiteWrite:              "Modify websites",
+	PermissionWebsiteApproval:           "Request website approval",
+	PermissionCertificateRead:           "View certificates",
+	PermissionCertificateWrite:          "Modify certificates",
+	PermissionDatabaseRead:              "View databases",
+	PermissionDatabaseWrite:             "Modify databases",
+	PermissionDatabaseApproval:          "Request database approval",
+	PermissionSoftwareRead:              "View software",
+	PermissionSoftwareWrite:             "Modify software",
+	PermissionServiceRead:               "View software services",
+	PermissionServiceWrite:              "Modify software services",
+	PermissionSecurityRead:              "View security settings",
+	PermissionSecurityWrite:             "Modify security settings",
+	PermissionCronRead:                  "View scheduled tasks",
+	PermissionCronWrite:                 "Modify scheduled tasks",
+	PermissionMonitoringRead:            "View monitoring data",
+	PermissionMonitoringWrite:           "Modify monitoring settings",
+	PermissionSystemRead:                "View system access settings",
+	PermissionSystemWrite:               "Modify system access settings",
+	PermissionConfigSnapshotRead:        "View configuration snapshots",
+	PermissionConfigSnapshotWrite:       "Restore or delete configuration snapshots",
+	PermissionTerminalAccess:            "Access the web terminal",
+	PermissionAuditRead:                 "View audit logs",
+	PermissionAuditExport:               "Export audit logs",
+	PermissionAuditVerify:               "Verify audit logs",
+	PermissionApprovalRead:              "View approval requests",
+	PermissionApprovalRequest:           "Submit approval requests",
+	PermissionApprovalReview:            "Review approval requests",
+	PermissionApprovalExecute:           "Execute approved operations",
+	PermissionTaskReadSelf:              "View own tasks",
+	PermissionTaskReadAll:               "View all tasks",
+	PermissionTaskCancelSelf:            "Cancel own tasks",
+	PermissionBastionRead:               "View bastion resources",
+	PermissionBastionWrite:              "Manage bastion resources",
+	PermissionBastionIdentityRead:       "View bastion login identities",
+	PermissionContainerRead:             "View container resources",
+	PermissionContainerWrite:            "Manage container lifecycle",
+	PermissionContainerDelete:           "Delete container resources",
+	PermissionContainerTerminal:         "Access container terminals",
+	PermissionContainerLogsRead:         "View container logs",
+	PermissionContainerImageWrite:       "Manage container images",
+	PermissionContainerNetworkWrite:     "Manage container networks",
+	PermissionContainerVolumeWrite:      "Manage storage volumes",
+	PermissionContainerComposeWrite:     "Manage Compose projects",
+	PermissionContainerRegistryWrite:    "Manage image registries",
+	PermissionContainerConfigWrite:      "Manage Docker configuration",
+	PermissionContainerRuntimeInstall:   "Install the Docker runtime",
+	PermissionContainerDangerousCleanup: "Clean up container resources",
+	PermissionContainerForceAction:      "Perform force actions on containers",
+}
+
 func permissionSummary(permission models.Permission) PermissionSummary {
 	return PermissionSummary{
 		Code:        permission.Code,
 		Name:        permission.Name,
+		NameEn:      builtinPermissionEnglishNames[permission.Code],
 		Description: permission.Description,
 		Module:      permission.Module,
 		Action:      permissionAction(permission.Code),
 	}
+}
+
+func isEnglishLocale(locale string) bool {
+	switch strings.ToLower(strings.TrimSpace(locale)) {
+	case "en", "en-us":
+		return true
+	default:
+		return false
+	}
+}
+
+// LocalizePermissionSummaries applies the deterministic labels for built-in
+// permissions at the response boundary. Runtime translation remains available
+// for custom text, but must not be required for the access-control catalog.
+func LocalizePermissionSummaries(locale string, permissions []PermissionSummary) []PermissionSummary {
+	if !isEnglishLocale(locale) {
+		return permissions
+	}
+	for index := range permissions {
+		if permissions[index].NameEn != "" {
+			permissions[index].Name = permissions[index].NameEn
+		}
+	}
+	return permissions
 }
 
 func knownPermissionCodes() map[string]struct{} {
@@ -799,6 +892,23 @@ func buildMenuTree(menus []models.Menu, permissionsByMenu map[uint64][]Permissio
 		result = append(result, *root)
 	}
 	return result
+}
+
+// LocalizeMenuTree applies the fixed English labels for the access-control
+// catalog. Custom menu names without nameEn remain unchanged and can still be
+// handled by the response translation fallback.
+func LocalizeMenuTree(locale string, nodes []MenuNode) []MenuNode {
+	if !isEnglishLocale(locale) {
+		return nodes
+	}
+	for index := range nodes {
+		if nodes[index].NameEn != "" {
+			nodes[index].Name = nodes[index].NameEn
+		}
+		nodes[index].Permissions = LocalizePermissionSummaries(locale, nodes[index].Permissions)
+		nodes[index].Children = LocalizeMenuTree(locale, nodes[index].Children)
+	}
+	return nodes
 }
 
 func filterObsoleteBuiltinButtonMenus(nodes []MenuNode) []MenuNode {

@@ -1,5 +1,10 @@
 package access
 
+import (
+	"regexp"
+	"strings"
+)
+
 // builtinButtonItem describes a frontend button menu entry. The frontend key
 // is kept as the action target (button.<action>) so the backend remains the
 // single source of truth for menu visibility and button authorization.
@@ -338,12 +343,112 @@ func BuiltinButtonPermissions() map[string]string {
 	return builtinActionPermissionCatalog()
 }
 
+var builtinActionEnglishScopes = map[string]string{
+	"approval":    "Approval",
+	"bastion":     "Bastion",
+	"certificate": "Certificate",
+	"config":      "Configuration",
+	"container":   "Container management",
+	"database":    "Database",
+	"file":        "File management",
+	"monitor":     "Monitoring",
+	"panel":       "Panel settings",
+	"security":    "Security",
+	"software":    "Software store",
+	"task":        "Scheduled tasks",
+	"user":        "User management",
+	"website":     "Website",
+}
+
+var builtinActionEnglishWords = map[string]string{
+	"access": "Access", "account": "Account", "alias": "Alias", "all": "All",
+	"appearance": "Appearance", "apply": "Apply", "approval": "Approval", "approve": "Approve",
+	"archive": "Archive", "assign": "Assign", "backup": "Backup", "bastion": "Bastion",
+	"batch": "Batch", "bind": "Bind", "build": "Build", "cache": "Cache", "cancel": "Cancel",
+	"catalog": "Catalog", "cert": "Certificate", "certificate": "Certificate", "channel": "Channel",
+	"check": "Check", "cleanup": "Clean up", "clear": "Clear", "codes": "Codes", "collect": "Collect",
+	"compose": "Compose", "config": "Configuration", "connect": "Connect", "container": "Container",
+	"create": "Create", "database": "Database", "delete": "Delete", "deploy": "Deploy",
+	"detail": "Details", "diff": "Differences", "disable": "Disable", "dns": "DNS", "download": "Download",
+	"edit": "Edit", "entry": "Entry", "event": "Event", "execute": "Execute", "export": "Export",
+	"file": "File", "firewall": "Firewall", "force": "Force", "forward": "Forward", "handle": "Handle",
+	"image": "Image", "import": "Import", "install": "Install", "intrusion": "Intrusion prevention",
+	"ip": "IP", "kill": "Force stop", "log": "Log", "logs": "Logs", "malicious": "Malicious",
+	"manage": "Manage", "mine": "My", "modify": "Modify", "monitor": "Monitor", "move": "Move",
+	"mysql": "MySQL", "network": "Network", "panel": "Panel", "password": "Password", "pause": "Pause",
+	"payload": "Payload", "permission": "Permission", "phpmyadmin": "phpMyAdmin", "ping": "Ping",
+	"port": "Port", "preview": "Preview", "project": "Project", "pull": "Pull", "push": "Push",
+	"read": "View", "record": "Record", "recovery": "Recovery", "regenerate": "Regenerate",
+	"region": "Region", "registry": "Registry", "reject": "Reject", "redis": "Redis", "remote": "Remote", "renew": "Renew",
+	"reset": "Reset", "resource": "Resource", "restart": "Restart", "restore": "Restore", "retry": "Retry",
+	"revoke": "Revoke", "role": "Role", "rule": "Rule", "security": "Security", "self": "Own",
+	"server": "Server", "service": "Service", "session": "Session", "settings": "Settings", "setup": "Set up",
+	"share": "Share", "signed": "Signed", "silence": "Silence", "snapshot": "Snapshot", "software": "Software",
+	"ssl": "SSL", "start": "Start", "stop": "Stop", "sync": "Sync", "tag": "Tag", "task": "Task",
+	"template": "Template", "test": "Test", "toggle": "Enable or disable", "totp": "TOTP",
+	"uninstall": "Uninstall", "unpause": "Resume", "update": "Edit", "upload": "Upload", "user": "User",
+	"username": "Username", "volume": "Volume", "webserver": "Web service", "website": "Website", "write": "Modify",
+}
+
+var builtinActionEnglishParts = map[string]string{
+	"account-security": "Account security",
+	"dns-account":      "DNS account",
+	"ip-rule":          "IP rule",
+	"port-forward":     "Port forwarding",
+	"port-rule":        "Port rule",
+	"recovery-codes":   "Recovery codes",
+	"self-signed":      "Self-signed certificate",
+}
+
+var builtinActionCamelCaseBoundary = regexp.MustCompile(`([a-z0-9])([A-Z])`)
+
+func builtinActionEnglishLabel(action string) string {
+	parts := strings.Split(action, ".")
+	if len(parts) < 2 {
+		return ""
+	}
+	scope, ok := builtinActionEnglishScopes[parts[0]]
+	if !ok {
+		return ""
+	}
+	details := make([]string, 0, len(parts)-1)
+	for _, part := range parts[1:] {
+		if translated, ok := builtinActionEnglishParts[part]; ok {
+			details = append(details, translated)
+			continue
+		}
+		words := builtinActionCamelCaseBoundary.ReplaceAllString(part, "$1 $2")
+		words = strings.ReplaceAll(strings.ReplaceAll(words, "-", " "), "_", " ")
+		translatedWords := make([]string, 0)
+		for _, word := range strings.Fields(strings.ToLower(words)) {
+			translated, ok := builtinActionEnglishWords[word]
+			if !ok {
+				return ""
+			}
+			translatedWords = append(translatedWords, translated)
+		}
+		if len(translatedWords) == 0 {
+			return ""
+		}
+		details = append(details, strings.Join(translatedWords, " "))
+	}
+	if len(details) == 0 {
+		return ""
+	}
+	return scope + " - " + strings.Join(details, " - ")
+}
+
 func lookupBuiltinActionLabel(action string) (builtinActionLabel, bool) {
 	for _, definition := range builtinFrontendButtonDefinitions() {
 		if definition.Action == action {
-			label := builtinActionLabel{Name: definition.Name, NameEn: definition.Action}
+			label := builtinActionLabel{Name: definition.Name}
 			if existing, ok := builtinActionLabels[action]; ok {
 				label.NameEn = existing.NameEn
+			} else {
+				label.NameEn = builtinActionEnglishLabel(action)
+			}
+			if label.NameEn == "" || label.NameEn == action {
+				return builtinActionLabel{}, false
 			}
 			return label, true
 		}
