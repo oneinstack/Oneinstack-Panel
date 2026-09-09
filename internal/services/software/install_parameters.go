@@ -140,8 +140,27 @@ func readNginxConfiguration(values map[string]string, mainConfig, siteConfig str
 	}
 	if match := nginxRootPattern.FindSubmatch(siteContents); len(match) > 1 {
 		root := string(match[1])
-		values["web-root"] = strings.TrimSuffix(root, "/default")
+		values["web-root"] = normalizeNginxWebRoot(root)
 	}
+}
+
+func normalizeNginxWebRoot(root string) string {
+	root = filepath.Clean(strings.TrimSpace(root))
+	const managedWebRoot = "/data/wwwroot"
+	if strings.HasPrefix(root, managedWebRoot+string(filepath.Separator)) {
+		remainder := strings.TrimPrefix(root, managedWebRoot+string(filepath.Separator))
+		allDefault := remainder != ""
+		for _, segment := range strings.Split(remainder, string(filepath.Separator)) {
+			if segment != "default" {
+				allDefault = false
+				break
+			}
+		}
+		if allDefault {
+			return managedWebRoot
+		}
+	}
+	return strings.TrimSuffix(root, "/default")
 }
 
 func latestNginxPreservedConfigRoots(stateDir string) []string {

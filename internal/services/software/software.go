@@ -173,6 +173,8 @@ func checkNginx(sf *models.Software) bool {
 
 func checkPhpMyAdmin(sf *models.Software) bool {
 	for _, path := range []string{
+		"/data/wwwroot/phpMyAdmin/index.php",
+		"/data/wwwroot/phpmyadmin/index.php",
 		"/data/wwwroot/default/phpMyAdmin/index.php",
 		"/data/wwwroot/default/phpmyadmin/index.php",
 		"/usr/share/phpmyadmin/index.php",
@@ -194,6 +196,7 @@ func checkRedis(sf *models.Software) bool {
 }
 
 func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software], error) {
+	filterByUpdate := param.IsUpdate != nil
 	tx := app.DB().
 		Where("(catalog_visible = ? OR installed = ?)", true, true).
 		Select(
@@ -248,14 +251,6 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 		tx = tx.Where("resource = ?", param.Resource)
 	}
 
-	if param.IsUpdate != nil {
-		isi := 0
-		if *param.IsUpdate {
-			isi = 1
-		}
-		tx = tx.Where("is_update = ?", isi)
-	}
-
 	if param.Installed != nil {
 		isi := 0
 		if *param.Installed {
@@ -282,12 +277,40 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 		}
 	}
 
-	paginated, err := services.Paginate[models.Softwares](tx, &models.Softwares{}, &input.Page{
-		Page:     param.Page.Page,
-		PageSize: param.Page.PageSize,
-	})
-	if err != nil {
-		return nil, err
+	var (
+		paginated *services.PaginatedResult[models.Softwares]
+		err       error
+	)
+	if filterByUpdate {
+		// Update state for components such as firewalld depends on a host probe
+		// performed while building the response. Do not filter on the persisted
+		// flag before that probe, otherwise stale rows can leak into the result.
+		var rows []models.Softwares
+		if err := tx.Find(&rows).Error; err != nil {
+			return nil, err
+		}
+		page := param.Page.Page
+		if page <= 0 {
+			page = 1
+		}
+		pageSize := param.Page.PageSize
+		if pageSize <= 0 {
+			pageSize = 10
+		}
+		paginated = &services.PaginatedResult[models.Softwares]{
+			Data:     rows,
+			Total:    len(rows),
+			Page:     page,
+			PageSize: pageSize,
+		}
+	} else {
+		paginated, err = services.Paginate[models.Softwares](tx, &models.Softwares{}, &input.Page{
+			Page:     param.Page.Page,
+			PageSize: param.Page.PageSize,
+		})
+		if err != nil {
+			return nil, err
+		}
 	}
 	versionOptions := make(map[string][]output.VersionOption)
 	versionLines := make(map[string][]string)
@@ -304,6 +327,10 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 			return nil, err
 		}
 		for _, row := range versionRows {
+			installable := row.Installable
+			if row.CatalogManaged {
+				installable = installable && strings.TrimSpace(row.LatestPackageVersion) != ""
+			}
 			versionOptions[row.Key] = append(versionOptions[row.Key], output.VersionOption{
 				Version:            row.Version,
 				Line:               row.VersionLine,
@@ -311,7 +338,7 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 				Enabled:            row.CatalogVisible || row.Installed,
 				Recommended:        row.Recommended,
 				AllowCustomVersion: row.AllowCustomVersion,
-				Installable:        row.Installable,
+				Installable:        installable,
 				ReleaseNotes:       row.ReleaseNotes,
 			})
 			line := strings.TrimSpace(row.VersionLine)
@@ -347,6 +374,16 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 	// 转换版本格式
 	groupedResults := make([]output.Software, 0, len(paginated.Data))
 	for i, item := range paginated.Data {
+		installable := item.Installable
+		if item.CatalogManaged {
+			installable = false
+			for _, option := range versionOptions[item.Key] {
+				if option.Installable {
+					installable = true
+					break
+				}
+			}
+		}
 		port := strings.TrimSpace(item.HttpPort)
 		if item.Installed && port == "" {
 			port = models.DefaultSoftwarePort(item.Key, item.Component)
@@ -371,7 +408,7 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 			UpdateReason:            softwareUpdateReason(item),
 			RecommendedVersion:      item.RecommendedVersion,
 			VersionOptions:          versionOptions[item.Key],
-			Installable:             item.Installable,
+			Installable:             installable,
 			CatalogManaged:          item.CatalogManaged,
 			IsUpdate:                item.IsUpdate,
 			Log:                     item.Log,
@@ -438,11 +475,40 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 		}
 	}
 
+	total := paginated.Total
+	totalPages := 0
+	if filterByUpdate {
+		filtered := make([]output.Software, 0, len(groupedResults))
+		for _, item := range groupedResults {
+			if item.IsUpdate == *param.IsUpdate {
+				filtered = append(filtered, item)
+			}
+		}
+		total = len(filtered)
+		pageSize := paginated.PageSize
+		start := (paginated.Page - 1) * pageSize
+		if start >= total {
+			groupedResults = []output.Software{}
+		} else {
+			end := start + pageSize
+			if end > total {
+				end = total
+			}
+			groupedResults = filtered[start:end]
+		}
+		if total > 0 {
+			totalPages = (total + pageSize - 1) / pageSize
+		} else {
+			totalPages = 0
+		}
+	}
+
 	return &services.PaginatedResult[output.Software]{
-		Data:     groupedResults,
-		Total:    paginated.Total,
-		Page:     paginated.Page,
-		PageSize: paginated.PageSize,
+		Data:       groupedResults,
+		Total:      total,
+		Page:       paginated.Page,
+		PageSize:   paginated.PageSize,
+		TotalPages: totalPages,
 	}, nil
 }
 

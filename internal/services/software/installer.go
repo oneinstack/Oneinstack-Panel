@@ -18,11 +18,12 @@ import (
 )
 
 var bundledOnlySoftwareKeys = map[string]struct{}{
-	"db":        {},
-	"redis":     {},
-	"webserver": {},
-	"php":       {},
-	"firewalld": {},
+	"db":         {},
+	"redis":      {},
+	"webserver":  {},
+	"php":        {},
+	"phpmyadmin": {},
+	"firewalld":  {},
 }
 
 // Installer 软件安装器
@@ -1126,7 +1127,7 @@ func (installer *Installer) setScriptParams(scriptInfo *script.ScriptInfo, param
 		}
 	}
 	componentKey := strings.ToLower(strings.TrimSpace(params.Key))
-	if componentKey == "docker" || componentKey == "docker-compose" {
+	if componentKey == "docker" || componentKey == "docker-compose" || componentKey == "phpmyadmin" {
 		// Installation mode and offline root are server-owned values. They are
 		// injected only after the signed package has been fixed by Panel.
 		scriptInfo.Params["ONEINSTACK_INSTALL_MODE"] = installMode

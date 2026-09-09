@@ -284,7 +284,7 @@ func SubmitOfflineInstallationTask(
 	}
 	componentKey := strings.ToLower(strings.TrimSpace(req.Key))
 	switch componentKey {
-	case "fail2ban", "docker", "docker-compose":
+	case "fail2ban", "docker", "docker-compose", "phpmyadmin":
 	default:
 		return nil, fmt.Errorf("offline installation is not supported for component %s", componentKey)
 	}
