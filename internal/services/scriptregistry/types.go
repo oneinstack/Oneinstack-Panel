@@ -15,7 +15,7 @@ import (
 var (
 	componentIDPattern         = regexp.MustCompile(`^[a-z][a-z0-9-]{1,63}$`)
 	versionPattern             = regexp.MustCompile(`^v?[0-9]+(?:\.[0-9]+){1,2}(?:[-+][0-9A-Za-z.-]+)?$`)
-	softwareVersionPattern     = regexp.MustCompile(`^v?[0-9]+(?:\.[0-9]+){1,2}(?:[-+][0-9A-Za-z.-]+)?$`)
+	softwareVersionPattern     = regexp.MustCompile(`^v?[0-9]+(?:\.[0-9]+){1,3}(?:[-+][0-9A-Za-z.-]+)?$`)
 	softwareVersionLinePattern = regexp.MustCompile(`^v?[0-9]+(?:\.[0-9]+)*\.x$`)
 	parameterPattern           = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_-]{1,63}$`)
 	environmentPattern         = regexp.MustCompile(`^[A-Z][A-Z0-9_]{1,63}$`)
@@ -381,7 +381,9 @@ func (m Manifest) validate() error {
 			default:
 				return fmt.Errorf("unsupported source architecture %q", source.Architecture)
 			}
-			if !buildIDPattern.MatchString(source.BuildID) {
+			// buildId is optional for historical and fixed-digest-only source
+			// releases. When present, it must still use the canonical format.
+			if source.BuildID != "" && !buildIDPattern.MatchString(source.BuildID) {
 				return fmt.Errorf("invalid source buildId for %s %s", source.SoftwareVersion, source.Architecture)
 			}
 			key := source.SoftwareVersion + "\x00" + source.Architecture
