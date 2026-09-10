@@ -26,10 +26,11 @@ import (
 const maxServiceProbeBytes = 64 * 1024
 
 var (
-	serviceStatePattern    = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
-	serviceNamePattern     = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.@-]{0,127}$`)
-	runtimeVersionPattern  = regexp.MustCompile(`^[0-9A-Za-z][0-9A-Za-z._:+-]{0,63}$`)
-	softwareVersionPattern = regexp.MustCompile(`^[0-9]+(?:\.[0-9]+){1,3}(?:[-+][0-9A-Za-z.-]+)?$`)
+	serviceStatePattern        = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
+	serviceNamePattern         = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.@-]{0,127}$`)
+	runtimeVersionPattern      = regexp.MustCompile(`^[0-9A-Za-z][0-9A-Za-z._:+-]{0,63}$`)
+	softwareVersionPattern     = regexp.MustCompile(`^[0-9]+(?:\.[0-9]+){1,3}(?:[-+][0-9A-Za-z.-]+)?$`)
+	phpVersionedServicePattern = regexp.MustCompile(`^php-fpm-[0-9]+\.[0-9]+$`)
 )
 
 type ComponentServiceDefinition struct {
@@ -261,6 +262,15 @@ func serviceIdentityName(name string) string {
 
 func serviceUnitCandidates(definition ComponentServiceDefinition) []string {
 	names := []string{serviceUnitName(definition.ServiceName)}
+	if strings.EqualFold(strings.TrimSpace(definition.Component), "php") {
+		params := installedServiceInstallParams(definition.SoftwareKey, definition.Component, "")
+		if serviceName := installParameterValue(params.Parameters, "service-name", "serviceName"); serviceName != "" {
+			names = append(names, serviceUnitName(serviceName))
+		}
+		if serviceName := phpServiceNameForVersion(params.Version); serviceName != "" {
+			names = append(names, serviceUnitName(serviceName))
+		}
+	}
 	if strings.EqualFold(strings.TrimSpace(definition.Component), "redis") {
 		// Managed Redis packages use redis.service. Older catalog rows and the
 		// legacy service definition use redis-server.service instead.
@@ -279,6 +289,19 @@ func serviceUnitCandidates(definition ComponentServiceDefinition) []string {
 		result = append(result, name)
 	}
 	return result
+}
+
+func phpServiceNameForVersion(version string) string {
+	switch strings.TrimSpace(version) {
+	case "5.3.29":
+		return "php-fpm-5.3"
+	case "5.4.45":
+		return "php-fpm-5.4"
+	case "7.0.33":
+		return "php-fpm-7.0"
+	default:
+		return ""
+	}
 }
 
 func activeServiceUnit(ctx context.Context, definition ComponentServiceDefinition) string {
@@ -788,6 +811,9 @@ func serviceProbeIdentityMatches(
 	expected := serviceIdentityName(definition.ServiceName)
 	actual := serviceIdentityName(serviceName)
 	if expected != "" && expected == actual {
+		return true
+	}
+	if definition.Component == "php" && phpVersionedServicePattern.MatchString(actual) {
 		return true
 	}
 	// Managed Redis packages use redis.service, while older catalog rows and

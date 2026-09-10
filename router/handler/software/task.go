@@ -317,17 +317,18 @@ func SubmitOfflineInstallationTask(
 	}
 	componentKey := strings.ToLower(strings.TrimSpace(req.Key))
 	switch componentKey {
-	case "fail2ban", "docker", "docker-compose", "phpmyadmin", "redis":
+	case "fail2ban", "docker", "docker-compose", "phpmyadmin", "redis", "firewalld", "db", "mysql", "webserver", "nginx", "php":
 	default:
 		return nil, fmt.Errorf("offline installation is not supported for component %s", componentKey)
 	}
-	pin, err := registry.ImportOfflineBundle(context.Background(), componentKey, req.Version, bundle)
+	offlineComponent := offlineBundleComponent(componentKey)
+	pin, err := registry.ImportOfflineBundle(context.Background(), offlineComponent, req.Version, bundle)
 	if err != nil {
 		return nil, err
 	}
 	req.InstallMode = "offline"
 	req.OfflinePackageID = "sha256:" + pin.PackageSHA256
-	req.OfflinePackagePath = filepath.Join(app.ONE_CONFIG.ScriptCenter.CachePath, "components", componentKey, "offline", pin.PackageSHA256)
+	req.OfflinePackagePath = filepath.Join(app.ONE_CONFIG.ScriptCenter.CachePath, "components", offlineComponent, "offline", pin.PackageSHA256)
 	req.ResolvedPackage = &pin
 	return submitInstallationTask(req, requestedBy)
 }
@@ -341,7 +342,7 @@ func submitInstallationTask(
 	if req.InstallMode == "" {
 		req.InstallMode = "center"
 	}
-	if strings.EqualFold(strings.TrimSpace(req.Key), "firewalld") {
+	if requiresClosedLoopPackage(req.Key) {
 		_, pin, err := softwareService.PreviewInstallationPackage(context.Background(), &req)
 		if err != nil {
 			return nil, err
@@ -420,6 +421,26 @@ func submitInstallationTask(
 		OfflinePackageID:   req.OfflinePackageID,
 		OfflinePackagePath: req.OfflinePackagePath,
 	}, requestedBy)
+}
+
+func requiresClosedLoopPackage(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "firewalld", "db", "mysql", "webserver", "nginx", "php":
+		return true
+	default:
+		return false
+	}
+}
+
+func offlineBundleComponent(key string) string {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "db", "mysql":
+		return "mysql"
+	case "webserver", "nginx":
+		return "nginx"
+	default:
+		return strings.ToLower(strings.TrimSpace(key))
+	}
 }
 
 func explicitInstallParameters(req input.InstallParams) map[string]bool {

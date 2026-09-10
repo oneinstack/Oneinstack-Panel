@@ -68,6 +68,9 @@ func (installer *Installer) install(ctx context.Context, params *input.InstallPa
 	if err := resolveFirewalldInstallParams(ctx, params); err != nil {
 		return "", err
 	}
+	if err := installer.ValidateInstallParams(ctx, params); err != nil {
+		return "", err
+	}
 	actionName := "install"
 	if app.DB() != nil {
 		var installed int64
@@ -101,6 +104,9 @@ func (installer *Installer) InstallTask(
 ) (string, error) {
 	NormalizeInstallParams(params)
 	if err := resolveFirewalldInstallParams(ctx, params); err != nil {
+		return "", err
+	}
+	if err := installer.ValidateInstallParams(ctx, params); err != nil {
 		return "", err
 	}
 	actionName := "install"
@@ -582,9 +588,16 @@ func (installer *Installer) getInstallScript(ctx context.Context, params *input.
 	var catalogManaged bool
 	var catalogChannel string
 	if app.DB() != nil {
+		catalogKeys := []string{params.Key}
+		if strings.EqualFold(strings.TrimSpace(params.Key), "mysql") {
+			catalogKeys = append(catalogKeys, "db")
+		}
+		if strings.EqualFold(strings.TrimSpace(params.Key), "nginx") {
+			catalogKeys = append(catalogKeys, "webserver")
+		}
 		var catalogRow models.Software
 		if err := app.DB().
-			Where("`key` = ? AND version = ? AND component <> ''", params.Key, params.Version).
+			Where("`key` IN ? AND version = ? AND component <> ''", catalogKeys, params.Version).
 			First(&catalogRow).Error; err == nil {
 			componentName = strings.ToLower(strings.TrimSpace(catalogRow.Component))
 			catalogManaged = catalogRow.CatalogManaged
@@ -595,7 +608,7 @@ func (installer *Installer) getInstallScript(ctx context.Context, params *input.
 			// line. The component package remains responsible for official-source
 			// validation and artifact verification.
 			if err := app.DB().
-				Where("`key` = ? AND catalog_managed = ? AND version_line <> '' AND component <> ''", params.Key, true).
+				Where("`key` IN ? AND catalog_managed = ? AND version_line <> '' AND component <> ''", catalogKeys, true).
 				Order("catalog_visible DESC, version_order ASC, id ASC").
 				Find(&candidates).Error; err == nil {
 				for _, candidate := range candidates {
@@ -611,13 +624,13 @@ func (installer *Installer) getInstallScript(ctx context.Context, params *input.
 		}
 	}
 
-	switch params.Key {
-	case "webserver":
+	switch strings.ToLower(strings.TrimSpace(params.Key)) {
+	case "webserver", "nginx":
 		if componentName == "" {
 			componentName = "nginx"
 		}
 		legacyScriptName = "nginx"
-	case "db":
+	case "db", "mysql":
 		if componentName == "" {
 			componentName = "mysql"
 		}
@@ -924,6 +937,9 @@ func installedServiceInstallParams(key, component, version string) *input.Instal
 	if err := query.Order("id DESC").First(&row).Error; err != nil {
 		return params
 	}
+	if strings.TrimSpace(params.Version) == "" {
+		params.Version = strings.TrimSpace(row.Version)
+	}
 	params.Port = strings.TrimSpace(row.HttpPort)
 	if strings.TrimSpace(row.RuntimeParamsJSON) == "" {
 		return params
@@ -1149,7 +1165,8 @@ func (installer *Installer) setScriptParams(scriptInfo *script.ScriptInfo, param
 		}
 	}
 	componentKey := strings.ToLower(strings.TrimSpace(params.Key))
-	if componentKey == "docker" || componentKey == "docker-compose" || componentKey == "phpmyadmin" || componentKey == "redis" {
+	if _, closedLoop := closedLoopPackageComponent(componentKey); closedLoop ||
+		componentKey == "docker" || componentKey == "docker-compose" || componentKey == "phpmyadmin" || componentKey == "redis" {
 		// Installation mode and offline root are server-owned values. They are
 		// injected only after the signed package has been fixed by Panel.
 		scriptInfo.Params["ONEINSTACK_INSTALL_MODE"] = installMode

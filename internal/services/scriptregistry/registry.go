@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -168,7 +169,8 @@ func (r *Registry) ImportOfflineBundle(
 	if err != nil {
 		return PackagePin{}, newRegistryError("PACKAGE_UNAVAILABLE", "offline bundle contents are invalid", err)
 	}
-	if manifest.Component.ID != component || !manifest.supportsSoftwareVersion(softwareVersion) || !compatibleWithHost(manifest, r.host) {
+	if manifest.Component.ID != component || !manifest.supportsSoftwareVersion(softwareVersion) ||
+		!compatibleWithHost(manifest, r.host) || !manifest.sourceAvailableForHost(softwareVersion, r.host) {
 		_ = os.RemoveAll(destination)
 		return PackagePin{}, newRegistryError("HOST_PLATFORM_UNSUPPORTED", "offline bundle does not match the requested version or host", nil)
 	}
@@ -235,7 +237,8 @@ func (r *Registry) ResolveFixed(component, softwareVersion string, pin PackagePi
 		return Package{}, newRegistryError("PACKAGE_UNAVAILABLE", "the preview-fixed package is no longer cached", err)
 	}
 	if manifest.Component.ID != component || manifest.Component.Version != pin.ResolvedVersion ||
-		!manifest.supportsSoftwareVersion(softwareVersion) || !compatibleWithHost(manifest, r.host) {
+		!manifest.supportsSoftwareVersion(softwareVersion) || !compatibleWithHost(manifest, r.host) ||
+		!manifest.sourceAvailableForHost(softwareVersion, r.host) {
 		return Package{}, newRegistryError("HOST_PLATFORM_UNSUPPORTED", "fixed package manifest no longer matches the installation request", nil)
 	}
 	if pin.Channel != "" && manifest.Component.Channel != pin.Channel {
@@ -497,7 +500,9 @@ func (r *Registry) resolvePackageVersionChannelBatchOnce(ctx context.Context, re
 			continue
 		}
 		if err := item.Metadata.Manifest.validate(); err != nil || item.Metadata.Manifest.Component.ID != item.Component ||
-			!item.Metadata.Manifest.supportsSoftwareVersion(item.SoftwareVersion) || item.Metadata.Manifest.Component.Channel != item.Channel {
+			!item.Metadata.Manifest.supportsSoftwareVersion(item.SoftwareVersion) ||
+			!item.Metadata.Manifest.sourceAvailableForHost(item.SoftwareVersion, r.host) ||
+			item.Metadata.Manifest.Component.Channel != item.Channel {
 			continue
 		}
 		if err := r.verifyMetadata(item.Metadata); err != nil {
@@ -679,6 +684,7 @@ func (r *Registry) resolveCachedInstalled(
 				manifest.Component.ID != component ||
 				!manifest.supportsSoftwareVersion(softwareVersion) ||
 				(checkCompatibility && !compatibleWithHost(manifest, r.host)) ||
+				!manifest.sourceAvailableForHost(softwareVersion, r.host) ||
 				!packageSupportsActions(manifest, requiredActions) {
 				continue
 			}
@@ -720,6 +726,7 @@ func (r *Registry) resolveBundledInstalled(
 			manifest.Component.ID != component ||
 			!manifest.supportsSoftwareVersion(softwareVersion) ||
 			(checkCompatibility && !compatibleWithHost(manifest, r.host)) ||
+			!manifest.sourceAvailableForHost(softwareVersion, r.host) ||
 			!packageSupportsActions(manifest, requiredActions) {
 			continue
 		}
@@ -792,6 +799,9 @@ func (r *Registry) resolveRemoteMetadata(ctx context.Context, component, softwar
 	}
 	if err := metadata.Manifest.validate(); err != nil {
 		return Metadata{}, newRegistryError("PACKAGE_RESOLVE_FAILED", "Center returned an invalid package manifest", err)
+	}
+	if !metadata.Manifest.sourceAvailableForHost(softwareVersion, r.host) {
+		return Metadata{}, newRegistryError("HOST_PLATFORM_UNSUPPORTED", "Center returned no pinned source for this release and host", nil)
 	}
 	if err := r.verifyMetadata(metadata); err != nil {
 		return Metadata{}, err
@@ -949,7 +959,8 @@ func (r *Registry) resolveBundled(component, softwareVersion string) (Package, e
 			manifest.Component.ID != component ||
 			manifest.Component.Channel != r.config.Channel ||
 			!manifest.supportsSoftwareVersion(softwareVersion) ||
-			!compatibleWithHost(manifest, r.host) {
+			!compatibleWithHost(manifest, r.host) ||
+			!manifest.sourceAvailableForHost(softwareVersion, r.host) {
 			continue
 		}
 		if selected.Root == "" || compareVersions(manifest.Component.Version, selected.Manifest.Component.Version) > 0 {
@@ -1022,7 +1033,29 @@ func detectHost() Host {
 		SystemID:      systemID,
 		SystemVersion: systemVersion,
 		Architecture:  runtime.GOARCH,
+		GlibcVersion:  detectGlibcVersion(),
 	}
+}
+
+func detectGlibcVersion() string {
+	output, err := exec.Command("ldd", "--version").CombinedOutput()
+	if err != nil {
+		return ""
+	}
+	for _, field := range strings.Fields(string(output)) {
+		parts := strings.Split(field, ".")
+		if len(parts) != 2 {
+			continue
+		}
+		if _, err := strconv.Atoi(parts[0]); err != nil {
+			continue
+		}
+		if _, err := strconv.Atoi(parts[1]); err != nil {
+			continue
+		}
+		return field
+	}
+	return ""
 }
 
 func readOSRelease(fileName string) (string, string) {

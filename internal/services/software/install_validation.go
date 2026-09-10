@@ -92,11 +92,17 @@ func (e *InstallParameterError) InstallationMessage() string {
 			return fmt.Sprintf("安装参数 %s 不能使用过于宽泛的系统目录，请指定更具体的目录后重试", field)
 		}
 		return "安装参数不能使用过于宽泛的系统目录，请指定更具体的目录后重试"
-	case "PHP 版本必须是 8.x.y 格式，并且属于 Center 已发布的版本线":
+	case "PHP 版本必须是 x.y.z 精确版本，并且属于 Center 已发布的版本":
+		return message
+	case "MySQL 版本必须选择 Panel 返回的精确可安装版本 8.0.45":
 		return message
 	case "MySQL 运行账户必须以小写字母或下划线开头，仅允许小写字母、数字、下划线和连字符，长度为 1-32 个字符",
 		"MySQL 登录用户必须以小写字母或下划线开头，仅允许小写字母、数字、下划线和连字符，长度为 1-32 个字符",
 		"MySQL 密码必须为 12-128 个字符，仅允许字母、数字及 _ @ % + = : , . ! # ? -":
+		return message
+	}
+	if strings.HasPrefix(message, "MySQL 版本 ") ||
+		strings.HasPrefix(message, "当前主机没有可用的 MySQL ") {
 		return message
 	}
 	if strings.HasPrefix(message, "PHP 版本线 ") && strings.HasSuffix(message, " 尚未由 Center 发布") {
@@ -182,8 +188,8 @@ var (
 	managedMySQLUsernamePattern         = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
 	managedMySQLDatabaseUsernamePattern = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
 	managedMySQLPasswordPattern         = regexp.MustCompile(`^[A-Za-z0-9_@%+=:,.!#?-]{12,128}$`)
-	phpExactVersionPattern              = regexp.MustCompile(`^8\.[0-9]+\.[0-9]+$`)
-	phpVersionLinePattern               = regexp.MustCompile(`^8\.[0-9]+\.x$`)
+	phpExactVersionPattern              = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+$`)
+	phpVersionLinePattern               = regexp.MustCompile(`^[0-9]+\.[0-9]+\.x$`)
 )
 
 // resolveInstallParams resolves the same package and parameter set used by
@@ -250,6 +256,9 @@ func (installer *Installer) resolveInstallParams(ctx context.Context, params *in
 		return nil, &InstallParameterError{Field: "version", Message: "is required"}
 	}
 	if err := ValidateManagedMySQLInstallParams(params); err != nil {
+		return nil, err
+	}
+	if err := validateClosedLoopCatalogVersion(params); err != nil {
 		return nil, err
 	}
 	scriptInfo, err := installer.getInstallScript(ctx, params, "install")
@@ -323,7 +332,7 @@ func resolvePHPInstallVersion(params *input.InstallParams) error {
 	}
 	requested := strings.TrimSpace(params.Version)
 	if !phpExactVersionPattern.MatchString(requested) {
-		return &InstallParameterError{Field: "version", Message: "PHP 版本必须是 8.x.y 格式，并且属于 Center 已发布的版本线"}
+		return &InstallParameterError{Field: "version", Message: "PHP 版本必须是 x.y.z 精确版本，并且属于 Center 已发布的版本"}
 	}
 	return nil
 }
@@ -360,6 +369,9 @@ func ResolvePHPVersionLine(db *gorm.DB, version string) (string, error) {
 		}
 	}
 	resolved := map[string]string{
+		"5.3.x": "5.3.29",
+		"5.4.x": "5.4.45",
+		"7.0.x": "7.0.33",
 		"8.1.x": "8.1.34",
 		"8.2.x": "8.2.30",
 		"8.3.x": "8.3.30",
@@ -371,6 +383,70 @@ func ResolvePHPVersionLine(db *gorm.DB, version string) (string, error) {
 		}
 	}
 	return resolved, nil
+}
+
+// validateClosedLoopCatalogVersion prevents a catalog-managed component from
+// falling back to a legacy script or a version line after the request has
+// entered the task pipeline. The catalog row is also the Panel-side proof that
+// Center has published a package identity for this exact runtime version.
+func validateClosedLoopCatalogVersion(params *input.InstallParams) error {
+	if params == nil {
+		return nil
+	}
+	key := strings.ToLower(strings.TrimSpace(params.Key))
+	catalogKey, catalogComponent, ok := closedLoopCatalogIdentity(key)
+	if !ok || key == "firewalld" {
+		// Firewalld is host-runtime-versioned. Its exact version is resolved by
+		// the host probe and pinned to the Center component package separately.
+		return nil
+	}
+	version := strings.TrimSpace(params.Version)
+	if !phpExactVersionPattern.MatchString(version) {
+		return &InstallParameterError{Field: "version", Message: "版本必须是 x.y.z 精确版本，并且属于 Center 已发布的可安装版本"}
+	}
+	db := app.DB()
+	if db == nil {
+		return nil
+	}
+	var row models.Software
+	query := db.Where("catalog_managed = ? AND catalog_visible = ? AND installable = ? AND version = ?", true, true, true, version)
+	if catalogComponent != "" {
+		query = query.Where("(`key` = ? OR component = ?)", catalogKey, catalogComponent)
+	} else {
+		query = query.Where("`key` = ?", catalogKey)
+	}
+	result := query.Order("recommended DESC, version_order ASC, id ASC").First(&row)
+	if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+		return &InstallParameterError{
+			Field:   "version",
+			Message: fmt.Sprintf("%s 版本 %s 尚未由 Center 发布可安装制品，请刷新软件目录后重试", key, version),
+		}
+	}
+	if result.Error != nil {
+		return fmt.Errorf("read %s catalog entry: %w", key, result.Error)
+	}
+	if strings.TrimSpace(row.LatestPackageVersion) == "" {
+		return &InstallParameterError{
+			Field:   "version",
+			Message: fmt.Sprintf("当前主机没有可用的 %s %s 安装制品，请刷新软件目录后重试", key, version),
+		}
+	}
+	return nil
+}
+
+func closedLoopCatalogIdentity(key string) (catalogKey, catalogComponent string, ok bool) {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "db", "mysql":
+		return "db", "mysql", true
+	case "webserver", "nginx":
+		return "webserver", "nginx", true
+	case "php":
+		return "php", "php", true
+	case "firewalld":
+		return "firewalld", "firewalld", true
+	default:
+		return "", "", false
+	}
 }
 
 // validateResolvedInstallPort validates a port only when the resolved
@@ -535,12 +611,28 @@ func PreviewInstallationPackage(ctx context.Context, params *input.InstallParams
 	if scriptInfo.PackagePin != nil {
 		pin = *scriptInfo.PackagePin
 	}
-	if strings.EqualFold(strings.TrimSpace(params.Key), "firewalld") &&
-		(pin.Component != "firewalld" || (pin.PackageSource != "remote" && pin.PackageSource != "cache") ||
+	if expectedComponent, required := closedLoopPackageComponent(params.Key); required &&
+		(pin.Component != expectedComponent ||
+			(pin.PackageSource != "remote" && pin.PackageSource != "cache" && pin.PackageSource != "offline") ||
 			pin.SoftwareVersion != strings.TrimSpace(params.Version) || pin.PackageSHA256 == "") {
-		return nil, scriptregistry.PackagePin{}, errors.New("PACKAGE_RESOLVE_FAILED: firewalld requires a Center-verified package pin")
+		return nil, scriptregistry.PackagePin{}, fmt.Errorf("PACKAGE_RESOLVE_FAILED: %s requires a Center-verified fixed package pin", params.Key)
 	}
 	return values, pin, nil
+}
+
+func closedLoopPackageComponent(key string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "firewalld":
+		return "firewalld", true
+	case "db", "mysql":
+		return "mysql", true
+	case "webserver", "nginx":
+		return "nginx", true
+	case "php":
+		return "php", true
+	default:
+		return "", false
+	}
 }
 
 func ensureCenterCatalogFreshForFirewalld(ctx context.Context, params *input.InstallParams) error {

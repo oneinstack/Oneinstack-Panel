@@ -29,6 +29,8 @@ var softwareCategoryOrder = []string{
 	"AI / 大模型",
 }
 
+const managedMySQLPublishedVersion = "8.0.45"
+
 type Category struct {
 	Name  string `json:"name"`
 	Value string `json:"value"`
@@ -433,7 +435,9 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 			}
 		}
 		groupedResults[i].Params = params
+		normalizeMySQLVersionPresentation(&groupedResults[i])
 		hydrateFirewalldInstallation(&groupedResults[i])
+		normalizeExactVersionPresentation(&groupedResults[i])
 		normalizeSoftwareUpgrade(&groupedResults[i])
 		defaultVersion := strings.TrimSpace(groupedResults[i].RecommendedVersion)
 		if defaultVersion == "" && groupedResults[i].Installed {
@@ -506,6 +510,84 @@ func splitSoftwareVersions(value string) []string {
 		}
 	}
 	return result
+}
+
+// normalizeMySQLVersionPresentation keeps the version line as an internal
+// catalog resolution detail. The application list must expose only the exact
+// version whose Center package has been resolved for this Panel host.
+func normalizeMySQLVersionPresentation(item *output.Software) {
+	if item == nil || (!strings.EqualFold(strings.TrimSpace(item.Key), "db") &&
+		!strings.EqualFold(strings.TrimSpace(item.Component), "mysql")) {
+		return
+	}
+	item.VersionLines = []string{}
+	item.Versions = []string{}
+	item.RecommendedVersion = ""
+	item.Installable = false
+
+	if !item.CatalogManaged {
+		item.VersionOptions = []output.VersionOption{}
+		return
+	}
+
+	options := make([]output.VersionOption, 0, 1)
+	for _, option := range item.VersionOptions {
+		if strings.TrimSpace(option.Version) != managedMySQLPublishedVersion ||
+			!option.Enabled || !option.Installable {
+			continue
+		}
+		option.Line = ""
+		option.AllowCustomVersion = false
+		option.Recommended = true
+		options = append(options, option)
+		break
+	}
+	item.VersionOptions = options
+	if len(options) == 0 {
+		return
+	}
+	item.Versions = []string{managedMySQLPublishedVersion}
+	item.RecommendedVersion = managedMySQLPublishedVersion
+	item.Installable = true
+}
+
+// normalizeExactVersionPresentation hides internal version lines for the
+// catalog-managed components. Only an enabled exact option with a resolved
+// package is returned to the frontend contract.
+func normalizeExactVersionPresentation(item *output.Software) {
+	if item == nil || strings.EqualFold(strings.TrimSpace(item.Key), "firewalld") ||
+		(strings.EqualFold(strings.TrimSpace(item.Key), "db") || strings.EqualFold(strings.TrimSpace(item.Component), "mysql")) {
+		return
+	}
+	key := strings.ToLower(strings.TrimSpace(item.Key))
+	component := strings.ToLower(strings.TrimSpace(item.Component))
+	if key != "php" && key != "webserver" && key != "nginx" && component != "php" && component != "nginx" {
+		return
+	}
+	options := make([]output.VersionOption, 0, len(item.VersionOptions))
+	versions := make([]string, 0, len(item.VersionOptions))
+	recommended := ""
+	for _, option := range item.VersionOptions {
+		version := strings.TrimSpace(option.Version)
+		if version == "" || !phpExactVersionPattern.MatchString(version) || !option.Enabled || !option.Installable {
+			continue
+		}
+		option.Line = ""
+		option.AllowCustomVersion = false
+		if recommended == "" && option.Recommended {
+			recommended = version
+		}
+		options = append(options, option)
+		versions = append(versions, version)
+	}
+	if recommended == "" && len(versions) > 0 {
+		recommended = versions[0]
+	}
+	item.VersionOptions = options
+	item.VersionLines = []string{}
+	item.Versions = versions
+	item.RecommendedVersion = recommended
+	item.Installable = len(options) > 0
 }
 
 func mysqlRuntimeInfo(item models.Softwares) *output.SoftwareRuntime {

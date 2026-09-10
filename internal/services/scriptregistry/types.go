@@ -6,6 +6,7 @@ import (
 	"io"
 	"path"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -123,13 +124,15 @@ type Sources struct {
 }
 
 type SourceRelease struct {
-	SoftwareVersion      string `json:"softwareVersion" yaml:"softwareVersion"`
-	Architecture         string `json:"architecture" yaml:"architecture"`
-	BuildID              string `json:"buildId,omitempty" yaml:"buildId,omitempty"`
-	URL                  string `json:"url" yaml:"url"`
-	SignatureURL         string `json:"signatureUrl" yaml:"signatureUrl"`
-	SHA256               string `json:"sha256" yaml:"sha256"`
-	PublisherFingerprint string `json:"publisherFingerprint" yaml:"publisherFingerprint"`
+	SoftwareVersion      string   `json:"softwareVersion" yaml:"softwareVersion"`
+	Architecture         string   `json:"architecture" yaml:"architecture"`
+	Runtime              string   `json:"runtime,omitempty" yaml:"runtime,omitempty"`
+	Systems              []System `json:"systems,omitempty" yaml:"systems,omitempty"`
+	BuildID              string   `json:"buildId,omitempty" yaml:"buildId,omitempty"`
+	URL                  string   `json:"url" yaml:"url"`
+	SignatureURL         string   `json:"signatureUrl" yaml:"signatureUrl"`
+	SHA256               string   `json:"sha256" yaml:"sha256"`
+	PublisherFingerprint string   `json:"publisherFingerprint" yaml:"publisherFingerprint"`
 }
 
 type Timeouts struct {
@@ -154,6 +157,7 @@ type Host struct {
 	SystemID      string `json:"systemId"`
 	SystemVersion string `json:"systemVersion"`
 	Architecture  string `json:"architecture"`
+	GlibcVersion  string `json:"glibcVersion,omitempty"`
 }
 
 type ResolveRequest struct {
@@ -386,7 +390,7 @@ func (m Manifest) validate() error {
 			if source.BuildID != "" && !buildIDPattern.MatchString(source.BuildID) {
 				return fmt.Errorf("invalid source buildId for %s %s", source.SoftwareVersion, source.Architecture)
 			}
-			key := source.SoftwareVersion + "\x00" + source.Architecture
+			key := source.SoftwareVersion + "\x00" + source.Architecture + "\x00" + source.Runtime
 			if _, exists := seenSources[key]; exists {
 				return fmt.Errorf("duplicate source for %s %s", source.SoftwareVersion, source.Architecture)
 			}
@@ -405,6 +409,14 @@ func (m Manifest) validate() error {
 			}
 			if source.SignatureURL != "" && !regexp.MustCompile(`^[A-Fa-f0-9]{16,64}$`).MatchString(source.PublisherFingerprint) {
 				return fmt.Errorf("source publisher fingerprint for %s %s is invalid", source.SoftwareVersion, source.Architecture)
+			}
+			if source.Runtime != "" && !regexp.MustCompile(`^[a-z][a-z0-9.+_-]{0,31}$`).MatchString(source.Runtime) {
+				return fmt.Errorf("invalid source runtime %q", source.Runtime)
+			}
+			for _, system := range source.Systems {
+				if !componentIDPattern.MatchString(system.ID) || len(system.Versions) == 0 {
+					return fmt.Errorf("invalid source system %q", system.ID)
+				}
 			}
 		}
 	}
@@ -432,6 +444,89 @@ func (m Manifest) actionMap() map[string]string {
 
 func (m Manifest) supportsSoftwareVersion(requested string) bool {
 	return SupportsSoftwareVersion(m.Component.SoftwareVersions, requested)
+}
+
+func (m Manifest) sourceAvailableForHost(softwareVersion string, host Host) bool {
+	if m.Sources == nil || len(m.Sources.Releases) == 0 {
+		return true
+	}
+	softwareVersion = strings.TrimSpace(softwareVersion)
+	architecture := strings.TrimSpace(host.Architecture)
+	for _, source := range m.Sources.Releases {
+		if strings.TrimSpace(source.SoftwareVersion) != softwareVersion ||
+			!strings.EqualFold(strings.TrimSpace(source.Architecture), architecture) {
+			continue
+		}
+		if source.Runtime == "" || sourceRuntimeMatches(source.Runtime, host.GlibcVersion) {
+			if len(source.Systems) == 0 || sourceSystemMatches(source.Systems, host) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func sourceSystemMatches(systems []System, host Host) bool {
+	for _, system := range systems {
+		if system.ID != host.SystemID {
+			continue
+		}
+		for _, version := range system.Versions {
+			if systemVersionMatches(version, host.SystemVersion) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func sourceRuntimeMatches(constraint, actual string) bool {
+	constraint = strings.ToLower(strings.TrimSpace(constraint))
+	actual = strings.TrimSpace(actual)
+	if !strings.HasPrefix(constraint, "glibc") {
+		return true
+	}
+	actualVersion := parseRuntimeVersion(actual)
+	if actualVersion == nil {
+		return false
+	}
+	constraintVersion := parseRuntimeVersion(strings.TrimPrefix(constraint, "glibc"))
+	if constraintVersion == nil {
+		return false
+	}
+	if strings.HasSuffix(constraint, "+") {
+		return compareRuntimeVersion(actualVersion, constraintVersion) >= 0
+	}
+	return compareRuntimeVersion(actualVersion, constraintVersion) == 0
+}
+
+func parseRuntimeVersion(value string) []int {
+	value = strings.TrimSuffix(strings.TrimSpace(value), "+")
+	parts := strings.Split(value, ".")
+	if len(parts) != 2 {
+		return nil
+	}
+	result := make([]int, 2)
+	for index, part := range parts {
+		parsed, err := strconv.Atoi(part)
+		if err != nil || parsed < 0 {
+			return nil
+		}
+		result[index] = parsed
+	}
+	return result
+}
+
+func compareRuntimeVersion(left, right []int) int {
+	for index := 0; index < 2; index++ {
+		if left[index] < right[index] {
+			return -1
+		}
+		if left[index] > right[index] {
+			return 1
+		}
+	}
+	return 0
 }
 
 func SupportsSoftwareVersion(supported []string, requested string) bool {
