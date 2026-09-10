@@ -1,9 +1,17 @@
 package software
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,7 +21,9 @@ import (
 	"time"
 
 	"oneinstack/app"
+	"oneinstack/config"
 	"oneinstack/internal/models"
+	"oneinstack/internal/services/scriptregistry"
 	"oneinstack/internal/services/softwaretask"
 	"oneinstack/router/input"
 	"oneinstack/router/middleware"
@@ -29,6 +39,7 @@ func TestMySQLInstallationUsesServerSideDefaultsAndDoesNotPersistSecret(t *testi
 	if err := app.InitDB(filepath.Join(t.TempDir(), "mysql-defaults.db")); err != nil {
 		t.Fatal(err)
 	}
+	configureClosedLoopPackage(t, "db", "mysql", "8.0.45")
 	requests := make(chan softwaretask.InstallRequest, 1)
 	manager := softwaretask.NewManager(
 		app.DB(),
@@ -83,6 +94,7 @@ func TestInstallationHandlerCreatesTaskAndStreamsTerminalEvent(t *testing.T) {
 	if err := app.InitDB(filepath.Join(t.TempDir(), "handler.db")); err != nil {
 		t.Fatal(err)
 	}
+	configureClosedLoopPackage(t, "webserver", "nginx", "1.28.2")
 	manager := softwaretask.NewManager(
 		app.DB(),
 		t.TempDir(),
@@ -322,6 +334,173 @@ func TestInstallationHandlerCreatesTaskAndStreamsTerminalEvent(t *testing.T) {
 	if removeTask.Operation != "uninstall" || removeTask.Phase != models.SoftwareTaskStatusSucceeded {
 		t.Fatalf("unexpected uninstall task: %#v", removeTask)
 	}
+}
+
+// configureClosedLoopPackage gives handler tests the same package proof that
+// production receives from Center: an exact catalog row, a signed package
+// digest, and a package that can be downloaded and extracted. The tests keep
+// the real validation path enabled instead of weakening it for test callers.
+func configureClosedLoopPackage(t *testing.T, catalogKey, component, softwareVersion string) {
+	t.Helper()
+	originalConfig := app.ONE_CONFIG
+	server, metadata := testPackageServer(t, component, softwareVersion)
+	centerConfig := config.ScriptCenter{
+		Enabled:               true,
+		AllowInsecureHTTP:     true,
+		URL:                   server.URL,
+		Channel:               "stable",
+		RequestTimeoutSeconds: 5,
+		MaxPackageBytes:       8 << 20,
+		MaxExpandedBytes:      32 << 20,
+		CachePath:             t.TempDir(),
+		BundledPath:           filepath.Join(t.TempDir(), "missing"),
+		TrustedKeys:           metadata.trustedKeys,
+	}
+	app.ONE_CONFIG.ScriptCenter = centerConfig
+	if err := app.DB().Model(&models.Software{}).
+		Where("`key` = ? AND version = ?", catalogKey, softwareVersion).
+		Updates(map[string]any{
+			"component":              component,
+			"catalog_managed":        true,
+			"catalog_visible":        true,
+			"installable":            true,
+			"recommended":            true,
+			"catalog_channel":        "stable",
+			"latest_package_version": "1.0.0",
+		}).Error; err != nil {
+		t.Fatal(err)
+	}
+	var count int64
+	if err := app.DB().Model(&models.Software{}).
+		Where("`key` = ? AND version = ? AND catalog_managed = ? AND latest_package_version = ?", catalogKey, softwareVersion, true, "1.0.0").
+		Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("closed-loop catalog fixture was not created for %s %s", catalogKey, softwareVersion)
+	}
+	t.Cleanup(func() {
+		server.Close()
+		app.ONE_CONFIG = originalConfig
+	})
+}
+
+type testPackageMetadata struct {
+	scriptregistry.Metadata
+	trustedKeys map[string]string
+}
+
+func testPackageServer(t *testing.T, component, softwareVersion string) (*httptest.Server, testPackageMetadata) {
+	t.Helper()
+	archive := testComponentPackageArchive(t, component, softwareVersion)
+	digest := sha256.Sum256(archive)
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyDigest := sha256.Sum256(publicKey)
+	keyID := hex.EncodeToString(keyDigest[:8])
+	digestHex := hex.EncodeToString(digest[:])
+	packageVersion := "1.0.0"
+	metadata := scriptregistry.Metadata{
+		Manifest: scriptregistry.Manifest{
+			SchemaVersion: 1,
+			Component: scriptregistry.Component{
+				ID:               component,
+				Name:             component,
+				Version:          packageVersion,
+				SoftwareVersions: []string{softwareVersion},
+				Channel:          "stable",
+			},
+			Compatibility: scriptregistry.Compatibility{
+				Systems:       []scriptregistry.System{{ID: "ubuntu", Versions: []string{"*"}}},
+				Architectures: []string{"amd64"},
+			},
+			Actions: scriptregistry.Actions{
+				Precheck:  "scripts/precheck.sh",
+				Install:   "scripts/install.sh",
+				Verify:    "scripts/verify.sh",
+				Uninstall: "scripts/uninstall.sh",
+			},
+		},
+		SHA256:    digestHex,
+		Size:      int64(len(archive)),
+		KeyID:     keyID,
+		Signature: base64.StdEncoding.EncodeToString(ed25519.Sign(privateKey, []byte(fmt.Sprintf("oneinstack-script-package-v1\n%s\n%s\n%s\n%d\n", component, packageVersion, digestHex, len(archive))))),
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/health/ready":
+			response.WriteHeader(http.StatusOK)
+		case "/v1/packages/resolve":
+			response.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(response).Encode(metadata)
+		case "/download":
+			response.WriteHeader(http.StatusOK)
+			_, _ = response.Write(archive)
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	metadata.DownloadURL = server.URL + "/download"
+	return server, testPackageMetadata{
+		Metadata:    metadata,
+		trustedKeys: map[string]string{keyID: base64.StdEncoding.EncodeToString(publicKey)},
+	}
+}
+
+func testComponentPackageArchive(t *testing.T, component, softwareVersion string) []byte {
+	t.Helper()
+	manifest := []byte(fmt.Sprintf(`schemaVersion: 1
+component:
+  id: %s
+  name: %s
+  version: 1.0.0
+  softwareVersions: ["%s"]
+  channel: stable
+compatibility:
+  systems:
+    - id: ubuntu
+      versions: ["*"]
+  architectures: [amd64]
+actions:
+  precheck: scripts/precheck.sh
+  install: scripts/install.sh
+  verify: scripts/verify.sh
+  uninstall: scripts/uninstall.sh
+`, component, component, softwareVersion))
+	script := []byte("#!/usr/bin/env bash\nset -Eeuo pipefail\n")
+	scriptDigest := sha256.Sum256(script)
+	checksums := []byte(
+		hex.EncodeToString(scriptDigest[:]) + "  scripts/precheck.sh\n" +
+			hex.EncodeToString(scriptDigest[:]) + "  scripts/install.sh\n" +
+			hex.EncodeToString(scriptDigest[:]) + "  scripts/verify.sh\n" +
+			hex.EncodeToString(scriptDigest[:]) + "  scripts/uninstall.sh\n",
+	)
+	var output bytes.Buffer
+	gzipWriter := gzip.NewWriter(&output)
+	tarWriter := tar.NewWriter(gzipWriter)
+	writeTarFile := func(name string, mode int64, contents []byte) {
+		t.Helper()
+		if err := tarWriter.WriteHeader(&tar.Header{Name: name, Mode: mode, Size: int64(len(contents)), Typeflag: tar.TypeReg}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tarWriter.Write(contents); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeTarFile("manifest.yaml", 0644, manifest)
+	for _, name := range []string{"scripts/precheck.sh", "scripts/install.sh", "scripts/verify.sh", "scripts/uninstall.sh"} {
+		writeTarFile(name, 0755, script)
+	}
+	writeTarFile("files.sha256", 0644, checksums)
+	if err := tarWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gzipWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return output.Bytes()
 }
 
 func softwaretaskServiceOperation(operation string) bool {
