@@ -62,11 +62,13 @@ func firewalldProbeIdentity() (string, string, string, error) {
 		return "", "", "", errors.New("CATALOG_STALE")
 	}
 	var row models.Software
-	if err := app.DB().Where("`key` = ? AND catalog_visible = ? AND installable = ?", "firewalld", true, true).
+	if err := app.DB().Where("`key` = ? AND catalog_visible = ? AND catalog_managed = ?", "firewalld", true, true).
 		Order("recommended DESC, version_order ASC, id DESC").First(&row).Error; err != nil {
 		return "", "", "", errors.New("PACKAGE_UNPUBLISHED")
 	}
 	// This version only locates the signed component; it is never installed.
+	// Do not require the persisted installable flag here: package availability
+	// may have recovered after a previous catalog refresh marked the row stale.
 	return row.Version, row.CatalogChannel, row.LatestPackageVersion, nil
 }
 
@@ -197,6 +199,16 @@ func probeFirewalldInstallation(ctx context.Context, pin *scriptregistry.Package
 	if component != "firewalld" || probe != "installation" || info.PackageManager == "" {
 		return info, invalidProbe()
 	}
+	// A host package that is already installed can be adopted by the Panel
+	// even when the repository no longer exposes that exact package candidate.
+	// Keep this fallback restricted to a runtime version supported by the
+	// signed component package; an arbitrary installed firewalld must not make
+	// an unsupported host version appear installable.
+	if len(info.AvailableVersions) == 0 && info.InstalledVersion != "" &&
+		scriptregistry.SupportsSoftwareVersion(pkg.Manifest.Component.SoftwareVersions, info.InstalledVersion) {
+		info.AvailableVersions = append(info.AvailableVersions, info.InstalledVersion)
+		info.RepositoryError = ""
+	}
 	slices.SortFunc(info.AvailableVersions, func(a, b string) int { return scriptregistry.ComparePackageVersions(b, a) })
 	if len(info.AvailableVersions) > 0 {
 		info.RecommendedVersion = info.AvailableVersions[0]
@@ -229,7 +241,7 @@ func hydrateFirewalldInstallation(item *output.Software) {
 	versions := make([]string, 0, len(availableVersions))
 	for _, version := range availableVersions {
 		for _, option := range item.VersionOptions {
-			if !option.Enabled || !option.Installable {
+			if !option.Enabled {
 				continue
 			}
 			if option.Version != version && !(option.AllowCustomVersion && scriptregistry.SupportsSoftwareVersion([]string{option.Line}, version)) {
@@ -255,7 +267,10 @@ func hydrateFirewalldInstallation(item *output.Software) {
 	}
 	item.RecommendedVersion = info.RecommendedVersion
 	item.VersionOptions, item.VersionLines, item.Versions = options, []string{}, versions
-	item.Installable = item.Installable && len(versions) > 0 && firewalldInstallationAllowed(info)
+	// The probe has already resolved and verified the signed Center package.
+	// Recompute firewalld availability from that proof instead of retaining a
+	// stale catalog flag that would otherwise make the disabled state sticky.
+	item.Installable = len(versions) > 0 && firewalldInstallationAllowed(info)
 	item.HostInstallation = &info
 	for _, parameter := range item.Params {
 		if parameter != nil && strings.EqualFold(parameter.Key, "software-version") {
@@ -316,7 +331,10 @@ func firewalldInstallationAllowed(info output.HostInstallation) bool {
 		return false
 	}
 	backend := strings.TrimSpace(info.ConflictingBackend)
-	return strings.EqualFold(backend, "ufw") || strings.EqualFold(backend, "nftables")
+	// An iptables host may install the firewalld package without taking over
+	// its active rules; the component keeps firewalld stopped until an
+	// explicitly guarded migration/start operation is requested.
+	return strings.EqualFold(backend, "ufw") || strings.EqualFold(backend, "nftables") || strings.EqualFold(backend, "iptables")
 }
 
 // Resolve defaults and version lines before package pinning; explicit exact
