@@ -546,6 +546,18 @@ func (m *Manager) submit(request InstallRequest, requestedBy int64) (*models.Sof
 			return nil, errors.New("software key and version are required")
 		}
 		if installedResult.Error == nil {
+			installedVersion := strings.TrimSpace(installed.InstallVersion)
+			if installedVersion == "" {
+				installedVersion = strings.TrimSpace(installed.Version)
+			}
+			if installedVersion != "" && softwareVersionIsOlder(request.Version, installedVersion) {
+				return nil, fmt.Errorf(
+					"software %s cannot be downgraded from %s to %s",
+					component,
+					installedVersion,
+					request.Version,
+				)
+			}
 			operation = "upgrade"
 		}
 	}
@@ -674,6 +686,20 @@ func (m *Manager) submit(request InstallRequest, requestedBy int64) (*models.Sof
 		)
 		return nil, errors.New("software task queue is full")
 	}
+}
+
+func softwareVersionIsOlder(requested, installed string) bool {
+	requested = strings.TrimSpace(strings.TrimPrefix(requested, "v"))
+	installed = strings.TrimSpace(strings.TrimPrefix(installed, "v"))
+	if strings.HasSuffix(requested, ".x") {
+		prefix := strings.TrimSuffix(requested, ".x")
+		prefixParts := strings.Split(prefix, ".")
+		installedParts := strings.Split(installed, ".")
+		if len(installedParts) >= len(prefixParts) && strings.Join(installedParts[:len(prefixParts)], ".") == prefix {
+			return false
+		}
+	}
+	return scriptregistry.ComparePackageVersions(requested, installed) < 0
 }
 
 func normalizeTaskInstallParameters(parameters map[string]string) map[string]string {
@@ -1201,6 +1227,9 @@ func (m *Manager) validateCatalogInstall(key, version string) error {
 	if strings.TrimSpace(state.Revision) == "" {
 		return nil
 	}
+	if strings.EqualFold(strings.TrimSpace(key), "db") || strings.EqualFold(strings.TrimSpace(key), "mysql") {
+		return softwareService.ValidateManagedMySQLVersion(m.db, key, version)
+	}
 	var catalogRow models.Software
 	result := m.db.Where("`key` = ? AND version = ?", key, version).First(&catalogRow)
 	if errors.Is(result.Error, gorm.ErrRecordNotFound) {
@@ -1219,6 +1248,9 @@ func (m *Manager) validateCatalogInstall(key, version string) error {
 		}
 		matched := false
 		for _, candidate := range candidates {
+			if !candidate.AllowCustomVersion {
+				continue
+			}
 			if !scriptregistry.SupportsSoftwareVersion([]string{candidate.VersionLine}, version) {
 				continue
 			}

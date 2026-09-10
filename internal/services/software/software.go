@@ -405,7 +405,7 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 			InstalledPackageVersion: item.InstalledPackageVersion,
 			RuntimeVersion:          item.RuntimeVersion,
 			LatestPackageVersion:    item.LatestPackageVersion,
-			UpdateReason:            softwareUpdateReason(item),
+			UpdateReason:            "",
 			RecommendedVersion:      item.RecommendedVersion,
 			VersionOptions:          versionOptions[item.Key],
 			Installable:             installable,
@@ -418,27 +418,6 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 			RuntimeGroup:            item.RuntimeGroup,
 			Versions:                splitSoftwareVersions(item.Versions),
 		})
-		// Do not expose a stale Center recommendation as an upgrade target.
-		// The catalog may temporarily recommend an older version than the
-		// version already installed on the host.
-		packageUpdate := strings.TrimSpace(groupedResults[i].InstalledPackageVersion) != "" &&
-			strings.TrimSpace(groupedResults[i].LatestPackageVersion) != "" &&
-			scriptregistry.ComparePackageVersions(
-				groupedResults[i].LatestPackageVersion,
-				groupedResults[i].InstalledPackageVersion,
-			) > 0
-		if groupedResults[i].Installed &&
-			strings.TrimSpace(groupedResults[i].InstallVersion) != "" &&
-			strings.TrimSpace(groupedResults[i].RecommendedVersion) != "" &&
-			!packageUpdate &&
-			scriptregistry.ComparePackageVersions(
-				groupedResults[i].RecommendedVersion,
-				groupedResults[i].InstallVersion,
-			) <= 0 {
-			groupedResults[i].RecommendedVersion = ""
-			groupedResults[i].IsUpdate = false
-			groupedResults[i].UpdateReason = ""
-		}
 		params := make([]*output.SoftParam, 0)
 		_ = json.Unmarshal([]byte(item.Params), &params)
 		if params == nil {
@@ -446,13 +425,6 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 		}
 		installParameterValues := hydrateNginxInstallParameters(item.Component, item.Key, params)
 		hydrateRedisInstallParameters(item.Component, item.Key, item.RuntimeParamsJSON, params)
-		if recommendedVersion := strings.TrimSpace(groupedResults[i].RecommendedVersion); recommendedVersion != "" {
-			for _, parameter := range params {
-				if parameter != nil && strings.EqualFold(strings.TrimSpace(parameter.Key), "software-version") {
-					parameter.Default = recommendedVersion
-				}
-			}
-		}
 		if strings.EqualFold(strings.TrimSpace(item.Key), "firewalld") {
 			for _, parameter := range params {
 				if parameter != nil && strings.EqualFold(strings.TrimSpace(parameter.Key), "panel-port") {
@@ -462,6 +434,18 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 		}
 		groupedResults[i].Params = params
 		hydrateFirewalldInstallation(&groupedResults[i])
+		normalizeSoftwareUpgrade(&groupedResults[i])
+		defaultVersion := strings.TrimSpace(groupedResults[i].RecommendedVersion)
+		if defaultVersion == "" && groupedResults[i].Installed {
+			defaultVersion = strings.TrimSpace(groupedResults[i].InstallVersion)
+		}
+		if defaultVersion != "" {
+			for _, parameter := range params {
+				if parameter != nil && strings.EqualFold(strings.TrimSpace(parameter.Key), "software-version") {
+					parameter.Default = defaultVersion
+				}
+			}
+		}
 		groupedResults[i].Runtime = mysqlRuntimeInfo(item)
 		if port := strings.TrimSpace(installParameterValues["port"]); port != "" {
 			groupedResults[i].Port = port
@@ -555,13 +539,51 @@ func mysqlRuntimeInfo(item models.Softwares) *output.SoftwareRuntime {
 	return runtime
 }
 
-func softwareUpdateReason(item models.Softwares) string {
+func normalizeSoftwareUpgrade(item *output.Software) {
+	if item == nil || !item.Installed {
+		return
+	}
+	installedVersion := strings.TrimSpace(item.InstallVersion)
+	if installedVersion == "" {
+		return
+	}
+	installedPackageVersion := strings.TrimSpace(item.InstalledPackageVersion)
+	latestPackageVersion := strings.TrimSpace(item.LatestPackageVersion)
+	packageUpdate := installedPackageVersion != "" && latestPackageVersion != "" &&
+		scriptregistry.ComparePackageVersions(latestPackageVersion, installedPackageVersion) > 0
+	recommendedVersion := strings.TrimSpace(item.RecommendedVersion)
+	softwareComparison := 0
+	if recommendedVersion != "" {
+		softwareComparison = scriptregistry.ComparePackageVersions(recommendedVersion, installedVersion)
+	}
+
+	// A component-package update keeps the software runtime version unchanged.
+	// Never expose a stale or lower Center recommendation as the upgrade target;
+	// otherwise the UI can ask the task pipeline to downgrade the runtime.
+	if packageUpdate && (recommendedVersion == "" || softwareComparison <= 0) {
+		item.RecommendedVersion = installedVersion
+	} else if softwareComparison <= 0 {
+		item.RecommendedVersion = ""
+	}
+	softwareUpdate := strings.TrimSpace(item.RecommendedVersion) != "" &&
+		scriptregistry.ComparePackageVersions(item.RecommendedVersion, installedVersion) > 0
+	item.IsUpdate = softwareUpdate || packageUpdate
+	item.UpdateReason = softwareUpdateReason(*item)
+	if item.HostInstallation != nil {
+		item.HostInstallation.RecommendedVersion = item.RecommendedVersion
+	}
+}
+
+func softwareUpdateReason(item output.Software) string {
 	if !item.IsUpdate {
 		return ""
 	}
 	softwareChanged := strings.TrimSpace(item.InstallVersion) != "" &&
 		strings.TrimSpace(item.RecommendedVersion) != "" &&
-		strings.TrimSpace(item.InstallVersion) != strings.TrimSpace(item.RecommendedVersion)
+		scriptregistry.ComparePackageVersions(
+			item.RecommendedVersion,
+			item.InstallVersion,
+		) > 0
 	packageChanged := strings.TrimSpace(item.InstalledPackageVersion) != "" &&
 		strings.TrimSpace(item.LatestPackageVersion) != "" &&
 		scriptregistry.ComparePackageVersions(
