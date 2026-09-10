@@ -24,6 +24,7 @@ var (
 	confirmationPattern               = regexp.MustCompile(`^确认文本必须为 (.+)$`)
 	ruleExpiryPattern                 = regexp.MustCompile(`^第 ([0-9]+) 条规则的过期时间格式错误$`)
 	softwareConfigurationFieldPattern = regexp.MustCompile(`^组件配置字段 ([A-Za-z0-9_-]+) (.+)$`)
+	installParameterPattern           = regexp.MustCompile(`^安装参数 ([A-Za-z][A-Za-z0-9_-]{1,63}) (.+)$`)
 	portInUsePattern                  = regexp.MustCompile(`^监听端口 ([0-9]+) 已被占用，请更换未占用的端口后重试$`)
 	portAvailabilityPattern           = regexp.MustCompile(`^无法确认监听端口 ([0-9]+) 是否可用，请检查端口状态后重试$`)
 )
@@ -110,6 +111,35 @@ func translateContainerErrorText(text string) string {
 }
 
 func translateDynamicErrorText(text string) (string, bool) {
+	if matches := installParameterPattern.FindStringSubmatch(text); len(matches) == 3 {
+		parameter, reason := matches[1], matches[2]
+		switch reason {
+		case "未填写，请补充该参数后重试":
+			return fmt.Sprintf("Installation parameter %s is empty. Provide a value and retry.", parameter), true
+		case "必须是整数，请修正后重试":
+			return fmt.Sprintf("Installation parameter %s must be an integer. Correct it and retry.", parameter), true
+		case "必须是 1 到 65535 之间的有效端口，请修正后重试":
+			return fmt.Sprintf("Installation parameter %s must be a valid port from 1 to 65535. Correct it and retry.", parameter), true
+		case "必须是 true 或 false，请修正后重试":
+			return fmt.Sprintf("Installation parameter %s must be true or false. Correct it and retry.", parameter), true
+		case "必须是规范化的绝对路径（以 / 开头且不包含 ..），请修正后重试":
+			return fmt.Sprintf("Installation parameter %s must be a normalized absolute path that starts with / and does not contain a '..' path segment. Correct it and retry.", parameter), true
+		case "包含不允许的内容，请修正后重试":
+			return fmt.Sprintf("Installation parameter %s contains disallowed content. Correct it and retry.", parameter), true
+		case "使用了保留名称，请刷新组件安装包后重试":
+			return fmt.Sprintf("Installation parameter %s uses a reserved name. Refresh the component package and retry.", parameter), true
+		case "使用了不支持的类型，请刷新组件安装参数定义后重试":
+			return fmt.Sprintf("Installation parameter %s uses an unsupported type. Refresh the component parameter definition and retry.", parameter), true
+		case "不能使用过于宽泛的系统目录，请指定更具体的目录后重试":
+			return fmt.Sprintf("Installation parameter %s cannot use an overly broad system directory. Specify a more specific directory and retry.", parameter), true
+		case "无效，请检查字段类型、格式和取值范围后重试":
+			return fmt.Sprintf("Installation parameter %s is invalid. Check its type, format, and allowed range, then retry.", parameter), true
+		}
+	}
+	if strings.HasPrefix(text, "PHP 版本线 ") && strings.HasSuffix(text, " 尚未由 Center 发布") {
+		version := strings.TrimSuffix(strings.TrimPrefix(text, "PHP 版本线 "), " 尚未由 Center 发布")
+		return fmt.Sprintf("The PHP version line %s has not been published by Center.", version), true
+	}
 	if matches := softwareConfigurationFieldPattern.FindStringSubmatch(text); len(matches) == 3 {
 		field, reason := matches[1], matches[2]
 		switch reason {
@@ -833,12 +863,26 @@ var englishTerms = map[string]string{
 }
 
 var englishErrorTexts = map[string]string{
-	"角色、菜单或用户不存在":      "The role, menu, or user does not exist",
-	"角色或菜单参数不合法":       "The role or menu parameters are invalid",
-	"角色或菜单当前状态不允许此操作":  "The current role or menu state does not allow this operation",
-	"内置资源或超级管理员身份不可修改": "Built-in resources and super administrator identity cannot be modified",
-	"角色描述不合法":          "The role description is invalid",
-	"容器标识无效":           "The container identifier is invalid",
+	"安装请求不能为空，请提供安装参数后重试":                                      "The installation request cannot be empty. Provide the installation parameters and retry.",
+	"version 与 software-version 参数不一致，请保持两者一致后重试":              "version and software-version do not match. Keep both values identical and retry.",
+	"port 与端口参数不一致，请保持两者一致后重试":                                 "port and the port parameter do not match. Keep both values identical and retry.",
+	"未填写软件标识 key，请提供要安装的软件后重试":                                 "The software identifier key is empty. Provide the software to install and retry.",
+	"未填写软件版本 version，请提供要安装的版本后重试":                             "The software version is empty. Provide the version to install and retry.",
+	"未填写监听端口 port，请提供端口后重试":                                    "The listening port is empty. Provide a port and retry.",
+	"安装参数未填写，请补充必填参数后重试":                                       "A required installation parameter is empty. Provide it and retry.",
+	"PHP 版本必须是 8.x.y 格式，并且属于 Center 已发布的版本线":                   "The PHP version must use the 8.x.y format and belong to a version line published by Center.",
+	"MySQL 运行账户必须以小写字母或下划线开头，仅允许小写字母、数字、下划线和连字符，长度为 1-32 个字符":  "The MySQL runtime user must start with a lowercase letter or underscore, contain only lowercase letters, digits, underscores, and hyphens, and be 1-32 characters long.",
+	"MySQL 登录用户必须以小写字母或下划线开头，仅允许小写字母、数字、下划线和连字符，长度为 1-32 个字符":  "The MySQL login user must start with a lowercase letter or underscore, contain only lowercase letters, digits, underscores, and hyphens, and be 1-32 characters long.",
+	"MySQL 密码必须为 12-128 个字符，仅允许字母、数字及 _ @ % + = : , . ! # ? -": "The MySQL password must be 12-128 characters and contain only letters, digits, and _ @ % + = : , . ! # ? -.",
+	"组件安装参数无效，请检查字段类型、格式和取值范围后重试":                              "The component installation parameters are invalid. Check their types, formats, and allowed ranges, then retry.",
+	"安装参数必须是规范化的绝对路径，请修正后重试":                                   "The installation parameter must be a normalized absolute path. Correct it and retry.",
+	"安装参数不能使用过于宽泛的系统目录，请指定更具体的目录后重试":                           "The installation parameter cannot use an overly broad system directory. Specify a more specific directory and retry.",
+	"角色、菜单或用户不存在":                                              "The role, menu, or user does not exist",
+	"角色或菜单参数不合法":                                               "The role or menu parameters are invalid",
+	"角色或菜单当前状态不允许此操作":                                          "The current role or menu state does not allow this operation",
+	"内置资源或超级管理员身份不可修改":                                         "Built-in resources and super administrator identity cannot be modified",
+	"角色描述不合法": "The role description is invalid",
+	"容器标识无效":  "The container identifier is invalid",
 	"容器标识不能为空、不能包含换行符，且不能以短横线开头。": "The container identifier must not be empty, contain line breaks, or start with a hyphen.",
 	"Docker stats 读取超时":      "Docker stats timed out while reading container metrics",
 	"Docker stats 权限不足":      "The Panel process does not have permission to read Docker stats",

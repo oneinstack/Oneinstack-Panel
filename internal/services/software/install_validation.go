@@ -36,14 +36,111 @@ func (e *InstallParameterError) Error() string {
 	return fmt.Sprintf("%s: %s", e.Field, e.Message)
 }
 
-// UserMessage returns a safe, actionable message for errors whose internal
-// validation text can be shown directly to an operator. Keep the default
-// validation details unchanged for compatibility with existing callers.
+// UserMessage keeps the historical user-facing conversion used by component
+// configuration handlers. Installation handlers should use
+// InstallationMessage, which covers the complete install validation surface.
 func (e *InstallParameterError) UserMessage() string {
 	if e == nil {
 		return ""
 	}
+	return installPortUserMessage(strings.TrimSpace(e.Message))
+}
 
+// InstallationMessage returns a safe, actionable Chinese message for an
+// installation parameter error. The HTTP response layer translates this
+// message according to Accept-Language, while the internal validation text
+// remains stable for logs and existing callers.
+func (e *InstallParameterError) InstallationMessage() string {
+	if e == nil {
+		return ""
+	}
+
+	field := strings.TrimSpace(e.Field)
+	message := strings.TrimSpace(e.Message)
+	if portMessage := installPortUserMessage(message); portMessage != "" {
+		return portMessage
+	}
+
+	switch message {
+	case "installation parameters are required":
+		return "安装请求不能为空，请提供安装参数后重试"
+	case "must match version when both fields are provided":
+		return "version 与 software-version 参数不一致，请保持两者一致后重试"
+	case "must match the port parameter when both fields are provided":
+		return "port 与端口参数不一致，请保持两者一致后重试"
+	case "is required":
+		switch field {
+		case "key":
+			return "未填写软件标识 key，请提供要安装的软件后重试"
+		case "version":
+			return "未填写软件版本 version，请提供要安装的版本后重试"
+		case "port":
+			return "未填写监听端口 port，请提供端口后重试"
+		default:
+			if field != "" && field != "parameters" {
+				return fmt.Sprintf("安装参数 %s 未填写，请补充该参数后重试", field)
+			}
+			return "安装参数未填写，请补充必填参数后重试"
+		}
+	case "必须是规范化的绝对路径":
+		if field != "" {
+			return fmt.Sprintf("安装参数 %s 必须是规范化的绝对路径（以 / 开头且不包含 ..），请修正后重试", field)
+		}
+		return "安装参数必须是规范化的绝对路径，请修正后重试"
+	case "目录范围过宽":
+		if field != "" {
+			return fmt.Sprintf("安装参数 %s 不能使用过于宽泛的系统目录，请指定更具体的目录后重试", field)
+		}
+		return "安装参数不能使用过于宽泛的系统目录，请指定更具体的目录后重试"
+	case "PHP 版本必须是 8.x.y 格式，并且属于 Center 已发布的版本线":
+		return message
+	case "MySQL 运行账户必须以小写字母或下划线开头，仅允许小写字母、数字、下划线和连字符，长度为 1-32 个字符",
+		"MySQL 登录用户必须以小写字母或下划线开头，仅允许小写字母、数字、下划线和连字符，长度为 1-32 个字符",
+		"MySQL 密码必须为 12-128 个字符，仅允许字母、数字及 _ @ % + = : , . ! # ? -":
+		return message
+	}
+	if strings.HasPrefix(message, "PHP 版本线 ") && strings.HasSuffix(message, " 尚未由 Center 发布") {
+		return message
+	}
+
+	if strings.HasPrefix(message, "component parameter ") {
+		const prefix = "component parameter "
+		parts := strings.SplitN(strings.TrimPrefix(message, prefix), " ", 2)
+		if len(parts) == 2 && strings.TrimSpace(parts[0]) != "" {
+			parameter := parts[0]
+			switch parts[1] {
+			case "is required":
+				return fmt.Sprintf("安装参数 %s 未填写，请补充该参数后重试", parameter)
+			case "must be an integer":
+				return fmt.Sprintf("安装参数 %s 必须是整数，请修正后重试", parameter)
+			case "must be a valid port":
+				return fmt.Sprintf("安装参数 %s 必须是 1 到 65535 之间的有效端口，请修正后重试", parameter)
+			case "must be true or false":
+				return fmt.Sprintf("安装参数 %s 必须是 true 或 false，请修正后重试", parameter)
+			case "must be a normalized absolute path":
+				return fmt.Sprintf("安装参数 %s 必须是规范化的绝对路径（以 / 开头且不包含 ..），请修正后重试", parameter)
+			case "contains invalid data":
+				return fmt.Sprintf("安装参数 %s 包含不允许的内容，请修正后重试", parameter)
+			case "is reserved":
+				return fmt.Sprintf("安装参数 %s 使用了保留名称，请刷新组件安装包后重试", parameter)
+			default:
+				if strings.HasPrefix(parts[1], "has unsupported type ") {
+					return fmt.Sprintf("安装参数 %s 使用了不支持的类型，请刷新组件安装参数定义后重试", parameter)
+				}
+			}
+		}
+	}
+
+	if field == "parameters" {
+		return "组件安装参数无效，请检查字段类型、格式和取值范围后重试"
+	}
+	if field != "" {
+		return fmt.Sprintf("安装参数 %s 无效，请检查字段类型、格式和取值范围后重试", field)
+	}
+	return "安装参数无效，请检查字段类型、格式和取值范围后重试"
+}
+
+func installPortUserMessage(message string) string {
 	const inUseSuffix = " is already in use"
 	const availabilitySuffix = " availability could not be confirmed"
 	for _, item := range []struct {
@@ -59,10 +156,10 @@ func (e *InstallParameterError) UserMessage() string {
 			message: "无法确认监听端口 %s 是否可用，请检查端口状态后重试",
 		},
 	} {
-		if !strings.HasPrefix(e.Message, "port ") || !strings.HasSuffix(e.Message, item.suffix) {
+		if !strings.HasPrefix(message, "port ") || !strings.HasSuffix(message, item.suffix) {
 			continue
 		}
-		port := strings.TrimSuffix(strings.TrimPrefix(e.Message, "port "), item.suffix)
+		port := strings.TrimSuffix(strings.TrimPrefix(message, "port "), item.suffix)
 		if _, err := strconv.Atoi(port); err != nil {
 			return ""
 		}
@@ -103,7 +200,16 @@ func (installer *Installer) resolveInstallParams(ctx context.Context, params *in
 	flatVersion := strings.TrimSpace(params.Version)
 	parameterVersion := installParameterValue(params.Parameters, "software-version", "version")
 	flatPort := strings.TrimSpace(params.Port)
-	parameterPort := installParameterValue(params.Parameters, "port", "nginx-port", "nginxPort", "mysql-port", "mysqlPort")
+	parameterPort := installParameterValue(
+		params.Parameters,
+		"port",
+		"nginx-port",
+		"nginxPort",
+		"mysql-port",
+		"mysqlPort",
+		"redis-port",
+		"redisPort",
+	)
 
 	NormalizeInstallParams(params)
 	if flatVersion != "" && parameterVersion != "" && flatVersion != parameterVersion {
@@ -126,6 +232,9 @@ func (installer *Installer) resolveInstallParams(ctx context.Context, params *in
 	}
 	if params.Version == "" {
 		return nil, &InstallParameterError{Field: "version", Message: "is required"}
+	}
+	if err := ValidateManagedMySQLVersion(app.DB(), params.Key, params.Version); err != nil {
+		return nil, err
 	}
 	if strings.EqualFold(strings.TrimSpace(params.Key), "php") {
 		resolvedVersion, resolveErr := ResolvePHPVersionLine(app.DB(), params.Version)
@@ -155,6 +264,53 @@ func (installer *Installer) resolveInstallParams(ctx context.Context, params *in
 		return nil, &InstallParameterError{Field: "parameters", Message: err.Error()}
 	}
 	return scriptInfo, nil
+}
+
+// ValidateManagedMySQLVersion keeps the MySQL installation contract aligned
+// with the Panel application list. The version line remains available to the
+// signed component manifest, but it is never accepted as a user-facing
+// installation version.
+func ValidateManagedMySQLVersion(db *gorm.DB, key, version string) error {
+	if !isManagedMySQLInstallKey(key) {
+		return nil
+	}
+	version = strings.TrimSpace(version)
+	if version != managedMySQLPublishedVersion {
+		return &InstallParameterError{
+			Field:   "version",
+			Message: fmt.Sprintf("MySQL 版本必须选择 Panel 返回的精确可安装版本 %s", managedMySQLPublishedVersion),
+		}
+	}
+	if db == nil {
+		return nil
+	}
+	var row models.Software
+	result := db.Where(
+		"(`key` = ? OR component = ?) AND version = ?",
+		"db", "mysql", version,
+	).Order("catalog_managed DESC, catalog_visible DESC, id DESC").First(&row)
+	if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+		return &InstallParameterError{
+			Field:   "version",
+			Message: fmt.Sprintf("MySQL 版本 %s 尚未由 Center 发布，请刷新软件目录后重试", version),
+		}
+	}
+	if result.Error != nil {
+		return fmt.Errorf("read MySQL catalog entry: %w", result.Error)
+	}
+	if row.CatalogManaged && (!row.CatalogVisible || !row.Installable) {
+		return &InstallParameterError{
+			Field:   "version",
+			Message: fmt.Sprintf("MySQL 版本 %s 当前不可安装，请刷新软件目录后重试", version),
+		}
+	}
+	if row.CatalogManaged && strings.TrimSpace(row.LatestPackageVersion) == "" {
+		return &InstallParameterError{
+			Field:   "version",
+			Message: fmt.Sprintf("当前主机没有可用的 MySQL %s 安装制品，请刷新软件目录后重试", version),
+		}
+	}
+	return nil
 }
 
 // resolvePHPInstallVersion validates the exact PHP patch shape after a

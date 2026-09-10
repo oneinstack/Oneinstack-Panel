@@ -31,16 +31,7 @@ func RunInstallation(c *gin.Context) {
 	}
 	task, err := SubmitInstallationTask(req, userID)
 	if err != nil {
-		var parameterErr *softwareService.InstallParameterError
-		if errors.As(err, &parameterErr) {
-			if userMessage := parameterErr.UserMessage(); userMessage != "" {
-				appErr := core.NewError(core.ErrInvalidParameter, userMessage)
-				core.HandleSimpleError(c, appErr)
-				return
-			}
-			appErr := core.NewErrorWithDetail(core.ErrInvalidParameter, "软件安装参数无效", parameterErr.Error())
-			appErr.Field = parameterErr.Field
-			core.HandleError(c, appErr)
+		if handleInstallationParameterError(c, err) {
 			return
 		}
 		appErr := core.WrapError(err, core.ErrBadRequest, "创建安装任务失败")
@@ -129,6 +120,9 @@ func RunOfflineInstallation(c *gin.Context) {
 	}
 	task, err := SubmitOfflineInstallationTask(req, bundle, userID)
 	if err != nil {
+		if handleInstallationParameterError(c, err) {
+			return
+		}
 		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "创建离线安装任务失败"))
 		return
 	}
@@ -144,6 +138,19 @@ func RunOfflineInstallation(c *gin.Context) {
 		"statusUrl":     "/v1/soft/tasks/" + task.ID,
 		"streamUrl":     "/v1/soft/tasks/" + task.ID + "/events",
 	}))
+}
+
+func handleInstallationParameterError(c *gin.Context, err error) bool {
+	var parameterErr *softwareService.InstallParameterError
+	if !errors.As(err, &parameterErr) {
+		return false
+	}
+	message := parameterErr.InstallationMessage()
+	if message == "" {
+		message = "安装参数无效，请检查字段类型、格式和取值范围后重试"
+	}
+	core.HandleSimpleError(c, core.NewError(core.ErrInvalidParameter, message))
+	return true
 }
 
 func taskInstallSource(task *models.SoftwareTask) string {

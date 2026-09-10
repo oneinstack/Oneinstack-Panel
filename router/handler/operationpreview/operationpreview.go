@@ -376,16 +376,21 @@ func Preview(c *gin.Context) {
 	}
 	document, resourceVersion, err := buildDocument(c.Request.Context(), operation, payload)
 	if err != nil {
-		var parameterErr *softwareService.InstallParameterError
-		if errors.As(err, &parameterErr) {
-			if userMessage := parameterErr.UserMessage(); userMessage != "" {
-				core.HandleSimpleError(c, core.NewError(core.ErrInvalidParameter, userMessage))
+		if operation == "software.install" && handleSoftwareInstallParameterError(c, err) {
+			return
+		}
+		if operation != "software.install" {
+			var parameterErr *softwareService.InstallParameterError
+			if errors.As(err, &parameterErr) {
+				if userMessage := parameterErr.UserMessage(); userMessage != "" {
+					core.HandleSimpleError(c, core.NewError(core.ErrInvalidParameter, userMessage))
+				} else {
+					appErr := core.NewErrorWithDetail(core.ErrInvalidParameter, "软件安装参数无效", parameterErr.Error())
+					appErr.Field = parameterErr.Field
+					core.HandleError(c, appErr)
+				}
 				return
 			}
-			appErr := core.NewErrorWithDetail(core.ErrInvalidParameter, "软件安装参数无效", parameterErr.Error())
-			appErr.Field = parameterErr.Field
-			core.HandleError(c, appErr)
-			return
 		}
 		if operation == "software.install" && handleSoftwareInstallPreviewError(c, err, payload, userID) {
 			return
@@ -434,6 +439,9 @@ func handleSoftwareInstallPreviewError(c *gin.Context, err error, payload json.R
 	if err == nil {
 		return false
 	}
+	if handleSoftwareInstallParameterError(c, err) {
+		return true
+	}
 	stableCode := softwareStableErrorCode(err)
 	if stableCode == "" {
 		return false
@@ -459,6 +467,19 @@ func handleSoftwareInstallPreviewError(c *gin.Context, err error, payload json.R
 		)
 	}
 	core.HandleError(c, appErr)
+	return true
+}
+
+func handleSoftwareInstallParameterError(c *gin.Context, err error) bool {
+	var parameterErr *softwareService.InstallParameterError
+	if !errors.As(err, &parameterErr) {
+		return false
+	}
+	message := parameterErr.InstallationMessage()
+	if message == "" {
+		message = "安装参数无效，请检查字段类型、格式和取值范围后重试"
+	}
+	core.HandleSimpleError(c, core.NewError(core.ErrInvalidParameter, message))
 	return true
 }
 
@@ -2300,12 +2321,12 @@ func writeExecutionError(c *gin.Context, err error) {
 		code, message = core.ErrConflict, "RUNTIME_DEPENDENCY_BUSY"
 		detail = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(detail), "RUNTIME_DEPENDENCY_BUSY:"))
 	case errors.As(err, &parameterErr):
-		if userMessage := parameterErr.UserMessage(); userMessage != "" {
-			core.HandleSimpleError(c, core.NewError(core.ErrInvalidParameter, userMessage))
-			return
+		message = parameterErr.InstallationMessage()
+		if message == "" {
+			message = "安装参数无效，请检查字段类型、格式和取值范围后重试"
 		}
-		code, message = core.ErrInvalidParameter, "软件安装参数无效"
-		detail = parameterErr.Error()
+		core.HandleSimpleError(c, core.NewError(core.ErrInvalidParameter, message))
+		return
 	case errors.Is(err, context.DeadlineExceeded):
 		code, message = core.ErrTaskTimeout, "操作超时，原配置已尝试恢复"
 		detail = "Web Server 配置校验或重载未在限定时间内完成，请检查服务状态和日志后重试。"
