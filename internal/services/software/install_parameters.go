@@ -2,6 +2,7 @@ package software
 
 import (
 	"bufio"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -80,6 +81,45 @@ func hydrateNginxInstallParameters(component, key string, params []*output.SoftP
 		}
 	}
 	return values
+}
+
+// hydrateRedisInstallParameters reflects the effective non-secret Redis
+// installation parameters in the software list. The values are persisted by
+// the script manager after manifest defaults and request overrides are
+// resolved, so reopening the install/configuration view does not fall back to
+// stale catalog defaults.
+func hydrateRedisInstallParameters(component, key, runtimeJSON string, params []*output.SoftParam) {
+	if !strings.EqualFold(strings.TrimSpace(component), "redis") &&
+		!strings.EqualFold(strings.TrimSpace(key), "redis") {
+		return
+	}
+	if strings.TrimSpace(runtimeJSON) == "" {
+		return
+	}
+	values := make(map[string]string)
+	if json.Unmarshal([]byte(runtimeJSON), &values) != nil {
+		return
+	}
+	for _, parameter := range params {
+		if parameter == nil || strings.EqualFold(strings.TrimSpace(parameter.Types), "password") {
+			continue
+		}
+		parameterKey := compactInstallParameterName(parameter.Key)
+		var value string
+		switch parameterKey {
+		case "port", "redisport":
+			value = installParameterValue(values, "redis-port", "redisPort", "port")
+		case "redisbind":
+			value = installParameterValue(values, "redis-bind", "redisBind")
+		case "redisusername":
+			value = installParameterValue(values, "redis-username", "redisUsername", "username")
+		default:
+			value = installParameterValue(values, parameter.Key)
+		}
+		if value != "" {
+			parameter.Default = value
+		}
+	}
 }
 
 func normalizeInstallParameterKey(value string) string {

@@ -445,6 +445,7 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 			params = make([]*output.SoftParam, 0)
 		}
 		installParameterValues := hydrateNginxInstallParameters(item.Component, item.Key, params)
+		hydrateRedisInstallParameters(item.Component, item.Key, item.RuntimeParamsJSON, params)
 		if recommendedVersion := strings.TrimSpace(groupedResults[i].RecommendedVersion); recommendedVersion != "" {
 			for _, parameter := range params {
 				if parameter != nil && strings.EqualFold(strings.TrimSpace(parameter.Key), "software-version") {

@@ -247,6 +247,49 @@ const (
 	serviceReadyTimeout   = 5 * time.Second
 )
 
+func serviceUnitName(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" || strings.HasSuffix(name, ".service") {
+		return name
+	}
+	return name + ".service"
+}
+
+func serviceIdentityName(name string) string {
+	return strings.TrimSuffix(serviceUnitName(name), ".service")
+}
+
+func serviceUnitCandidates(definition ComponentServiceDefinition) []string {
+	names := []string{serviceUnitName(definition.ServiceName)}
+	if strings.EqualFold(strings.TrimSpace(definition.Component), "redis") {
+		// Managed Redis packages use redis.service. Older catalog rows and the
+		// legacy service definition use redis-server.service instead.
+		names = append(names, "redis.service", "redis-server.service")
+	}
+	result := make([]string, 0, len(names))
+	seen := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		if strings.TrimSpace(name) == "" {
+			continue
+		}
+		if _, exists := seen[name]; exists {
+			continue
+		}
+		seen[name] = struct{}{}
+		result = append(result, name)
+	}
+	return result
+}
+
+func activeServiceUnit(ctx context.Context, definition ComponentServiceDefinition) string {
+	for _, unit := range serviceUnitCandidates(definition) {
+		if err := exec.CommandContext(ctx, "systemctl", "is-active", "--quiet", unit).Run(); err == nil {
+			return unit
+		}
+	}
+	return ""
+}
+
 // verifyServiceActionReady checks the runtime result of a successful service
 // script. A systemd command can return successfully before the process has
 // created its listener or FastCGI socket, so service state alone is not enough
@@ -264,7 +307,7 @@ func verifyServiceActionReady(
 	if serviceName == "" {
 		return fmt.Errorf("%s action verification failed: service name is missing", action)
 	}
-	if err := exec.CommandContext(ctx, "systemctl", "is-active", "--quiet", serviceName+".service").Run(); err != nil {
+	if activeServiceUnit(ctx, definition) == "" {
 		return fmt.Errorf("%s action verification failed: service %s is not active", action, serviceName)
 	}
 	if strings.EqualFold(strings.TrimSpace(definition.Component), "firewalld") {
@@ -742,15 +785,16 @@ func serviceProbeIdentityMatches(
 	definition ComponentServiceDefinition,
 	serviceName string,
 ) bool {
-	if serviceName == definition.ServiceName {
+	expected := serviceIdentityName(definition.ServiceName)
+	actual := serviceIdentityName(serviceName)
+	if expected != "" && expected == actual {
 		return true
 	}
-	// Redis 7.4.8 packages installed the verified redis.service unit and emit
-	// service=redis. Newer packages use the canonical redis-server identity.
-	// Accept only this known legacy identity and normalize the API response to
-	// definition.ServiceName in parseComponentServiceProbe.
+	// Managed Redis packages use redis.service, while older catalog rows and
+	// the legacy service definition use redis-server.service.
 	return (definition.Component == "redis" &&
-		definition.ServiceName == "redis-server" && serviceName == "redis") ||
+		(expected == "redis" || expected == "redis-server") &&
+		(actual == "redis" || actual == "redis-server")) ||
 		(definition.Component == "nginx" && serviceName == "nginx")
 }
 

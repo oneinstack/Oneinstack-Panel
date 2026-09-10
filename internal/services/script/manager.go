@@ -1425,6 +1425,13 @@ func persistedRuntimeParameters(params *input.InstallParams, port string, effect
 		values["run-group"] = "mysql"
 		values["component-state-dir"] = "/var/lib/oneinstack/components"
 	}
+	if strings.EqualFold(strings.TrimSpace(params.Key), "redis") {
+		values["redis-port"] = strings.TrimSpace(port)
+		values["redis-username"] = "default"
+		values["install-dir"] = "/usr/local/redis"
+		values["data-dir"] = "/data/redis"
+		values["component-state-dir"] = "/var/lib/oneinstack/components"
+	}
 	for key, value := range params.Parameters {
 		if isSecretInstallParameter(key) || strings.TrimSpace(value) == "" {
 			continue
@@ -1499,6 +1506,12 @@ func canonicalRuntimeParameterName(key string) (string, bool) {
 	switch compactInstallParameterName(key) {
 	case "port", "mysqlport":
 		return "mysql-port", true
+	case "redisport":
+		return "redis-port", true
+	case "redisbind":
+		return "redis-bind", true
+	case "redisusername":
+		return "redis-username", true
 	case "mysqlbindaddress":
 		return "mysql-bind-address", true
 	case "mysqlusername", "databaseusername":

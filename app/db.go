@@ -668,6 +668,15 @@ func syncCenterSoftwareCatalog() error {
   {"key":"migrate-external-confirm","name":"确认接管外部MySQL","required":"false","type":"boolean","default":"false"},
   {"key":"component-state-dir","name":"组件状态目录","required":"false","type":"path","default":"/var/lib/oneinstack/components"}
 ]`
+	const redisCatalogParametersJSON = `[
+  {"key":"software-version","name":"Redis 版本","required":"true","type":"input","default":"8.4.0"},
+  {"key":"install-dir","name":"安装目录","required":"false","type":"path","default":"/usr/local/redis"},
+  {"key":"data-dir","name":"数据目录","required":"false","type":"path","default":"/data/redis"},
+  {"key":"redis-port","name":"监听端口","rule":"port","required":"false","type":"port","default":"6379"},
+  {"key":"redis-bind","name":"监听地址","required":"false","type":"input","default":"127.0.0.1 ::1"},
+  {"key":"redis-username","name":"Redis 登录用户","rule":"username","required":"false","type":"username","default":"default"},
+  {"key":"redis-password","name":"Redis 密码","required":"false","type":"password"}
+]`
 	if err := db.Model(&models.Software{}).
 		Where("`key` = ?", "db").
 		Updates(map[string]any{
@@ -675,6 +684,14 @@ func syncCenterSoftwareCatalog() error {
 			"params": mysqlCatalogParametersJSON,
 		}).Error; err != nil {
 		return fmt.Errorf("normalize MySQL catalog parameters: %w", err)
+	}
+	if err := db.Model(&models.Software{}).
+		Where("`key` = ?", "redis").
+		Updates(map[string]any{
+			"name":   "Redis",
+			"params": redisCatalogParametersJSON,
+		}).Error; err != nil {
+		return fmt.Errorf("normalize Redis catalog parameters: %w", err)
 	}
 	if err := hideUnsupportedBundledVersions(); err != nil {
 		return err

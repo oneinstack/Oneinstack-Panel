@@ -30,6 +30,7 @@ var (
 	ErrConfigurationConflict = errors.New("configuration revision conflict")
 	configurationKeyPattern  = regexp.MustCompile(`^[a-z][A-Za-z0-9-]{0,63}$`)
 	configurationHashPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	redisUsernamePattern     = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
 )
 
 type ConfigurationField struct {
@@ -54,6 +55,7 @@ type ComponentConfiguration struct {
 	Values            map[string]string           `json:"values"`
 	PackageSource     string                      `json:"packageSource"`
 	InstallParameters []ComponentInstallParameter `json:"installParameters,omitempty"`
+	Connection        *ComponentConnection        `json:"connection,omitempty"`
 	Runtime           *ComponentRuntime           `json:"runtime,omitempty"`
 }
 
@@ -63,12 +65,23 @@ type ComponentConfiguration struct {
 // the fields declared by the component configuration schema.
 type ComponentInstallParameter struct {
 	Key         string `json:"key"`
+	Label       string `json:"label"`
 	Type        string `json:"type"`
 	Required    bool   `json:"required,omitempty"`
 	Secret      bool   `json:"secret,omitempty"`
 	Default     string `json:"default,omitempty"`
 	Value       string `json:"value,omitempty"`
 	Description string `json:"description,omitempty"`
+}
+
+// ComponentConnection contains the current non-secret Redis connection
+// settings. PasswordConfigured is a status flag only; the password itself is
+// never returned by a configuration-read endpoint.
+type ComponentConnection struct {
+	Port               string `json:"port,omitempty"`
+	BindAddress        string `json:"bindAddress,omitempty"`
+	Username           string `json:"username,omitempty"`
+	PasswordConfigured *bool  `json:"passwordConfigured,omitempty"`
 }
 
 type ComponentRuntime struct {
@@ -520,6 +533,9 @@ func (installer *Installer) inspectServiceConfiguration(
 	}
 	configuration.PackageSource = componentPackage.Source
 	configuration.InstallParameters = componentInstallParameters(componentPackage.Manifest.Parameters, scriptInfo.Params)
+	if configuration.Connection == nil && definition.Component == "redis" {
+		configuration.Connection = redisConnectionFromParameters(scriptInfo.Params)
+	}
 	return configuration, nil
 }
 
@@ -544,6 +560,14 @@ func cloneComponentConfiguration(configuration ComponentConfiguration) Component
 		}
 	}
 	clone.InstallParameters = append([]ComponentInstallParameter(nil), configuration.InstallParameters...)
+	if configuration.Connection != nil {
+		connection := *configuration.Connection
+		if configuration.Connection.PasswordConfigured != nil {
+			configured := *configuration.Connection.PasswordConfigured
+			connection.PasswordConfigured = &configured
+		}
+		clone.Connection = &connection
+	}
 	if configuration.Runtime != nil {
 		runtime := *configuration.Runtime
 		clone.Runtime = &runtime
@@ -568,6 +592,7 @@ func componentInstallParameters(
 		}
 		result = append(result, ComponentInstallParameter{
 			Key:         parameter.Name,
+			Label:       componentInstallParameterLabel(parameter.Name),
 			Type:        parameter.Type,
 			Required:    parameter.Required,
 			Secret:      secret,
@@ -577,6 +602,44 @@ func componentInstallParameters(
 		})
 	}
 	return result
+}
+
+func componentInstallParameterLabel(name string) string {
+	switch strings.ToUpper(strings.TrimSpace(name)) {
+	case "SOFTWARE_VERSION":
+		return "Software version"
+	case "INSTALL_DIR":
+		return "Installation directory"
+	case "DATA_DIR":
+		return "Data directory"
+	case "REDIS_PORT":
+		return "Redis listener port"
+	case "REDIS_BIND":
+		return "Redis listener addresses"
+	case "REDIS_USERNAME":
+		return "Redis login username"
+	case "REDIS_PASSWORD":
+		return "Redis password"
+	case "ONEINSTACK_COMPONENT_STATE":
+		return "Component state directory"
+	default:
+		return strings.TrimSpace(name)
+	}
+}
+
+func redisConnectionFromParameters(values map[string]string) *ComponentConnection {
+	if len(values) == 0 {
+		return nil
+	}
+	connection := &ComponentConnection{
+		Port:        installParameterValue(values, "REDIS_PORT", "redis-port", "redisPort"),
+		BindAddress: installParameterValue(values, "REDIS_BIND", "redis-bind", "redisBind"),
+		Username:    installParameterValue(values, "REDIS_USERNAME", "redis-username", "redisUsername", "username"),
+	}
+	if connection.Port == "" && connection.BindAddress == "" && connection.Username == "" {
+		return nil
+	}
+	return connection
 }
 
 func (installer *Installer) ApplyServiceConfigurationTask(
@@ -865,6 +928,7 @@ func parseComponentConfiguration(
 		"revision":   {},
 		"apply_mode": {},
 	}
+	optional := make(map[string]struct{})
 	var runtime *ComponentRuntime
 	if definition.Component == "mysql" || definition.Component == "php" || definition.Component == "firewalld" {
 		runtime = &ComponentRuntime{}
@@ -874,6 +938,17 @@ func parseComponentConfiguration(
 		}
 		for _, key := range runtimeKeys {
 			allowed[key] = struct{}{}
+		}
+	}
+	if definition.Component == "redis" {
+		for _, key := range []string{
+			"connection.port",
+			"connection.bindAddress",
+			"connection.username",
+			"connection.passwordConfigured",
+		} {
+			allowed[key] = struct{}{}
+			optional[key] = struct{}{}
 		}
 	}
 	for _, field := range definition.Fields {
@@ -907,6 +982,9 @@ func parseComponentConfiguration(
 		return ComponentConfiguration{}, fmt.Errorf("read component configuration output: %w", err)
 	}
 	for key := range allowed {
+		if _, isOptional := optional[key]; isOptional {
+			continue
+		}
 		if _, exists := fields[key]; !exists {
 			return ComponentConfiguration{}, fmt.Errorf("component configuration output is missing field %q", key)
 		}
@@ -956,6 +1034,41 @@ func parseComponentConfiguration(
 			}
 		}
 	}
+	var connection *ComponentConnection
+	if definition.Component == "redis" {
+		connectionKeys := []string{
+			"connection.port",
+			"connection.bindAddress",
+			"connection.username",
+			"connection.passwordConfigured",
+		}
+		connectionFields := 0
+		for _, key := range connectionKeys {
+			if _, exists := fields[key]; exists {
+				connectionFields++
+			}
+		}
+		if connectionFields > 0 && connectionFields != len(connectionKeys) {
+			return ComponentConfiguration{}, errors.New("component Redis connection output is incomplete")
+		}
+		if connectionFields == len(connectionKeys) {
+			port, parseErr := strconv.Atoi(fields["connection.port"])
+			if parseErr != nil || port < 1 || port > 65535 || strings.TrimSpace(fields["connection.bindAddress"]) == "" ||
+				!redisUsernamePattern.MatchString(strings.TrimSpace(fields["connection.username"])) {
+				return ComponentConfiguration{}, errors.New("component Redis connection output is invalid")
+			}
+			passwordConfigured, parseErr := strconv.ParseBool(fields["connection.passwordConfigured"])
+			if parseErr != nil {
+				return ComponentConfiguration{}, errors.New("component Redis password status output is invalid")
+			}
+			connection = &ComponentConnection{
+				Port:               strings.TrimSpace(fields["connection.port"]),
+				BindAddress:        strings.TrimSpace(fields["connection.bindAddress"]),
+				Username:           strings.TrimSpace(fields["connection.username"]),
+				PasswordConfigured: &passwordConfigured,
+			}
+		}
+	}
 	return ComponentConfiguration{
 		Component:   definition.Component,
 		SoftwareKey: definition.SoftwareKey,
@@ -964,6 +1077,7 @@ func parseComponentConfiguration(
 		ApplyMode:   definition.ApplyMode,
 		Fields:      append([]ConfigurationField(nil), definition.Fields...),
 		Values:      values,
+		Connection:  connection,
 		Runtime:     runtime,
 	}, nil
 }

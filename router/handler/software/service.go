@@ -360,9 +360,23 @@ func localizeComponentConfiguration(locale string, configuration *softwareServic
 		return
 	}
 	for index := range configuration.Fields {
-		configuration.Fields[index].Label = i18n.LocalizeBusinessText(locale, configuration.Fields[index].Label)
-		configuration.Fields[index].Description = i18n.LocalizeBusinessText(locale, configuration.Fields[index].Description)
-		configuration.Fields[index].Unit = i18n.LocalizeBusinessText(locale, configuration.Fields[index].Unit)
+		configuration.Fields[index].Label = i18n.LocalizeComponentConfigurationText(
+			locale, configuration.Component, configuration.Fields[index].Key, configuration.Fields[index].Label,
+		)
+		configuration.Fields[index].Description = i18n.LocalizeComponentConfigurationText(
+			locale, configuration.Component, configuration.Fields[index].Key, configuration.Fields[index].Description,
+		)
+		configuration.Fields[index].Unit = i18n.LocalizeComponentConfigurationText(
+			locale, configuration.Component, configuration.Fields[index].Key, configuration.Fields[index].Unit,
+		)
+	}
+	for index := range configuration.InstallParameters {
+		configuration.InstallParameters[index].Label = i18n.LocalizeComponentInstallParameterLabel(
+			locale, configuration.Component, configuration.InstallParameters[index].Key, configuration.InstallParameters[index].Label,
+		)
+		configuration.InstallParameters[index].Description = i18n.LocalizeComponentConfigurationText(
+			locale, configuration.Component, configuration.InstallParameters[index].Key, configuration.InstallParameters[index].Description,
+		)
 	}
 }
 

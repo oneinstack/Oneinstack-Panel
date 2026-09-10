@@ -146,6 +146,8 @@ func NormalizeInstallParams(params *input.InstallParams) {
 			"password",
 			"mysql-password",
 			"mysqlPassword",
+			"redis-password",
+			"redisPassword",
 			"MYSQL_PASSWORD",
 		)
 	}
@@ -154,13 +156,19 @@ func NormalizeInstallParams(params *input.InstallParams) {
 		switch strings.ToLower(strings.TrimSpace(params.Key)) {
 		case "db", "mysql", "mariadb", "percona":
 			portNames = append(portNames, "mysql-port", "mysqlPort")
+		case "redis":
+			portNames = append(portNames, "redis-port", "redisPort")
 		case "webserver", "nginx", "openresty", "tengine":
 			portNames = append(portNames, "nginx-port", "nginxPort")
 		}
 		params.Port = installParameterValue(params.Parameters, portNames...)
 	}
 	if params.Username == "" {
-		params.Username = installParameterValue(params.Parameters, "username", "run-user", "runUser")
+		usernameNames := []string{"username", "run-user", "runUser"}
+		if strings.EqualFold(strings.TrimSpace(params.Key), "redis") {
+			usernameNames = append(usernameNames, "redis-username", "redisUsername")
+		}
+		params.Username = installParameterValue(params.Parameters, usernameNames...)
 	}
 	if isDatabaseInstallKey(params.Key) {
 		if params.Port == "" {
@@ -563,6 +571,12 @@ func persistedUninstallParameters(softwareKey string, params *input.RemoveParams
 
 // getInstallScript 获取安装脚本
 func (installer *Installer) getInstallScript(ctx context.Context, params *input.InstallParams, actionName string) (*script.ScriptInfo, error) {
+	if params == nil {
+		return nil, &InstallParameterError{Field: "install", Message: "installation parameters are required"}
+	}
+	if err := ValidateManagedMySQLVersion(app.DB(), params.Key, params.Version); err != nil {
+		return nil, err
+	}
 	var componentName string
 	var legacyScriptName string
 	var catalogManaged bool
@@ -920,7 +934,10 @@ func installedServiceInstallParams(key, component, version string) *input.Instal
 	}
 	params.Parameters = runtime
 	if params.Port == "" {
-		params.Port = installParameterValue(runtime, "port", "mysql-port", "mysqlPort")
+		params.Port = installParameterValue(runtime, "port", "mysql-port", "mysqlPort", "redis-port", "redisPort")
+	}
+	if strings.EqualFold(strings.TrimSpace(component), "redis") {
+		params.Username = installParameterValue(runtime, "username", "redis-username", "redisUsername")
 	}
 	return params
 }
@@ -1032,8 +1049,13 @@ func (installer *Installer) setScriptParams(scriptInfo *script.ScriptInfo, param
 		if params.Port != "" {
 			scriptInfo.Params["REDIS_PORT"] = params.Port
 		}
+		if params.Username != "" {
+			scriptInfo.Params["REDIS_USERNAME"] = params.Username
+			markExplicit("REDIS_USERNAME")
+		}
 		if params.Pwd != "" {
 			scriptInfo.Params["REDIS_PASSWORD"] = params.Pwd
+			markExplicit("REDIS_PASSWORD")
 		}
 	case "php":
 		scriptInfo.Params["PHP_VERSION"] = scriptVersion
@@ -1127,7 +1149,7 @@ func (installer *Installer) setScriptParams(scriptInfo *script.ScriptInfo, param
 		}
 	}
 	componentKey := strings.ToLower(strings.TrimSpace(params.Key))
-	if componentKey == "docker" || componentKey == "docker-compose" || componentKey == "phpmyadmin" {
+	if componentKey == "docker" || componentKey == "docker-compose" || componentKey == "phpmyadmin" || componentKey == "redis" {
 		// Installation mode and offline root are server-owned values. They are
 		// injected only after the signed package has been fixed by Panel.
 		scriptInfo.Params["ONEINSTACK_INSTALL_MODE"] = installMode

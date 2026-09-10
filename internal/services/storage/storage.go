@@ -614,10 +614,96 @@ func EnsureManagedLocalRedisConnection(port, username, password string) error {
 		Where("type = ? AND port = ? AND addr IN ?", "redis", port, []string{"127.0.0.1", "localhost"}).
 		First(&existing)
 	if result.Error == nil {
+		// User-maintained Redis connections must not be overwritten. The
+		// Panel-managed record, however, follows the credentials that were just
+		// applied by the component install or upgrade task.
+		if !strings.Contains(existing.Remark, "面板自动管理") {
+			return nil
+		}
+		candidate := &models.Storage{
+			Addr:     "127.0.0.1",
+			Port:     port,
+			Root:     username,
+			Password: password,
+			Type:     "redis",
+		}
+		if err := testStorageConnection(candidate); err != nil {
+			return fmt.Errorf("verify managed local Redis connection: %w", err)
+		}
+		encrypted, err := utils.EncryptCredential(
+			password,
+			utils.CredentialPurposeStoragePassword,
+		)
+		if err != nil {
+			return err
+		}
+		updated := app.DB().Model(&models.Storage{}).
+			Where("id = ?", existing.ID).
+			Updates(map[string]interface{}{
+				"addr":        candidate.Addr,
+				"port":        candidate.Port,
+				"root":        candidate.Root,
+				"password":    encrypted,
+				"remark":      "本机 Redis（面板自动管理）",
+				"type":        candidate.Type,
+				"update_time": time.Now(),
+			})
+		if updated.Error != nil {
+			return fmt.Errorf("update managed local Redis connection: %w", updated.Error)
+		}
+		if updated.RowsAffected == 0 {
+			return errors.New("managed local Redis connection was not updated")
+		}
 		return nil
 	}
 	if !errors.Is(result.Error, gorm.ErrRecordNotFound) {
 		return result.Error
+	}
+	// A managed Redis port change should move the existing Panel-managed
+	// connection instead of leaving a stale record on the previous port.
+	var managedExisting models.Storage
+	managedResult := app.DB().
+		Where("type = ? AND addr IN ? AND remark LIKE ?", "redis", []string{"127.0.0.1", "localhost"}, "%面板自动管理%").
+		Order("id DESC").First(&managedExisting)
+	if managedResult.Error == nil {
+		candidate := &models.Storage{
+			Addr:     "127.0.0.1",
+			Port:     port,
+			Root:     username,
+			Password: password,
+			Type:     "redis",
+		}
+		if err := testStorageConnection(candidate); err != nil {
+			return fmt.Errorf("verify managed local Redis connection: %w", err)
+		}
+		encrypted, err := utils.EncryptCredential(
+			password,
+			utils.CredentialPurposeStoragePassword,
+		)
+		if err != nil {
+			return err
+		}
+		updated := app.DB().Model(&models.Storage{}).
+			Where("id = ?", managedExisting.ID).
+			Updates(map[string]interface{}{
+				"addr":        candidate.Addr,
+				"port":        candidate.Port,
+				"root":        candidate.Root,
+				"password":    encrypted,
+				"remark":      "本机 Redis（面板自动管理）",
+				"type":        candidate.Type,
+				"update_time": time.Now(),
+			})
+		if updated.Error != nil {
+			return fmt.Errorf("update managed local Redis connection: %w", updated.Error)
+		}
+		if updated.RowsAffected == 0 {
+			return errors.New("managed local Redis connection was not updated")
+		}
+		return nil
+	}
+	if !errors.Is(managedResult.Error, gorm.ErrRecordNotFound) {
+		return managedResult.Error
 	}
 	candidate := &models.Storage{
 		Addr:     "127.0.0.1",

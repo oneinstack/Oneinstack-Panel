@@ -66,6 +66,79 @@ func LocalizeBusinessText(locale, value string) string {
 	return value
 }
 
+// LocalizeComponentConfigurationText localizes component configuration
+// labels, descriptions, and units in both directions. Component manifests
+// use stable English text, while older built-in definitions use Chinese; the
+// API boundary must support either source representation.
+func LocalizeComponentConfigurationText(locale, component, key, value string) string {
+	if strings.TrimSpace(value) == "" {
+		return value
+	}
+	if Canonical(locale) == LocaleEnUS {
+		return LocalizeBusinessText(locale, value)
+	}
+	if strings.EqualFold(strings.TrimSpace(component), "redis") {
+		if translated, ok := redisConfigurationChineseText[strings.TrimSpace(value)]; ok {
+			return translated
+		}
+		if translated, ok := redisConfigurationChineseText[strings.TrimSpace(key)]; ok {
+			return translated
+		}
+	}
+	return value
+}
+
+// LocalizeComponentInstallParameterLabel gives install parameters a human
+// readable label without changing their stable machine key.
+func LocalizeComponentInstallParameterLabel(locale, component, key, fallback string) string {
+	if strings.EqualFold(strings.TrimSpace(component), "redis") {
+		if translated, ok := redisInstallParameterChineseLabels[strings.ToUpper(strings.TrimSpace(key))]; ok &&
+			Canonical(locale) != LocaleEnUS {
+			return translated
+		}
+	}
+	return LocalizeComponentConfigurationText(locale, component, key, fallback)
+}
+
+var redisConfigurationChineseText = map[string]string{
+	"maxmemory":                      "最大内存",
+	"maxmemoryPolicy":                "内存淘汰策略",
+	"appendonly":                     "AOF 持久化",
+	"timeout":                        "空闲连接超时",
+	"tcpKeepalive":                   "TCP 保活",
+	"Max memory":                     "最大内存",
+	"Max memory policy":              "内存淘汰策略",
+	"AOF persistence":                "AOF 持久化",
+	"Idle connection timeout":        "空闲连接超时",
+	"TCP keepalive":                  "TCP 保活",
+	"TCP Keepalive":                  "TCP 保活",
+	"0 means no Redis memory limit.": "0 表示不设置 Redis 内存上限。",
+	"How Redis handles new writes after reaching the memory limit.":        "达到内存上限后 Redis 处理新写入的方式。",
+	"Appends write operations to the AOF file.":                            "将写操作追加到 AOF 文件。",
+	"0 means idle clients are not disconnected automatically.":             "0 表示不主动断开空闲客户端。",
+	"TCP keepalive probe interval; 0 disables it.":                         "TCP 保活探测间隔；0 表示关闭。",
+	"Redis software version: 7.4.8 or 8.4.0.":                              "Redis 软件版本：7.4.8 或 8.4.0。",
+	"Managed Redis program directory.":                                     "受管 Redis 程序目录。",
+	"Persistent RDB/AOF data directory; preserved on uninstall.":           "持久化 RDB/AOF 数据目录；卸载时保留。",
+	"Redis TCP listener port.":                                             "Redis TCP 监听端口。",
+	"Space-separated IPv4/IPv6 listener addresses; local-only by default.": "以空格分隔的 IPv4/IPv6 监听地址；默认仅本机访问。",
+	"Redis ACL login username.":                                            "Redis ACL 登录用户名。",
+	"Optional Redis password; never returned in task output.":              "可选 Redis 密码；任务输出中不会返回明文。",
+	"Managed component state and rollback directory.":                      "受管组件状态及回滚目录。",
+	"seconds": "秒",
+}
+
+var redisInstallParameterChineseLabels = map[string]string{
+	"SOFTWARE_VERSION":           "Redis 版本",
+	"INSTALL_DIR":                "安装目录",
+	"DATA_DIR":                   "数据目录",
+	"REDIS_PORT":                 "监听端口",
+	"REDIS_BIND":                 "监听地址",
+	"REDIS_USERNAME":             "Redis 登录用户",
+	"REDIS_PASSWORD":             "Redis 密码",
+	"ONEINSTACK_COMPONENT_STATE": "组件状态目录",
+}
+
 func translateWebServerPreviewText(value string) string {
 	const (
 		syntaxSuffix   = " 配置语法"

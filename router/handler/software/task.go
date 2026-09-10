@@ -156,7 +156,7 @@ func getTaskManager() (*softwaretask.Manager, error) {
 				if params.Key == "redis" {
 					if err := storageService.EnsureManagedLocalRedisConnection(
 						params.Port,
-						"default",
+						params.Username,
 						params.Pwd,
 					); err != nil {
 						return fmt.Errorf("register managed local Redis connection: %w", err)
@@ -317,7 +317,7 @@ func SubmitOfflineInstallationTask(
 	}
 	componentKey := strings.ToLower(strings.TrimSpace(req.Key))
 	switch componentKey {
-	case "fail2ban", "docker", "docker-compose", "phpmyadmin":
+	case "fail2ban", "docker", "docker-compose", "phpmyadmin", "redis":
 	default:
 		return nil, fmt.Errorf("offline installation is not supported for component %s", componentKey)
 	}
