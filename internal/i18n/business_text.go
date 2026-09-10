@@ -101,6 +101,7 @@ func LocalizeComponentInstallParameterLabel(locale, component, key, fallback str
 }
 
 var redisConfigurationChineseText = map[string]string{
+	"port":                           "监听端口",
 	"maxmemory":                      "最大内存",
 	"maxmemoryPolicy":                "内存淘汰策略",
 	"appendonly":                     "AOF 持久化",
@@ -112,6 +113,7 @@ var redisConfigurationChineseText = map[string]string{
 	"Idle connection timeout":        "空闲连接超时",
 	"TCP keepalive":                  "TCP 保活",
 	"TCP Keepalive":                  "TCP 保活",
+	"Redis listener port":            "监听端口",
 	"0 means no Redis memory limit.": "0 表示不设置 Redis 内存上限。",
 	"How Redis handles new writes after reaching the memory limit.":        "达到内存上限后 Redis 处理新写入的方式。",
 	"Appends write operations to the AOF file.":                            "将写操作追加到 AOF 文件。",

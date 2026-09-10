@@ -231,6 +231,7 @@ func componentConfigurationDefinition(component string) (configurationDefinition
 	case "redis":
 		result.ApplyMode = "restart"
 		result.Fields = []ConfigurationField{
+			{Key: "port", Label: "监听端口", Type: "port", Default: "6379", Min: intPointer(1), Max: intPointer(65535), Description: "Redis TCP 监听端口。"},
 			{Key: "maxmemory", Label: "最大内存", Type: "integer", Unit: "MB", Default: "0", Min: intPointer(0), Max: intPointer(1048576)},
 			{
 				Key:         "maxmemoryPolicy",
@@ -248,6 +249,7 @@ func componentConfigurationDefinition(component string) (configurationDefinition
 			{Key: "tcpKeepalive", Label: "TCP Keepalive", Type: "integer", Unit: "秒", Default: "300", Min: intPointer(0), Max: intPointer(3600)},
 		}
 		result.Environment = map[string]string{
+			"port":            "ONEINSTACK_CONFIG_PORT",
 			"maxmemory":       "ONEINSTACK_CONFIG_MAXMEMORY",
 			"maxmemoryPolicy": "ONEINSTACK_CONFIG_MAXMEMORY_POLICY",
 			"appendonly":      "ONEINSTACK_CONFIG_APPENDONLY",
