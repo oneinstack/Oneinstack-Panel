@@ -587,6 +587,9 @@ func (s *Service) SetEnabled(ctx context.Context, enabled bool, confirmation str
 		return fmt.Errorf("%w: 未检测到受支持的防火墙", ErrUnsupported)
 	}
 	if state.Enabled == enabled {
+		if enabled && (state.Name == BackendUFW || state.Name == BackendFirewalld) {
+			return s.reconcileEnabledRules(ctx, state)
+		}
 		return nil
 	}
 	if !enabled && strings.TrimSpace(confirmation) != DisableConfirmation {
@@ -610,9 +613,77 @@ func (s *Service) SetEnabled(ctx context.Context, enabled bool, confirmation str
 			}
 			return err
 		}
+		activeState := state
+		activeState.Enabled = true
+		if err := s.reconcileEnabledRules(ctx, activeState); err != nil {
+			stopErr := s.toggleBackend(ctx, state.Name, false)
+			if created != nil {
+				s.rollbackOperations(ctx, operations)
+				_ = s.db.Delete(&models.IptablesRule{}, created.ID).Error
+			}
+			if stopErr != nil {
+				return fmt.Errorf("防火墙已启动，但同步已有规则失败且回退失败: %v; %w", stopErr, err)
+			}
+			return fmt.Errorf("同步已有防火墙规则失败，防火墙已回退: %w", err)
+		}
 		return nil
 	}
 	return s.toggleBackend(ctx, state.Name, false)
+}
+
+// reconcileEnabledRules repairs the gap between the Panel rule records and the
+// active firewall backend after a backend restart or enable operation. A rule
+// marked enabled in the database is not proof that the system rule still
+// exists, so only missing rules are re-applied and existing rules are left
+// untouched.
+func (s *Service) reconcileEnabledRules(ctx context.Context, state backendState) error {
+	if s.db == nil || !state.Enabled || state.Name == BackendNone {
+		return nil
+	}
+	var rules []models.IptablesRule
+	if err := s.db.Where("state = ? AND protected = ?", 1, false).
+		Order("id ASC").Find(&rules).Error; err != nil {
+		return err
+	}
+	operations := make([]commandOperation, 0)
+	backendUpdates := make([]int64, 0)
+	for index := range rules {
+		rule := &rules[index]
+		if rule.ExpiresAt != nil && !rule.ExpiresAt.After(time.Now()) {
+			continue
+		}
+		effectiveRule := *rule
+		if effectiveRule.Backend != state.Name {
+			effectiveRule.Backend = state.Name
+			backendUpdates = append(backendUpdates, rule.ID)
+		}
+		if s.ruleExists(ctx, &effectiveRule, state) {
+			continue
+		}
+		ruleOperations, err := s.ruleOperations(&effectiveRule)
+		if err != nil {
+			return err
+		}
+		operations = append(operations, ruleOperations...)
+	}
+	if len(operations) > 0 {
+		if err := s.runOperations(ctx, state.Name, operations); err != nil {
+			return err
+		}
+	}
+	if len(backendUpdates) == 0 {
+		return nil
+	}
+	if err := s.db.Model(&models.IptablesRule{}).
+		Where("id IN ?", backendUpdates).
+		Update("backend", state.Name).Error; err != nil {
+		if len(operations) > 0 {
+			s.rollbackOperations(ctx, operations)
+			_ = s.persist(ctx, state.Name)
+		}
+		return fmt.Errorf("保存防火墙规则后端失败，系统规则已回滚: %w", err)
+	}
+	return nil
 }
 
 func (s *Service) ensurePanelRule(ctx context.Context, state backendState) (*models.IptablesRule, []commandOperation, error) {
