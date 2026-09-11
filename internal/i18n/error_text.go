@@ -30,21 +30,24 @@ var (
 )
 
 var (
-	websiteWebServerMismatchPattern  = regexp.MustCompile(`^WEBSITE_WEB_SERVER_MISMATCH: 网站 (.+) 属于 (.+)，当前运行 Web Server 为 (.+)，请切换回 (.+) 后操作$`)
-	websiteEngineImmutablePattern    = regexp.MustCompile(`^WEBSITE_ENGINE_IMMUTABLE: 网站 (.+) 的 Engine 已固定为 (.+)，不能修改为 (.+)$`)
-	websiteConfigUnavailablePattern  = regexp.MustCompile(`^WEBSITE_CONFIG_UNAVAILABLE: 网站 (.+) 属于 (.+)，当前没有可用的该归属运行配置文件$`)
-	policyTemplateConflictPattern    = regexp.MustCompile(`^策略模板“(.+?)”（(.+?)）已存在，请直接编辑现有策略，不要重复添加。$`)
-	containerRiskConfirmationPattern = regexp.MustCompile(`^(.+?)。确认后请提交 confirmHighRisk=true。$`)
-	configRollbackPattern            = regexp.MustCompile(`^回滚资源类型=(.+?)、原操作=(.+?)，在(.+?)阶段失败；具体原因：(.+)$`)
-	certificateDNSPattern            = regexp.MustCompile(`^域名 (.+) 没有有效的 A/AAAA DNS 记录，请先将域名解析到本服务器后再申请 HTTP-01 证书。$`)
-	certificateHTTP403Pattern        = regexp.MustCompile(`^域名 (.+) 的 HTTP-01 验证地址返回 403，请检查 DNS 是否指向本服务器，以及 CDN/WAF 是否拦截了验证请求。$`)
-	certificateHTTP404Pattern        = regexp.MustCompile(`^域名 (.+) 的 HTTP-01 验证地址返回 404，请检查网站是否启用、80 端口是否可访问，以及 CDN/WAF 是否拦截了验证请求。$`)
-	certificateBindDetailPattern     = regexp.MustCompile(`^证书绑定(资源读取|校验|部署)失败：(.*)$`)
-	composePostgresMountPattern      = regexp.MustCompile(`^服务 (.+) 使用了 PostgreSQL 18\+ 的旧数据目录挂载；PostgreSQL 18\+ 官方镜像的数据卷应只挂载到 /var/lib/postgresql；旧路径 /var/lib/postgresql/data 会被视为未使用挂载$`)
-	firewallConfirmationPattern      = regexp.MustCompile(`^关闭防火墙需要输入确认文本 (.+)$`)
-	webServerSyntaxDiagnosticPattern = regexp.MustCompile(`^Web Server 配置语法错误：第 ([0-9]+) 行；Nginx 诊断：(.*)。(.+)$`)
-	webServerSyntaxLinePattern       = regexp.MustCompile(`^Web Server 配置语法错误：第 ([0-9]+) 行。(.*)$`)
-	webServerPreflightPattern        = regexp.MustCompile(`^Web Server 配置预检失败：(.*)。(.+)$`)
+	websiteWebServerMismatchPattern        = regexp.MustCompile(`^WEBSITE_WEB_SERVER_MISMATCH: 网站 (.+) 属于 (.+)，当前运行 Web Server 为 (.+)，请切换回 (.+) 后操作$`)
+	websiteEngineImmutablePattern          = regexp.MustCompile(`^WEBSITE_ENGINE_IMMUTABLE: 网站 (.+) 的 Engine 已固定为 (.+)，不能修改为 (.+)$`)
+	websiteConfigUnavailablePattern        = regexp.MustCompile(`^WEBSITE_CONFIG_UNAVAILABLE: 网站 (.+) 属于 (.+)，当前没有可用的该归属运行配置文件$`)
+	policyTemplateConflictPattern          = regexp.MustCompile(`^策略模板“(.+?)”（(.+?)）已存在，请直接编辑现有策略，不要重复添加。$`)
+	containerRiskConfirmationPattern       = regexp.MustCompile(`^(.+?)。确认后请提交 confirmHighRisk=true。$`)
+	configRollbackPattern                  = regexp.MustCompile(`^回滚资源类型=(.+?)、原操作=(.+?)，在(.+?)阶段失败；具体原因：(.+)$`)
+	certificateDNSPattern                  = regexp.MustCompile(`^域名 (.+) 没有有效的 A/AAAA DNS 记录，请先将域名解析到本服务器后再申请 HTTP-01 证书。$`)
+	certificateHTTP403Pattern              = regexp.MustCompile(`^域名 (.+) 的 HTTP-01 验证地址返回 403，请检查 DNS 是否指向本服务器，以及 CDN/WAF 是否拦截了验证请求。$`)
+	certificateHTTP404Pattern              = regexp.MustCompile(`^域名 (.+) 的 HTTP-01 验证地址返回 404，请检查网站是否启用、80 端口是否可访问，以及 CDN/WAF 是否拦截了验证请求。$`)
+	certificateBindDetailPattern           = regexp.MustCompile(`^证书绑定(资源读取|校验|部署)失败：(.*)$`)
+	composePostgresMountPattern            = regexp.MustCompile(`^服务 (.+) 使用了 PostgreSQL 18\+ 的旧数据目录挂载；PostgreSQL 18\+ 官方镜像的数据卷应只挂载到 /var/lib/postgresql；旧路径 /var/lib/postgresql/data 会被视为未使用挂载$`)
+	firewallConfirmationPattern            = regexp.MustCompile(`^关闭防火墙需要输入确认文本 (.+)$`)
+	webServerSyntaxDiagnosticPattern       = regexp.MustCompile(`^(.+?) 配置语法错误：(?:文件 (.+?) )?第 ([0-9]+) 行；诊断：(.*)。(.+)$`)
+	webServerSyntaxLinePattern             = regexp.MustCompile(`^(.+?) 配置语法错误：(?:文件 (.+?) )?第 ([0-9]+) 行。(.*)$`)
+	webServerSyntaxFailurePattern          = regexp.MustCompile(`^(.+?) 配置语法校验失败：(.+)。(.+)$`)
+	webServerLegacySyntaxDiagnosticPattern = regexp.MustCompile(`^Web Server 配置语法错误：第 ([0-9]+) 行；Nginx 诊断：(.*)。(.+)$`)
+	webServerLegacySyntaxLinePattern       = regexp.MustCompile(`^Web Server 配置语法错误：第 ([0-9]+) 行。(.*)$`)
+	webServerPreflightPattern              = regexp.MustCompile(`^(.+?) 配置预检失败：(.*)。(.+)$`)
 )
 
 // LocalizeText translates API response text that predates message keys.
@@ -271,25 +274,60 @@ func translateDynamicErrorText(text string) (string, bool) {
 }
 
 func translateWebServerConfigDetail(text string) (string, bool) {
-	if matches := webServerSyntaxDiagnosticPattern.FindStringSubmatch(text); len(matches) == 4 {
+	if matches := webServerSyntaxDiagnosticPattern.FindStringSubmatch(text); len(matches) == 6 {
+		location := ""
+		if strings.TrimSpace(matches[2]) != "" {
+			location = fmt.Sprintf(" in %s", strings.TrimSpace(matches[2]))
+		}
+		return fmt.Sprintf(
+			"%s configuration syntax error at line %s%s; diagnostic: %s. %s",
+			localizeWebServerEngine(matches[1]), matches[3], location, localizeWebServerConfigFragment(matches[4]), localizeWebServerConfigFragment(matches[5]),
+		), true
+	}
+	if matches := webServerSyntaxLinePattern.FindStringSubmatch(text); len(matches) == 5 {
+		location := ""
+		if strings.TrimSpace(matches[2]) != "" {
+			location = fmt.Sprintf(" in %s", strings.TrimSpace(matches[2]))
+		}
+		return fmt.Sprintf(
+			"%s configuration syntax error at line %s%s. %s",
+			localizeWebServerEngine(matches[1]), matches[3], location, localizeWebServerConfigFragment(matches[4]),
+		), true
+	}
+	if matches := webServerSyntaxFailurePattern.FindStringSubmatch(text); len(matches) == 4 {
+		return fmt.Sprintf(
+			"%s configuration validation failed: %s. %s",
+			localizeWebServerEngine(matches[1]), localizeWebServerConfigFragment(matches[2]), localizeWebServerConfigFragment(matches[3]),
+		), true
+	}
+	if matches := webServerLegacySyntaxDiagnosticPattern.FindStringSubmatch(text); len(matches) == 4 {
 		return fmt.Sprintf(
 			"Web Server configuration syntax error at line %s; Nginx diagnostic: %s. %s",
 			matches[1], matches[2], localizeWebServerConfigFragment(matches[3]),
 		), true
 	}
-	if matches := webServerSyntaxLinePattern.FindStringSubmatch(text); len(matches) == 3 {
+	if matches := webServerLegacySyntaxLinePattern.FindStringSubmatch(text); len(matches) == 3 {
 		return fmt.Sprintf(
 			"Web Server configuration syntax error at line %s. %s",
 			matches[1], localizeWebServerConfigFragment(matches[2]),
 		), true
 	}
-	if matches := webServerPreflightPattern.FindStringSubmatch(text); len(matches) == 3 {
+	if matches := webServerPreflightPattern.FindStringSubmatch(text); len(matches) == 4 {
 		return fmt.Sprintf(
-			"Web Server configuration preflight failed: %s. %s",
-			localizeWebServerConfigFragment(matches[1]), localizeWebServerConfigFragment(matches[2]),
+			"%s configuration preflight failed: %s. %s",
+			localizeWebServerEngine(matches[1]), localizeWebServerConfigFragment(matches[2]), localizeWebServerConfigFragment(matches[3]),
 		), true
 	}
 	return "", false
+}
+
+func localizeWebServerEngine(value string) string {
+	switch strings.TrimSpace(value) {
+	case "Nginx", "OpenResty", "Tengine", "Apache", "Caddy", "Web Server":
+		return strings.TrimSpace(value)
+	default:
+		return "Web Server"
+	}
 }
 
 func localizeWebServerConfigFragment(value string) string {
@@ -1548,6 +1586,9 @@ var englishOperationPreviewErrorTexts = map[string]string{
 	"include 文件路径格式无效":                   "The include file path has an invalid format",
 	"include 依赖文件无法读取":                   "An include dependency cannot be read",
 	"include 依赖文件无法暂存到预览目录":              "An include dependency cannot be staged in the preview directory",
+	"原配置恢复失败，请立即检查配置文件和 Web Server 状态。":  "The original configuration could not be restored. Check the configuration file and Web Server status immediately.",
+	"Web Server 配置语法校验失败，原配置已自动恢复；请检查当前 Web Server 指令格式后重新预览。":    "Web Server configuration validation failed. The original configuration was restored automatically. Check the current Web Server directive syntax and create a new preview.",
+	"Web Server 配置语法校验失败，预览阶段未写入原配置；请检查当前 Web Server 指令格式后重新预览。":  "Web Server configuration validation failed. The original configuration was not written during preview. Check the current Web Server directive syntax and create a new preview.",
 	"Web Server 配置语法校验失败，原配置已自动恢复；请检查 Nginx/OpenResty 指令格式后重新预览。": "Web Server configuration validation failed. The original configuration was restored automatically. Check the Nginx/OpenResty directive syntax and create a new preview.",
 	"Web Server 配置预检失败": "Web Server configuration preflight failed",
 	"Web Server 配置语法错误": "Web Server configuration syntax error",

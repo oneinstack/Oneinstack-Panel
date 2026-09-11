@@ -1436,7 +1436,7 @@ func buildDocument(ctx context.Context, operation string, payload json.RawMessag
 				)
 			}
 			if err := manager.ValidateContent(context.Background(), request.Path, request.Content); err != nil {
-				return previewservice.Document{}, "", fmt.Errorf("%w: %v", website.ErrWebServerConfigValidate, err)
+				return previewservice.Document{}, "", fmt.Errorf("%w: %w", website.ErrWebServerConfigValidate, err)
 			}
 			document.Files = []previewservice.FileChange{{Path: current.Path, Action: "update", ChangeSummary: "更新 Web 服务器受管配置"}}
 			document.Actions = webServerPreviewActions(manager.Server)
@@ -1516,7 +1516,7 @@ func buildDocument(ctx context.Context, operation string, payload json.RawMessag
 			return previewservice.Document{}, "", fmt.Errorf("%w: configuration changed after it was opened; reload it before saving", website.ErrWebServerConfigConflict)
 		}
 		if err := manager.ValidateContent(context.Background(), request.Path, request.Content); err != nil {
-			return previewservice.Document{}, "", fmt.Errorf("%w: %v", website.ErrWebServerConfigValidate, err)
+			return previewservice.Document{}, "", fmt.Errorf("%w: %w", website.ErrWebServerConfigValidate, err)
 		}
 		document.Files = []previewservice.FileChange{{Path: current.Path, Action: "update", ChangeSummary: "更新 Web 服务器受管配置", Diff: boundedConfigDiff(current.Content, request.Content)}}
 		document.Actions = webServerPreviewActions(manager.Server)
@@ -2338,6 +2338,9 @@ func writeExecutionError(c *gin.Context, err error) {
 		detail = ""
 	case errors.Is(err, website.ErrWebServerConfigValidate):
 		code, message = core.ErrConfigValidateFailed, "Web Server 配置校验失败，原配置已恢复"
+		if diagnostic := website.WebServerConfigErrorDetail(err); diagnostic != "" {
+			detail = diagnostic
+		}
 	case errors.Is(err, website.ErrWebsiteSettingsValidate):
 		code, message = core.ErrInvalidParameter, "网站设置格式错误"
 		detail = ""

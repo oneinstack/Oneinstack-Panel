@@ -321,7 +321,7 @@ func (service *Service) PreviewManagedConfig(ctx context.Context, id int64, cont
 		return WebsiteRuntimePreview{}, err
 	}
 	if err := validationManager.ValidateContentAtRoot(ctx, configRoot, validationRelative, content); err != nil {
-		return WebsiteRuntimePreview{}, fmt.Errorf("%w: %v", ErrWebServerConfigValidate, err)
+		return WebsiteRuntimePreview{}, fmt.Errorf("%w: %w", ErrWebServerConfigValidate, err)
 	}
 	version, err := service.RuntimeRevision(id)
 	if err != nil {
@@ -403,7 +403,7 @@ func (service *Service) validateRuntimeCandidate(site *models.Website, path, con
 		return errors.New("网站候选配置不属于当前 Web 服务器配置目录")
 	}
 	if err := manager.ValidateContentAtRoot(context.Background(), configRoot, filepath.ToSlash(relative), content); err != nil {
-		return fmt.Errorf("%w: %v", ErrWebServerConfigValidate, err)
+		return fmt.Errorf("%w: %w", ErrWebServerConfigValidate, err)
 	}
 	return nil
 }

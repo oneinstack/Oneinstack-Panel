@@ -366,12 +366,12 @@ func formatWebServerConfigValidationDetail(detail string) string {
 		return fmt.Sprintf("Web Server 配置语法错误：第 %s 行；Nginx 诊断：%s。%s", matches[2], diagnostic, suffix)
 	}
 	if restored {
-		return "Web Server 配置语法校验失败，原配置已自动恢复；请检查 Nginx/OpenResty 指令格式后重新预览。"
+		return "Web Server 配置语法校验失败，原配置已自动恢复；请检查当前 Web Server 指令格式后重新预览。"
 	}
 	if preflight := formatWebServerConfigPreflightDetail(detail); preflight != "" {
 		return fmt.Sprintf("Web Server 配置预检失败：%s。%s", preflight, suffix)
 	}
-	return "Web Server 配置语法校验失败，预览阶段未写入原配置；请检查 Nginx/OpenResty 指令格式后重新预览。"
+	return "Web Server 配置语法校验失败，预览阶段未写入原配置；请检查当前 Web Server 指令格式后重新预览。"
 }
 
 // formatWebServerConfigPreflightDetail keeps errors raised while assembling
@@ -727,6 +727,15 @@ func WrapError(err error, code ErrorCode, message string) *AppError {
 		Message:    message,
 		Detail:     err.Error(),
 		Suggestion: errorSuggestion(err.Error()),
+	}
+	var safeDetailProvider interface {
+		SafeErrorDetail(error) string
+	}
+	if errors.As(err, &safeDetailProvider) {
+		if detail := strings.TrimSpace(safeDetailProvider.SafeErrorDetail(err)); detail != "" {
+			appError.Detail = detail
+			appError.PublicDetail = true
+		}
 	}
 	var provider interface{ ErrorCode() string }
 	if errors.As(err, &provider) {

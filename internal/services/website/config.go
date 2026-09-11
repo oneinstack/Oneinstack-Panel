@@ -549,14 +549,14 @@ func (ApacheAdapter) Validate(ctx context.Context, publisher *Publisher) error {
 	if publisher == nil || publisher.MainConfigPath == "" {
 		return errors.New("Apache main config is not configured")
 	}
-	return publisher.runCommand(ctx, publisher.NginxBinary, "-t", "-f", publisher.MainConfigPath)
+	return publisher.runValidationCommand(ctx, publisher.NginxBinary, "-t", "-f", publisher.MainConfigPath)
 }
 
 func (CaddyAdapter) Validate(ctx context.Context, publisher *Publisher) error {
 	if publisher == nil || publisher.MainConfigPath == "" {
 		return errors.New("Caddy main config is not configured")
 	}
-	return publisher.runCommand(ctx, publisher.NginxBinary, "validate", "--config", publisher.MainConfigPath, "--adapter", "caddyfile")
+	return publisher.runValidationCommand(ctx, publisher.NginxBinary, "validate", "--config", publisher.MainConfigPath, "--adapter", "caddyfile")
 }
 
 func (ApacheAdapter) Reload(ctx context.Context, publisher *Publisher) error {
@@ -1444,7 +1444,7 @@ func (p *Publisher) runEngine(ctx context.Context, operation string) error {
 }
 
 func validateNginxPublisher(ctx context.Context, publisher *Publisher) error {
-	return publisher.runNginx(ctx, "-t")
+	return publisher.runValidationCommand(ctx, publisher.NginxBinary, "-t")
 }
 
 func reloadNginxPublisher(ctx context.Context, publisher *Publisher) error {
@@ -1517,6 +1517,32 @@ func reloadCaddyPublisher(ctx context.Context, publisher *Publisher) error {
 func (p *Publisher) runCommand(ctx context.Context, command string, args ...string) error {
 	output, err := p.Runner.Run(ctx, command, args...)
 	return commandErrorForContext(ctx, output, err)
+}
+
+func (p *Publisher) runValidationCommand(ctx context.Context, command string, args ...string) error {
+	return runWebServerValidationCommand(
+		ctx,
+		p.Runner,
+		p.Engine,
+		p.validationDisplayPath(),
+		command,
+		args...,
+	)
+}
+
+func (p *Publisher) validationDisplayPath() string {
+	if p == nil || strings.TrimSpace(p.MainConfigPath) == "" {
+		return ""
+	}
+	mainConfig := filepath.Clean(strings.TrimSpace(p.MainConfigPath))
+	configDir := filepath.Clean(strings.TrimSpace(p.ConfigDir))
+	if filepath.IsAbs(configDir) && configDir != "." {
+		if relative, err := filepath.Rel(configDir, mainConfig); err == nil &&
+			relative != "." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) && relative != ".." {
+			return filepath.ToSlash(relative)
+		}
+	}
+	return filepath.Base(mainConfig)
 }
 
 func (p *Publisher) serviceActive(ctx context.Context) bool {

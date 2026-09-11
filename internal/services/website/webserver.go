@@ -424,9 +424,9 @@ func (manager *WebServerConfigManager) validateContent(
 		timeoutCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 		defer cancel()
 		if manager.Server.Component == "apache" {
-			return manager.runCommand(timeoutCtx, manager.Server.BinaryPath, "-t", "-f", previewPath)
+			return manager.runValidationCommand(timeoutCtx, relativePath, manager.Server.BinaryPath, "-t", "-f", previewPath)
 		}
-		return manager.runCommand(timeoutCtx, manager.Server.BinaryPath, "validate", "--config", previewPath, "--adapter", "caddyfile")
+		return manager.runValidationCommand(timeoutCtx, relativePath, manager.Server.BinaryPath, "validate", "--config", previewPath, "--adapter", "caddyfile")
 	}
 
 	directory, err := os.MkdirTemp(app.GetBasePath(), ".oneinstack-web-server-preview-")
@@ -494,7 +494,16 @@ func (manager *WebServerConfigManager) validateContent(
 	}
 	timeoutCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	return manager.run(timeoutCtx, "-t", "-p", ensureTrailingSeparator(directory), "-c", mainConfig)
+	return manager.runValidationCommand(
+		timeoutCtx,
+		relativePath,
+		manager.Server.BinaryPath,
+		"-t",
+		"-p",
+		ensureTrailingSeparator(directory),
+		"-c",
+		mainConfig,
+	)
 }
 
 var nginxIncludePattern = regexp.MustCompile(`(?m)^[\t ]*include[\t ]+([^;#]+);`)
@@ -807,8 +816,8 @@ func (manager *WebServerConfigManager) Update(
 		}
 	}
 
-	if err := manager.testConfiguration(ctx); err != nil {
-		validationErr := fmt.Errorf("%w: %v", ErrWebServerConfigValidate, err)
+	if err := manager.testConfiguration(ctx, request.Path); err != nil {
+		validationErr := fmt.Errorf("%w: %w", ErrWebServerConfigValidate, err)
 		restoreErr := restoreWebServerConfig(target, original, fileInfo.Mode())
 		if restoreErr == nil && strings.EqualFold(manager.Server.Component, "caddy") {
 			restoreErr = ensureCaddyManagedConfigAccess(manager.Server.ConfigRoot, manager.Server.MainConfigPath, target)
@@ -834,7 +843,7 @@ func (manager *WebServerConfigManager) Update(
 				restoreErr = ensureCaddyManagedConfigAccess(manager.Server.ConfigRoot, manager.Server.MainConfigPath, target)
 			}
 			if restoreErr == nil {
-				_ = manager.testConfiguration(context.Background())
+				_ = manager.testConfiguration(context.Background(), request.Path)
 				_ = manager.reload(context.Background())
 			}
 			if restoreErr != nil {
@@ -966,17 +975,19 @@ func (manager *WebServerConfigManager) backup(relativePath, source string) (stri
 	return target, nil
 }
 
-func (manager *WebServerConfigManager) testConfiguration(ctx context.Context) error {
+func (manager *WebServerConfigManager) testConfiguration(ctx context.Context, displayPath string) error {
 	timeoutCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	switch manager.Server.Component {
 	case "apache":
-		return manager.runCommand(timeoutCtx, manager.Server.BinaryPath, "-t", "-f", manager.Server.MainConfigPath)
+		return manager.runValidationCommand(timeoutCtx, displayPath, manager.Server.BinaryPath, "-t", "-f", manager.Server.MainConfigPath)
 	case "caddy":
-		return manager.runCommand(timeoutCtx, manager.Server.BinaryPath, "validate", "--config", manager.Server.MainConfigPath, "--adapter", "caddyfile")
+		return manager.runValidationCommand(timeoutCtx, displayPath, manager.Server.BinaryPath, "validate", "--config", manager.Server.MainConfigPath, "--adapter", "caddyfile")
 	}
-	return manager.run(
+	return manager.runValidationCommand(
 		timeoutCtx,
+		displayPath,
+		manager.Server.BinaryPath,
 		"-t",
 		"-p",
 		ensureTrailingSeparator(manager.Server.Prefix),
@@ -1011,6 +1022,21 @@ func (manager *WebServerConfigManager) reload(ctx context.Context) error {
 
 func (manager *WebServerConfigManager) run(ctx context.Context, args ...string) error {
 	return manager.runCommand(ctx, manager.Server.BinaryPath, args...)
+}
+
+func (manager *WebServerConfigManager) runValidationCommand(
+	ctx context.Context,
+	displayPath, command string,
+	args ...string,
+) error {
+	return runWebServerValidationCommand(
+		ctx,
+		manager.Runner,
+		manager.Server.Component,
+		displayPath,
+		command,
+		args...,
+	)
 }
 
 func (manager *WebServerConfigManager) runCommand(ctx context.Context, command string, args ...string) error {
