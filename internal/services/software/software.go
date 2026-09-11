@@ -438,6 +438,7 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 		normalizeMySQLVersionPresentation(&groupedResults[i])
 		hydrateFirewalldInstallation(&groupedResults[i])
 		normalizeExactVersionPresentation(&groupedResults[i])
+		normalizeNodeJSVersionPresentation(&groupedResults[i])
 		normalizeSoftwareUpgrade(&groupedResults[i])
 		defaultVersion := strings.TrimSpace(groupedResults[i].RecommendedVersion)
 		if defaultVersion == "" && groupedResults[i].Installed {
@@ -654,6 +655,59 @@ func normalizeSoftwareUpgrade(item *output.Software) {
 	if item.HostInstallation != nil {
 		item.HostInstallation.RecommendedVersion = item.RecommendedVersion
 	}
+}
+
+func normalizeNodeJSVersionPresentation(item *output.Software) {
+	const centOS7NodeVersion = "16.20.2"
+	if item == nil || !isCentOS7Host() ||
+		(!strings.EqualFold(strings.TrimSpace(item.Key), "nodejs") &&
+			!strings.EqualFold(strings.TrimSpace(item.Component), "nodejs")) ||
+		(item.Installed && strings.TrimSpace(item.InstallVersion) != centOS7NodeVersion) {
+		return
+	}
+
+	var selected output.VersionOption
+	available := false
+	for _, option := range item.VersionOptions {
+		if strings.TrimSpace(option.Version) != centOS7NodeVersion || !option.Enabled || !option.Installable {
+			continue
+		}
+		selected = option
+		selected.Recommended = true
+		available = true
+		break
+	}
+	if !available {
+		return
+	}
+
+	item.VersionOptions = []output.VersionOption{selected}
+	item.VersionLines = []string{}
+	item.Versions = []string{centOS7NodeVersion}
+	item.RecommendedVersion = centOS7NodeVersion
+	item.Installable = true
+	for _, parameter := range item.Params {
+		if parameter != nil && strings.EqualFold(strings.TrimSpace(parameter.Key), "software-version") {
+			parameter.Default = centOS7NodeVersion
+		}
+	}
+}
+
+func isCentOS7Host() bool {
+	contents, err := os.ReadFile("/etc/os-release")
+	if err != nil {
+		return false
+	}
+	values := make(map[string]string, 4)
+	for _, line := range strings.Split(string(contents), "\n") {
+		key, value, ok := strings.Cut(strings.TrimSpace(line), "=")
+		if !ok {
+			continue
+		}
+		values[key] = strings.Trim(strings.TrimSpace(value), "\"")
+	}
+	return strings.EqualFold(strings.TrimSpace(values["ID"]), "centos") &&
+		strings.HasPrefix(strings.TrimSpace(values["VERSION_ID"]), "7")
 }
 
 func softwareUpdateReason(item output.Software) string {

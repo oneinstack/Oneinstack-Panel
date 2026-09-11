@@ -52,7 +52,7 @@ func RunInstallation(c *gin.Context) {
 	}))
 }
 
-// RunOfflineInstallation accepts a Fail2ban component bundle and visible
+// RunOfflineInstallation accepts a component bundle and visible
 // installation fields. The server derives the offline mode and bundle ID;
 // neither is accepted as a client-provided parameter.
 func RunOfflineInstallation(c *gin.Context) {
@@ -75,7 +75,7 @@ func RunOfflineInstallation(c *gin.Context) {
 		header, err = c.FormFile("file")
 	}
 	if err != nil {
-		core.HandleError(c, core.WrapError(err, core.ErrInvalidParameter, "请上传 Fail2ban 离线 Bundle"))
+		core.HandleError(c, core.WrapError(err, core.ErrInvalidParameter, "请上传组件离线 Bundle"))
 		return
 	}
 	if header.Size < 1 || header.Size > maxPackageBytes {

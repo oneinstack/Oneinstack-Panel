@@ -630,6 +630,8 @@ func closedLoopPackageComponent(key string) (string, bool) {
 		return "nginx", true
 	case "php":
 		return "php", true
+	case "nodejs":
+		return "nodejs", true
 	default:
 		return "", false
 	}
