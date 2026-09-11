@@ -215,6 +215,8 @@ func (installer *Installer) resolveInstallParams(ctx context.Context, params *in
 		"mysqlPort",
 		"redis-port",
 		"redisPort",
+		"apache-port",
+		"apachePort",
 	)
 
 	NormalizeInstallParams(params)
@@ -440,6 +442,8 @@ func closedLoopCatalogIdentity(key string) (catalogKey, catalogComponent string,
 		return "db", "mysql", true
 	case "webserver", "nginx":
 		return "webserver", "nginx", true
+	case "apache":
+		return "apache", "apache", true
 	case "php":
 		return "php", "php", true
 	case "firewalld":
@@ -628,6 +632,8 @@ func closedLoopPackageComponent(key string) (string, bool) {
 		return "mysql", true
 	case "webserver", "nginx":
 		return "nginx", true
+	case "apache":
+		return "apache", true
 	case "php":
 		return "php", true
 	case "nodejs":

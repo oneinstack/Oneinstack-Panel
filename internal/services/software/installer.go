@@ -21,6 +21,7 @@ var bundledOnlySoftwareKeys = map[string]struct{}{
 	"db":         {},
 	"redis":      {},
 	"webserver":  {},
+	"apache":     {},
 	"php":        {},
 	"phpmyadmin": {},
 	"firewalld":  {},
@@ -166,6 +167,8 @@ func NormalizeInstallParams(params *input.InstallParams) {
 			portNames = append(portNames, "redis-port", "redisPort")
 		case "webserver", "nginx", "openresty", "tengine":
 			portNames = append(portNames, "nginx-port", "nginxPort")
+		case "apache":
+			portNames = append(portNames, "apache-port", "apachePort")
 		}
 		params.Port = installParameterValue(params.Parameters, portNames...)
 	}
@@ -219,6 +222,8 @@ func canonicalInstallParameterName(value string) string {
 	switch compactInstallParameterName(value) {
 	case "version", "softwareversion":
 		return "software-version"
+	case "port", "nginxport", "nginxportnumber", "apacheport", "apacheportnumber":
+		return "port"
 	case "installdir":
 		return "install-dir"
 	case "logdir":
@@ -440,6 +445,12 @@ func (installer *Installer) SwitchServiceActionTask(
 	if err != nil {
 		return "", err
 	}
+	if definition.RuntimeGroup == webServerRuntimeGroup {
+		owners := ActiveRuntimeGroupOwners(ctx, definition.RuntimeGroup, definition.Component)
+		if len(owners) > 0 {
+			return "", fmt.Errorf("WEB_SERVER_CONFLICT: %s is already active; stop it explicitly before starting %s", owners[0].ServiceName, definition.Component)
+		}
+	}
 	if definition.RuntimeGroup == "" || (action != "start" && action != "restart") {
 		return installer.ServiceActionTask(ctx, component, version, action, logPath, observer)
 	}
@@ -630,6 +641,10 @@ func (installer *Installer) getInstallScript(ctx context.Context, params *input.
 			componentName = "nginx"
 		}
 		legacyScriptName = "nginx"
+	case "apache":
+		if componentName == "" {
+			componentName = "apache"
+		}
 	case "db", "mysql":
 		if componentName == "" {
 			componentName = "mysql"
@@ -998,6 +1013,8 @@ func componentForRemove(value string) (component string, softwareKey string, err
 	switch normalized {
 	case "nginx", "webserver":
 		return "nginx", "webserver", nil
+	case "apache":
+		return "apache", "apache", nil
 	case "mysql", "db":
 		return "mysql", "db", nil
 	case "redis":
@@ -1072,6 +1089,11 @@ func (installer *Installer) setScriptParams(scriptInfo *script.ScriptInfo, param
 		if params.Pwd != "" {
 			scriptInfo.Params["REDIS_PASSWORD"] = params.Pwd
 			markExplicit("REDIS_PASSWORD")
+		}
+	case "apache":
+		if params.Port != "" {
+			scriptInfo.Params["PORT"] = params.Port
+			markExplicit("port")
 		}
 	case "php":
 		scriptInfo.Params["PHP_VERSION"] = scriptVersion
@@ -1177,6 +1199,15 @@ func (installer *Installer) setScriptParams(scriptInfo *script.ScriptInfo, param
 			}
 			scriptInfo.Params["ONEINSTACK_OFFLINE_PACKAGE_PATH"] = offlinePath
 		}
+	}
+	if params.Key == "apache" {
+		vhostRoot := strings.TrimSpace(app.ONE_CONFIG.System.WebVhostRoot)
+		if vhostRoot == "" {
+			vhostRoot = "/usr/local/one/vhost"
+		}
+		vhostRoot = filepath.Clean(vhostRoot)
+		scriptInfo.Params["WEB_VHOST_ROOT"] = vhostRoot
+		scriptInfo.Params["ONEINSTACK_PARAMETER_WEB_VHOST_ROOT_EXPLICIT"] = "true"
 	}
 }
 

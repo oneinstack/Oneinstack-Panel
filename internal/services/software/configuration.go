@@ -190,6 +190,24 @@ func componentConfigurationDefinition(component string) (configurationDefinition
 			"keepaliveTimeout":  "ONEINSTACK_CONFIG_KEEPALIVE_TIMEOUT",
 			"clientMaxBodySize": "ONEINSTACK_CONFIG_CLIENT_MAX_BODY_SIZE",
 		}
+	case "apache":
+		result.ApplyMode = "restart"
+		result.Fields = []ConfigurationField{
+			{Key: "port", Label: "监听端口", Type: "port", Default: "80", Min: intPointer(1), Max: intPointer(65535), Description: "Apache 默认站点监听的 HTTP 端口。"},
+			{Key: "maxRequestWorkers", Label: "最大请求工作进程数", Type: "integer", Default: "256", Min: intPointer(1), Max: intPointer(65535)},
+			{Key: "keepaliveTimeout", Label: "长连接超时", Type: "integer", Unit: "秒", Default: "5", Min: intPointer(1), Max: intPointer(600)},
+			{Key: "phpFpmSocket", Label: "PHP-FPM Socket", Type: "path", Default: "/dev/shm/php-cgi.sock"},
+			{Key: "webRoot", Label: "网站根目录", Type: "path", Default: "/data/wwwroot"},
+			{Key: "logDir", Label: "日志目录", Type: "path", Default: "/data/wwwlogs"},
+		}
+		result.Environment = map[string]string{
+			"port":              "ONEINSTACK_CONFIG_PORT",
+			"maxRequestWorkers": "ONEINSTACK_CONFIG_MAX_REQUEST_WORKERS",
+			"keepaliveTimeout":  "ONEINSTACK_CONFIG_KEEPALIVE_TIMEOUT",
+			"phpFpmSocket":      "ONEINSTACK_CONFIG_PHP_FPM_SOCKET",
+			"webRoot":           "ONEINSTACK_CONFIG_WEB_ROOT",
+			"logDir":            "ONEINSTACK_CONFIG_LOG_DIR",
+		}
 	case "mysql":
 		result.ApplyMode = "restart"
 		result.Fields = []ConfigurationField{
@@ -441,6 +459,21 @@ func normalizeConfigurationValues(definition configurationDefinition, values map
 			return nil, errors.New("PHP-FPM process counts must satisfy min spare ≤ start ≤ max spare ≤ max children")
 		}
 	}
+	if definition.Component == "apache" {
+		webRoot := strings.TrimSpace(result["webRoot"])
+		if webRoot != "/data/wwwroot" && webRoot != "/data/wwwroot/default" {
+			return nil, errors.New("Apache webRoot must be /data/wwwroot")
+		}
+		logDir := strings.TrimSpace(result["logDir"])
+		if logDir != "/data/wwwlogs" && !strings.HasPrefix(logDir, "/data/wwwlogs/") {
+			return nil, errors.New("Apache logDir must be below /data/wwwlogs")
+		}
+		for _, key := range []string{"phpFpmSocket", "logDir"} {
+			if strings.ContainsAny(result[key], " \t\r\n\"';|&$`*?[]") {
+				return nil, fmt.Errorf("Apache configuration field %s contains unsupported path characters", key)
+			}
+		}
+	}
 	return result, nil
 }
 
@@ -622,6 +655,28 @@ func componentInstallParameterLabel(name string) string {
 		return "Redis login username"
 	case "REDIS_PASSWORD":
 		return "Redis password"
+	case "PORT":
+		return "HTTP listener port"
+	case "PHP_FPM_SOCKET":
+		return "PHP-FPM socket"
+	case "WEB_ROOT":
+		return "Website root directory"
+	case "LOG_DIR":
+		return "Log directory"
+	case "WEB_VHOST_ROOT":
+		return "Panel vhost directory"
+	case "RUN_USER":
+		return "Runtime user"
+	case "RUN_GROUP":
+		return "Runtime group"
+	case "ONEINSTACK_INSTALL_MODE":
+		return "Installation mode"
+	case "ONEINSTACK_OFFLINE_PACKAGE_PATH":
+		return "Offline Bundle path"
+	case "UNINSTALL_DATA_POLICY":
+		return "Uninstall data policy"
+	case "UNINSTALL_CONFIRM_DATA_DELETION":
+		return "Confirm data deletion"
 	case "ONEINSTACK_COMPONENT_STATE":
 		return "Component state directory"
 	default:
@@ -754,6 +809,9 @@ func persistManagedConfiguration(params *input.InstallParams, values map[string]
 	if strings.EqualFold(strings.TrimSpace(params.Key), "php") {
 		return persistManagedPHPConfiguration(params, values)
 	}
+	if strings.EqualFold(strings.TrimSpace(params.Key), "apache") {
+		return persistManagedApacheConfiguration(params, values)
+	}
 	if strings.EqualFold(strings.TrimSpace(params.Key), "firewalld") {
 		return persistManagedFirewalldConfiguration(params, values)
 	}
@@ -835,6 +893,68 @@ func persistManagedPHPConfiguration(params *input.InstallParams, values map[stri
 	}
 	if result.RowsAffected == 0 {
 		return errors.New("PHP software runtime parameters were not updated")
+	}
+	return nil
+}
+
+func persistManagedApacheConfiguration(params *input.InstallParams, values map[string]string) error {
+	if params == nil || app.DB() == nil {
+		return nil
+	}
+	var row models.Software
+	query := app.DB().Where("installed = ?", true).
+		Where("(`key` = ? OR component = ?)", "apache", "apache")
+	if strings.TrimSpace(params.Key) != "" {
+		query = query.Where("(`key` = ? OR component = ?)", params.Key, "apache")
+	}
+	if err := query.Order("install_time DESC, id DESC").First(&row).Error; err != nil {
+		return err
+	}
+	runtime := make(map[string]string)
+	if strings.TrimSpace(row.RuntimeParamsJSON) != "" {
+		if err := json.Unmarshal([]byte(row.RuntimeParamsJSON), &runtime); err != nil {
+			return fmt.Errorf("decode Apache runtime parameters: %w", err)
+		}
+	}
+	assign := func(valueKey string, runtimeKeys ...string) {
+		value := strings.TrimSpace(values[valueKey])
+		if value == "" {
+			return
+		}
+		for _, runtimeKey := range runtimeKeys {
+			runtime[runtimeKey] = value
+		}
+	}
+	assign("port", "apache-port", "port")
+	assign("phpFpmSocket", "apache-php-fpm-socket", "php-fpm-socket")
+	assign("webRoot", "apache-web-root", "web-root")
+	assign("logDir", "apache-log-dir", "log-dir")
+	if runtime["apache-install-dir"] == "" {
+		runtime["apache-install-dir"] = "/usr/local/apache"
+	}
+	if runtime["apache-vhost-root"] == "" {
+		runtime["apache-vhost-root"] = "/usr/local/one/vhost"
+	}
+	if runtime["apache-run-user"] == "" {
+		runtime["apache-run-user"] = "www"
+	}
+	if runtime["apache-run-group"] == "" {
+		runtime["apache-run-group"] = "www"
+	}
+	encoded, err := json.Marshal(runtime)
+	if err != nil {
+		return fmt.Errorf("encode Apache runtime parameters: %w", err)
+	}
+	updates := map[string]interface{}{"runtime_params": string(encoded)}
+	if port := strings.TrimSpace(values["port"]); port != "" {
+		updates["http_port"] = port
+	}
+	result := app.DB().Model(&models.Software{}).Where("id = ?", row.Id).Updates(updates)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return errors.New("Apache software runtime parameters were not updated")
 	}
 	return nil
 }
@@ -932,7 +1052,7 @@ func parseComponentConfiguration(
 	}
 	optional := make(map[string]struct{})
 	var runtime *ComponentRuntime
-	if definition.Component == "mysql" || definition.Component == "php" || definition.Component == "firewalld" {
+	if definition.Component == "mysql" || definition.Component == "php" || definition.Component == "firewalld" || definition.Component == "apache" {
 		runtime = &ComponentRuntime{}
 		runtimeKeys := []string{"runtime.port", "runtime.bindAddress", "runtime.installDir", "runtime.dataDir", "runtime.logDir", "runtime.runUser", "runtime.runGroup"}
 		if definition.Component == "php" {
@@ -1033,6 +1153,14 @@ func parseComponentConfiguration(
 				runtime.DataDir == "" || !strings.HasPrefix(runtime.DataDir, "/") || filepath.Clean(runtime.DataDir) != runtime.DataDir ||
 				runtime.LogDir == "" || runtime.RunUser == "" || runtime.RunGroup == "" {
 				return ComponentConfiguration{}, errors.New("firewalld component runtime identity is invalid")
+			}
+		} else if definition.Component == "apache" {
+			port, parseErr := strconv.Atoi(runtime.Port)
+			if parseErr != nil || port < 1 || port > 65535 || runtime.BindAddress != "0.0.0.0" ||
+				runtime.InstallDir != "/usr/local/apache" || runtime.DataDir != "" ||
+				runtime.LogDir == "" || !strings.HasPrefix(runtime.LogDir, "/") || filepath.Clean(runtime.LogDir) != runtime.LogDir ||
+				runtime.RunUser == "" || runtime.RunGroup == "" {
+				return ComponentConfiguration{}, errors.New("Apache component runtime identity is invalid")
 			}
 		}
 	}

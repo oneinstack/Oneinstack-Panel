@@ -2,6 +2,7 @@ package software
 
 import (
 	"encoding/json"
+	"net"
 	"oneinstack/app"
 	"oneinstack/internal/i18n"
 	"oneinstack/internal/models"
@@ -11,9 +12,11 @@ import (
 	"oneinstack/router/output"
 	"oneinstack/utils"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 )
 
 var softwareCategoryOrder = []string{
@@ -148,6 +151,11 @@ func Exploration(param *input.SoftwareParam) bool {
 	if strings.Contains(strings.ToLower(sf.Name), "nginx") {
 		return checkNginx(sf)
 	}
+	if strings.EqualFold(strings.TrimSpace(sf.Component), "apache") ||
+		strings.EqualFold(strings.TrimSpace(sf.Key), "apache") ||
+		strings.Contains(strings.ToLower(sf.Name), "apache") {
+		return checkApache(sf)
+	}
 	if strings.Contains(strings.ToLower(sf.Name), "phpmyadmin") {
 		return checkPhpMyAdmin(sf)
 	}
@@ -173,6 +181,83 @@ func checkNginx(sf *models.Software) bool {
 	return len(strings.TrimSpace(string(output))) > 0
 }
 
+func checkApache(sf *models.Software) bool {
+	for attempt := 0; attempt < 5; attempt++ {
+		if checkApacheOnce(sf) {
+			return true
+		}
+		if attempt < 4 {
+			time.Sleep(250 * time.Millisecond)
+		}
+	}
+	return false
+}
+
+func checkApacheOnce(sf *models.Software) bool {
+	serviceName := "oneinstack-httpd"
+	installDir := apacheInstallDir(sf)
+	if !apacheOwnershipVerified(installDir) {
+		return false
+	}
+	active, err := utils.CheckServiceStatus(serviceName)
+	if err != nil || !active {
+		return false
+	}
+	output, err := utils.GetProcessList("httpd")
+	if err != nil {
+		return false
+	}
+	expectedBinary := filepath.Join(installDir, "bin", "httpd")
+	processFound := false
+	for _, line := range strings.Split(string(output), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 8 {
+			continue
+		}
+		command := filepath.Clean(fields[7])
+		if command == expectedBinary {
+			processFound = true
+			break
+		}
+	}
+	if !processFound {
+		return false
+	}
+	port := apachePort(sf)
+	if port == 0 {
+		return false
+	}
+	connection, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), 500*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	_ = connection.Close()
+	return true
+}
+
+func apacheOwnershipVerified(installDir string) bool {
+	stateRoot := strings.TrimSpace(os.Getenv("ONEINSTACK_COMPONENT_STATE"))
+	if stateRoot == "" {
+		stateRoot = filepath.Dir(defaultApacheStateDir)
+	}
+	statePath := filepath.Join(stateRoot, "apache", "installed.json")
+	stateBytes, err := os.ReadFile(statePath)
+	if err != nil {
+		return false
+	}
+	var state struct {
+		Component string `json:"component"`
+	}
+	if json.Unmarshal(stateBytes, &state) != nil || !strings.EqualFold(strings.TrimSpace(state.Component), "apache") {
+		return false
+	}
+	unitBytes, err := os.ReadFile("/etc/systemd/system/oneinstack-httpd.service")
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(unitBytes), "ExecStart="+filepath.Join(installDir, "bin", "httpd")+" -DFOREGROUND")
+}
+
 func checkPhpMyAdmin(sf *models.Software) bool {
 	for _, path := range []string{
 		"/data/wwwroot/phpMyAdmin/index.php",
@@ -195,6 +280,41 @@ func checkRedis(sf *models.Software) bool {
 		return false
 	}
 	return len(strings.TrimSpace(string(output))) > 0
+}
+
+func apacheInstallDir(sf *models.Software) string {
+	values := detectApacheInstallParameters()
+	if value := strings.TrimSpace(values["install-dir"]); value != "" {
+		return filepath.Clean(value)
+	}
+	if sf != nil {
+		var runtime map[string]string
+		if json.Unmarshal([]byte(sf.RuntimeParamsJSON), &runtime) == nil {
+			if value := installParameterValue(runtime, "install-dir", "apache-install-dir", "installDir"); value != "" {
+				return filepath.Clean(value)
+			}
+		}
+	}
+	return defaultApacheInstallDir
+}
+
+func apachePort(sf *models.Software) int {
+	values := detectApacheInstallParameters()
+	if port, ok := parseServicePort(values["port"]); ok {
+		return port
+	}
+	if sf != nil {
+		if port, ok := parseServicePort(sf.HttpPort); ok {
+			return port
+		}
+		var runtime map[string]string
+		if json.Unmarshal([]byte(sf.RuntimeParamsJSON), &runtime) == nil {
+			if port, ok := parseServicePort(installParameterValue(runtime, "port", "apache-port", "apachePort")); ok {
+				return port
+			}
+		}
+	}
+	return 0
 }
 
 func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software], error) {
@@ -426,6 +546,9 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 			params = make([]*output.SoftParam, 0)
 		}
 		installParameterValues := hydrateNginxInstallParameters(item.Component, item.Key, params)
+		if apacheValues := hydrateApacheInstallParameters(item.Component, item.Key, item.RuntimeParamsJSON, params); apacheValues != nil {
+			installParameterValues = apacheValues
+		}
 		hydrateRedisInstallParameters(item.Component, item.Key, item.RuntimeParamsJSON, params)
 		if strings.EqualFold(strings.TrimSpace(item.Key), "firewalld") {
 			for _, parameter := range params {
@@ -452,6 +575,9 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 			}
 		}
 		groupedResults[i].Runtime = mysqlRuntimeInfo(item)
+		if groupedResults[i].Runtime == nil {
+			groupedResults[i].Runtime = apacheRuntimeInfo(item)
+		}
 		if port := strings.TrimSpace(installParameterValues["port"]); port != "" {
 			groupedResults[i].Port = port
 		}
@@ -562,7 +688,7 @@ func normalizeExactVersionPresentation(item *output.Software) {
 	}
 	key := strings.ToLower(strings.TrimSpace(item.Key))
 	component := strings.ToLower(strings.TrimSpace(item.Component))
-	if key != "php" && key != "webserver" && key != "nginx" && component != "php" && component != "nginx" {
+	if key != "php" && key != "webserver" && key != "nginx" && key != "apache" && component != "php" && component != "nginx" && component != "apache" {
 		return
 	}
 	options := make([]output.VersionOption, 0, len(item.VersionOptions))
@@ -619,6 +745,41 @@ func mysqlRuntimeInfo(item models.Softwares) *output.SoftwareRuntime {
 		runtime.RunUser = installParameterValue(values, "run-user", "runUser")
 		runtime.RunGroup = installParameterValue(values, "run-group", "runGroup")
 	}
+	return runtime
+}
+
+func apacheRuntimeInfo(item models.Softwares) *output.SoftwareRuntime {
+	if strings.ToLower(strings.TrimSpace(item.Component)) != "apache" &&
+		strings.ToLower(strings.TrimSpace(item.Key)) != "apache" {
+		return nil
+	}
+	if !item.Installed {
+		return nil
+	}
+	runtime := &output.SoftwareRuntime{Status: "not_running"}
+	if checkApache(&item.Software) {
+		runtime.Status = "running"
+	}
+	var values map[string]string
+	if strings.TrimSpace(item.RuntimeParamsJSON) != "" {
+		_ = json.Unmarshal([]byte(item.RuntimeParamsJSON), &values)
+	}
+	detected := detectApacheInstallParameters()
+	runtime.Port = strconv.Itoa(apachePort(&item.Software))
+	if runtime.Port == "0" {
+		runtime.Port = strings.TrimSpace(item.HttpPort)
+	}
+	runtime.InstallDir = apacheInstallDir(&item.Software)
+	if runtime.InstallDir == "" {
+		runtime.InstallDir = "/usr/local/apache"
+	}
+	runtime.DataDir = ""
+	runtime.LogDir = installParameterValue(detected, "log-dir", "apache-log-dir", "logDir")
+	if runtime.LogDir == "" {
+		runtime.LogDir = installParameterValue(values, "log-dir", "apache-log-dir", "logDir")
+	}
+	runtime.RunUser = installParameterValue(values, "run-user", "apache-run-user", "runUser")
+	runtime.RunGroup = installParameterValue(values, "run-group", "apache-run-group", "runGroup")
 	return runtime
 }
 

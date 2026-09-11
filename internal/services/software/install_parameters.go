@@ -13,8 +13,10 @@ import (
 )
 
 const (
-	defaultNginxInstallDir = "/usr/local/nginx"
-	defaultNginxStateDir   = "/var/lib/oneinstack/components/nginx"
+	defaultNginxInstallDir  = "/usr/local/nginx"
+	defaultNginxStateDir    = "/var/lib/oneinstack/components/nginx"
+	defaultApacheInstallDir = "/usr/local/apache"
+	defaultApacheStateDir   = "/var/lib/oneinstack/components/apache"
 )
 
 var (
@@ -22,6 +24,9 @@ var (
 	nginxRootPattern          = regexp.MustCompile(`(?m)^[[:space:]]*root[[:space:]]+([^;[:space:]]+);`)
 	nginxUserPattern          = regexp.MustCompile(`(?m)^[[:space:]]*user[[:space:]]+([^;[:space:]]+)(?:[[:space:]]+([^;[:space:]]+))?;`)
 	nginxErrorLogPattern      = regexp.MustCompile(`(?m)^[[:space:]]*error_log[[:space:]]+([^;[:space:]]+)/nginx-error\.log(?:[[:space:]][^;]*)?;`)
+	apacheListenPattern       = regexp.MustCompile(`(?m)^[[:space:]]*Listen[[:space:]]+(?:\[[^]]+\]|[^[:space:]:]+:)?([0-9]+)(?:[[:space:]]+#.*)?[[:space:]]*$`)
+	apacheDocumentRootPattern = regexp.MustCompile(`(?m)^[[:space:]]*DocumentRoot[[:space:]]+"([^"]+)/default"`)
+	apacheErrorLogPattern     = regexp.MustCompile(`(?m)^[[:space:]]*ErrorLog[[:space:]]+"([^"]+)/apache-error\.log"`)
 )
 
 // detectNginxInstallParameters reads only the managed Nginx parameter file and
@@ -122,13 +127,100 @@ func hydrateRedisInstallParameters(component, key, runtimeJSON string, params []
 	}
 }
 
+func detectApacheInstallParameters() map[string]string {
+	values := make(map[string]string)
+	stateRoot := strings.TrimSpace(os.Getenv("ONEINSTACK_COMPONENT_STATE"))
+	if stateRoot == "" {
+		stateRoot = filepath.Dir(defaultApacheStateDir)
+	}
+	stateDir := filepath.Join(stateRoot, "apache")
+	parameterFile := filepath.Join(stateDir, "install-parameters")
+	for key, value := range readNginxParameterFile(parameterFile) {
+		values[normalizeInstallParameterKey(key)] = value
+	}
+	installDir := values["install-dir"]
+	if installDir == "" {
+		installDir = defaultApacheInstallDir
+	}
+	mainConfig := filepath.Join(installDir, "conf", "httpd.conf")
+	contents, err := os.ReadFile(mainConfig)
+	if err == nil {
+		if match := apacheListenPattern.FindSubmatch(contents); len(match) > 1 {
+			values["port"] = string(match[1])
+		}
+		if match := apacheDocumentRootPattern.FindSubmatch(contents); len(match) > 1 {
+			values["web-root"] = normalizeNginxWebRoot(string(match[1]))
+		}
+		if match := apacheErrorLogPattern.FindSubmatch(contents); len(match) > 1 {
+			values["log-dir"] = string(match[1])
+		}
+	}
+	values["install-dir"] = installDir
+	return values
+}
+
+func hydrateApacheInstallParameters(component, key, runtimeJSON string, params []*output.SoftParam) map[string]string {
+	if !strings.EqualFold(strings.TrimSpace(component), "apache") &&
+		!strings.EqualFold(strings.TrimSpace(key), "apache") {
+		return nil
+	}
+	values := make(map[string]string)
+	if strings.TrimSpace(runtimeJSON) != "" {
+		var runtime map[string]string
+		if json.Unmarshal([]byte(runtimeJSON), &runtime) == nil {
+			for runtimeKey, value := range runtime {
+				values[normalizeInstallParameterKey(runtimeKey)] = value
+			}
+		}
+	}
+	// The current Apache configuration is authoritative for mutable runtime
+	// fields. RuntimeParamsJSON is retained as a fallback for values that are
+	// not safely recoverable from httpd.conf, such as the PHP-FPM socket.
+	for detectedKey, detectedValue := range detectApacheInstallParameters() {
+		if strings.TrimSpace(detectedValue) != "" {
+			values[normalizeInstallParameterKey(detectedKey)] = detectedValue
+		}
+	}
+	for _, parameter := range params {
+		if parameter == nil || strings.EqualFold(strings.TrimSpace(parameter.Types), "password") {
+			continue
+		}
+		parameterKey := compactInstallParameterName(parameter.Key)
+		var value string
+		switch parameterKey {
+		case "port", "apacheport":
+			value = installParameterValue(values, "port", "apache-port", "apachePort")
+		case "phpfmpsocket":
+			value = installParameterValue(values, "php-fpm-socket", "apache-php-fpm-socket", "phpFpmSocket")
+		case "installdir":
+			value = installParameterValue(values, "install-dir", "apache-install-dir", "installDir")
+		case "webroot":
+			value = installParameterValue(values, "web-root", "apache-web-root", "webRoot")
+		case "logdir":
+			value = installParameterValue(values, "log-dir", "apache-log-dir", "logDir")
+		case "webvhostroot":
+			value = installParameterValue(values, "web-vhost-root", "apache-vhost-root", "webVhostRoot")
+		case "runuser":
+			value = installParameterValue(values, "run-user", "apache-run-user", "runUser")
+		case "rungroup":
+			value = installParameterValue(values, "run-group", "apache-run-group", "runGroup")
+		default:
+			value = installParameterValue(values, parameter.Key)
+		}
+		if value != "" {
+			parameter.Default = value
+		}
+	}
+	return values
+}
+
 func normalizeInstallParameterKey(value string) string {
 	value = strings.ToLower(strings.TrimSpace(value))
 	value = strings.NewReplacer("_", "-", ".", "-", " ", "-").Replace(value)
 	switch value {
-	case "nginx-port":
+	case "nginx-port", "apache-port":
 		return "port"
-	case "nginx-port-number":
+	case "nginx-port-number", "apache-port-number":
 		return "port"
 	default:
 		return value

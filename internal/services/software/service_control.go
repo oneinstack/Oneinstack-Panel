@@ -245,7 +245,7 @@ func IsServiceAction(value string) bool {
 const (
 	webServerRuntimeGroup = "web-server"
 	phpFPMDefaultSocket   = "/dev/shm/php-cgi.sock"
-	serviceReadyTimeout   = 5 * time.Second
+	serviceReadyTimeout   = 30 * time.Second
 )
 
 func serviceUnitName(name string) string {
@@ -425,7 +425,7 @@ func waitForServiceListener(ctx context.Context, ports []int) error {
 		}
 	}
 	if lastErr == nil {
-		lastErr = errors.New("ports 80 and 443 are not accepting TCP connections")
+		lastErr = errors.New("configured service ports are not accepting TCP connections")
 	}
 	return lastErr
 }
@@ -438,6 +438,14 @@ func serviceReadinessPorts(definition ComponentServiceDefinition) []int {
 	if strings.EqualFold(strings.TrimSpace(definition.Component), "nginx") ||
 		strings.EqualFold(strings.TrimSpace(definition.SoftwareKey), "webserver") {
 		if values := detectNginxInstallParameters(); values != nil {
+			if port, ok := parseServicePort(values["port"]); ok {
+				return []int{port}
+			}
+		}
+	}
+	if strings.EqualFold(strings.TrimSpace(definition.Component), "apache") ||
+		strings.EqualFold(strings.TrimSpace(definition.SoftwareKey), "apache") {
+		if values := detectApacheInstallParameters(); values != nil {
 			if port, ok := parseServicePort(values["port"]); ok {
 				return []int{port}
 			}
@@ -547,6 +555,7 @@ func ActiveRuntimeGroupOwners(ctx context.Context, runtimeGroup, excludeComponen
 			{Component: "legacy-web", ServiceName: "nginx"},
 			{Component: "legacy-web", ServiceName: "httpd"},
 			{Component: "legacy-web", ServiceName: "apache2"},
+			{Component: "legacy-web", ServiceName: "apache"},
 			{Component: "legacy-web", ServiceName: "openresty"},
 			{Component: "legacy-web", ServiceName: "tengine"},
 			{Component: "legacy-web", ServiceName: "caddy"},
