@@ -420,6 +420,55 @@ func ConfigPath(path ...string) string {
 	return configFilePath(path...)
 }
 
+// PersistClusterAgentConfig updates the node-agent settings in config.yaml
+// while preserving unrelated user configuration and refreshing the in-memory
+// values used by the running agent supervisor.
+func PersistClusterAgentConfig(enabled bool, controllerURL, token string, intervalSeconds, timeoutSeconds int, path ...string) error {
+	configPath := configFilePath(path...)
+	contents, err := os.ReadFile(configPath)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("read config file: %w", err)
+	}
+	var document yaml.Node
+	if len(contents) == 0 {
+		document = yaml.Node{Kind: yaml.DocumentNode, Content: []*yaml.Node{{Kind: yaml.MappingNode}}}
+	} else if err := yaml.Unmarshal(contents, &document); err != nil {
+		return fmt.Errorf("decode config file: %w", err)
+	}
+	if len(document.Content) == 0 || document.Content[0].Kind == 0 {
+		document = yaml.Node{Kind: yaml.DocumentNode, Content: []*yaml.Node{{Kind: yaml.MappingNode}}}
+	}
+	root := document.Content[0]
+	if root.Kind != yaml.MappingNode {
+		return fmt.Errorf("config file root must be a YAML mapping")
+	}
+	section := yamlMappingValueFold(root, "clusterAgent")
+	if section == nil {
+		section = &yaml.Node{Kind: yaml.MappingNode}
+		root.Content = append(root.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: "clusterAgent"}, section)
+	} else if section.Kind != yaml.MappingNode {
+		return fmt.Errorf("config section clusterAgent must be a YAML mapping")
+	}
+	setYAMLScalar(section, "enabled", strconv.FormatBool(enabled), "!!bool")
+	setYAMLScalar(section, "controllerUrl", strings.TrimSpace(controllerURL), "!!str")
+	setYAMLScalar(section, "token", token, "!!str")
+	setYAMLScalar(section, "intervalSeconds", strconv.Itoa(intervalSeconds), "!!int")
+	setYAMLScalar(section, "requestTimeoutSeconds", strconv.Itoa(timeoutSeconds), "!!int")
+	encoded, err := yaml.Marshal(&document)
+	if err != nil {
+		return fmt.Errorf("encode cluster agent config: %w", err)
+	}
+	if err := writeConfigAtomically(configPath, encoded); err != nil {
+		return err
+	}
+	ONE_CONFIG.ClusterAgent.Enabled = enabled
+	ONE_CONFIG.ClusterAgent.ControllerURL = strings.TrimSpace(controllerURL)
+	ONE_CONFIG.ClusterAgent.Token = token
+	ONE_CONFIG.ClusterAgent.IntervalSeconds = intervalSeconds
+	ONE_CONFIG.ClusterAgent.RequestTimeoutSec = timeoutSeconds
+	return nil
+}
+
 // ReadCLILanguage reads only the persisted terminal language. It does not
 // initialize the application, database, or generated secrets, so `one lang`
 // remains usable when the rest of the panel is not initialized yet.

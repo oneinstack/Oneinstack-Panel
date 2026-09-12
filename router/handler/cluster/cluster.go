@@ -24,6 +24,24 @@ func manager(c *gin.Context) (*cluster.Manager, bool) {
 	return m, true
 }
 
+func GetAgentSettings(c *gin.Context) {
+	core.HandleSuccess(c, cluster.GetAgentSettings())
+}
+
+func UpdateAgentSettings(c *gin.Context) {
+	var request cluster.UpdateAgentSettingsInput
+	if err := c.ShouldBindJSON(&request); err != nil {
+		core.HandleError(c, core.NewError(core.ErrInvalidParameter, "节点模式配置参数无效"))
+		return
+	}
+	settings, err := cluster.UpdateAgentSettings(request)
+	if err != nil {
+		core.HandleError(c, core.NewError(core.ErrInvalidParameter, err.Error()))
+		return
+	}
+	core.HandleSuccess(c, settings)
+}
+
 func ListNodes(c *gin.Context) {
 	m, ok := manager(c)
 	if !ok {

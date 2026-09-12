@@ -131,6 +131,8 @@ func SetupRouter() *gin.Engine {
 	protected.POST("/operations/:previewId/execute", operationpreviewHandler.Execute)
 	clusterg := protected.Group("/cluster")
 	{
+		clusterg.GET("/agent/settings", middleware.RequireSuperAdmin(), clusterHandler.GetAgentSettings)
+		clusterg.PUT("/agent/settings", middleware.RequireSuperAdmin(), clusterHandler.UpdateAgentSettings)
 		clusterg.GET("/nodes", middleware.RequireSuperAdmin(), clusterHandler.ListNodes)
 		clusterg.GET("/nodes/:id", middleware.RequireSuperAdmin(), clusterHandler.GetNode)
 		clusterg.GET("/nodes/:id/metrics", middleware.RequireSuperAdmin(), clusterHandler.ListMetrics)
