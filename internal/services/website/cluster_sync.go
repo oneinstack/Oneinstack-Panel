@@ -24,12 +24,7 @@ func SyncClusterWebsite(ctx context.Context, snapshot models.Website, settings *
 	}
 
 	var existing models.Website
-	query := service.DB
-	if strings.TrimSpace(snapshot.Name) != "" {
-		query = query.Where("name = ?", strings.TrimSpace(snapshot.Name))
-	} else {
-		query = query.Where("domain = ?", strings.TrimSpace(snapshot.Domain))
-	}
+	query := service.DB.Where("name = ? OR domain = ?", strings.TrimSpace(snapshot.Name), strings.TrimSpace(snapshot.Domain))
 	findErr := query.First(&existing).Error
 	if errors.Is(findErr, gorm.ErrRecordNotFound) {
 		copy := snapshot
