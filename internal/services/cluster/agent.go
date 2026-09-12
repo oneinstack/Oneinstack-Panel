@@ -14,7 +14,9 @@ import (
 	"time"
 
 	"oneinstack/internal/buildinfo"
+	"oneinstack/internal/models"
 	"oneinstack/internal/services/monitoring"
+	websiteService "oneinstack/internal/services/website"
 
 	"github.com/shirou/gopsutil/v4/host"
 )
@@ -68,7 +70,65 @@ func (a *Agent) run(ctx context.Context) {
 			if err := a.heartbeat(ctx); err != nil {
 				fmt.Printf("cluster agent heartbeat failed: %v\n", err)
 			}
+			if err := a.drainTasks(ctx); err != nil {
+				fmt.Printf("cluster agent task processing failed: %v\n", err)
+			}
 		}
+	}
+}
+
+type apiEnvelope struct {
+	Data json.RawMessage `json:"data"`
+}
+
+type claimData struct {
+	Task *models.ClusterTask `json:"task"`
+}
+
+func (a *Agent) drainTasks(ctx context.Context) error {
+	for i := 0; i < 20; i++ {
+		var envelope apiEnvelope
+		if err := a.post(ctx, "/cluster/agent/tasks/next", nil, &envelope); err != nil {
+			return err
+		}
+		var claimed claimData
+		if len(envelope.Data) > 0 {
+			if err := json.Unmarshal(envelope.Data, &claimed); err != nil {
+				return err
+			}
+		}
+		if claimed.Task == nil {
+			return nil
+		}
+		result, taskErr := a.executeTask(ctx, claimed.Task)
+		completion := TaskCompletion{TaskID: claimed.Task.ID, Result: result}
+		if taskErr != nil {
+			completion.Status = models.ClusterTaskStatusFailed
+			completion.Error = taskErr.Error()
+		} else {
+			completion.Status = models.ClusterTaskStatusSucceeded
+		}
+		if err := a.post(ctx, "/cluster/agent/tasks/complete", completion, nil); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (a *Agent) executeTask(ctx context.Context, task *models.ClusterTask) (json.RawMessage, error) {
+	switch task.Type {
+	case "website.sync":
+		var payload WebsiteSyncPayload
+		if err := json.Unmarshal([]byte(task.Payload), &payload); err != nil {
+			return nil, err
+		}
+		updated, err := websiteService.SyncClusterWebsite(ctx, payload.Website, payload.Settings)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(map[string]interface{}{"websiteId": updated.ID, "name": updated.Name, "domain": updated.Domain})
+	default:
+		return nil, fmt.Errorf("unsupported cluster task type %q", task.Type)
 	}
 }
 
@@ -90,7 +150,13 @@ func (a *Agent) heartbeat(ctx context.Context) error {
 }
 
 func (a *Agent) post(ctx context.Context, path string, payload interface{}, output interface{}) error {
-	body, err := json.Marshal(payload)
+	var body []byte
+	var err error
+	if payload != nil {
+		body, err = json.Marshal(payload)
+	} else {
+		body = []byte(`{}`)
+	}
 	if err != nil {
 		return err
 	}
@@ -99,6 +165,7 @@ func (a *Agent) post(ctx context.Context, path string, payload interface{}, outp
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+a.cfg.Token)
 	resp, err := a.client.Do(req)
 	if err != nil {
 		return err

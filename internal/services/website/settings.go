@@ -123,6 +123,17 @@ func (service *Service) GetSettings(id int64) (*WebsiteSettingsDocument, error) 
 	return &WebsiteSettingsDocument{Website: *site, Settings: settings}, nil
 }
 
+// GetSettings loads a website's structured settings using the active local
+// Web server configuration. It is used by the cluster dispatcher when a
+// website snapshot is sent to another Panel node.
+func GetSettings(id int64) (*WebsiteSettingsDocument, error) {
+	service, err := defaultService()
+	if err != nil {
+		return nil, err
+	}
+	return service.GetSettings(id)
+}
+
 func (service *Service) UpdateSettings(
 	ctx context.Context,
 	id int64,

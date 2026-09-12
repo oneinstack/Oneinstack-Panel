@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"oneinstack/internal/models"
+	websiteService "oneinstack/internal/services/website"
 )
 
 type WebsiteDispatchInput struct {
@@ -21,6 +22,11 @@ type WebsiteDispatchInput struct {
 type WebsiteDispatchResult struct {
 	NodeIDs []uint               `json:"nodeIds"`
 	Tasks   []models.ClusterTask `json:"tasks"`
+}
+
+type WebsiteSyncPayload struct {
+	Website  models.Website                  `json:"website"`
+	Settings *websiteService.WebsiteSettings `json:"settings,omitempty"`
 }
 
 func (m *Manager) DispatchWebsite(input WebsiteDispatchInput) (WebsiteDispatchResult, error) {
@@ -43,7 +49,11 @@ func (m *Manager) DispatchWebsite(input WebsiteDispatchInput) (WebsiteDispatchRe
 	if len(selected) == 0 {
 		return WebsiteDispatchResult{}, errors.New("no eligible nodes found")
 	}
-	payload, _ := json.Marshal(map[string]interface{}{"website": site, "strategy": strategy})
+	settingsDocument, err := websiteService.GetSettings(site.ID)
+	if err != nil {
+		return WebsiteDispatchResult{}, err
+	}
+	payload, _ := json.Marshal(WebsiteSyncPayload{Website: site, Settings: &settingsDocument.Settings})
 	result := WebsiteDispatchResult{NodeIDs: make([]uint, 0, len(selected)), Tasks: make([]models.ClusterTask, 0, len(selected))}
 	for _, node := range selected {
 		key := strings.TrimSpace(input.IdempotencyKey)

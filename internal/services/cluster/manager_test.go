@@ -3,6 +3,7 @@ package cluster
 import (
 	"encoding/json"
 	"testing"
+	"time"
 
 	"oneinstack/internal/models"
 
@@ -24,6 +25,27 @@ func testManager(t *testing.T) *Manager {
 		t.Fatal(err)
 	}
 	return m
+}
+
+func TestRecoverStaleTasksRequeuesAndFailsByAttemptBudget(t *testing.T) {
+	m := testManager(t)
+	now := time.Now().Add(-time.Hour)
+	tasks := []models.ClusterTask{
+		{NodeID: 1, Type: "website.sync", IdempotencyKey: "stale-requeue", Payload: `{}`, Status: models.ClusterTaskStatusRunning, Attempts: 1, MaxAttempts: 3, QueuedAt: now, StartedAt: &now},
+		{NodeID: 1, Type: "website.sync", IdempotencyKey: "stale-fail", Payload: `{}`, Status: models.ClusterTaskStatusRunning, Attempts: 3, MaxAttempts: 3, QueuedAt: now, StartedAt: &now},
+	}
+	if err := m.db.Create(&tasks).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := m.RecoverStaleTasks(5 * time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	var first, second models.ClusterTask
+	m.db.First(&first, tasks[0].ID)
+	m.db.First(&second, tasks[1].ID)
+	if first.Status != models.ClusterTaskStatusQueued || second.Status != models.ClusterTaskStatusFailed {
+		t.Fatalf("unexpected recovery states: first=%s second=%s", first.Status, second.Status)
+	}
 }
 
 func TestNodeRegistrationAndHeartbeat(t *testing.T) {

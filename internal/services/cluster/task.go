@@ -82,6 +82,11 @@ func (m *Manager) ClaimTask(token string) (*models.ClusterTask, error) {
 	if !node.Enabled {
 		return nil, ErrNodeDisabled
 	}
+	// A crashed agent can leave a task in running forever. Requeue stale
+	// attempts before claiming the next task so the queue remains recoverable.
+	if err := m.RecoverStaleTasks(15 * time.Minute); err != nil {
+		return nil, err
+	}
 	var task models.ClusterTask
 	err = m.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Where("node_id = ? AND status = ?", node.ID, models.ClusterTaskStatusQueued).Order("id asc").First(&task).Error; err != nil {
@@ -98,6 +103,36 @@ func (m *Manager) ClaimTask(token string) (*models.ClusterTask, error) {
 		return nil, err
 	}
 	return &task, nil
+}
+
+// RecoverStaleTasks requeues interrupted attempts and permanently fails tasks
+// that exhausted their retry budget. It is safe to call from every agent poll.
+func (m *Manager) RecoverStaleTasks(timeout time.Duration) error {
+	if timeout <= 0 {
+		timeout = 15 * time.Minute
+	}
+	cutoff := time.Now().Add(-timeout)
+	var stale []models.ClusterTask
+	if err := m.db.Where("status = ? AND started_at IS NOT NULL AND started_at < ?", models.ClusterTaskStatusRunning, cutoff).Find(&stale).Error; err != nil {
+		return err
+	}
+	for i := range stale {
+		task := &stale[i]
+		if task.Attempts < task.MaxAttempts {
+			task.Status = models.ClusterTaskStatusQueued
+			task.QueuedAt = time.Now()
+			task.StartedAt = nil
+		} else {
+			task.Status = models.ClusterTaskStatusFailed
+			task.Error = "task timed out after maximum attempts"
+			now := time.Now()
+			task.FinishedAt = &now
+		}
+		if err := m.db.Save(task).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (m *Manager) CompleteTask(input TaskCompletion) (models.ClusterTask, error) {
