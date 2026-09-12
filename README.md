@@ -1,5 +1,11 @@
 # OneinStack Panel
 
+[![Latest Release](https://img.shields.io/github/v/release/oneinstack/Oneinstack-Panel?sort=semver&display_name=tag)](https://github.com/oneinstack/Oneinstack-Panel/releases)
+[![CI](https://github.com/oneinstack/Oneinstack-Panel/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/oneinstack/Oneinstack-Panel/actions/workflows/ci.yml)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/oneinstack/Oneinstack-Panel)](https://github.com/oneinstack/Oneinstack-Panel/blob/main/go.mod)
+[![License](https://img.shields.io/github/license/oneinstack/Oneinstack-Panel)](LICENSE)
+[![GitHub Stars](https://img.shields.io/github/stars/oneinstack/Oneinstack-Panel?style=flat)](https://github.com/oneinstack/Oneinstack-Panel/stargazers)
+
 OneinStack Panel is an open-source Linux server operations panel for websites, software, databases, containers, files, certificates, security, monitoring, and auditing. Multiple independent Panel installations can be joined into a user-owned controller/node cluster.
 
 > Center publishes Panel versions, component packages, and software-store catalogs. It is not part of the node runtime or task path.
@@ -83,3 +89,7 @@ go run ./cmd server
 Built with Go, Gin, GORM, SQLite, Systemd, and Vue.js. Licensed under [Apache License 2.0](LICENSE).
 
 Website: [oneinstack.com](https://oneinstack.com) · Issues: [GitHub Issues](https://github.com/oneinstack/Oneinstack-Panel/issues)
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=oneinstack/Oneinstack-Panel&type=Date)](https://star-history.com/#oneinstack/Oneinstack-Panel&Date)

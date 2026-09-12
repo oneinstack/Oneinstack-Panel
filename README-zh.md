@@ -1,5 +1,11 @@
 # OneinStack Panel
 
+[![最新版本](https://img.shields.io/github/v/release/oneinstack/Oneinstack-Panel?sort=semver&display_name=tag)](https://github.com/oneinstack/Oneinstack-Panel/releases)
+[![CI 构建](https://github.com/oneinstack/Oneinstack-Panel/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/oneinstack/Oneinstack-Panel/actions/workflows/ci.yml)
+[![Go 版本](https://img.shields.io/github/go-mod/go-version/oneinstack/Oneinstack-Panel)](https://github.com/oneinstack/Oneinstack-Panel/blob/main/go.mod)
+[![许可证](https://img.shields.io/github/license/oneinstack/Oneinstack-Panel)](LICENSE)
+[![GitHub Stars](https://img.shields.io/github/stars/oneinstack/Oneinstack-Panel?style=flat)](https://github.com/oneinstack/Oneinstack-Panel/stargazers)
+
 OneinStack Panel 是面向 Linux 服务器的开源运维面板，提供网站、软件、数据库、容器、文件、证书、安全、监控和审计等管理能力，并支持多个独立 Panel 组成用户自己的控制端/节点集群。
 
 > Center 只负责版本、组件脚本包和软件商城目录发布，不参与节点运行时管理。
@@ -81,3 +87,7 @@ go run ./cmd server
 技术栈：Go、Gin、GORM、SQLite、Systemd、Vue.js。项目采用 [Apache License 2.0](LICENSE) 开源。
 
 官网：[oneinstack.com](https://oneinstack.com) · 反馈：[GitHub Issues](https://github.com/oneinstack/Oneinstack-Panel/issues)
+
+## Star 趋势
+
+[![Star History Chart](https://api.star-history.com/svg?repos=oneinstack/Oneinstack-Panel&type=Date)](https://star-history.com/#oneinstack/Oneinstack-Panel&Date)
