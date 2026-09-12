@@ -16,6 +16,7 @@ import (
 	auditHandler "oneinstack/router/handler/audit"
 	bastionHandler "oneinstack/router/handler/bastion"
 	certificateHandler "oneinstack/router/handler/certificate"
+	clusterHandler "oneinstack/router/handler/cluster"
 	containerHandler "oneinstack/router/handler/container"
 	"oneinstack/router/handler/cron"
 	fail2banHandler "oneinstack/router/handler/fail2ban"
@@ -110,6 +111,11 @@ func SetupRouter() *gin.Engine {
 			middleware.RateLimitMiddleware(30, time.Minute),
 			ftp.DownloadSharedFile,
 		)
+		// Agent endpoints authenticate with a per-node token in the request body.
+		r.POST("/cluster/agent/register", middleware.RateLimitMiddleware(30, time.Minute), clusterHandler.RegisterNode)
+		r.POST("/cluster/agent/heartbeat", middleware.RateLimitMiddleware(240, time.Minute), clusterHandler.Heartbeat)
+		r.POST("/cluster/agent/tasks/next", middleware.RateLimitMiddleware(120, time.Minute), clusterHandler.ClaimTask)
+		r.POST("/cluster/agent/tasks/complete", middleware.RateLimitMiddleware(240, time.Minute), clusterHandler.CompleteTask)
 	}
 
 	// 除上述白名单外，所有 API 默认要求认证、限流并记录审计日志。
@@ -123,6 +129,19 @@ func SetupRouter() *gin.Engine {
 	protected.POST("/logout", user.LogoutHandler)
 	protected.POST("/operations/preview", operationpreviewHandler.Preview)
 	protected.POST("/operations/:previewId/execute", operationpreviewHandler.Execute)
+	clusterg := protected.Group("/cluster")
+	{
+		clusterg.GET("/nodes", middleware.RequireSuperAdmin(), clusterHandler.ListNodes)
+		clusterg.GET("/nodes/:id", middleware.RequireSuperAdmin(), clusterHandler.GetNode)
+		clusterg.GET("/nodes/:id/metrics", middleware.RequireSuperAdmin(), clusterHandler.ListMetrics)
+		clusterg.POST("/nodes", middleware.RequireSuperAdmin(), clusterHandler.CreateNode)
+		clusterg.PUT("/nodes/:id", middleware.RequireSuperAdmin(), clusterHandler.UpdateNode)
+		clusterg.POST("/nodes/:id/token/rotate", middleware.RequireSuperAdmin(), clusterHandler.RotateToken)
+		clusterg.GET("/nodes/:id/tasks", middleware.RequireSuperAdmin(), clusterHandler.ListTasks)
+		clusterg.POST("/tasks", middleware.RequireSuperAdmin(), clusterHandler.EnqueueTask)
+		clusterg.POST("/website/dispatch", middleware.RequireSuperAdmin(), clusterHandler.DispatchWebsite)
+		clusterg.DELETE("/nodes/:id", middleware.RequireSuperAdmin(), clusterHandler.DeleteNode)
+	}
 	certificateg := protected.Group("/certificates")
 	{
 		certificateg.GET("/algorithms", middleware.RequirePermission(accessservice.PermissionCertificateRead), certificateHandler.ListAlgorithms)

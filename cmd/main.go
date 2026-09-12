@@ -14,6 +14,7 @@ import (
 	"oneinstack/internal/services/audit"
 	bastionservice "oneinstack/internal/services/bastion"
 	"oneinstack/internal/services/certificate"
+	clusterService "oneinstack/internal/services/cluster"
 	"oneinstack/internal/services/databasetask"
 	fail2banservice "oneinstack/internal/services/fail2ban"
 	"oneinstack/internal/services/filemanager"
@@ -658,6 +659,20 @@ func startServer() error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if app.ONE_CONFIG.ClusterAgent.Enabled {
+		agent, agentErr := clusterService.NewAgent(clusterService.AgentConfig{
+			ControllerURL:  app.ONE_CONFIG.ClusterAgent.ControllerURL,
+			Token:          app.ONE_CONFIG.ClusterAgent.Token,
+			Interval:       time.Duration(app.ONE_CONFIG.ClusterAgent.IntervalSeconds) * time.Second,
+			RequestTimeout: time.Duration(app.ONE_CONFIG.ClusterAgent.RequestTimeoutSec) * time.Second,
+		})
+		if agentErr != nil {
+			log.Printf("cluster agent disabled: %v", agentErr)
+		} else {
+			agent.Start(ctx)
+			log.Printf("cluster agent enabled: controller=%s interval=%ds", app.ONE_CONFIG.ClusterAgent.ControllerURL, app.ONE_CONFIG.ClusterAgent.IntervalSeconds)
+		}
+	}
 	fail2banservice.DefaultManager().Start(ctx)
 	go safeservice.RunMaintenance(ctx)
 

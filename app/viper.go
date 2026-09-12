@@ -119,6 +119,12 @@ bastion:
     maxConcurrentCollects: 5
     retentionDays: 30
     cleanupSchedule: "30 4 * * *"
+clusterAgent:
+    enabled: false
+    controllerUrl: ""
+    token: ""
+    intervalSeconds: 30
+    requestTimeoutSeconds: 10
 translation:
     configVersion: 2
     enabled: true
@@ -237,6 +243,11 @@ func LoadConfig(path ...string) (*viper.Viper, error) {
 	v.SetDefault("updateCenter.healthTimeoutSeconds", 60)
 	v.SetDefault("updateCenter.backupRetention", 5)
 	v.SetDefault("bastion.enabled", false)
+	v.SetDefault("clusterAgent.enabled", false)
+	v.SetDefault("clusterAgent.controllerUrl", "")
+	v.SetDefault("clusterAgent.token", "")
+	v.SetDefault("clusterAgent.intervalSeconds", 30)
+	v.SetDefault("clusterAgent.requestTimeoutSeconds", 10)
 	v.SetDefault("bastion.collectSchedule", "*/1 * * * *")
 	v.SetDefault("bastion.collectTimeoutSeconds", 15)
 	v.SetDefault("bastion.maxConcurrentCollects", 5)
