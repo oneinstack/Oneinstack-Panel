@@ -46,6 +46,12 @@ func SyncClusterWebsite(ctx context.Context, snapshot models.Website, settings *
 				return models.Website{}, err
 			}
 		}
+		if !snapshot.Enabled {
+			if _, err := service.SetEnabled(ctx, copy.ID, false); err != nil {
+				return models.Website{}, err
+			}
+			copy.Enabled = false
+		}
 		return copy, nil
 	}
 	if findErr != nil {
@@ -64,6 +70,13 @@ func SyncClusterWebsite(ctx context.Context, snapshot models.Website, settings *
 		if _, err := service.UpdateSettings(ctx, copy.ID, *settings); err != nil {
 			return models.Website{}, err
 		}
+	}
+	if snapshot.Enabled != existing.Enabled {
+		updated, err := service.SetEnabled(ctx, copy.ID, snapshot.Enabled)
+		if err != nil {
+			return models.Website{}, err
+		}
+		copy = *updated
 	}
 	return copy, nil
 }
