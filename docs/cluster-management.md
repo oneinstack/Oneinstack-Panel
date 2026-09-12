@@ -36,7 +36,20 @@ clusterAgent:
 
 源节点的网站文件内容不会通过任务队列复制。静态文件或代码需要通过文件同步、镜像仓库或对象存储单独分发。
 
-## 4. 排障
+## 4. 通用节点任务
+
+控制端的任务接口还支持以下结构化任务类型：
+
+- `software.install` / `software.uninstall`：复用本机组件安装、卸载流程；
+- `service.start` / `service.stop` / `service.restart` / `service.reload`：仅允许已登记的 OneinStack 组件服务；
+- `system.command`：使用参数数组执行受限诊断命令，禁止 shell、下载器和解释器；
+- `file.upload`：Base64 文件上传，单文件最大 16 MiB，路径必须位于 Panel 管理目录；
+- `database.sync`：将 MySQL/MariaDB 或 PostgreSQL dump 导入目标数据库，dump 最大 64 MiB；
+- `website.content_sync`：同步网站配置及网站目录内容，总大小最大 64 MiB，自动校验 SHA-256 并拒绝路径穿越。
+
+软件密码、数据库密码等敏感字段只应通过 HTTPS 和短生命周期任务传递，生产环境建议使用专用同步账号，避免使用 root 密码。
+
+## 5. 排障
 
 - `pending`：节点尚未使用令牌成功注册；
 - `offline`：超过两分钟没有心跳；

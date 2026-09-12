@@ -128,7 +128,7 @@ func (a *Agent) executeTask(ctx context.Context, task *models.ClusterTask) (json
 		}
 		return json.Marshal(map[string]interface{}{"websiteId": updated.ID, "name": updated.Name, "domain": updated.Domain})
 	default:
-		return nil, fmt.Errorf("unsupported cluster task type %q", task.Type)
+		return a.executeExtendedTask(ctx, task)
 	}
 }
 
