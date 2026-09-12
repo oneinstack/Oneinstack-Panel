@@ -1,228 +1,85 @@
-<h1 align="center">Oneinstack Server Management Panel</h1>
+# OneinStack Panel
 
-[![GitHub forks](https://img.shields.io/github/forks/oneinstack/Oneinstack-Panel)](https://github.com/oneinstack/Oneinstack-Panel/network)
-[![GitHub stars](https://img.shields.io/github/stars/oneinstack/Oneinstack-Panel)](https://github.com/oneinstack/Oneinstack-Panel/stargazers)
-[![GitHub license](https://img.shields.io/github/license/oneinstack/Oneinstack-Panel)](https://github.com/oneinstack/Oneinstack-Panel/blob/main/LICENSE)
-![GitHub release](https://img.shields.io/github/v/release/oneinstack/Oneinstack-Panel)
+OneinStack Panel is an open-source Linux server operations panel for websites, software, databases, containers, files, certificates, security, monitoring, and auditing. Multiple independent Panel installations can be joined into a user-owned controller/node cluster.
 
-> An open-source Linux server operation and maintenance management panel, making server management simpler, safer, and more efficient
+> Center publishes Panel versions, component packages, and software-store catalogs. It is not part of the node runtime or task path.
 
-## Language
+## Features
 
-- [English](README.md)
-- [简体中文](README-zh.md)
+- Resource monitoring: CPU, memory, disk, network, service health, and history
+- Signed software catalog and component packages with install, upgrade, removal, and service configuration
+- Website hosting and reverse proxy, Nginx configuration, certificates, ACME, backups, and restore
+- Database connections, backups, restores, and task logs
+- Docker containers, images, networks, volumes, Compose, and controlled terminals
+- File manager, trash, SSH, firewall, Fail2ban, and scheduled tasks
+- Operation preview, approvals, configuration snapshots, diffs, audit, alerts, and notifications
+- Multi-node registration, token rotation, heartbeats, metrics, task queues, and website dispatch
 
-Latest tagged build: `v0.3.0-build.11` (the main branch contains follow-up fixes)
+## Multi-node mode
 
-## 🚀 Features
+Deploy independent Panel instances and configure the role from **Multi-node Management**:
 
-- 🛡️ Visual server status monitoring (CPU/Memory/Disk/Network)
-- 🔧 Software store and component-package management (Nginx/MySQL/Redis/PHP, etc.)
-- 🐳 Docker container, image, network, volume, Compose, and controlled terminal management
-- 🔐 Firewall, port forwarding, auto-blocking, Fail2ban, and SSH management
-- 🧾 HMAC-protected operation audit with filtering, integrity checks, and CSV export
-- 🌐 Website, Nginx configuration, HTTPS certificates, and ACME renewal
-- 📁 File management, trash, file sharing, database, and backup/restore workflows
-- 🔄 Scheduled task management (Crontab)
-- 📈 Metric history, service health checks, monitoring rules, alert events, and notification channels
-- 🖥️ Bastion-host server management, connection tests, and metric collection
-- 🧩 Configuration snapshots, diffs, preview execution, approvals, and audit
-- [x] 📊 Real-time runtime log viewing and analysis
-- [x] 📡 Multi-language API responses and user interface
+- **Controller** manages nodes, metrics, task dispatch, and website rollout.
+- **Node** enables the node-mode switch and stores the controller URL and token in the backend configuration.
+- Changes are applied by a runtime supervisor without manually editing YAML or restarting the service.
 
-## 📦 Quick Installation
+Supported task types are `software.install`, `software.uninstall`, `service.start`, `service.stop`, `service.restart`, `service.reload`, `system.command`, `file.upload`, `database.sync`, `website.sync`, and `website.content_sync`.
 
-### System requirements
+Website dispatch supports fixed nodes, tags, or least-load selection, with optional website-content transfer (up to 64 MiB). File uploads are limited to managed Panel directories and 16 MiB. Database dumps are limited to 64 MiB. System commands use argv arrays and a restricted allowlist; shells, downloaders, and interpreters are rejected.
 
-- OS: Linux; verified on Ubuntu, Debian, CentOS, RHEL, Rocky, AlmaLinux,
-  OpenCloudOS, and Anolis
-- Architecture: linux/amd64 and linux/arm64
-- Memory: Recommended 1GB+
-- Disk Space: At least 20GB free space
-- Root privileges, systemd, and `prlimit` required
+Node endpoints accept only node tokens, while controller APIs require super-admin access. Tokens are stored as hashes and rotation immediately invalidates the previous token.
 
-Unverified Linux distributions can be explicitly installed with
-`--allow-unsupported`; verified distributions are recommended for production.
+## Requirements
 
-Download the matching release archive and its `.sha256` file, verify it, and
-extract it in an isolated temporary directory. Do not run `tar -xzf` again
-from an already extracted release directory, or the archive's top-level
-directory will be nested repeatedly. The temporary directory is removed after
-installation. Create the administrator password file without exposing the
-password in shell history:
+- Linux amd64 or arm64; verified on Ubuntu, Debian, CentOS, RHEL, Rocky, AlmaLinux, OpenCloudOS, and Anolis
+- At least 1 GB RAM recommended and 20 GB free disk space
+- Root privileges, systemd, and `prlimit`
+
+## Install and update
+
+Download the architecture-matched release archive and checksum, verify it in a temporary directory, then run the installer:
 
 ```bash
 VERSION="v0.3.0-build.11"
 PACKAGE="one-linux-amd64-${VERSION}.tar.gz"
 BASE_URL="https://mirrors.oneinstack.com/oneinstack"
-(
-  work_dir="$(mktemp -d "${TMPDIR:-/tmp}/oneinstack-install.XXXXXX")"
-  trap 'rm -rf -- "$work_dir"' EXIT
-  cd "$work_dir"
-
-  wget -c "${BASE_URL}/${PACKAGE}"
-  wget -c "${BASE_URL}/${PACKAGE}.sha256"
-  sha256sum -c "${PACKAGE}.sha256"
-  tar -xzf "${PACKAGE}"
-  cd "${PACKAGE%.tar.gz}"
-
-  read -r -s -p "Initial administrator password: " PANEL_PASSWORD
-  printf '\n'
-  sudo install -m 0600 /dev/null /run/one-admin-password
-  printf '%s\n' "$PANEL_PASSWORD" | sudo tee /run/one-admin-password >/dev/null
-  unset PANEL_PASSWORD
-  sudo ./install.sh --admin-user admin \
-    --admin-password-file /run/one-admin-password
-  sudo rm -f /run/one-admin-password
-)
+work_dir="$(mktemp -d)"; trap 'rm -rf -- "$work_dir"' EXIT; cd "$work_dir"
+wget -c "$BASE_URL/$PACKAGE" "$BASE_URL/$PACKAGE.sha256"
+sha256sum -c "$PACKAGE.sha256" && tar -xzf "$PACKAGE"
+cd "${PACKAGE%.tar.gz}" && sudo ./install.sh --force
 ```
 
-After installation, visit: `http://your-server-ip:8089`
+Open `http://your-server-ip:8089` after installation. HTTP remains available by default; HTTPS can be configured separately in Settings. Run `sudo ./install.sh --force` with another verified release to update while preserving configuration.
 
-HTTP is the default and permanently available panel entry point. It listens
-on `0.0.0.0` by default, so no domain is required for server-IP access. An
-administrator may enable a separate HTTPS listener and certificate under
-**Settings → Panel Access**; enabling HTTPS neither disables nor redirects
-HTTP. The trusted-proxy list is empty by default and should contain only
-proxy IP addresses or CIDR ranges under your control.
+Normal uninstall: `sudo ./install.sh uninstall`.
 
-The installer uses only the binary and configuration bundled in the verified
-release. It does not replace package repositories, disable the firewall,
-change kernel parameters, or perform a system-wide upgrade.
+Permanent removal requires explicit confirmation: `sudo ./install.sh uninstall --purge --yes`.
 
-To update from another verified, extracted release while preserving the
-current configuration:
+## Center and software store
 
-```bash
-sudo ./install.sh --force
-```
-
-After configuring the Center URL and a trusted update public key, an
-administrator can install the signed release assigned by Center from
-**Settings → Panel Update**, or use:
-
-```bash
-sudo one update check
-sudo one update apply --yes
-sudo one update status
-sudo one update rollback --yes
-```
-
-Center controls release channels, percentage rollout, instance targeting, and
-version revocation. Panel does not trust Center's network response directly:
-it verifies the pinned Ed25519 key, manifest, artifact size, and SHA-256 before
-running a database migration preflight, atomically switching releases, and
-checking readiness. A failed update restores the previous binary, database,
-configuration, and bundled component scripts. See [BUILD.md](BUILD.md) for key
-configuration, manual recovery, and release operations.
-
-### Center-controlled software store and panel updates
-
-The software store and component-package registry use the same trusted Center
-connection. Configure `scriptCenter.enabled`, `scriptCenter.url`, and the
-pinned Ed25519 public key in `scriptCenter.trustedKeys`. Panel downloads
-`/v1/software/catalog` at startup and synchronizes it every 15 minutes by
-default.
-
-Center controls the applications and versions shown in the store, recommended
-versions, whether new installations are allowed, ordering, tags, release
-notes, and the component package used for each application. Panel applies a
-new catalog in one database transaction only after verifying its signature and
-revision. If Center is temporarily unavailable, the last verified snapshot
-remains usable. An application removed from Center is no longer available for
-new installations, while an already-installed instance remains visible for
-service management and uninstallation.
+Center controls release channels, rollout, software versions, and component packages. Panel applies updates only after verifying signatures, revision digests, artifact sizes, and SHA-256. When Center is unavailable, the last verified catalog remains usable.
 
 ```yaml
 scriptCenter:
   enabled: true
-  url: 'https://center.example.com'
-  channel: 'stable'
-  catalogSyncIntervalMinutes: 15
-  catalogStaleAfterHours: 24
+  url: "https://center.example.com"
+  channel: "stable"
   trustedKeys:
-    center-key-id: 'BASE64_ED25519_PUBLIC_KEY'
-
+    center-key-id: "BASE64_ED25519_PUBLIC_KEY"
 updateCenter:
   enabled: true
-  centerUrl: 'https://center.example.com'
-  channel: 'stable'
-  healthTimeoutSeconds: 60
-  backupRetention: 5
-  trustedKeys: {}
+  centerUrl: "https://center.example.com"
 ```
 
-For a loopback-only development Center using HTTP, set
-`allowInsecureHTTP: true`. Production Center connections must use HTTPS.
-Administrators can see the active data source on the software-store page and
-manually refresh the catalog.
+Production Center connections must use HTTPS. See [BUILD.md](BUILD.md), [CLUSTER_MANAGEMENT.md](CLUSTER_MANAGEMENT.md), and [docs/cluster-management.md](docs/cluster-management.md) for build, release, and API details.
 
-Normal uninstall preserves configuration, database, logs, and backups:
+## Development and license
 
 ```bash
-sudo ./install.sh uninstall
+go test ./...
+go run ./cmd server
 ```
 
-Permanent removal requires both destructive flags:
+Built with Go, Gin, GORM, SQLite, Systemd, and Vue.js. Licensed under [Apache License 2.0](LICENSE).
 
-```bash
-sudo ./install.sh uninstall --purge --yes
-```
-
-## 🖥️ Management Features
-
-### Server Management
-
-- Real-time resource monitoring
-
-![alt text](img/1.png)
-
-- Firewall rule configuration
-
-![alt text](img/2.png)
-
-- SSH port management
-- System service management
-- Scheduled task management
-- Monitoring rules, service health checks, and alert notifications
-- Configuration snapshots, preview execution, approvals, and audit
-- Bastion-host servers and session metrics
-
-![alt text](img/3.png)
-
-- System update notifications
-
-### Application Management
-
-- Software store and signed component packages
-- Software installation, upgrades, uninstallation, and service configuration
-- Docker containers, images, networks, volumes, and Compose
-- Database connections, backups, and restores
-
-### Website Management
-
-- Website lifecycle, configuration preview, and snapshot restore
-- Static hosting and reverse proxy
-- HTTPS certificates, ACME issuance, renewal, and disabling
-- Website backups, restores, and task logs
-
-## 🛠️ Technology Stack
-
-- Core Language: Go
-- Frontend Framework: Vue.js
-- Database: SQLite
-- Process Management: Systemd
-- Production Targets: Linux amd64/arm64
-
-## 🤝 Contributions
-
-We welcome contributions of all kinds!
-
-## 📄 License
-
-This project is licensed under the [Apache License 2.0](LICENSE).
-
----
-
-> 🌍 Official Website: [https://oneinstack.com](https://oneinstack.com)  
-> 🐛 Bug Report: [GitHub Issues](https://github.com/oneinstack/Oneinstack-Panel/issues)
+Website: [oneinstack.com](https://oneinstack.com) · Issues: [GitHub Issues](https://github.com/oneinstack/Oneinstack-Panel/issues)
