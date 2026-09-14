@@ -263,6 +263,10 @@ func safePublicErrorMessage(err *AppError) string {
 }
 
 func classifyErrorDetail(detail string) string {
+	if classified := classifySoftwareInstallConflictDetail(detail); classified != "" {
+		return classified
+	}
+
 	lower := strings.ToLower(detail)
 	switch {
 	case strings.Contains(lower, "web server configuration validation failed"),
@@ -333,6 +337,32 @@ func classifyErrorDetail(detail string) string {
 	default:
 		return ""
 	}
+}
+
+func classifySoftwareInstallConflictDetail(detail string) string {
+	trimmed := strings.TrimSpace(detail)
+	const (
+		prefix = "cannot install "
+		marker = " while "
+		suffix = " is installed; uninstall the conflicting component first"
+	)
+	lower := strings.ToLower(trimmed)
+	if !strings.HasPrefix(lower, prefix) || !strings.HasSuffix(lower, suffix) {
+		return ""
+	}
+	markerIndex := strings.Index(lower, marker)
+	if markerIndex <= len(prefix) || markerIndex >= len(trimmed)-len(suffix) {
+		return ""
+	}
+	component := strings.TrimSpace(trimmed[len(prefix):markerIndex])
+	conflict := strings.TrimSpace(trimmed[markerIndex+len(marker) : len(trimmed)-len(suffix)])
+	if component == "" || conflict == "" ||
+		len(component) > 64 || len(conflict) > 128 ||
+		strings.ContainsAny(component+conflict, "\r\n") ||
+		containsSensitiveErrorDetail(component) || containsSensitiveErrorDetail(conflict) {
+		return ""
+	}
+	return fmt.Sprintf("不能安装 %s，因为已安装 %s；请先卸载冲突组件后重试。", component, conflict)
 }
 
 func formatWebServerConfigValidationDetail(detail string) string {

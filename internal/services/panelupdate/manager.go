@@ -455,8 +455,12 @@ func (m *Manager) verifyCandidate(ctx context.Context, binary, expectedVersion s
 		return fmt.Errorf("execute candidate version check: %w", err)
 	}
 	for _, line := range strings.Split(string(output), "\n") {
-		if strings.HasPrefix(strings.TrimSpace(line), "Version:") {
-			version := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "Version:"))
+		line = strings.TrimSpace(line)
+		for _, prefix := range []string{"Version:", "版本:"} {
+			if !strings.HasPrefix(line, prefix) {
+				continue
+			}
+			version := strings.TrimSpace(strings.TrimPrefix(line, prefix))
 			if canonicalVersion(version) != canonicalVersion(expectedVersion) {
 				return fmt.Errorf("candidate reports version %q, expected %q", version, expectedVersion)
 			}

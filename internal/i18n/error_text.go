@@ -48,6 +48,7 @@ var (
 	webServerLegacySyntaxDiagnosticPattern = regexp.MustCompile(`^Web Server 配置语法错误：第 ([0-9]+) 行；Nginx 诊断：(.*)。(.+)$`)
 	webServerLegacySyntaxLinePattern       = regexp.MustCompile(`^Web Server 配置语法错误：第 ([0-9]+) 行。(.*)$`)
 	webServerPreflightPattern              = regexp.MustCompile(`^(.+?) 配置预检失败：(.*)。(.+)$`)
+	softwareInstallConflictPattern         = regexp.MustCompile(`^不能安装 (.+)，因为已安装 (.+)；请先卸载冲突组件后重试。$`)
 )
 
 // LocalizeText translates API response text that predates message keys.
@@ -114,6 +115,13 @@ func translateContainerErrorText(text string) string {
 }
 
 func translateDynamicErrorText(text string) (string, bool) {
+	if matches := softwareInstallConflictPattern.FindStringSubmatch(text); len(matches) == 3 {
+		return fmt.Sprintf(
+			"Cannot install %s while %s is installed; uninstall the conflicting component first and retry.",
+			matches[1], matches[2],
+		), true
+	}
+
 	if matches := installParameterPattern.FindStringSubmatch(text); len(matches) == 3 {
 		parameter, reason := matches[1], matches[2]
 		switch reason {

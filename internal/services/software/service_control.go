@@ -723,7 +723,14 @@ func parseComponentServiceProbe(
 			if definition.Component != "php" && definition.Component != "firewalld" {
 				return ComponentServiceProbe{}, fmt.Errorf("component status output contains unknown field %q", key)
 			}
-		case "port", "bind_address", "install_dir", "data_dir", "log_dir", "run_user", "run_group":
+		case "port":
+			// Apache status scripts report the configured listener so the service
+			// card can keep its runtime metadata in sync while the service is
+			// stopped. The field is internal to the probe and is not exposed here.
+			if definition.Component != "mysql" && definition.Component != "apache" {
+				return ComponentServiceProbe{}, fmt.Errorf("component status output contains unknown field %q", key)
+			}
+		case "bind_address", "install_dir", "data_dir", "log_dir", "run_user", "run_group":
 			// The managed MySQL status script also reports its effective runtime
 			// metadata. These fields are intentionally accepted only for MySQL;
 			// they are not part of the public probe response.
@@ -765,6 +772,12 @@ func parseComponentServiceProbe(
 	if fields["recorded_version"] != "" &&
 		!softwareVersionPattern.MatchString(fields["recorded_version"]) {
 		return ComponentServiceProbe{}, fmt.Errorf("component status output contains invalid recorded version")
+	}
+	if definition.Component == "apache" && fields["port"] != "" && fields["port"] != "unknown" {
+		port, err := strconv.Atoi(fields["port"])
+		if err != nil || port < 1 || port > 65535 {
+			return ComponentServiceProbe{}, fmt.Errorf("component status output contains invalid port")
+		}
 	}
 	if definition.Component == "php" {
 		switch fields["version_state"] {
@@ -846,6 +859,7 @@ func ClassifyServiceProbeError(err error) (string, string) {
 		strings.Contains(err.Error(), "unknown field"),
 		strings.Contains(err.Error(), "invalid runtime version"),
 		strings.Contains(err.Error(), "invalid can_reload"),
+		strings.Contains(err.Error(), "invalid port"),
 		strings.Contains(err.Error(), "identity does not match request"):
 		return "probe_output_invalid", "状态探针输出格式异常"
 	case strings.Contains(err.Error(), "resolve"),
