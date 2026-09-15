@@ -30,6 +30,11 @@ var (
 )
 
 var (
+	runtimeDependencyBusyDetailPattern     = regexp.MustCompile(`^PHP-FPM 正被运行中的 Web 服务器 (.+?) 使用；停止 PHP-FPM 会导致 PHP 网站和 phpMyAdmin 返回 502。$`)
+	runtimeDependencyBusySuggestionPattern = regexp.MustCompile(`^请先停止 Web 服务器 (.+?)，或者移除其 PHP-FPM 配置，再重新停止 PHP-FPM。$`)
+)
+
+var (
 	websiteWebServerMismatchPattern        = regexp.MustCompile(`^WEBSITE_WEB_SERVER_MISMATCH: 网站 (.+) 属于 (.+)，当前运行 Web Server 为 (.+)，请切换回 (.+) 后操作$`)
 	websiteEngineImmutablePattern          = regexp.MustCompile(`^WEBSITE_ENGINE_IMMUTABLE: 网站 (.+) 的 Engine 已固定为 (.+)，不能修改为 (.+)$`)
 	websiteConfigUnavailablePattern        = regexp.MustCompile(`^WEBSITE_CONFIG_UNAVAILABLE: 网站 (.+) 属于 (.+)，当前没有可用的该归属运行配置文件$`)
@@ -115,6 +120,18 @@ func translateContainerErrorText(text string) string {
 }
 
 func translateDynamicErrorText(text string) (string, bool) {
+	if matches := runtimeDependencyBusyDetailPattern.FindStringSubmatch(text); len(matches) == 2 {
+		return fmt.Sprintf(
+			"PHP-FPM is used by active Web server %s; stopping PHP-FPM would cause PHP sites and phpMyAdmin to return 502.",
+			matches[1],
+		), true
+	}
+	if matches := runtimeDependencyBusySuggestionPattern.FindStringSubmatch(text); len(matches) == 2 {
+		return fmt.Sprintf(
+			"Stop Web server %s first, or remove its PHP-FPM configuration, then try stopping PHP-FPM again.",
+			matches[1],
+		), true
+	}
 	if matches := softwareInstallConflictPattern.FindStringSubmatch(text); len(matches) == 3 {
 		return fmt.Sprintf(
 			"Cannot install %s while %s is installed; uninstall the conflicting component first and retry.",
@@ -909,6 +926,7 @@ var englishTerms = map[string]string{
 }
 
 var englishErrorTexts = map[string]string{
+	"无法停止 PHP-FPM：运行中的 Web 服务器仍依赖该服务":                          "PHP-FPM cannot be stopped because an active Web server still depends on it",
 	"安装请求不能为空，请提供安装参数后重试":                                      "The installation request cannot be empty. Provide the installation parameters and retry.",
 	"version 与 software-version 参数不一致，请保持两者一致后重试":              "version and software-version do not match. Keep both values identical and retry.",
 	"port 与端口参数不一致，请保持两者一致后重试":                                 "port and the port parameter do not match. Keep both values identical and retry.",

@@ -3,6 +3,7 @@ package software
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"oneinstack/internal/i18n"
 	"oneinstack/internal/models"
 	softwareService "oneinstack/internal/services/software"
+	"oneinstack/internal/services/softwaretask"
 	"oneinstack/router/input"
 	"oneinstack/router/middleware"
 
@@ -131,12 +133,8 @@ func RunComponentServiceAction(c *gin.Context) {
 			))
 			return
 		}
-		if strings.HasPrefix(message, "RUNTIME_DEPENDENCY_BUSY:") {
-			core.HandleErrorWithStatus(c, http.StatusConflict, core.NewErrorWithDetail(
-				core.ErrConflict,
-				"RUNTIME_DEPENDENCY_BUSY",
-				strings.TrimSpace(strings.TrimPrefix(message, "RUNTIME_DEPENDENCY_BUSY:")),
-			))
+		if appErr, ok := RuntimeDependencyBusyAppError(err); ok {
+			core.HandleErrorWithStatus(c, http.StatusConflict, appErr)
 			return
 		}
 		if strings.HasPrefix(message, "SWITCH_UNSUPPORTED:") {
@@ -164,6 +162,25 @@ func RunComponentServiceAction(c *gin.Context) {
 		"statusUrl":   "/v1/soft/tasks/" + task.ID,
 		"streamUrl":   "/v1/soft/tasks/" + task.ID + "/events",
 	}))
+}
+
+func RuntimeDependencyBusyAppError(err error) (*core.AppError, bool) {
+	var dependencyErr *softwaretask.RuntimeDependencyBusyError
+	if !errors.As(err, &dependencyErr) {
+		return nil, false
+	}
+	owner := strings.TrimSpace(dependencyErr.OwnerService)
+	if owner == "" {
+		owner = "Web Server"
+	}
+	appErr := core.NewErrorWithDetail(
+		core.ErrConflict,
+		"无法停止 PHP-FPM：运行中的 Web 服务器仍依赖该服务",
+		fmt.Sprintf("PHP-FPM 正被运行中的 Web 服务器 %s 使用；停止 PHP-FPM 会导致 PHP 网站和 phpMyAdmin 返回 502。", owner),
+	)
+	appErr.StableCode = "RUNTIME_DEPENDENCY_BUSY"
+	appErr.Suggestion = fmt.Sprintf("请先停止 Web 服务器 %s，或者移除其 PHP-FPM 配置，再重新停止 PHP-FPM。", owner)
+	return appErr, true
 }
 
 func GetComponentServiceConfiguration(c *gin.Context) {

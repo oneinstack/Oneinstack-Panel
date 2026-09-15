@@ -60,6 +60,17 @@ var (
 	ErrTaskSecretUnavailable = errors.New("TASK_SECRET_UNAVAILABLE")
 )
 
+type RuntimeDependencyBusyError struct {
+	OwnerService string
+}
+
+func (e *RuntimeDependencyBusyError) Error() string {
+	return fmt.Sprintf(
+		"RUNTIME_DEPENDENCY_BUSY: PHP-FPM is required by active Web server %s; stopping it would make PHP sites return 502",
+		strings.TrimSpace(e.OwnerService),
+	)
+}
+
 type Executor func(
 	ctx context.Context,
 	request InstallRequest,
@@ -316,10 +327,7 @@ func (m *Manager) SubmitServiceActionWithConfirmation(
 	if resolvedComponent == "php" && action == "stop" {
 		owners := activeRuntimeGroupOwners(context.Background(), "web-server", "")
 		if len(owners) > 0 {
-			return nil, fmt.Errorf(
-				"RUNTIME_DEPENDENCY_BUSY: PHP-FPM is required by active Web server %s; stopping it would make PHP sites return 502",
-				owners[0].ServiceName,
-			)
+			return nil, &RuntimeDependencyBusyError{OwnerService: owners[0].ServiceName}
 		}
 	}
 	return m.submit(InstallRequest{

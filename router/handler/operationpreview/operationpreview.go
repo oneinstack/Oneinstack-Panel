@@ -2308,6 +2308,10 @@ func writeConsumeError(c *gin.Context, err error) {
 }
 
 func writeExecutionError(c *gin.Context, err error) {
+	if appErr, ok := software.RuntimeDependencyBusyAppError(err); ok {
+		core.HandleErrorWithStatus(c, http.StatusConflict, appErr)
+		return
+	}
 	if stableCode := softwareStableErrorCode(err); stableCode != "" {
 		core.HandleError(c, softwareStableAppError(stableCode))
 		return
@@ -2317,9 +2321,6 @@ func writeExecutionError(c *gin.Context, err error) {
 	var applyErr *website.WebServerConfigApplyError
 	var parameterErr *softwareService.InstallParameterError
 	switch {
-	case strings.HasPrefix(strings.TrimSpace(detail), "RUNTIME_DEPENDENCY_BUSY:"):
-		code, message = core.ErrConflict, "RUNTIME_DEPENDENCY_BUSY"
-		detail = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(detail), "RUNTIME_DEPENDENCY_BUSY:"))
 	case errors.As(err, &parameterErr):
 		message = parameterErr.InstallationMessage()
 		if message == "" {
