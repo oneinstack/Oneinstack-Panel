@@ -443,6 +443,14 @@ func serviceReadinessPorts(definition ComponentServiceDefinition) []int {
 			}
 		}
 	}
+	if strings.EqualFold(strings.TrimSpace(definition.Component), "tengine") ||
+		strings.EqualFold(strings.TrimSpace(definition.SoftwareKey), "tengine") {
+		if values := detectTengineInstallParameters(); values != nil {
+			if port, ok := parseServicePort(values["port"]); ok {
+				return []int{port}
+			}
+		}
+	}
 	if strings.EqualFold(strings.TrimSpace(definition.Component), "apache") ||
 		strings.EqualFold(strings.TrimSpace(definition.SoftwareKey), "apache") {
 		if values := detectApacheInstallParameters(); values != nil {

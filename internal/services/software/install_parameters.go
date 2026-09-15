@@ -13,10 +13,15 @@ import (
 )
 
 const (
-	defaultNginxInstallDir  = "/usr/local/nginx"
-	defaultNginxStateDir    = "/var/lib/oneinstack/components/nginx"
-	defaultApacheInstallDir = "/usr/local/apache"
-	defaultApacheStateDir   = "/var/lib/oneinstack/components/apache"
+	defaultNginxInstallDir     = "/usr/local/nginx"
+	defaultNginxStateDir       = "/var/lib/oneinstack/components/nginx"
+	defaultOpenRestyInstallDir = "/usr/local/openresty"
+	defaultOpenRestyStateDir   = "/var/lib/oneinstack/components/openresty"
+	defaultTengineInstallDir   = "/usr/local/tengine"
+	defaultTengineStateDir     = "/var/lib/oneinstack/components/tengine"
+	defaultCaddyStateDir       = "/var/lib/oneinstack/components/caddy"
+	defaultApacheInstallDir    = "/usr/local/apache"
+	defaultApacheStateDir      = "/var/lib/oneinstack/components/apache"
 )
 
 var (
@@ -24,6 +29,9 @@ var (
 	nginxRootPattern          = regexp.MustCompile(`(?m)^[[:space:]]*root[[:space:]]+([^;[:space:]]+);`)
 	nginxUserPattern          = regexp.MustCompile(`(?m)^[[:space:]]*user[[:space:]]+([^;[:space:]]+)(?:[[:space:]]+([^;[:space:]]+))?;`)
 	nginxErrorLogPattern      = regexp.MustCompile(`(?m)^[[:space:]]*error_log[[:space:]]+([^;[:space:]]+)/nginx-error\.log(?:[[:space:]][^;]*)?;`)
+	openRestyErrorLogPattern  = regexp.MustCompile(`(?m)^[[:space:]]*error_log[[:space:]]+([^;[:space:]]+)/openresty-error\.log(?:[[:space:]][^;]*)?;`)
+	tengineErrorLogPattern    = regexp.MustCompile(`(?m)^[[:space:]]*error_log[[:space:]]+([^;[:space:]]+)/tengine-error\.log(?:[[:space:]][^;]*)?;`)
+	tenginePHPFPMPathPattern  = regexp.MustCompile(`(?m)^[[:space:]]*fastcgi_pass[[:space:]]+unix:([^;[:space:]]+);`)
 	apacheListenPattern       = regexp.MustCompile(`(?m)^[[:space:]]*Listen[[:space:]]+(?:\[[^]]+\]|[^[:space:]:]+:)?([0-9]+)(?:[[:space:]]+#.*)?[[:space:]]*$`)
 	apacheDocumentRootPattern = regexp.MustCompile(`(?m)^[[:space:]]*DocumentRoot[[:space:]]+"([^"]+)/default"`)
 	apacheErrorLogPattern     = regexp.MustCompile(`(?m)^[[:space:]]*ErrorLog[[:space:]]+"([^"]+)/apache-error\.log"`)
@@ -85,6 +93,205 @@ func hydrateNginxInstallParameters(component, key string, params []*output.SoftP
 			parameter.Default = value
 		}
 	}
+	return values
+}
+
+// detectTengineInstallParameters reads the Tengine-owned parameter file and
+// native/legacy configuration paths. It never adopts a generic Nginx service.
+func detectTengineInstallParameters() map[string]string {
+	values := make(map[string]string)
+	stateRoot := strings.TrimSpace(os.Getenv("ONEINSTACK_COMPONENT_STATE"))
+	if stateRoot == "" {
+		stateRoot = filepath.Dir(defaultTengineStateDir)
+	}
+	managedStateDir := filepath.Join(stateRoot, "tengine")
+	parameterFile := filepath.Join(managedStateDir, "install-parameters")
+	for key, value := range readNginxParameterFile(parameterFile) {
+		values[normalizeInstallParameterKey(key)] = value
+	}
+	installDir := values["install-dir"]
+	if installDir == "" {
+		installDir = tengineInstallDirFromUnit()
+	}
+	if installDir == "" {
+		installDir = defaultTengineInstallDir
+	}
+	configRoots := []string{filepath.Join(installDir, "conf")}
+	configRoots = append(configRoots, latestTenginePreservedConfigRoots(managedStateDir)...)
+	for _, configRoot := range configRoots {
+		mainConfig := filepath.Join(configRoot, "tengine.conf")
+		siteConfig := filepath.Join(configRoot, "conf.d", "default.conf")
+		if !fileExists(mainConfig) {
+			mainConfig = filepath.Join(configRoot, "nginx.conf")
+		}
+		if !fileExists(mainConfig) && !fileExists(siteConfig) {
+			continue
+		}
+		readTengineConfiguration(values, mainConfig, siteConfig)
+		break
+	}
+	values["install-dir"] = installDir
+	return values
+}
+
+func hydrateTengineInstallParameters(component, key string, params []*output.SoftParam) map[string]string {
+	if !strings.EqualFold(strings.TrimSpace(component), "tengine") &&
+		!strings.EqualFold(strings.TrimSpace(key), "tengine") {
+		return nil
+	}
+	values := detectTengineInstallParameters()
+	for _, parameter := range params {
+		if parameter == nil || strings.EqualFold(strings.TrimSpace(parameter.Types), "password") {
+			continue
+		}
+		parameterKey := compactInstallParameterName(parameter.Key)
+		var value string
+		switch parameterKey {
+		case "port", "tengineport":
+			value = installParameterValue(values, "port", "tengine-port", "tenginePort")
+		case "phpfmpsocket":
+			value = installParameterValue(values, "php-fpm-socket", "tengine-php-fpm-socket", "phpFpmSocket")
+		case "installdir":
+			value = installParameterValue(values, "install-dir", "tengine-install-dir", "installDir")
+		case "webroot":
+			value = installParameterValue(values, "web-root", "tengine-web-root", "webRoot")
+		case "logdir":
+			value = installParameterValue(values, "log-dir", "tengine-log-dir", "logDir")
+		case "webvhostroot":
+			value = installParameterValue(values, "web-vhost-root", "tengine-vhost-root", "webVhostRoot")
+		case "runuser":
+			value = installParameterValue(values, "run-user", "tengine-run-user", "runUser")
+		case "rungroup":
+			value = installParameterValue(values, "run-group", "tengine-run-group", "runGroup")
+		default:
+			value = installParameterValue(values, parameter.Key)
+		}
+		if value != "" {
+			parameter.Default = value
+		}
+	}
+	return values
+}
+
+// hydrateCaddyInstallParameters reflects only the non-sensitive values written
+// by the managed Caddy lifecycle. Server-owned source and identity fields stay
+// internal and therefore cannot be overridden through the request parameter map.
+func hydrateCaddyInstallParameters(component, key, runtimeJSON string, params []*output.SoftParam) map[string]string {
+	if !strings.EqualFold(strings.TrimSpace(component), "caddy") &&
+		!strings.EqualFold(strings.TrimSpace(key), "caddy") {
+		return nil
+	}
+	values := make(map[string]string)
+	if strings.TrimSpace(runtimeJSON) != "" {
+		var runtime map[string]string
+		if json.Unmarshal([]byte(runtimeJSON), &runtime) == nil {
+			for runtimeKey, value := range runtime {
+				values[normalizeInstallParameterKey(runtimeKey)] = value
+			}
+		}
+	}
+	stateRoot := strings.TrimSpace(os.Getenv("ONEINSTACK_COMPONENT_STATE"))
+	if stateRoot == "" {
+		stateRoot = filepath.Dir(defaultCaddyStateDir)
+	}
+	for parameterKey, value := range readNginxParameterFile(filepath.Join(stateRoot, "caddy", "install-parameters")) {
+		values[normalizeInstallParameterKey(parameterKey)] = value
+	}
+	for _, parameter := range params {
+		if parameter == nil || strings.EqualFold(strings.TrimSpace(parameter.Types), "password") {
+			continue
+		}
+		parameterKey := compactInstallParameterName(parameter.Key)
+		var value string
+		switch parameterKey {
+		case "port", "caddyport":
+			value = installParameterValue(values, "port", "caddy-port", "caddyPort")
+		case "phpfmpsocket":
+			value = installParameterValue(values, "php-fpm-socket", "caddy-php-fpm-socket", "phpFpmSocket")
+		case "webroot":
+			value = installParameterValue(values, "web-root", "caddy-web-root", "webRoot")
+		case "logdir":
+			value = installParameterValue(values, "log-dir", "caddy-log-dir", "logDir")
+		default:
+			value = installParameterValue(values, parameter.Key)
+		}
+		if value != "" {
+			parameter.Default = value
+		}
+	}
+	return values
+}
+
+// hydrateOpenRestyInstallParameters reflects the managed OpenResty prefix and
+// its native nginx subtree without falling back to package-manager locations.
+func hydrateOpenRestyInstallParameters(component, key string, params []*output.SoftParam) map[string]string {
+	if !strings.EqualFold(strings.TrimSpace(component), "openresty") &&
+		!strings.EqualFold(strings.TrimSpace(key), "openresty") {
+		return nil
+	}
+	values := detectOpenRestyInstallParameters()
+	for _, parameter := range params {
+		if parameter == nil || strings.EqualFold(strings.TrimSpace(parameter.Types), "password") {
+			continue
+		}
+		parameterKey := compactInstallParameterName(parameter.Key)
+		var value string
+		switch parameterKey {
+		case "port", "openrestyport":
+			value = installParameterValue(values, "port", "openresty-port", "openrestyPort")
+		case "phpfmpsocket":
+			value = installParameterValue(values, "php-fpm-socket", "openresty-php-fpm-socket", "phpFpmSocket")
+		case "installdir":
+			value = installParameterValue(values, "install-dir", "openresty-install-dir", "installDir")
+		case "webroot":
+			value = installParameterValue(values, "web-root", "openresty-web-root", "webRoot")
+		case "logdir":
+			value = installParameterValue(values, "log-dir", "openresty-log-dir", "logDir")
+		case "webvhostroot":
+			value = installParameterValue(values, "web-vhost-root", "openresty-vhost-root", "webVhostRoot")
+		case "runuser":
+			value = installParameterValue(values, "run-user", "openresty-run-user", "runUser")
+		case "rungroup":
+			value = installParameterValue(values, "run-group", "openresty-run-group", "runGroup")
+		default:
+			value = installParameterValue(values, parameter.Key)
+		}
+		if value != "" {
+			parameter.Default = value
+		}
+	}
+	return values
+}
+
+func detectOpenRestyInstallParameters() map[string]string {
+	values := make(map[string]string)
+	stateRoot := strings.TrimSpace(os.Getenv("ONEINSTACK_COMPONENT_STATE"))
+	if stateRoot == "" {
+		stateRoot = filepath.Dir(defaultOpenRestyStateDir)
+	}
+	managedStateDir := filepath.Join(stateRoot, "openresty")
+	for key, value := range readNginxParameterFile(filepath.Join(managedStateDir, "install-parameters")) {
+		values[normalizeInstallParameterKey(key)] = value
+	}
+	installDir := values["install-dir"]
+	if installDir == "" {
+		installDir = openRestyInstallDirFromUnit()
+	}
+	if installDir == "" {
+		installDir = defaultOpenRestyInstallDir
+	}
+	configRoots := []string{filepath.Join(installDir, "nginx", "conf")}
+	configRoots = append(configRoots, latestOpenRestyPreservedConfigRoots(managedStateDir)...)
+	for _, configRoot := range configRoots {
+		mainConfig := filepath.Join(configRoot, "nginx.conf")
+		siteConfig := filepath.Join(configRoot, "conf.d", "default.conf")
+		if !fileExists(mainConfig) && !fileExists(siteConfig) {
+			continue
+		}
+		readOpenRestyConfiguration(values, mainConfig, siteConfig)
+		break
+	}
+	values["install-dir"] = installDir
 	return values
 }
 
@@ -218,9 +425,9 @@ func normalizeInstallParameterKey(value string) string {
 	value = strings.ToLower(strings.TrimSpace(value))
 	value = strings.NewReplacer("_", "-", ".", "-", " ", "-").Replace(value)
 	switch value {
-	case "nginx-port", "apache-port":
+	case "nginx-port", "openresty-port", "apache-port", "tengine-port", "caddy-port":
 		return "port"
-	case "nginx-port-number", "apache-port-number":
+	case "nginx-port-number", "openresty-port-number", "apache-port-number", "tengine-port-number", "caddy-port-number":
 		return "port"
 	default:
 		return value
@@ -276,6 +483,62 @@ func readNginxConfiguration(values map[string]string, mainConfig, siteConfig str
 	}
 }
 
+func readTengineConfiguration(values map[string]string, mainConfig, siteConfig string) {
+	mainContents, mainErr := os.ReadFile(mainConfig)
+	if mainErr == nil {
+		if match := nginxUserPattern.FindSubmatch(mainContents); len(match) > 1 {
+			values["run-user"] = string(match[1])
+			if len(match) > 2 && len(match[2]) > 0 {
+				values["run-group"] = string(match[2])
+			}
+		}
+		if match := tengineErrorLogPattern.FindSubmatch(mainContents); len(match) > 1 {
+			values["log-dir"] = string(match[1])
+		}
+	}
+	siteContents, siteErr := os.ReadFile(siteConfig)
+	if siteErr != nil {
+		return
+	}
+	if match := nginxDefaultListenPattern.FindSubmatch(siteContents); len(match) > 1 {
+		values["port"] = string(match[1])
+	}
+	if match := nginxRootPattern.FindSubmatch(siteContents); len(match) > 1 {
+		values["web-root"] = normalizeNginxWebRoot(string(match[1]))
+	}
+	if match := tenginePHPFPMPathPattern.FindSubmatch(siteContents); len(match) > 1 {
+		values["php-fpm-socket"] = string(match[1])
+	}
+}
+
+func readOpenRestyConfiguration(values map[string]string, mainConfig, siteConfig string) {
+	mainContents, mainErr := os.ReadFile(mainConfig)
+	if mainErr == nil {
+		if match := nginxUserPattern.FindSubmatch(mainContents); len(match) > 1 {
+			values["run-user"] = string(match[1])
+			if len(match) > 2 && len(match[2]) > 0 {
+				values["run-group"] = string(match[2])
+			}
+		}
+		if match := openRestyErrorLogPattern.FindSubmatch(mainContents); len(match) > 1 {
+			values["log-dir"] = string(match[1])
+		}
+	}
+	siteContents, siteErr := os.ReadFile(siteConfig)
+	if siteErr != nil {
+		return
+	}
+	if match := nginxDefaultListenPattern.FindSubmatch(siteContents); len(match) > 1 {
+		values["port"] = string(match[1])
+	}
+	if match := nginxRootPattern.FindSubmatch(siteContents); len(match) > 1 {
+		values["web-root"] = normalizeNginxWebRoot(string(match[1]))
+	}
+	if match := tenginePHPFPMPathPattern.FindSubmatch(siteContents); len(match) > 1 {
+		values["php-fpm-socket"] = string(match[1])
+	}
+}
+
 func normalizeNginxWebRoot(root string) string {
 	root = filepath.Clean(strings.TrimSpace(root))
 	const managedWebRoot = "/data/wwwroot"
@@ -317,6 +580,50 @@ func latestNginxPreservedConfigRoots(stateDir string) []string {
 	return roots
 }
 
+func latestTenginePreservedConfigRoots(stateDir string) []string {
+	roots := make([]string, 0, 8)
+	patterns := []string{
+		filepath.Join(stateDir, "removed", "*", "install", "conf"),
+		filepath.Join(strings.TrimSpace(os.Getenv("ONEINSTACK_WEB_SERVER_MIGRATION_ROOT")), "tengine", "*", "config"),
+	}
+	if strings.TrimSpace(os.Getenv("ONEINSTACK_WEB_SERVER_MIGRATION_ROOT")) == "" {
+		patterns[1] = filepath.Join("/var/lib/oneinstack/web-server-migration/tengine", "*", "config")
+	}
+	for _, pattern := range patterns {
+		matches, err := filepath.Glob(pattern)
+		if err != nil {
+			continue
+		}
+		sort.Strings(matches)
+		for index := len(matches) - 1; index >= 0; index-- {
+			roots = append(roots, matches[index])
+		}
+	}
+	return roots
+}
+
+func latestOpenRestyPreservedConfigRoots(stateDir string) []string {
+	roots := make([]string, 0, 8)
+	patterns := []string{
+		filepath.Join(stateDir, "removed", "*", "install", "nginx", "conf"),
+		filepath.Join(strings.TrimSpace(os.Getenv("ONEINSTACK_WEB_SERVER_MIGRATION_ROOT")), "openresty", "*", "config"),
+	}
+	if strings.TrimSpace(os.Getenv("ONEINSTACK_WEB_SERVER_MIGRATION_ROOT")) == "" {
+		patterns[1] = filepath.Join("/var/lib/oneinstack/web-server-migration/openresty", "*", "config")
+	}
+	for _, pattern := range patterns {
+		matches, err := filepath.Glob(pattern)
+		if err != nil {
+			continue
+		}
+		sort.Strings(matches)
+		for index := len(matches) - 1; index >= 0; index-- {
+			roots = append(roots, matches[index])
+		}
+	}
+	return roots
+}
+
 func nginxInstallDirFromUnit() string {
 	contents, err := os.ReadFile("/etc/systemd/system/oneinstack-nginx.service")
 	if err != nil {
@@ -335,6 +642,65 @@ func nginxInstallDirFromUnit() string {
 		binary = strings.TrimPrefix(binary, "-")
 		if strings.HasSuffix(binary, "/sbin/nginx") {
 			return strings.TrimSuffix(binary, "/sbin/nginx")
+		}
+	}
+	return ""
+}
+
+func tengineInstallDirFromUnit() string {
+	for _, unit := range []string{
+		"/etc/systemd/system/oneinstack-tengine.service",
+		"/etc/systemd/system/tengine.service",
+		"/etc/systemd/system/nginx.service",
+	} {
+		contents, err := os.ReadFile(unit)
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(string(contents), "\n") {
+			line = strings.TrimSpace(line)
+			if !strings.HasPrefix(line, "ExecStart=") {
+				continue
+			}
+			fields := strings.Fields(strings.TrimSpace(strings.TrimPrefix(line, "ExecStart=")))
+			if len(fields) == 0 {
+				continue
+			}
+			binary := strings.TrimPrefix(strings.Trim(fields[0], "\"'"), "-")
+			for _, suffix := range []string{"/sbin/tengine", "/sbin/nginx"} {
+				if strings.HasSuffix(binary, suffix) && strings.HasPrefix(binary, defaultTengineInstallDir+"/") {
+					return strings.TrimSuffix(binary, suffix)
+				}
+			}
+		}
+	}
+	return ""
+}
+
+func openRestyInstallDirFromUnit() string {
+	for _, unit := range []string{
+		"/etc/systemd/system/oneinstack-openresty.service",
+		"/etc/systemd/system/openresty.service",
+		"/etc/systemd/system/nginx.service",
+	} {
+		contents, err := os.ReadFile(unit)
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(string(contents), "\n") {
+			line = strings.TrimSpace(line)
+			if !strings.HasPrefix(line, "ExecStart=") {
+				continue
+			}
+			fields := strings.Fields(strings.TrimSpace(strings.TrimPrefix(line, "ExecStart=")))
+			if len(fields) == 0 {
+				continue
+			}
+			binary := strings.TrimPrefix(strings.Trim(fields[0], "\"'"), "-")
+			const suffix = "/nginx/sbin/nginx"
+			if strings.HasSuffix(binary, suffix) && strings.HasPrefix(binary, defaultOpenRestyInstallDir+"/") {
+				return strings.TrimSuffix(binary, suffix)
+			}
 		}
 	}
 	return ""

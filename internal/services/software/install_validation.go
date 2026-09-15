@@ -189,6 +189,7 @@ var (
 	managedMySQLDatabaseUsernamePattern = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
 	managedMySQLPasswordPattern         = regexp.MustCompile(`^[A-Za-z0-9_@%+=:,.!#?-]{12,128}$`)
 	phpExactVersionPattern              = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+$`)
+	openRestyExactVersionPattern        = regexp.MustCompile(`^[0-9]+(?:\.[0-9]+){3}$`)
 	phpVersionLinePattern               = regexp.MustCompile(`^[0-9]+\.[0-9]+\.x$`)
 )
 
@@ -211,6 +212,10 @@ func (installer *Installer) resolveInstallParams(ctx context.Context, params *in
 		"port",
 		"nginx-port",
 		"nginxPort",
+		"openresty-port",
+		"openrestyPort",
+		"caddy-port",
+		"caddyPort",
 		"mysql-port",
 		"mysqlPort",
 		"redis-port",
@@ -403,8 +408,14 @@ func validateClosedLoopCatalogVersion(params *input.InstallParams) error {
 		return nil
 	}
 	version := strings.TrimSpace(params.Version)
-	if !phpExactVersionPattern.MatchString(version) {
-		return &InstallParameterError{Field: "version", Message: "版本必须是 x.y.z 精确版本，并且属于 Center 已发布的可安装版本"}
+	versionPattern := phpExactVersionPattern
+	versionShape := "x.y.z"
+	if key == "openresty" {
+		versionPattern = openRestyExactVersionPattern
+		versionShape = "x.y.z.w"
+	}
+	if !versionPattern.MatchString(version) {
+		return &InstallParameterError{Field: "version", Message: fmt.Sprintf("版本必须是 %s 精确版本，并且属于 Center 已发布的可安装版本", versionShape)}
 	}
 	db := app.DB()
 	if db == nil {
@@ -442,6 +453,12 @@ func closedLoopCatalogIdentity(key string) (catalogKey, catalogComponent string,
 		return "db", "mysql", true
 	case "webserver", "nginx":
 		return "webserver", "nginx", true
+	case "tengine":
+		return "tengine", "tengine", true
+	case "openresty":
+		return "openresty", "openresty", true
+	case "caddy":
+		return "caddy", "caddy", true
 	case "apache":
 		return "apache", "apache", true
 	case "php":
@@ -591,6 +608,9 @@ func PreviewInstallationPackage(ctx context.Context, params *input.InstallParams
 	appendValue("username", params.Username, usernameSource, false)
 
 	for _, spec := range scriptInfo.ParameterSpecs {
+		if serverOwnedInstallParameterForComponent(params.Key, spec.Name) {
+			continue
+		}
 		envName := installParameterEnvironmentName(spec)
 		value := strings.TrimSpace(scriptInfo.Params[envName])
 		sensitive := spec.Secret || strings.EqualFold(strings.TrimSpace(spec.Type), "password")
@@ -632,6 +652,12 @@ func closedLoopPackageComponent(key string) (string, bool) {
 		return "mysql", true
 	case "webserver", "nginx":
 		return "nginx", true
+	case "tengine":
+		return "tengine", true
+	case "openresty":
+		return "openresty", true
+	case "caddy":
+		return "caddy", true
 	case "apache":
 		return "apache", true
 	case "php":

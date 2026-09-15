@@ -232,6 +232,11 @@ func DetectWebServer() (WebServerInfo, error) {
 		mainConfigName = "httpd.conf"
 	} else if selected.Component == "caddy" {
 		mainConfigName = "Caddyfile"
+	} else if selected.Component == "tengine" {
+		mainConfigName = "tengine.conf"
+		if !isRegularFile(filepath.Join(configRoot, mainConfigName)) && isRegularFile(filepath.Join(configRoot, "nginx.conf")) {
+			mainConfigName = "nginx.conf"
+		}
 	}
 	mainConfig := filepath.Join(configRoot, mainConfigName)
 	configurationAvailable := isRegularFile(mainConfig)
@@ -1129,6 +1134,7 @@ func webServerCandidates() []webServerCandidate {
 			Config:    "/usr/local/openresty/nginx/conf",
 			Priority:  40,
 		},
+		webServerCandidate{Component: "tengine", Name: "Tengine", Service: webServiceName("tengine"), Binary: "/usr/local/tengine/sbin/tengine", Prefix: "/usr/local/tengine", Config: "/usr/local/tengine/conf", Priority: 41},
 		webServerCandidate{Component: "tengine", Name: "Tengine", Service: webServiceName("tengine"), Binary: "/usr/local/tengine/sbin/nginx", Prefix: "/usr/local/tengine", Config: "/usr/local/tengine/conf", Priority: 40},
 		webServerCandidate{Component: "apache", Name: "Apache HTTP Server", Service: webServiceName("apache"), Binary: "/usr/local/apache/bin/httpd", Prefix: "/usr/local/apache", Config: "/usr/local/apache/conf", Priority: 40},
 		webServerCandidate{Component: "caddy", Name: "Caddy", Service: webServiceName("caddy"), Binary: "/usr/local/caddy/bin/caddy", Prefix: "/usr/local/caddy", Config: "/usr/local/caddy/conf", Priority: 40},
@@ -1389,7 +1395,7 @@ func defaultManagedWebServerLayout(component, binary string) (string, string) {
 			return prefix, filepath.Join(prefix, "conf")
 		}
 	case "tengine":
-		if strings.HasSuffix(binary, "/sbin/nginx") {
+		if strings.HasSuffix(binary, "/sbin/tengine") || strings.HasSuffix(binary, "/sbin/nginx") {
 			prefix := filepath.Dir(filepath.Dir(binary))
 			return prefix, filepath.Join(prefix, "conf")
 		}
@@ -1459,8 +1465,20 @@ func webServerIsRunning(candidate webServerCandidate, runningExecutables map[str
 	if runningExecutables[canonicalPath(filepath.Clean(candidate.Binary))] {
 		return true
 	}
-	pidPath := filepath.Join(candidate.Prefix, "logs", "nginx.pid")
-	mainConfig := filepath.Join(candidate.Config, "nginx.conf")
+	pidName := "nginx.pid"
+	mainConfigName := "nginx.conf"
+	if strings.EqualFold(strings.TrimSpace(candidate.Component), "tengine") {
+		pidName = "tengine.pid"
+		mainConfigName = "tengine.conf"
+		if !isRegularFile(filepath.Join(candidate.Config, mainConfigName)) {
+			mainConfigName = "nginx.conf"
+		}
+		if !isRegularFile(filepath.Join(candidate.Prefix, "logs", pidName)) && isRegularFile(filepath.Join(candidate.Prefix, "logs", "nginx.pid")) {
+			pidName = "nginx.pid"
+		}
+	}
+	pidPath := filepath.Join(candidate.Prefix, "logs", pidName)
+	mainConfig := filepath.Join(candidate.Config, mainConfigName)
 	if data, err := readBoundedFile(mainConfig, maxWebServerConfigBytes); err == nil {
 		if configured, ok := nginxPIDPath(string(data), candidate.Prefix); ok {
 			pidPath = configured

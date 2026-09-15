@@ -31,6 +31,7 @@ var (
 	configurationKeyPattern  = regexp.MustCompile(`^[a-z][A-Za-z0-9-]{0,63}$`)
 	configurationHashPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 	redisUsernamePattern     = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
+	systemAccountPattern     = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,30}$`)
 )
 
 type ConfigurationField struct {
@@ -93,6 +94,10 @@ type ComponentRuntime struct {
 	LogDir      string `json:"logDir"`
 	RunUser     string `json:"runUser"`
 	RunGroup    string `json:"runGroup"`
+	ConfigFile  string `json:"configFile,omitempty"`
+	VhostDir    string `json:"vhostDir,omitempty"`
+	ServiceName string `json:"serviceName,omitempty"`
+	Version     string `json:"version,omitempty"`
 }
 
 type ConfigurationChange struct {
@@ -189,6 +194,88 @@ func componentConfigurationDefinition(component string) (configurationDefinition
 			"workerConnections": "ONEINSTACK_CONFIG_WORKER_CONNECTIONS",
 			"keepaliveTimeout":  "ONEINSTACK_CONFIG_KEEPALIVE_TIMEOUT",
 			"clientMaxBodySize": "ONEINSTACK_CONFIG_CLIENT_MAX_BODY_SIZE",
+		}
+	case "openresty":
+		result.ApplyMode = "reload"
+		result.Fields = []ConfigurationField{
+			{
+				Key:         "workerProcesses",
+				Label:       "工作进程数",
+				Type:        "worker_processes",
+				Default:     "auto",
+				Description: "建议保持 auto；手动设置范围为 1–99。",
+			},
+			{Key: "workerConnections", Label: "单进程连接数", Type: "integer", Default: "4096", Min: intPointer(512), Max: intPointer(65535)},
+			{Key: "keepaliveTimeout", Label: "长连接超时", Type: "integer", Unit: "秒", Default: "65", Min: intPointer(5), Max: intPointer(300)},
+			{Key: "clientMaxBodySize", Label: "请求体上限", Type: "integer", Unit: "MB", Default: "1", Min: intPointer(1), Max: intPointer(10240)},
+			{Key: "openrestyPort", Label: "监听端口", Type: "port", Default: "80", Min: intPointer(1), Max: intPointer(65535)},
+			{Key: "phpFpmSocket", Label: "PHP-FPM Socket", Type: "path", Default: "/dev/shm/php-cgi.sock"},
+			{Key: "installDir", Label: "安装目录", Type: "path", Default: "/usr/local/openresty", Description: "安装目录不可在线迁移。"},
+			{Key: "webRoot", Label: "网站根目录", Type: "path", Default: "/data/wwwroot"},
+			{Key: "logDir", Label: "日志目录", Type: "path", Default: "/data/wwwlogs"},
+			{Key: "runUser", Label: "运行账号", Type: "string", Default: "www"},
+			{Key: "runGroup", Label: "运行用户组", Type: "string", Default: "www"},
+		}
+		result.Environment = map[string]string{
+			"workerProcesses":   "ONEINSTACK_CONFIG_WORKER_PROCESSES",
+			"workerConnections": "ONEINSTACK_CONFIG_WORKER_CONNECTIONS",
+			"keepaliveTimeout":  "ONEINSTACK_CONFIG_KEEPALIVE_TIMEOUT",
+			"clientMaxBodySize": "ONEINSTACK_CONFIG_CLIENT_MAX_BODY_SIZE",
+			"openrestyPort":     "ONEINSTACK_CONFIG_OPENRESTY_PORT",
+			"phpFpmSocket":      "ONEINSTACK_CONFIG_PHP_FPM_SOCKET",
+			"installDir":        "ONEINSTACK_CONFIG_INSTALL_DIR",
+			"webRoot":           "ONEINSTACK_CONFIG_WEB_ROOT",
+			"logDir":            "ONEINSTACK_CONFIG_LOG_DIR",
+			"runUser":           "ONEINSTACK_CONFIG_RUN_USER",
+			"runGroup":          "ONEINSTACK_CONFIG_RUN_GROUP",
+		}
+	case "tengine":
+		result.ApplyMode = "reload"
+		result.Fields = []ConfigurationField{
+			{
+				Key:         "workerProcesses",
+				Label:       "工作进程数",
+				Type:        "worker_processes",
+				Default:     "auto",
+				Description: "建议保持 auto；手动设置范围为 1–99。",
+			},
+			{Key: "workerConnections", Label: "单进程连接数", Type: "integer", Min: intPointer(512), Max: intPointer(65535)},
+			{Key: "keepaliveTimeout", Label: "长连接超时", Type: "integer", Unit: "秒", Min: intPointer(5), Max: intPointer(300)},
+			{Key: "clientMaxBodySize", Label: "请求体上限", Type: "integer", Unit: "MB", Min: intPointer(1), Max: intPointer(10240)},
+			{Key: "tenginePort", Label: "监听端口", Type: "port", Min: intPointer(1), Max: intPointer(65535)},
+			{Key: "phpFpmSocket", Label: "PHP-FPM Socket", Type: "path"},
+			{Key: "installDir", Label: "安装目录", Type: "path", Description: "安装目录不可在线迁移。"},
+			{Key: "webRoot", Label: "网站根目录", Type: "path"},
+			{Key: "logDir", Label: "日志目录", Type: "path"},
+			{Key: "runUser", Label: "运行账号", Type: "string"},
+			{Key: "runGroup", Label: "运行用户组", Type: "string"},
+		}
+		result.Environment = map[string]string{
+			"workerProcesses":   "ONEINSTACK_CONFIG_WORKER_PROCESSES",
+			"workerConnections": "ONEINSTACK_CONFIG_WORKER_CONNECTIONS",
+			"keepaliveTimeout":  "ONEINSTACK_CONFIG_KEEPALIVE_TIMEOUT",
+			"clientMaxBodySize": "ONEINSTACK_CONFIG_CLIENT_MAX_BODY_SIZE",
+			"tenginePort":       "ONEINSTACK_CONFIG_TENGINE_PORT",
+			"phpFpmSocket":      "ONEINSTACK_CONFIG_PHP_FPM_SOCKET",
+			"installDir":        "ONEINSTACK_CONFIG_INSTALL_DIR",
+			"webRoot":           "ONEINSTACK_CONFIG_WEB_ROOT",
+			"logDir":            "ONEINSTACK_CONFIG_LOG_DIR",
+			"runUser":           "ONEINSTACK_CONFIG_RUN_USER",
+			"runGroup":          "ONEINSTACK_CONFIG_RUN_GROUP",
+		}
+	case "caddy":
+		result.ApplyMode = "reload"
+		result.Fields = []ConfigurationField{
+			{Key: "port", Label: "监听端口", Type: "port", Default: "80", Min: intPointer(1), Max: intPointer(65535)},
+			{Key: "phpFpmSocket", Label: "PHP-FPM Socket", Type: "path", Default: "/dev/shm/php-cgi.sock"},
+			{Key: "webRoot", Label: "网站根目录", Type: "path", Default: "/data/wwwroot"},
+			{Key: "logDir", Label: "日志目录", Type: "path", Default: "/data/wwwlogs"},
+		}
+		result.Environment = map[string]string{
+			"port":         "ONEINSTACK_CONFIG_PORT",
+			"phpFpmSocket": "ONEINSTACK_CONFIG_PHP_FPM_SOCKET",
+			"webRoot":      "ONEINSTACK_CONFIG_WEB_ROOT",
+			"logDir":       "ONEINSTACK_CONFIG_LOG_DIR",
 		}
 	case "apache":
 		result.ApplyMode = "restart"
@@ -474,6 +561,18 @@ func normalizeConfigurationValues(definition configurationDefinition, values map
 			}
 		}
 	}
+	if definition.Component == "openresty" {
+		for _, key := range []string{"phpFpmSocket", "installDir", "webRoot", "logDir"} {
+			if strings.ContainsAny(result[key], " \t\r\n\"';|&$`*?[]{}()<>\\#") {
+				return nil, fmt.Errorf("OpenResty configuration field %s contains unsupported path characters", key)
+			}
+		}
+		for _, key := range []string{"runUser", "runGroup"} {
+			if !systemAccountPattern.MatchString(result[key]) {
+				return nil, fmt.Errorf("OpenResty configuration field %s must be a valid system account identifier", key)
+			}
+		}
+	}
 	return result, nil
 }
 
@@ -567,7 +666,7 @@ func (installer *Installer) inspectServiceConfiguration(
 		return ComponentConfiguration{}, err
 	}
 	configuration.PackageSource = componentPackage.Source
-	configuration.InstallParameters = componentInstallParameters(componentPackage.Manifest.Parameters, scriptInfo.Params)
+	configuration.InstallParameters = componentInstallParameters(definition.Component, componentPackage.Manifest.Parameters, scriptInfo.Params)
 	if configuration.Connection == nil && definition.Component == "redis" {
 		configuration.Connection = redisConnectionFromParameters(scriptInfo.Params)
 	}
@@ -611,11 +710,15 @@ func cloneComponentConfiguration(configuration ComponentConfiguration) Component
 }
 
 func componentInstallParameters(
+	component string,
 	parameters []scriptregistry.Parameter,
 	values map[string]string,
 ) []ComponentInstallParameter {
 	result := make([]ComponentInstallParameter, 0, len(parameters))
 	for _, parameter := range parameters {
+		if serverOwnedInstallParameterForComponent(component, parameter.Name) {
+			continue
+		}
 		envName := strings.TrimSpace(parameter.Env)
 		if envName == "" {
 			envName = strings.ToUpper(strings.NewReplacer("-", "_", ".", "_").Replace(strings.TrimSpace(parameter.Name)))
@@ -639,6 +742,31 @@ func componentInstallParameters(
 	return result
 }
 
+func serverOwnedInstallParameterName(name string) bool {
+	switch strings.ToUpper(strings.TrimSpace(name)) {
+	case "ONEINSTACK_INSTALL_MODE", "ONEINSTACK_OFFLINE_PACKAGE_PATH", "ONEINSTACK_COMPONENT_STATE",
+		"UNINSTALL_DATA_POLICY", "UNINSTALL_CONFIRM_DATA_DELETION", "WEB_VHOST_ROOT":
+		return true
+	default:
+		return false
+	}
+}
+
+func serverOwnedInstallParameterForComponent(component, name string) bool {
+	if serverOwnedInstallParameterName(name) {
+		return true
+	}
+	if !strings.EqualFold(strings.TrimSpace(component), "caddy") {
+		return false
+	}
+	switch strings.ToUpper(strings.TrimSpace(name)) {
+	case "INSTALL_DIR", "RUN_USER", "RUN_GROUP":
+		return true
+	default:
+		return false
+	}
+}
+
 func componentInstallParameterLabel(name string) string {
 	switch strings.ToUpper(strings.TrimSpace(name)) {
 	case "SOFTWARE_VERSION":
@@ -657,6 +785,12 @@ func componentInstallParameterLabel(name string) string {
 		return "Redis password"
 	case "PORT":
 		return "HTTP listener port"
+	case "TENGINE_PORT":
+		return "Tengine HTTP listener port"
+	case "OPENRESTY_PORT":
+		return "OpenResty HTTP listener port"
+	case "CADDY_PORT":
+		return "Caddy HTTP listener port"
 	case "PHP_FPM_SOCKET":
 		return "PHP-FPM socket"
 	case "WEB_ROOT":
@@ -812,10 +946,135 @@ func persistManagedConfiguration(params *input.InstallParams, values map[string]
 	if strings.EqualFold(strings.TrimSpace(params.Key), "apache") {
 		return persistManagedApacheConfiguration(params, values)
 	}
+	if strings.EqualFold(strings.TrimSpace(params.Key), "openresty") {
+		return persistManagedOpenRestyConfiguration(params, values)
+	}
+	if strings.EqualFold(strings.TrimSpace(params.Key), "caddy") {
+		return persistManagedCaddyConfiguration(params, values)
+	}
 	if strings.EqualFold(strings.TrimSpace(params.Key), "firewalld") {
 		return persistManagedFirewalldConfiguration(params, values)
 	}
 	return persistManagedMySQLConfiguration(params, values)
+}
+
+func persistManagedCaddyConfiguration(params *input.InstallParams, values map[string]string) error {
+	if params == nil || app.DB() == nil {
+		return nil
+	}
+	var row models.Software
+	query := app.DB().Where("installed = ?", true).
+		Where("(`key` = ? OR component = ?)", "caddy", "caddy")
+	if strings.TrimSpace(params.Key) != "" {
+		query = query.Where("(`key` = ? OR component = ?)", params.Key, "caddy")
+	}
+	if err := query.Order("install_time DESC, id DESC").First(&row).Error; err != nil {
+		return err
+	}
+	runtime := make(map[string]string)
+	if strings.TrimSpace(row.RuntimeParamsJSON) != "" {
+		if err := json.Unmarshal([]byte(row.RuntimeParamsJSON), &runtime); err != nil {
+			return fmt.Errorf("decode Caddy runtime parameters: %w", err)
+		}
+	}
+	assign := func(valueKey string, runtimeKeys ...string) {
+		value := strings.TrimSpace(values[valueKey])
+		if value == "" {
+			return
+		}
+		for _, runtimeKey := range runtimeKeys {
+			runtime[runtimeKey] = value
+		}
+	}
+	assign("port", "caddy-port", "port")
+	assign("phpFpmSocket", "caddy-php-fpm-socket", "php-fpm-socket")
+	assign("webRoot", "caddy-web-root", "web-root")
+	assign("logDir", "caddy-log-dir", "log-dir")
+	runtime["caddy-install-dir"] = "/usr/local/caddy"
+	runtime["install-dir"] = "/usr/local/caddy"
+	runtime["caddy-vhost-root"] = "/usr/local/one/vhost"
+	runtime["web-vhost-root"] = "/usr/local/one/vhost"
+	runtime["caddy-run-user"] = "caddy"
+	runtime["run-user"] = "caddy"
+	runtime["caddy-run-group"] = "caddy"
+	runtime["run-group"] = "caddy"
+	encoded, err := json.Marshal(runtime)
+	if err != nil {
+		return fmt.Errorf("encode Caddy runtime parameters: %w", err)
+	}
+	updates := map[string]interface{}{"runtime_params": string(encoded)}
+	if port := strings.TrimSpace(values["port"]); port != "" {
+		updates["http_port"] = port
+	}
+	result := app.DB().Model(&models.Software{}).Where("id = ?", row.Id).Updates(updates)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return errors.New("Caddy software runtime parameters were not updated")
+	}
+	return nil
+}
+
+func persistManagedOpenRestyConfiguration(params *input.InstallParams, values map[string]string) error {
+	if params == nil || app.DB() == nil {
+		return nil
+	}
+	var row models.Software
+	query := app.DB().Where("installed = ?", true).
+		Where("(`key` = ? OR component = ?)", "openresty", "openresty")
+	if strings.TrimSpace(params.Key) != "" {
+		query = query.Where("(`key` = ? OR component = ?)", params.Key, "openresty")
+	}
+	if err := query.Order("install_time DESC, id DESC").First(&row).Error; err != nil {
+		return err
+	}
+	runtime := make(map[string]string)
+	if strings.TrimSpace(row.RuntimeParamsJSON) != "" {
+		if err := json.Unmarshal([]byte(row.RuntimeParamsJSON), &runtime); err != nil {
+			return fmt.Errorf("decode OpenResty runtime parameters: %w", err)
+		}
+	}
+	assign := func(valueKey string, runtimeKeys ...string) {
+		value := strings.TrimSpace(values[valueKey])
+		if value == "" {
+			return
+		}
+		for _, runtimeKey := range runtimeKeys {
+			runtime[runtimeKey] = value
+		}
+	}
+	assign("openrestyPort", "openresty-port", "port")
+	assign("phpFpmSocket", "openresty-php-fpm-socket", "php-fpm-socket")
+	assign("installDir", "openresty-install-dir", "install-dir")
+	assign("webRoot", "openresty-web-root", "web-root")
+	assign("logDir", "openresty-log-dir", "log-dir")
+	assign("runUser", "openresty-run-user", "run-user")
+	assign("runGroup", "openresty-run-group", "run-group")
+	if runtime["openresty-install-dir"] == "" {
+		runtime["openresty-install-dir"] = "/usr/local/openresty"
+		runtime["install-dir"] = "/usr/local/openresty"
+	}
+	if runtime["openresty-vhost-root"] == "" {
+		runtime["openresty-vhost-root"] = "/usr/local/one/vhost"
+		runtime["web-vhost-root"] = "/usr/local/one/vhost"
+	}
+	encoded, err := json.Marshal(runtime)
+	if err != nil {
+		return fmt.Errorf("encode OpenResty runtime parameters: %w", err)
+	}
+	updates := map[string]interface{}{"runtime_params": string(encoded)}
+	if port := strings.TrimSpace(values["openrestyPort"]); port != "" {
+		updates["http_port"] = port
+	}
+	result := app.DB().Model(&models.Software{}).Where("id = ?", row.Id).Updates(updates)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return errors.New("OpenResty software runtime parameters were not updated")
+	}
+	return nil
 }
 
 func persistManagedFirewalldConfiguration(params *input.InstallParams, values map[string]string) error {
@@ -1052,11 +1311,15 @@ func parseComponentConfiguration(
 	}
 	optional := make(map[string]struct{})
 	var runtime *ComponentRuntime
-	if definition.Component == "mysql" || definition.Component == "php" || definition.Component == "firewalld" || definition.Component == "apache" {
+	if definition.Component == "mysql" || definition.Component == "php" || definition.Component == "firewalld" || definition.Component == "apache" || definition.Component == "openresty" || definition.Component == "caddy" {
 		runtime = &ComponentRuntime{}
 		runtimeKeys := []string{"runtime.port", "runtime.bindAddress", "runtime.installDir", "runtime.dataDir", "runtime.logDir", "runtime.runUser", "runtime.runGroup"}
 		if definition.Component == "php" {
 			runtimeKeys = append(runtimeKeys, "runtime.socketPath")
+		} else if definition.Component == "openresty" {
+			runtimeKeys = []string{"runtime.port", "runtime.installDir", "runtime.dataDir", "runtime.logDir", "runtime.runUser", "runtime.runGroup"}
+		} else if definition.Component == "caddy" {
+			runtimeKeys = []string{"runtime.port", "runtime.bindAddress", "runtime.socketPath", "runtime.installDir", "runtime.dataDir", "runtime.logDir", "runtime.runUser", "runtime.runGroup", "runtime.configFile", "runtime.vhostDir", "runtime.serviceName", "runtime.version"}
 		}
 		for _, key := range runtimeKeys {
 			allowed[key] = struct{}{}
@@ -1133,6 +1396,10 @@ func parseComponentConfiguration(
 		runtime.LogDir = fields["runtime.logDir"]
 		runtime.RunUser = fields["runtime.runUser"]
 		runtime.RunGroup = fields["runtime.runGroup"]
+		runtime.ConfigFile = fields["runtime.configFile"]
+		runtime.VhostDir = fields["runtime.vhostDir"]
+		runtime.ServiceName = fields["runtime.serviceName"]
+		runtime.Version = fields["runtime.version"]
 		if definition.Component == "mysql" {
 			if port, parseErr := strconv.Atoi(runtime.Port); parseErr != nil || port < 1 || port > 65535 {
 				return ComponentConfiguration{}, errors.New("component runtime port is invalid")
@@ -1161,6 +1428,25 @@ func parseComponentConfiguration(
 				runtime.LogDir == "" || !strings.HasPrefix(runtime.LogDir, "/") || filepath.Clean(runtime.LogDir) != runtime.LogDir ||
 				runtime.RunUser == "" || runtime.RunGroup == "" {
 				return ComponentConfiguration{}, errors.New("Apache component runtime identity is invalid")
+			}
+		} else if definition.Component == "openresty" {
+			port, parseErr := strconv.Atoi(runtime.Port)
+			if parseErr != nil || port < 1 || port > 65535 || runtime.BindAddress != "" ||
+				runtime.InstallDir == "" || !strings.HasPrefix(runtime.InstallDir, "/") || filepath.Clean(runtime.InstallDir) != runtime.InstallDir ||
+				runtime.DataDir != "" || runtime.LogDir == "" || !strings.HasPrefix(runtime.LogDir, "/") || filepath.Clean(runtime.LogDir) != runtime.LogDir ||
+				runtime.RunUser == "" || runtime.RunGroup == "" {
+				return ComponentConfiguration{}, errors.New("OpenResty component runtime identity is invalid")
+			}
+		} else if definition.Component == "caddy" {
+			port, parseErr := strconv.Atoi(runtime.Port)
+			if parseErr != nil || port < 1 || port > 65535 || runtime.BindAddress != "0.0.0.0" ||
+				runtime.SocketPath == "" || !strings.HasPrefix(runtime.SocketPath, "/") || filepath.Clean(runtime.SocketPath) != runtime.SocketPath ||
+				runtime.InstallDir != "/usr/local/caddy" || runtime.DataDir != "/var/lib/caddy" ||
+				runtime.LogDir == "" || !strings.HasPrefix(runtime.LogDir, "/") || filepath.Clean(runtime.LogDir) != runtime.LogDir ||
+				runtime.RunUser != "caddy" || runtime.RunGroup != "caddy" ||
+				runtime.ConfigFile != "/usr/local/caddy/conf/Caddyfile" || runtime.VhostDir != "/usr/local/one/vhost/caddy" ||
+				runtime.ServiceName != "oneinstack-caddy" || !phpExactVersionPattern.MatchString(runtime.Version) {
+				return ComponentConfiguration{}, errors.New("Caddy component runtime identity is invalid")
 			}
 		}
 	}

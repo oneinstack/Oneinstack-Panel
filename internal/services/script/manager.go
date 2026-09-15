@@ -1506,6 +1506,8 @@ func canonicalRuntimeParameterName(key string) (string, bool) {
 	switch compactInstallParameterName(key) {
 	case "port", "mysqlport":
 		return "mysql-port", true
+	case "caddyport":
+		return "caddy-port", true
 	case "redisport":
 		return "redis-port", true
 	case "redisbind":
@@ -1522,6 +1524,12 @@ func canonicalRuntimeParameterName(key string) (string, bool) {
 		return "data-dir", true
 	case "logdir":
 		return "log-dir", true
+	case "webroot":
+		return "web-root", true
+	case "webvhostroot":
+		return "web-vhost-root", true
+	case "phpfmpsocket":
+		return "php-fpm-socket", true
 	case "runuser":
 		return "run-user", true
 	case "rungroup":

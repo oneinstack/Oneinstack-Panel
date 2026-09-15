@@ -413,6 +413,10 @@ func webEngineBinary(engine string) string {
 	case "openresty":
 		return "/usr/local/openresty/nginx/sbin/nginx"
 	case "tengine":
+		native := "/usr/local/tengine/sbin/tengine"
+		if info, err := os.Stat(native); err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0111 != 0 {
+			return native
+		}
 		return "/usr/local/tengine/sbin/nginx"
 	case "apache":
 		return "/usr/local/apache/bin/httpd"
@@ -430,6 +434,11 @@ func webEngineMainConfig(engine string) string {
 		return filepath.Join(root, "../conf/nginx.conf")
 	case "apache":
 		return filepath.Join(root, "../conf/httpd.conf")
+	case "tengine":
+		if strings.HasSuffix(webEngineBinary(engine), "/sbin/tengine") {
+			return filepath.Join(root, "../conf/tengine.conf")
+		}
+		return filepath.Join(root, "../conf/nginx.conf")
 	case "caddy":
 		return filepath.Join(root, "../conf/Caddyfile")
 	default:

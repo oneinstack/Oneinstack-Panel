@@ -317,7 +317,7 @@ func SubmitOfflineInstallationTask(
 	}
 	componentKey := strings.ToLower(strings.TrimSpace(req.Key))
 	switch componentKey {
-	case "fail2ban", "docker", "docker-compose", "phpmyadmin", "redis", "firewalld", "db", "mysql", "webserver", "nginx", "apache", "php", "nodejs":
+	case "fail2ban", "docker", "docker-compose", "phpmyadmin", "redis", "firewalld", "db", "mysql", "webserver", "nginx", "openresty", "tengine", "caddy", "apache", "php", "nodejs":
 	default:
 		return nil, fmt.Errorf("offline installation is not supported for component %s", componentKey)
 	}
@@ -425,7 +425,7 @@ func submitInstallationTask(
 
 func requiresClosedLoopPackage(key string) bool {
 	switch strings.ToLower(strings.TrimSpace(key)) {
-	case "firewalld", "db", "mysql", "webserver", "nginx", "apache", "php", "nodejs":
+	case "firewalld", "db", "mysql", "webserver", "nginx", "openresty", "tengine", "caddy", "apache", "php", "nodejs":
 		return true
 	default:
 		return false
@@ -438,6 +438,12 @@ func offlineBundleComponent(key string) string {
 		return "mysql"
 	case "webserver", "nginx":
 		return "nginx"
+	case "tengine":
+		return "tengine"
+	case "openresty":
+		return "openresty"
+	case "caddy":
+		return "caddy"
 	default:
 		return strings.ToLower(strings.TrimSpace(key))
 	}

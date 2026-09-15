@@ -549,6 +549,15 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 		if apacheValues := hydrateApacheInstallParameters(item.Component, item.Key, item.RuntimeParamsJSON, params); apacheValues != nil {
 			installParameterValues = apacheValues
 		}
+		if tengineValues := hydrateTengineInstallParameters(item.Component, item.Key, params); tengineValues != nil {
+			installParameterValues = tengineValues
+		}
+		if openRestyValues := hydrateOpenRestyInstallParameters(item.Component, item.Key, params); openRestyValues != nil {
+			installParameterValues = openRestyValues
+		}
+		if caddyValues := hydrateCaddyInstallParameters(item.Component, item.Key, item.RuntimeParamsJSON, params); caddyValues != nil {
+			installParameterValues = caddyValues
+		}
 		hydrateRedisInstallParameters(item.Component, item.Key, item.RuntimeParamsJSON, params)
 		if strings.EqualFold(strings.TrimSpace(item.Key), "firewalld") {
 			for _, parameter := range params {
@@ -688,7 +697,8 @@ func normalizeExactVersionPresentation(item *output.Software) {
 	}
 	key := strings.ToLower(strings.TrimSpace(item.Key))
 	component := strings.ToLower(strings.TrimSpace(item.Component))
-	if key != "php" && key != "webserver" && key != "nginx" && key != "apache" && component != "php" && component != "nginx" && component != "apache" {
+	if key != "php" && key != "webserver" && key != "nginx" && key != "openresty" && key != "caddy" && key != "apache" &&
+		component != "php" && component != "nginx" && component != "openresty" && component != "caddy" && component != "apache" {
 		return
 	}
 	options := make([]output.VersionOption, 0, len(item.VersionOptions))
@@ -696,7 +706,11 @@ func normalizeExactVersionPresentation(item *output.Software) {
 	recommended := ""
 	for _, option := range item.VersionOptions {
 		version := strings.TrimSpace(option.Version)
-		if version == "" || !phpExactVersionPattern.MatchString(version) || !option.Enabled || !option.Installable {
+		versionPattern := phpExactVersionPattern
+		if key == "openresty" || component == "openresty" {
+			versionPattern = openRestyExactVersionPattern
+		}
+		if version == "" || !versionPattern.MatchString(version) || !option.Enabled || !option.Installable {
 			continue
 		}
 		option.Line = ""

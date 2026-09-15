@@ -21,6 +21,7 @@ var bundledOnlySoftwareKeys = map[string]struct{}{
 	"db":         {},
 	"redis":      {},
 	"webserver":  {},
+	"caddy":      {},
 	"apache":     {},
 	"php":        {},
 	"phpmyadmin": {},
@@ -165,8 +166,8 @@ func NormalizeInstallParams(params *input.InstallParams) {
 			portNames = append(portNames, "mysql-port", "mysqlPort")
 		case "redis":
 			portNames = append(portNames, "redis-port", "redisPort")
-		case "webserver", "nginx", "openresty", "tengine":
-			portNames = append(portNames, "nginx-port", "nginxPort")
+		case "webserver", "nginx", "openresty", "tengine", "caddy":
+			portNames = append(portNames, "nginx-port", "nginxPort", "openresty-port", "openrestyPort", "tengine-port", "tenginePort", "caddy-port", "caddyPort")
 		case "apache":
 			portNames = append(portNames, "apache-port", "apachePort")
 		}
@@ -178,6 +179,11 @@ func NormalizeInstallParams(params *input.InstallParams) {
 			usernameNames = append(usernameNames, "redis-username", "redisUsername")
 		}
 		params.Username = installParameterValue(params.Parameters, usernameNames...)
+	}
+	if strings.EqualFold(strings.TrimSpace(params.Key), "caddy") {
+		// Caddy always runs as the server-owned caddy:caddy identity. Keep the
+		// legacy flat username field and generic run-user aliases from replacing it.
+		params.Username = ""
 	}
 	if isDatabaseInstallKey(params.Key) {
 		if params.Port == "" {
@@ -222,7 +228,7 @@ func canonicalInstallParameterName(value string) string {
 	switch compactInstallParameterName(value) {
 	case "version", "softwareversion":
 		return "software-version"
-	case "port", "nginxport", "nginxportnumber", "apacheport", "apacheportnumber":
+	case "port", "nginxport", "nginxportnumber", "openrestyport", "openrestyportnumber", "tengineport", "tengineportnumber", "caddyport", "caddyportnumber", "apacheport", "apacheportnumber":
 		return "port"
 	case "installdir":
 		return "install-dir"
@@ -645,6 +651,10 @@ func (installer *Installer) getInstallScript(ctx context.Context, params *input.
 		if componentName == "" {
 			componentName = "apache"
 		}
+	case "tengine":
+		if componentName == "" {
+			componentName = "tengine"
+		}
 	case "db", "mysql":
 		if componentName == "" {
 			componentName = "mysql"
@@ -691,7 +701,10 @@ func (installer *Installer) getInstallScript(ctx context.Context, params *input.
 		if componentName == "" {
 			componentName = "openresty"
 		}
-		legacyScriptName = "openresty"
+	case "caddy":
+		if componentName == "" {
+			componentName = "caddy"
+		}
 	case "phpmyadmin":
 		if componentName == "" {
 			componentName = "phpmyadmin"
@@ -797,7 +810,7 @@ func (installer *Installer) getInstallScript(ctx context.Context, params *input.
 			registryErr,
 		)
 	}
-	if _, bundledOnly := bundledOnlySoftwareKeys[params.Key]; bundledOnly {
+	if _, bundledOnly := bundledOnlySoftwareKeys[strings.ToLower(strings.TrimSpace(params.Key))]; bundledOnly {
 		return nil, fmt.Errorf(
 			"resolve %s %s package: %v",
 			componentName,
@@ -1013,6 +1026,12 @@ func componentForRemove(value string) (component string, softwareKey string, err
 	switch normalized {
 	case "nginx", "webserver":
 		return "nginx", "webserver", nil
+	case "openresty":
+		return "openresty", "openresty", nil
+	case "tengine":
+		return "tengine", "tengine", nil
+	case "caddy":
+		return "caddy", "caddy", nil
 	case "apache":
 		return "apache", "apache", nil
 	case "mysql", "db":
@@ -1145,7 +1164,11 @@ func (installer *Installer) setScriptParams(scriptInfo *script.ScriptInfo, param
 	// resolved signed manifest. This supports new Center components without
 	// hard-coding their parameter names while preventing arbitrary environment
 	// variable injection.
+	componentKey := strings.ToLower(strings.TrimSpace(params.Key))
 	for _, parameter := range scriptInfo.ParameterSpecs {
+		if serverOwnedInstallParameterForComponent(componentKey, parameter.Name) {
+			continue
+		}
 		for key, value := range params.Parameters {
 			if parameter.Type != "password" {
 				value = strings.TrimSpace(value)
@@ -1186,7 +1209,6 @@ func (installer *Installer) setScriptParams(scriptInfo *script.ScriptInfo, param
 			scriptInfo.Params["FAIL2BAN_OFFLINE_PACKAGE_PATH"] = offlinePath
 		}
 	}
-	componentKey := strings.ToLower(strings.TrimSpace(params.Key))
 	if _, closedLoop := closedLoopPackageComponent(componentKey); closedLoop ||
 		componentKey == "docker" || componentKey == "docker-compose" || componentKey == "phpmyadmin" || componentKey == "redis" {
 		// Installation mode and offline root are server-owned values. They are
@@ -1200,7 +1222,7 @@ func (installer *Installer) setScriptParams(scriptInfo *script.ScriptInfo, param
 			scriptInfo.Params["ONEINSTACK_OFFLINE_PACKAGE_PATH"] = offlinePath
 		}
 	}
-	if params.Key == "apache" {
+	if strings.EqualFold(strings.TrimSpace(params.Key), "apache") || strings.EqualFold(strings.TrimSpace(params.Key), "tengine") || strings.EqualFold(strings.TrimSpace(params.Key), "openresty") || strings.EqualFold(strings.TrimSpace(params.Key), "caddy") {
 		vhostRoot := strings.TrimSpace(app.ONE_CONFIG.System.WebVhostRoot)
 		if vhostRoot == "" {
 			vhostRoot = "/usr/local/one/vhost"
@@ -1208,6 +1230,14 @@ func (installer *Installer) setScriptParams(scriptInfo *script.ScriptInfo, param
 		vhostRoot = filepath.Clean(vhostRoot)
 		scriptInfo.Params["WEB_VHOST_ROOT"] = vhostRoot
 		scriptInfo.Params["ONEINSTACK_PARAMETER_WEB_VHOST_ROOT_EXPLICIT"] = "true"
+	}
+	if scriptInfo.ActionName == "uninstall" {
+		if dataPolicy := installParameterValue(params.Parameters, "data-policy"); dataPolicy != "" {
+			scriptInfo.Params["UNINSTALL_DATA_POLICY"] = dataPolicy
+		}
+		if confirmation := installParameterValue(params.Parameters, "delete-data-confirm"); confirmation != "" {
+			scriptInfo.Params["UNINSTALL_CONFIRM_DATA_DELETION"] = confirmation
+		}
 	}
 }
 
