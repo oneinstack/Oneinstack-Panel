@@ -1071,7 +1071,11 @@ func readOSRelease(fileName string) (string, string) {
 		}
 		values[strings.TrimSpace(key)] = strings.Trim(strings.TrimSpace(value), `"'`)
 	}
-	return strings.ToLower(values["ID"]), values["VERSION_ID"]
+	systemID := strings.ToLower(values["ID"])
+	if systemID == "centos" && strings.Contains(strings.ToLower(values["NAME"]+" "+values["PRETTY_NAME"]), "stream") {
+		systemID = "centos-stream"
+	}
+	return systemID, values["VERSION_ID"]
 }
 
 func compatibleWithHost(manifest Manifest, host Host) bool {
