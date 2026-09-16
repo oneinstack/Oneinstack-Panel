@@ -107,9 +107,13 @@ func getTaskManager() (*softwaretask.Manager, error) {
 						logPath,
 						reporter,
 					)
-					if err == nil && (strings.EqualFold(strings.TrimSpace(request.Key), "db") || strings.EqualFold(strings.TrimSpace(request.Key), "mysql")) {
-						previousPort := strings.TrimSpace(request.PreviousConfiguration["mysqlPort"])
-						targetPort := strings.TrimSpace(request.Configuration["mysqlPort"])
+					if err == nil && (strings.EqualFold(strings.TrimSpace(request.Key), "db") || strings.EqualFold(strings.TrimSpace(request.Key), "mysql") || strings.EqualFold(strings.TrimSpace(request.Key), "mariadb")) {
+						portKey := "mysqlPort"
+						if strings.EqualFold(strings.TrimSpace(request.Key), "mariadb") {
+							portKey = "mariadbPort"
+						}
+						previousPort := strings.TrimSpace(request.PreviousConfiguration[portKey])
+						targetPort := strings.TrimSpace(request.Configuration[portKey])
 						if err = storageService.MoveManagedLocalMySQLConnection(previousPort, targetPort); err != nil {
 							return fmt.Errorf("move managed local MySQL connection: %w", err)
 						}
@@ -317,7 +321,7 @@ func SubmitOfflineInstallationTask(
 	}
 	componentKey := strings.ToLower(strings.TrimSpace(req.Key))
 	switch componentKey {
-	case "fail2ban", "docker", "docker-compose", "phpmyadmin", "redis", "firewalld", "db", "mysql", "webserver", "nginx", "openresty", "tengine", "caddy", "apache", "php", "nodejs":
+	case "fail2ban", "docker", "docker-compose", "phpmyadmin", "redis", "mongodb", "firewalld", "db", "mysql", "mariadb", "webserver", "nginx", "openresty", "tengine", "caddy", "apache", "php", "nodejs":
 	default:
 		return nil, fmt.Errorf("offline installation is not supported for component %s", componentKey)
 	}
@@ -425,7 +429,7 @@ func submitInstallationTask(
 
 func requiresClosedLoopPackage(key string) bool {
 	switch strings.ToLower(strings.TrimSpace(key)) {
-	case "firewalld", "db", "mysql", "webserver", "nginx", "openresty", "tengine", "caddy", "apache", "php", "nodejs":
+	case "firewalld", "db", "mysql", "mariadb", "mongodb", "webserver", "nginx", "openresty", "tengine", "caddy", "apache", "php", "nodejs":
 		return true
 	default:
 		return false
@@ -469,7 +473,11 @@ func explicitInstallParameters(req input.InstallParams) map[string]bool {
 func mysqlDataDirectoryInitialized(req input.InstallParams) (bool, error) {
 	dataDir := installTaskParameterValue(req.Parameters, "data-dir", "dataDir", "DATA_DIR")
 	if dataDir == "" {
-		dataDir = "/data/mysql"
+		if strings.EqualFold(strings.TrimSpace(req.Key), "mariadb") {
+			dataDir = "/data/mariadb"
+		} else {
+			dataDir = "/data/mysql"
+		}
 	}
 	cleaned := filepath.Clean(dataDir)
 	if !filepath.IsAbs(dataDir) || cleaned != dataDir {

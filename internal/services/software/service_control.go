@@ -68,6 +68,7 @@ func SupportedComponentServices() []ComponentServiceDefinition {
 		{Component: "caddy", SoftwareKey: "caddy", DisplayName: "Caddy", ServiceName: "oneinstack-caddy", RuntimeGroup: "web-server", ManageScopes: []string{"web_service"}},
 		{Component: "apache", SoftwareKey: "apache", DisplayName: "Apache HTTP Server", ServiceName: "oneinstack-httpd", RuntimeGroup: "web-server", ManageScopes: []string{"web_service"}},
 		{Component: "mysql", SoftwareKey: "db", DisplayName: "MySQL", ServiceName: "mysql", RuntimeGroup: "database", ManageScopes: []string{"database"}},
+		{Component: "mariadb", SoftwareKey: "mariadb", DisplayName: "MariaDB", ServiceName: "mariadb", RuntimeGroup: "database", ManageScopes: []string{"database"}},
 		{Component: "php", SoftwareKey: "php", DisplayName: "PHP-FPM", ServiceName: "php-fpm", RuntimeGroup: "php-runtime", ManageScopes: []string{"runtime"}},
 		{Component: "redis", SoftwareKey: "redis", DisplayName: "Redis", ServiceName: "redis-server", ManageScopes: []string{"cache"}},
 		{Component: "firewalld", SoftwareKey: "firewalld", DisplayName: "firewalld", ServiceName: "firewalld", RuntimeGroup: "firewall", ManageScopes: []string{"security"}},
@@ -83,6 +84,15 @@ func NormalizeServiceComponent(value string) (ComponentServiceDefinition, error)
 			normalized == definition.ServiceName {
 			return definition, nil
 		}
+	}
+	if normalized == "mongodb" || normalized == "mongod" {
+		return ComponentServiceDefinition{
+			Component:    "mongodb",
+			SoftwareKey:  "mongodb",
+			DisplayName:  "MongoDB",
+			ServiceName:  "mongod",
+			ManageScopes: []string{"database"},
+		}, nil
 	}
 	return ComponentServiceDefinition{}, fmt.Errorf("unsupported component service: %s", value)
 }
@@ -728,21 +738,21 @@ func parseComponentServiceProbe(
 		case "component", "service", "load_state", "active_state", "sub_state",
 			"unit_file_state", "runtime_version", "can_reload":
 		case "recorded_version", "version_state", "ownership", "socket_state":
-			if definition.Component != "php" && definition.Component != "firewalld" {
+			if definition.Component != "php" && definition.Component != "firewalld" && definition.Component != "mariadb" {
 				return ComponentServiceProbe{}, fmt.Errorf("component status output contains unknown field %q", key)
 			}
 		case "port":
 			// Apache status scripts report the configured listener so the service
 			// card can keep its runtime metadata in sync while the service is
 			// stopped. The field is internal to the probe and is not exposed here.
-			if definition.Component != "mysql" && definition.Component != "apache" {
+			if definition.Component != "mysql" && definition.Component != "mariadb" && definition.Component != "mongodb" && definition.Component != "apache" {
 				return ComponentServiceProbe{}, fmt.Errorf("component status output contains unknown field %q", key)
 			}
 		case "bind_address", "install_dir", "data_dir", "log_dir", "run_user", "run_group":
 			// The managed MySQL status script also reports its effective runtime
 			// metadata. These fields are intentionally accepted only for MySQL;
 			// they are not part of the public probe response.
-			if definition.Component != "mysql" {
+			if definition.Component != "mysql" && definition.Component != "mariadb" && definition.Component != "mongodb" {
 				return ComponentServiceProbe{}, fmt.Errorf("component status output contains unknown field %q", key)
 			}
 		default:

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -19,6 +20,7 @@ import (
 	"oneinstack/internal/models"
 	"oneinstack/internal/services/script"
 	"oneinstack/internal/services/scriptregistry"
+	storageService "oneinstack/internal/services/storage"
 	"oneinstack/router/input"
 
 	"gorm.io/gorm"
@@ -31,6 +33,8 @@ var (
 	configurationKeyPattern  = regexp.MustCompile(`^[a-z][A-Za-z0-9-]{0,63}$`)
 	configurationHashPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 	redisUsernamePattern     = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
+	mongodbUsernamePattern   = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9._-]{0,63}$`)
+	mongodbHostnamePattern   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$`)
 	systemAccountPattern     = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,30}$`)
 )
 
@@ -98,6 +102,10 @@ type ComponentRuntime struct {
 	VhostDir    string `json:"vhostDir,omitempty"`
 	ServiceName string `json:"serviceName,omitempty"`
 	Version     string `json:"version,omitempty"`
+	// RuntimeVersion is the explicit read-only runtime identity used by
+	// production database components. Version remains for compatibility with
+	// existing managed-configuration consumers.
+	RuntimeVersion string `json:"runtimeVersion,omitempty"`
 }
 
 type ConfigurationChange struct {
@@ -310,6 +318,44 @@ func componentConfigurationDefinition(component string) (configurationDefinition
 			"innodbBufferPoolSize": "ONEINSTACK_CONFIG_INNODB_BUFFER_POOL_SIZE",
 			"slowQueryLog":         "ONEINSTACK_CONFIG_SLOW_QUERY_LOG",
 			"longQueryTime":        "ONEINSTACK_CONFIG_LONG_QUERY_TIME",
+		}
+	case "mariadb":
+		result.ApplyMode = "restart"
+		result.Fields = []ConfigurationField{
+			{Key: "maxConnections", Label: "最大连接数", Type: "integer", Default: "300", Min: intPointer(10), Max: intPointer(100000)},
+			{Key: "maxAllowedPacket", Label: "数据包上限", Type: "integer", Unit: "MB", Default: "64", Min: intPointer(1), Max: intPointer(1024)},
+			{Key: "innodbBufferPoolSize", Label: "InnoDB 缓冲池", Type: "integer", Unit: "MB", Default: "128", Min: intPointer(128), Max: intPointer(1048576)},
+			{Key: "slowQueryLog", Label: "慢查询日志", Type: "boolean", Default: "false", Description: "记录执行时间超过阈值的 SQL。"},
+			{Key: "longQueryTime", Label: "慢查询阈值", Type: "integer", Unit: "秒", Default: "10", Min: intPointer(1), Max: intPointer(600)},
+			{Key: "mariadbPort", Label: "监听端口", Type: "port", Default: "3306", Min: intPointer(1), Max: intPointer(65535)},
+			{Key: "bindAddress", Label: "绑定地址", Type: "string", Default: "127.0.0.1"},
+		}
+		result.Environment = map[string]string{
+			"maxConnections":       "ONEINSTACK_CONFIG_MAX_CONNECTIONS",
+			"maxAllowedPacket":     "ONEINSTACK_CONFIG_MAX_ALLOWED_PACKET",
+			"innodbBufferPoolSize": "ONEINSTACK_CONFIG_INNODB_BUFFER_POOL_SIZE",
+			"slowQueryLog":         "ONEINSTACK_CONFIG_SLOW_QUERY_LOG",
+			"longQueryTime":        "ONEINSTACK_CONFIG_LONG_QUERY_TIME",
+			"mariadbPort":          "ONEINSTACK_CONFIG_MARIADB_PORT",
+			"bindAddress":          "ONEINSTACK_CONFIG_BIND_ADDRESS",
+		}
+	case "mongodb":
+		result.ApplyMode = "restart"
+		result.Fields = []ConfigurationField{
+			{Key: "mongodbPort", Label: "监听端口", Type: "port", Default: "27017", Min: intPointer(1), Max: intPointer(65535)},
+			{Key: "bindIp", Label: "绑定地址", Type: "string", Default: "127.0.0.1", Description: "逗号分隔的 IP 或主机名；认证始终启用。"},
+			{Key: "maxIncomingConnections", Label: "最大入站连接数", Type: "integer", Default: "0", Min: intPointer(0), Max: intPointer(1000000), Description: "0 表示自动；非零值最小为 100。"},
+			{Key: "wiredTigerCacheSizeGB", Label: "WiredTiger 缓存", Type: "integer", Default: "0", Unit: "GB", Min: intPointer(0), Max: intPointer(1024), Description: "0 表示自动。"},
+			{Key: "operationProfilingMode", Label: "性能分析模式", Type: "select", Default: "off", Options: []string{"off", "slowOp", "all"}},
+			{Key: "slowOpThresholdMs", Label: "慢操作阈值", Type: "integer", Unit: "毫秒", Default: "100", Min: intPointer(1), Max: intPointer(600000)},
+		}
+		result.Environment = map[string]string{
+			"mongodbPort":            "ONEINSTACK_CONFIG_MONGODB_PORT",
+			"bindIp":                 "ONEINSTACK_CONFIG_BIND_IP",
+			"maxIncomingConnections": "ONEINSTACK_CONFIG_MAX_INCOMING_CONNECTIONS",
+			"wiredTigerCacheSizeGB":  "ONEINSTACK_CONFIG_WIREDTIGER_CACHE_SIZE_GB",
+			"operationProfilingMode": "ONEINSTACK_CONFIG_OPERATION_PROFILING_MODE",
+			"slowOpThresholdMs":      "ONEINSTACK_CONFIG_SLOW_OP_THRESHOLD_MS",
 		}
 	case "php":
 		result.ApplyMode = "reload"
@@ -573,7 +619,36 @@ func normalizeConfigurationValues(definition configurationDefinition, values map
 			}
 		}
 	}
+	if definition.Component == "mariadb" && net.ParseIP(result["bindAddress"]) == nil {
+		return nil, errors.New("bindAddress must be a valid IPv4 or IPv6 address")
+	}
+	if definition.Component == "mongodb" {
+		maxConnections, _ := strconv.Atoi(result["maxIncomingConnections"])
+		if maxConnections > 0 && maxConnections < 100 {
+			return nil, errors.New("maxIncomingConnections must be 0 or an integer from 100 to 1000000")
+		}
+		if err := validateMongoDBBindIP(result["bindIp"]); err != nil {
+			return nil, err
+		}
+	}
 	return result, nil
+}
+
+func validateMongoDBBindIP(value string) error {
+	parts := strings.Split(value, ",")
+	if len(parts) == 0 || len(parts) > 32 {
+		return errors.New("bindIp must contain 1-32 IP addresses or hostnames")
+	}
+	for _, raw := range parts {
+		part := strings.TrimSpace(raw)
+		if part == "" || part != raw || strings.ContainsAny(part, "\r\n\t{}[]#&*!|><'\"\\") {
+			return errors.New("bindIp contains an invalid IP address or hostname")
+		}
+		if net.ParseIP(part) == nil && (!mongodbHostnamePattern.MatchString(part) || strings.Contains(part, "..") || strings.HasPrefix(part, ".") || strings.HasSuffix(part, ".")) {
+			return errors.New("bindIp contains an invalid IP address or hostname")
+		}
+	}
+	return nil
 }
 
 func containsConfigurationOption(options []string, value string) bool {
@@ -785,6 +860,14 @@ func componentInstallParameterLabel(name string) string {
 		return "Redis login username"
 	case "REDIS_PASSWORD":
 		return "Redis password"
+	case "MONGODB_PORT":
+		return "MongoDB listener port"
+	case "MONGODB_BIND_IP":
+		return "MongoDB listener addresses"
+	case "MONGODB_ADMIN_USERNAME":
+		return "MongoDB administrator username"
+	case "MONGODB_ADMIN_PASSWORD":
+		return "MongoDB administrator password"
 	case "PORT":
 		return "HTTP listener port"
 	case "TENGINE_PORT":
@@ -874,6 +957,20 @@ func (installer *Installer) ApplyServiceConfigurationTask(
 		definition.Component,
 		strings.TrimSpace(version),
 	)
+	if definition.Component == "mysql" || definition.Component == "mariadb" {
+		username, password, found, credentialErr := storageService.ManagedLocalMySQLCredential(params.Port)
+		if credentialErr != nil {
+			return "", fmt.Errorf("load managed database credential: %w", credentialErr)
+		}
+		if !found {
+			return "", errors.New("managed database credential is unavailable")
+		}
+		params.Pwd = password
+		if params.Parameters == nil {
+			params.Parameters = make(map[string]string)
+		}
+		params.Parameters["mysql-username"] = username
+	}
 	installer.setScriptParams(scriptInfo, params)
 	scriptInfo.Params["ONEINSTACK_CONFIG_OPERATION"] = "apply"
 	scriptInfo.Params["ONEINSTACK_CONFIG_REVISION"] = revision
@@ -957,7 +1054,57 @@ func persistManagedConfiguration(params *input.InstallParams, values map[string]
 	if strings.EqualFold(strings.TrimSpace(params.Key), "firewalld") {
 		return persistManagedFirewalldConfiguration(params, values)
 	}
+	if strings.EqualFold(strings.TrimSpace(params.Key), "mongodb") {
+		return persistManagedMongoDBConfiguration(params, values)
+	}
+	if strings.EqualFold(strings.TrimSpace(params.Key), "mariadb") {
+		return persistManagedMariaDBConfiguration(params, values)
+	}
 	return persistManagedMySQLConfiguration(params, values)
+}
+
+func persistManagedMongoDBConfiguration(params *input.InstallParams, values map[string]string) error {
+	if params == nil || app.DB() == nil {
+		return nil
+	}
+	var row models.Software
+	query := app.DB().Where("installed = ?", true).Where("(`key` = ? OR component = ?)", "mongodb", "mongodb")
+	if err := query.Order("install_time DESC, id DESC").First(&row).Error; err != nil {
+		return err
+	}
+	runtime := make(map[string]string)
+	if strings.TrimSpace(row.RuntimeParamsJSON) != "" {
+		if err := json.Unmarshal([]byte(row.RuntimeParamsJSON), &runtime); err != nil {
+			return fmt.Errorf("decode MongoDB runtime parameters: %w", err)
+		}
+	}
+	if value := strings.TrimSpace(values["mongodbPort"]); value != "" {
+		runtime["mongodb-port"] = value
+	}
+	if value := strings.TrimSpace(values["bindIp"]); value != "" {
+		runtime["mongodb-bind-ip"] = value
+	}
+	for _, key := range []string{"maxIncomingConnections", "wiredTigerCacheSizeGB", "operationProfilingMode", "slowOpThresholdMs"} {
+		if value := strings.TrimSpace(values[key]); value != "" {
+			runtime[key] = value
+		}
+	}
+	encoded, err := json.Marshal(runtime)
+	if err != nil {
+		return fmt.Errorf("encode MongoDB runtime parameters: %w", err)
+	}
+	updates := map[string]interface{}{"runtime_params": string(encoded)}
+	if port := strings.TrimSpace(values["mongodbPort"]); port != "" {
+		updates["http_port"] = port
+	}
+	result := app.DB().Model(&models.Software{}).Where("id = ?", row.Id).Updates(updates)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return errors.New("MongoDB software runtime parameters were not updated")
+	}
+	return nil
 }
 
 func persistManagedCaddyConfiguration(params *input.InstallParams, values map[string]string) error {
@@ -1220,6 +1367,52 @@ func persistManagedApacheConfiguration(params *input.InstallParams, values map[s
 	return nil
 }
 
+func persistManagedMariaDBConfiguration(params *input.InstallParams, values map[string]string) error {
+	if params == nil || !strings.EqualFold(strings.TrimSpace(params.Key), "mariadb") || app.DB() == nil {
+		return nil
+	}
+	var row models.Software
+	query := app.DB().Where("installed = ?", true).
+		Where("(`key` = ? OR component = ?)", "mariadb", "mariadb")
+	if err := query.Order("id DESC").First(&row).Error; err != nil {
+		return err
+	}
+	runtime := make(map[string]string)
+	if strings.TrimSpace(row.RuntimeParamsJSON) != "" {
+		if err := json.Unmarshal([]byte(row.RuntimeParamsJSON), &runtime); err != nil {
+			return fmt.Errorf("decode MariaDB runtime parameters: %w", err)
+		}
+	}
+	assign := func(key, persistedKey string) {
+		if value := strings.TrimSpace(values[key]); value != "" {
+			runtime[persistedKey] = value
+		}
+	}
+	assign("mariadbPort", "mariadb-port")
+	assign("bindAddress", "mariadb-bind-address")
+	assign("installDir", "install-dir")
+	assign("dataDir", "data-dir")
+	assign("logDir", "log-dir")
+	assign("runUser", "run-user")
+	assign("runGroup", "run-group")
+	encoded, err := json.Marshal(runtime)
+	if err != nil {
+		return fmt.Errorf("encode MariaDB runtime parameters: %w", err)
+	}
+	updates := map[string]interface{}{"runtime_params": string(encoded)}
+	if port := strings.TrimSpace(values["mariadbPort"]); port != "" {
+		updates["http_port"] = port
+	}
+	result := app.DB().Model(&models.Software{}).Where("id = ?", row.Id).Updates(updates)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return errors.New("MariaDB software runtime parameters were not updated")
+	}
+	return nil
+}
+
 func persistManagedMySQLConfiguration(params *input.InstallParams, values map[string]string) error {
 	if params == nil || !isDatabaseInstallKey(params.Key) || app.DB() == nil {
 		return nil
@@ -1313,21 +1506,25 @@ func parseComponentConfiguration(
 	}
 	optional := make(map[string]struct{})
 	var runtime *ComponentRuntime
-	if definition.Component == "mysql" || definition.Component == "php" || definition.Component == "firewalld" || definition.Component == "apache" || definition.Component == "openresty" || definition.Component == "caddy" {
+	if definition.Component == "mysql" || definition.Component == "mariadb" || definition.Component == "mongodb" || definition.Component == "php" || definition.Component == "firewalld" || definition.Component == "apache" || definition.Component == "openresty" || definition.Component == "caddy" {
 		runtime = &ComponentRuntime{}
 		runtimeKeys := []string{"runtime.port", "runtime.bindAddress", "runtime.installDir", "runtime.dataDir", "runtime.logDir", "runtime.runUser", "runtime.runGroup"}
-		if definition.Component == "php" {
+		if definition.Component == "mariadb" {
+			runtimeKeys = []string{"runtime.port", "runtime.bindAddress", "runtime.socketPath", "runtime.installDir", "runtime.dataDir", "runtime.logDir", "runtime.runUser", "runtime.runGroup", "runtime.configFile", "runtime.serviceName", "runtime.version"}
+		} else if definition.Component == "php" {
 			runtimeKeys = append(runtimeKeys, "runtime.socketPath")
 		} else if definition.Component == "openresty" {
 			runtimeKeys = []string{"runtime.port", "runtime.installDir", "runtime.dataDir", "runtime.logDir", "runtime.runUser", "runtime.runGroup"}
 		} else if definition.Component == "caddy" {
 			runtimeKeys = []string{"runtime.port", "runtime.bindAddress", "runtime.socketPath", "runtime.installDir", "runtime.dataDir", "runtime.logDir", "runtime.runUser", "runtime.runGroup", "runtime.configFile", "runtime.vhostDir", "runtime.serviceName", "runtime.version"}
+		} else if definition.Component == "mongodb" {
+			runtimeKeys = []string{"runtime.port", "runtime.bindAddress", "runtime.installDir", "runtime.dataDir", "runtime.logDir", "runtime.runUser", "runtime.runGroup", "runtime.configFile", "runtime.serviceName", "runtime.version"}
 		}
 		for _, key := range runtimeKeys {
 			allowed[key] = struct{}{}
 		}
 	}
-	if definition.Component == "redis" {
+	if definition.Component == "redis" || definition.Component == "mongodb" {
 		for _, key := range []string{
 			"connection.port",
 			"connection.bindAddress",
@@ -1402,12 +1599,36 @@ func parseComponentConfiguration(
 		runtime.VhostDir = fields["runtime.vhostDir"]
 		runtime.ServiceName = fields["runtime.serviceName"]
 		runtime.Version = fields["runtime.version"]
+		if definition.Component == "mariadb" {
+			runtime.RuntimeVersion = runtime.Version
+		}
 		if definition.Component == "mysql" {
 			if port, parseErr := strconv.Atoi(runtime.Port); parseErr != nil || port < 1 || port > 65535 {
 				return ComponentConfiguration{}, errors.New("component runtime port is invalid")
 			}
 			if runtime.BindAddress == "" || runtime.InstallDir == "" || runtime.DataDir == "" || runtime.LogDir == "" || runtime.RunUser == "" || runtime.RunGroup == "" {
 				return ComponentConfiguration{}, errors.New("component runtime identity is incomplete")
+			}
+		} else if definition.Component == "mariadb" {
+			port, parseErr := strconv.Atoi(runtime.Port)
+			if parseErr != nil || port < 1 || port > 65535 || runtime.BindAddress == "" ||
+				runtime.SocketPath != "/run/mariadb/mariadb.sock" ||
+				runtime.InstallDir == "" || !strings.HasPrefix(runtime.InstallDir, "/") || filepath.Clean(runtime.InstallDir) != runtime.InstallDir ||
+				runtime.DataDir == "" || !strings.HasPrefix(runtime.DataDir, "/") || filepath.Clean(runtime.DataDir) != runtime.DataDir ||
+				runtime.LogDir == "" || !strings.HasPrefix(runtime.LogDir, "/") || filepath.Clean(runtime.LogDir) != runtime.LogDir ||
+				!systemAccountPattern.MatchString(runtime.RunUser) || !systemAccountPattern.MatchString(runtime.RunGroup) ||
+				runtime.ConfigFile != "/etc/oneinstack/mariadb/my.cnf" || runtime.ServiceName != "mariadb" || !phpExactVersionPattern.MatchString(runtime.Version) {
+				return ComponentConfiguration{}, errors.New("MariaDB component runtime identity is invalid")
+			}
+		} else if definition.Component == "mongodb" {
+			port, parseErr := strconv.Atoi(runtime.Port)
+			if parseErr != nil || port < 1 || port > 65535 || runtime.BindAddress == "" ||
+				runtime.InstallDir == "" || !strings.HasPrefix(runtime.InstallDir, "/") || filepath.Clean(runtime.InstallDir) != runtime.InstallDir ||
+				runtime.DataDir == "" || !strings.HasPrefix(runtime.DataDir, "/") || filepath.Clean(runtime.DataDir) != runtime.DataDir ||
+				runtime.LogDir == "" || !strings.HasPrefix(runtime.LogDir, "/") || filepath.Clean(runtime.LogDir) != runtime.LogDir ||
+				!systemAccountPattern.MatchString(runtime.RunUser) || !systemAccountPattern.MatchString(runtime.RunGroup) ||
+				runtime.ConfigFile != "/etc/mongod.conf" || runtime.ServiceName != "mongod" || !runtimeVersionPattern.MatchString(runtime.Version) {
+				return ComponentConfiguration{}, errors.New("MongoDB component runtime identity is invalid")
 			}
 		} else if definition.Component == "php" {
 			if runtime.Port != "" || runtime.BindAddress != "unix" || runtime.SocketPath == "" ||
@@ -1453,7 +1674,7 @@ func parseComponentConfiguration(
 		}
 	}
 	var connection *ComponentConnection
-	if definition.Component == "redis" {
+	if definition.Component == "redis" || definition.Component == "mongodb" {
 		connectionKeys := []string{
 			"connection.port",
 			"connection.bindAddress",
@@ -1467,17 +1688,22 @@ func parseComponentConfiguration(
 			}
 		}
 		if connectionFields > 0 && connectionFields != len(connectionKeys) {
-			return ComponentConfiguration{}, errors.New("component Redis connection output is incomplete")
+			return ComponentConfiguration{}, fmt.Errorf("component %s connection output is incomplete", definition.DisplayName)
 		}
 		if connectionFields == len(connectionKeys) {
 			port, parseErr := strconv.Atoi(fields["connection.port"])
+			username := strings.TrimSpace(fields["connection.username"])
+			usernameValid := redisUsernamePattern.MatchString(username)
+			if definition.Component == "mongodb" {
+				usernameValid = mongodbUsernamePattern.MatchString(username)
+			}
 			if parseErr != nil || port < 1 || port > 65535 || strings.TrimSpace(fields["connection.bindAddress"]) == "" ||
-				!redisUsernamePattern.MatchString(strings.TrimSpace(fields["connection.username"])) {
-				return ComponentConfiguration{}, errors.New("component Redis connection output is invalid")
+				!usernameValid {
+				return ComponentConfiguration{}, fmt.Errorf("component %s connection output is invalid", definition.DisplayName)
 			}
 			passwordConfigured, parseErr := strconv.ParseBool(fields["connection.passwordConfigured"])
 			if parseErr != nil {
-				return ComponentConfiguration{}, errors.New("component Redis password status output is invalid")
+				return ComponentConfiguration{}, fmt.Errorf("component %s password status output is invalid", definition.DisplayName)
 			}
 			connection = &ComponentConnection{
 				Port:               strings.TrimSpace(fields["connection.port"]),

@@ -96,6 +96,8 @@ func (e *InstallParameterError) InstallationMessage() string {
 		return message
 	case "MySQL 版本必须选择 Panel 返回的精确可安装版本 8.0.45":
 		return message
+	case "MariaDB 版本必须是 10.11.19 或 11.4.13":
+		return message
 	case "MySQL 运行账户必须以小写字母或下划线开头，仅允许小写字母、数字、下划线和连字符，长度为 1-32 个字符",
 		"MySQL 登录用户必须以小写字母或下划线开头，仅允许小写字母、数字、下划线和连字符，长度为 1-32 个字符",
 		"MySQL 密码必须为 12-128 个字符，仅允许字母、数字及 _ @ % + = : , . ! # ? -":
@@ -104,6 +106,16 @@ func (e *InstallParameterError) InstallationMessage() string {
 	if strings.HasPrefix(message, "MySQL 版本 ") ||
 		strings.HasPrefix(message, "当前主机没有可用的 MySQL ") {
 		return message
+	}
+	if strings.HasPrefix(message, "mariadb 版本 ") {
+		return "MariaDB " + strings.TrimPrefix(message, "mariadb ")
+	}
+	if strings.HasPrefix(message, "当前主机没有可用的 mariadb ") {
+		version := strings.TrimSuffix(
+			strings.TrimPrefix(message, "当前主机没有可用的 mariadb "),
+			" 安装制品，请刷新软件目录后重试",
+		)
+		return fmt.Sprintf("当前主机没有可用的 MariaDB %s 安装制品，请从软件列表选择可安装版本后重试", version)
 	}
 	if strings.HasPrefix(message, "PHP 版本线 ") && strings.HasSuffix(message, " 尚未由 Center 发布") {
 		return message
@@ -218,8 +230,12 @@ func (installer *Installer) resolveInstallParams(ctx context.Context, params *in
 		"caddyPort",
 		"mysql-port",
 		"mysqlPort",
+		"mariadb-port",
+		"mariadbPort",
 		"redis-port",
 		"redisPort",
+		"mongodb-port",
+		"mongodbPort",
 		"apache-port",
 		"apachePort",
 	)
@@ -265,6 +281,9 @@ func (installer *Installer) resolveInstallParams(ctx context.Context, params *in
 	if err := ValidateManagedMySQLInstallParams(params); err != nil {
 		return nil, err
 	}
+	if err := validateMongoDBInstallParams(params); err != nil {
+		return nil, err
+	}
 	if err := validateClosedLoopCatalogVersion(params); err != nil {
 		return nil, err
 	}
@@ -280,6 +299,42 @@ func (installer *Installer) resolveInstallParams(ctx context.Context, params *in
 		return nil, &InstallParameterError{Field: "parameters", Message: err.Error()}
 	}
 	return scriptInfo, nil
+}
+
+func validateMongoDBInstallParams(params *input.InstallParams) error {
+	if params == nil || !strings.EqualFold(strings.TrimSpace(params.Key), "mongodb") {
+		return nil
+	}
+	if params.Version != "8.0.17" && params.Version != "8.0.32" {
+		return &InstallParameterError{Field: "version", Message: "MongoDB 版本必须是 8.0.17 或 8.0.32"}
+	}
+	if len(params.Pwd) < 12 || len(params.Pwd) > 128 || strings.ContainsAny(params.Pwd, "\x00\r\n") {
+		return &InstallParameterError{Field: "mongodb-admin-password", Message: "MongoDB 管理员密码必须为 12-128 个字符且不能包含换行"}
+	}
+	username := strings.TrimSpace(params.Username)
+	if username == "" {
+		username = installParameterValue(params.Parameters, "mongodb-admin-username", "mongodbAdminUsername")
+	}
+	if !mongodbUsernamePattern.MatchString(username) {
+		return &InstallParameterError{Field: "mongodb-admin-username", Message: "MongoDB 管理员用户名格式无效"}
+	}
+	bindIP := installParameterValue(params.Parameters, "mongodb-bind-ip", "mongodbBindIp")
+	if bindIP == "" {
+		bindIP = "127.0.0.1"
+	}
+	if strings.ContainsAny(bindIP, " \t\r\n") {
+		return &InstallParameterError{Field: "mongodb-bind-ip", Message: "MongoDB 绑定地址不能包含空白或换行"}
+	}
+	if err := validateMongoDBBindIP(bindIP); err != nil {
+		return &InstallParameterError{Field: "mongodb-bind-ip", Message: err.Error()}
+	}
+	for _, key := range []string{"run-user", "run-group"} {
+		value := installParameterValue(params.Parameters, key)
+		if value != "" && !systemAccountPattern.MatchString(value) {
+			return &InstallParameterError{Field: key, Message: "MongoDB 运行账号或组格式无效"}
+		}
+	}
+	return nil
 }
 
 // ValidateManagedMySQLVersion keeps the MySQL installation contract aligned
@@ -451,6 +506,10 @@ func closedLoopCatalogIdentity(key string) (catalogKey, catalogComponent string,
 	switch strings.ToLower(strings.TrimSpace(key)) {
 	case "db", "mysql":
 		return "db", "mysql", true
+	case "mariadb":
+		return "mariadb", "mariadb", true
+	case "mongodb":
+		return "mongodb", "mongodb", true
 	case "webserver", "nginx":
 		return "webserver", "nginx", true
 	case "tengine":
@@ -650,6 +709,10 @@ func closedLoopPackageComponent(key string) (string, bool) {
 		return "firewalld", true
 	case "db", "mysql":
 		return "mysql", true
+	case "mariadb":
+		return "mariadb", true
+	case "mongodb":
+		return "mongodb", true
 	case "webserver", "nginx":
 		return "nginx", true
 	case "tengine":
@@ -779,6 +842,15 @@ func isManagedMySQLInstallKey(key string) bool {
 	}
 }
 
+func isManagedMySQLProtocolInstallKey(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "db", "mysql", "mariadb":
+		return true
+	default:
+		return false
+	}
+}
+
 // ManagedMySQLDatabaseUsername resolves the SQL login account configured for
 // the managed MySQL component. It is deliberately separate from Username,
 // which represents the Linux service runtime account.
@@ -802,25 +874,37 @@ func ManagedMySQLDatabaseUsername(params *input.InstallParams) string {
 // The top-level username is the component's OS runtime account; the SQL
 // login account is configured separately through mysql-username.
 func ValidateManagedMySQLInstallParams(params *input.InstallParams) error {
-	if params == nil || !isManagedMySQLInstallKey(params.Key) {
+	if params == nil || !isManagedMySQLProtocolInstallKey(params.Key) {
 		return nil
 	}
 	if username := strings.TrimSpace(params.Username); username != "" && !managedMySQLUsernamePattern.MatchString(username) {
 		return &InstallParameterError{
 			Field:   "username",
-			Message: "MySQL 运行账户必须以小写字母或下划线开头，仅允许小写字母、数字、下划线和连字符，长度为 1-32 个字符",
+			Message: "数据库运行账户必须以小写字母或下划线开头，仅允许小写字母、数字、下划线和连字符，长度为 1-32 个字符",
 		}
 	}
 	if username := ManagedMySQLDatabaseUsername(params); !managedMySQLDatabaseUsernamePattern.MatchString(username) {
 		return &InstallParameterError{
 			Field:   "mysql-username",
-			Message: "MySQL 登录用户必须以小写字母或下划线开头，仅允许小写字母、数字、下划线和连字符，长度为 1-32 个字符",
+			Message: "数据库登录用户必须以小写字母或下划线开头，仅允许小写字母、数字、下划线和连字符，长度为 1-32 个字符",
 		}
 	}
 	if params.Pwd != "" && !managedMySQLPasswordPattern.MatchString(params.Pwd) {
 		return &InstallParameterError{
 			Field:   "pwd",
-			Message: "MySQL 密码必须为 12-128 个字符，仅允许字母、数字及 _ @ % + = : , . ! # ? -",
+			Message: "数据库密码必须为 12-128 个字符，仅允许字母、数字及 _ @ % + = : , . ! # ? -",
+		}
+	}
+	if strings.EqualFold(strings.TrimSpace(params.Key), "mariadb") {
+		if params.Version != "10.11.19" && params.Version != "11.4.13" {
+			return &InstallParameterError{Field: "version", Message: "MariaDB 版本必须是 10.11.19 或 11.4.13"}
+		}
+		bindAddress := installParameterValue(params.Parameters, "mariadb-bind-address", "mariadbBindAddress")
+		if bindAddress != "" && net.ParseIP(bindAddress) == nil {
+			return &InstallParameterError{Field: "mariadb-bind-address", Message: "MariaDB 绑定地址必须是合法 IPv4 或 IPv6 地址"}
+		}
+		if runGroup := installParameterValue(params.Parameters, "run-group", "runGroup"); runGroup != "" && !managedMySQLUsernamePattern.MatchString(runGroup) {
+			return &InstallParameterError{Field: "run-group", Message: "MariaDB 运行用户组格式无效"}
 		}
 	}
 	return nil

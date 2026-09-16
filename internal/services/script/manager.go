@@ -1434,6 +1434,17 @@ func persistedRuntimeParameters(params *input.InstallParams, port string, effect
 		values["data-dir"] = "/data/redis"
 		values["component-state-dir"] = "/var/lib/oneinstack/components"
 	}
+	if strings.EqualFold(strings.TrimSpace(params.Key), "mongodb") {
+		values["mongodb-port"] = strings.TrimSpace(port)
+		values["mongodb-bind-ip"] = "127.0.0.1"
+		values["mongodb-admin-username"] = "root"
+		values["install-dir"] = "/usr/local/mongodb"
+		values["data-dir"] = "/data/mongodb"
+		values["log-dir"] = "/data/mongodb"
+		values["run-user"] = "mongod"
+		values["run-group"] = "mongod"
+		values["component-state-dir"] = "/var/lib/oneinstack/components"
+	}
 	for key, value := range params.Parameters {
 		if isSecretInstallParameter(key) || strings.TrimSpace(value) == "" {
 			continue
@@ -1460,6 +1471,10 @@ func persistedRuntimeParameters(params *input.InstallParams, port string, effect
 		if strings.EqualFold(strings.TrimSpace(params.Key), "db") ||
 			strings.EqualFold(strings.TrimSpace(params.Key), "mysql") {
 			values["mysql-port"] = strings.TrimSpace(port)
+		} else if strings.EqualFold(strings.TrimSpace(params.Key), "mariadb") {
+			values["mariadb-port"] = strings.TrimSpace(port)
+		} else if strings.EqualFold(strings.TrimSpace(params.Key), "mongodb") {
+			values["mongodb-port"] = strings.TrimSpace(port)
 		} else {
 			values["port"] = strings.TrimSpace(port)
 		}
@@ -1511,10 +1526,20 @@ func canonicalRuntimeParameterName(key string) (string, bool) {
 	switch compactInstallParameterName(key) {
 	case "port", "mysqlport":
 		return "mysql-port", true
+	case "mariadbport":
+		return "mariadb-port", true
+	case "mariadbbindaddress":
+		return "mariadb-bind-address", true
 	case "caddyport":
 		return "caddy-port", true
 	case "redisport":
 		return "redis-port", true
+	case "mongodbport":
+		return "mongodb-port", true
+	case "mongodbbindip":
+		return "mongodb-bind-ip", true
+	case "mongodbadminusername":
+		return "mongodb-admin-username", true
 	case "redisbind":
 		return "redis-bind", true
 	case "redisusername":

@@ -21,7 +21,9 @@ import (
 
 var bundledOnlySoftwareKeys = map[string]struct{}{
 	"db":         {},
+	"mariadb":    {},
 	"redis":      {},
+	"mongodb":    {},
 	"webserver":  {},
 	"caddy":      {},
 	"apache":     {},
@@ -158,6 +160,8 @@ func NormalizeInstallParams(params *input.InstallParams) {
 			"mysqlPassword",
 			"redis-password",
 			"redisPassword",
+			"mongodb-admin-password",
+			"mongodbAdminPassword",
 			"MYSQL_PASSWORD",
 		)
 	}
@@ -166,8 +170,13 @@ func NormalizeInstallParams(params *input.InstallParams) {
 		switch strings.ToLower(strings.TrimSpace(params.Key)) {
 		case "db", "mysql", "mariadb", "percona":
 			portNames = append(portNames, "mysql-port", "mysqlPort")
+			if strings.EqualFold(strings.TrimSpace(params.Key), "mariadb") {
+				portNames = append(portNames, "mariadb-port", "mariadbPort")
+			}
 		case "redis":
 			portNames = append(portNames, "redis-port", "redisPort")
+		case "mongodb":
+			portNames = append(portNames, "mongodb-port", "mongodbPort")
 		case "webserver", "nginx", "openresty", "tengine", "caddy":
 			portNames = append(portNames, "nginx-port", "nginxPort", "openresty-port", "openrestyPort", "tengine-port", "tenginePort", "caddy-port", "caddyPort")
 		case "apache":
@@ -180,6 +189,9 @@ func NormalizeInstallParams(params *input.InstallParams) {
 		if strings.EqualFold(strings.TrimSpace(params.Key), "redis") {
 			usernameNames = append(usernameNames, "redis-username", "redisUsername")
 		}
+		if strings.EqualFold(strings.TrimSpace(params.Key), "mongodb") {
+			usernameNames = []string{"mongodb-admin-username", "mongodbAdminUsername", "username"}
+		}
 		params.Username = installParameterValue(params.Parameters, usernameNames...)
 	}
 	if strings.EqualFold(strings.TrimSpace(params.Key), "caddy") {
@@ -190,6 +202,14 @@ func NormalizeInstallParams(params *input.InstallParams) {
 	if isDatabaseInstallKey(params.Key) {
 		if params.Port == "" {
 			params.Port = "3306"
+		}
+		if params.Username == "" {
+			params.Username = "root"
+		}
+	}
+	if strings.EqualFold(strings.TrimSpace(params.Key), "mongodb") {
+		if params.Port == "" {
+			params.Port = "27017"
 		}
 		if params.Username == "" {
 			params.Username = "root"
@@ -980,10 +1000,13 @@ func installedServiceInstallParams(key, component, version string) *input.Instal
 	}
 	params.Parameters = runtime
 	if params.Port == "" {
-		params.Port = installParameterValue(runtime, "port", "mysql-port", "mysqlPort", "redis-port", "redisPort")
+		params.Port = installParameterValue(runtime, "port", "mysql-port", "mysqlPort", "mariadb-port", "mariadbPort", "redis-port", "redisPort", "mongodb-port", "mongodbPort")
 	}
 	if strings.EqualFold(strings.TrimSpace(component), "redis") {
 		params.Username = installParameterValue(runtime, "username", "redis-username", "redisUsername")
+	}
+	if strings.EqualFold(strings.TrimSpace(component), "mongodb") {
+		params.Username = installParameterValue(runtime, "username", "mongodb-admin-username", "mongodbAdminUsername")
 	}
 	return params
 }
@@ -1040,6 +1063,8 @@ func componentForRemove(value string) (component string, softwareKey string, err
 		return "mysql", "db", nil
 	case "redis":
 		return "redis", "redis", nil
+	case "mongodb":
+		return "mongodb", "mongodb", nil
 	case "php":
 		return "php", "php", nil
 	case "firewalld":
@@ -1111,6 +1136,19 @@ func (installer *Installer) setScriptParams(scriptInfo *script.ScriptInfo, param
 			scriptInfo.Params["REDIS_PASSWORD"] = params.Pwd
 			markExplicit("REDIS_PASSWORD")
 		}
+	case "mongodb":
+		if params.Port != "" {
+			scriptInfo.Params["MONGODB_PORT"] = params.Port
+			markExplicit("mongodb-port")
+		}
+		if params.Username != "" {
+			scriptInfo.Params["MONGODB_ADMIN_USERNAME"] = params.Username
+			markExplicit("mongodb-admin-username")
+		}
+		if params.Pwd != "" {
+			scriptInfo.Params["MONGODB_ADMIN_PASSWORD"] = params.Pwd
+			markExplicit("mongodb-admin-password")
+		}
 	case "apache":
 		if params.Port != "" {
 			scriptInfo.Params["PORT"] = params.Port
@@ -1152,7 +1190,8 @@ func (installer *Installer) setScriptParams(scriptInfo *script.ScriptInfo, param
 			}
 		}
 	}
-	if params.Username != "" && (!isManagedMySQLInstallKey(params.Key) || params.Username != "root") {
+	if params.Username != "" && !strings.EqualFold(strings.TrimSpace(params.Key), "mongodb") &&
+		(!isManagedMySQLProtocolInstallKey(params.Key) || params.Username != "root") {
 		for _, parameter := range scriptInfo.ParameterSpecs {
 			name := strings.ToUpper(strings.NewReplacer("-", "_", ".", "_").Replace(strings.TrimSpace(parameter.Name)))
 			if name == "RUN_USER" || name == "USERNAME" || name == "USER" {

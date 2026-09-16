@@ -139,6 +139,8 @@ func recoveryProcessRunning(ctx context.Context, component string) (bool, error)
 		processNames = []string{"httpd"}
 	case "mysql":
 		processNames = []string{"mysqld", "mysqld_safe"}
+	case "mariadb":
+		processNames = []string{"mariadbd", "mysqld", "mysqld_safe"}
 	case "redis":
 		processNames = []string{"redis-server"}
 	case "firewalld":

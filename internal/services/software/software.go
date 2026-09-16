@@ -148,6 +148,11 @@ func Exploration(param *input.SoftwareParam) bool {
 	if strings.Contains(strings.ToLower(sf.Name), "mysql") {
 		return checkMySQL(sf)
 	}
+	if strings.EqualFold(strings.TrimSpace(sf.Component), "mariadb") ||
+		strings.EqualFold(strings.TrimSpace(sf.Key), "mariadb") ||
+		strings.Contains(strings.ToLower(sf.Name), "mariadb") {
+		return checkMySQL(sf)
+	}
 	if strings.Contains(strings.ToLower(sf.Name), "nginx") {
 		return checkNginx(sf)
 	}
@@ -166,7 +171,11 @@ func Exploration(param *input.SoftwareParam) bool {
 }
 
 func checkMySQL(sf *models.Software) bool {
-	output, err := utils.GetProcessList("mysqld")
+	processName := "mysqld"
+	if sf != nil && (strings.EqualFold(strings.TrimSpace(sf.Component), "mariadb") || strings.EqualFold(strings.TrimSpace(sf.Key), "mariadb")) {
+		processName = "mariadbd"
+	}
+	output, err := utils.GetProcessList(processName)
 	if err != nil {
 		return false
 	}
@@ -697,8 +706,8 @@ func normalizeExactVersionPresentation(item *output.Software) {
 	}
 	key := strings.ToLower(strings.TrimSpace(item.Key))
 	component := strings.ToLower(strings.TrimSpace(item.Component))
-	if key != "php" && key != "webserver" && key != "nginx" && key != "openresty" && key != "caddy" && key != "apache" &&
-		component != "php" && component != "nginx" && component != "openresty" && component != "caddy" && component != "apache" {
+	if key != "mariadb" && key != "php" && key != "webserver" && key != "nginx" && key != "openresty" && key != "caddy" && key != "apache" &&
+		component != "mariadb" && component != "php" && component != "nginx" && component != "openresty" && component != "caddy" && component != "apache" {
 		return
 	}
 	options := make([]output.VersionOption, 0, len(item.VersionOptions))
@@ -732,8 +741,9 @@ func normalizeExactVersionPresentation(item *output.Software) {
 }
 
 func mysqlRuntimeInfo(item models.Softwares) *output.SoftwareRuntime {
-	if strings.ToLower(strings.TrimSpace(item.Component)) != "mysql" &&
-		strings.ToLower(strings.TrimSpace(item.Key)) != "db" {
+	component := strings.ToLower(strings.TrimSpace(item.Component))
+	key := strings.ToLower(strings.TrimSpace(item.Key))
+	if component != "mysql" && component != "mariadb" && key != "db" && key != "mysql" && key != "mariadb" {
 		return nil
 	}
 	if !item.Installed {
@@ -750,9 +760,9 @@ func mysqlRuntimeInfo(item models.Softwares) *output.SoftwareRuntime {
 	}
 	if values != nil {
 		if runtime.Port == "" {
-			runtime.Port = installParameterValue(values, "port", "mysql-port", "mysqlPort")
+			runtime.Port = installParameterValue(values, "port", "mysql-port", "mysqlPort", "mariadb-port", "mariadbPort")
 		}
-		runtime.BindAddress = installParameterValue(values, "mysql-bind-address", "mysqlBindAddress")
+		runtime.BindAddress = installParameterValue(values, "mysql-bind-address", "mysqlBindAddress", "mariadb-bind-address", "mariadbBindAddress")
 		runtime.InstallDir = installParameterValue(values, "install-dir", "installDir")
 		runtime.DataDir = installParameterValue(values, "data-dir", "dataDir")
 		runtime.LogDir = installParameterValue(values, "log-dir", "logDir")
