@@ -1376,6 +1376,54 @@ func requireServiceComponentPermission(c *gin.Context, operation string, payload
 	return nil
 }
 
+func softwareUninstallPreviewState(component string) (string, string, string, map[string]string) {
+	runtimeValues := make(map[string]string)
+	if app.DB() == nil {
+		return "", "", "", runtimeValues
+	}
+	var row models.Software
+	result := app.DB().Where(
+		"installed = ? AND (`key` = ? OR component = ? OR service_name = ?)",
+		true, component, component, component,
+	).Order("install_time DESC, id DESC").First(&row)
+	if result.Error != nil {
+		return "", "", "", runtimeValues
+	}
+	var stored map[string]string
+	if strings.TrimSpace(row.RuntimeParamsJSON) != "" && json.Unmarshal([]byte(row.RuntimeParamsJSON), &stored) == nil {
+		for key, value := range stored {
+			normalized := strings.ToLower(strings.TrimSpace(key))
+			normalized = strings.NewReplacer("_", "-", ".", "-", " ", "-").Replace(normalized)
+			switch strings.ReplaceAll(normalized, "-", "") {
+			case "installdir":
+				runtimeValues["install-dir"] = value
+			case "configfile":
+				runtimeValues["config-file"] = value
+			case "datadir":
+				runtimeValues["data-dir"] = value
+			case "logdir":
+				runtimeValues["log-dir"] = value
+			case "statedir":
+				runtimeValues["state-dir"] = value
+			}
+		}
+	}
+	displayName := strings.TrimSpace(row.Name)
+	if displayName == "" {
+		displayName = strings.TrimSpace(row.Component)
+	}
+	return displayName, strings.TrimSpace(row.ServiceName), strings.TrimSpace(row.InstalledPackageVersion), runtimeValues
+}
+
+func uninstallPreviewFirstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 func buildDocument(ctx context.Context, operation string, payload json.RawMessage) (previewservice.Document, string, error) {
 	if _, _, err := previewservice.NormalizePayload(payload); err != nil {
 		return previewservice.Document{}, "", err
@@ -1589,8 +1637,70 @@ func buildDocument(ctx context.Context, operation string, payload json.RawMessag
 		document.Impact = previewservice.Impact{WriteFiles: true, ModifyDatabase: true, RestartService: true}
 		document.Rollback = previewservice.Rollback{Supported: true, Summary: "任务失败时由软件任务执行器按组件策略回滚或保留失败现场"}
 	case "software.uninstall":
-		document.Actions = []previewservice.Action{{Type: "component", Name: "执行受控软件卸载动作", DisplayCommand: "由组件卸载器按软件 key 和版本执行"}}
-		document.Impact = previewservice.Impact{WriteFiles: true, ModifyDatabase: true, RestartService: true}
+		var value input.RemoveParams
+		if err := json.Unmarshal(payload, &value); err != nil {
+			return previewservice.Document{}, "", err
+		}
+		component := strings.ToLower(strings.TrimSpace(value.Name))
+		version := strings.TrimSpace(value.Version)
+		if component == "" || version == "" {
+			return previewservice.Document{}, "", errors.New("software name and version are required")
+		}
+		dataPolicy := strings.ToLower(strings.TrimSpace(value.DataPolicy))
+		if dataPolicy == "" {
+			dataPolicy = "preserve"
+		}
+		if dataPolicy != "preserve" && dataPolicy != "delete" {
+			return previewservice.Document{}, "", errors.New("dataPolicy must be preserve or delete")
+		}
+		if dataPolicy == "delete" && !value.ConfirmDataDeletion {
+			return previewservice.Document{}, "", errors.New("confirmDataDeletion is required when dataPolicy is delete")
+		}
+		displayName, serviceName, packageVersion, runtimeValues := softwareUninstallPreviewState(component)
+		if displayName == "" {
+			displayName = component
+		}
+		document.Review.Reason = fmt.Sprintf("卸载 %s %s 会停止 %s 服务并移除受管程序文件，执行前需要确认", displayName, version, uninstallPreviewFirstNonEmpty(serviceName, component))
+		document.EffectiveValues = []previewservice.EffectiveValue{
+			{Key: "component", Value: component, Source: "request"},
+			{Key: "softwareVersion", Value: version, Source: "request"},
+			{Key: "dataPolicy", Value: dataPolicy, Source: "request"},
+		}
+		if packageVersion != "" {
+			document.EffectiveValues = append(document.EffectiveValues, previewservice.EffectiveValue{Key: "packageVersion", Value: packageVersion, Source: "installed_state"})
+		}
+		if serviceName != "" {
+			document.EffectiveValues = append(document.EffectiveValues, previewservice.EffectiveValue{Key: "serviceName", Value: serviceName, Source: "installed_state"})
+		}
+		for _, key := range []string{"install-dir", "config-file", "data-dir", "log-dir", "state-dir"} {
+			path := strings.TrimSpace(runtimeValues[key])
+			if path == "" {
+				continue
+			}
+			action, summary := "preserve", "卸载后保留"
+			if key == "install-dir" {
+				action, summary = "remove", "移除受管程序文件"
+			} else if dataPolicy == "delete" && (key == "data-dir" || key == "log-dir") {
+				action, summary = "delete", "按删除策略移除"
+			}
+			document.Files = append(document.Files, previewservice.FileChange{Path: path, Action: action, ChangeSummary: summary})
+		}
+		document.Actions = []previewservice.Action{
+			{Type: "service", Name: "停止 " + uninstallPreviewFirstNonEmpty(serviceName, component) + " 服务", DisplayCommand: "由组件卸载脚本安全停止服务", Service: uninstallPreviewFirstNonEmpty(serviceName, component)},
+			{Type: "component", Name: "卸载 " + displayName + " " + version, DisplayCommand: "使用已固定的受管组件包执行卸载"},
+		}
+		if dataPolicy == "delete" {
+			document.Actions = append(document.Actions, previewservice.Action{Type: "component", Name: "删除组件数据", DisplayCommand: "仅在删除策略和确认字段同时有效时执行"})
+			document.Rollback = previewservice.Rollback{Supported: false, Summary: "数据删除不可自动恢复", Unrecoverable: []string{"数据目录和日志目录删除后不可由卸载任务恢复"}}
+		} else {
+			document.Actions = append(document.Actions, previewservice.Action{Type: "component", Name: "保留组件数据和配置", DisplayCommand: "卸载程序文件，保留受管数据与配置"})
+			document.Rollback = previewservice.Rollback{Supported: false, Summary: "卸载完成后不自动恢复已移除的程序文件；保留的数据和配置可供重新安装后接管"}
+		}
+		document.Prechecks = []previewservice.Precheck{
+			{Name: "卸载目标", Status: "passed", Message: fmt.Sprintf("已确认组件 %s，软件版本 %s，数据策略 %s", component, version, dataPolicy)},
+			{Name: "服务与文件状态", Status: "deferred", Message: "执行阶段将重新检查服务、受管目录和已固定卸载包"},
+		}
+		document.Impact = previewservice.Impact{WriteFiles: true, ModifyDatabase: true}
 	case "software.service_action":
 		var value struct {
 			Action string `json:"action"`
