@@ -330,7 +330,22 @@ func (m *Manager) run(item queuedTask) {
 		_ = m.finish(task.ID, models.WebsiteTaskStatusFailed, "RESOURCE_BUSY", err.Error())
 		return
 	}
-	defer m.releaseLocks(&task)
+	locksReleased := false
+	releaseLocks := func() {
+		if locksReleased {
+			return
+		}
+		m.releaseLocks(&task)
+		locksReleased = true
+	}
+	finish := func(status, code, message string) {
+		// A terminal task is observable by API clients immediately. Release its
+		// operation locks first so a follow-up task cannot see "succeeded" while
+		// the previous task still owns the website or database lock.
+		releaseLocks()
+		_ = m.finish(task.ID, status, code, message)
+	}
+	defer releaseLocks()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	m.cancelMu.Lock()
@@ -347,7 +362,7 @@ func (m *Manager) run(item queuedTask) {
 	}
 	logFile, err := openTaskLog(task.LogPath)
 	if err != nil {
-		_ = m.finish(task.ID, models.WebsiteTaskStatusFailed, "LOG_OPEN_FAILED", err.Error())
+		finish(models.WebsiteTaskStatusFailed, "LOG_OPEN_FAILED", err.Error())
 		return
 	}
 	defer logFile.Close()
@@ -395,12 +410,12 @@ func (m *Manager) run(item queuedTask) {
 			}
 		}
 		_, _ = fmt.Fprintf(logFile, "[%s] task failed: %s\n", time.Now().UTC().Format(time.RFC3339), message)
-		_ = m.finish(task.ID, status, code, message)
+		finish(status, code, message)
 		appendWebsiteTaskAudit(&task, string(status), message)
 		return
 	}
 	_, _ = fmt.Fprintf(logFile, "[%s] task completed\n", time.Now().UTC().Format(time.RFC3339))
-	_ = m.finish(task.ID, models.WebsiteTaskStatusSucceeded, "", "网站任务执行成功")
+	finish(models.WebsiteTaskStatusSucceeded, "", "网站任务执行成功")
 	appendWebsiteTaskAudit(&task, string(models.WebsiteTaskStatusSucceeded), "网站任务执行成功")
 }
 
