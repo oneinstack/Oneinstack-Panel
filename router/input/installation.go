@@ -96,7 +96,17 @@ func (p *InstallParams) UnmarshalJSON(data []byte) error {
 
 func isServerOwnedInstallParameter(value string) bool {
 	compact := strings.NewReplacer("-", "", "_", "", ".", "", " ", "").Replace(strings.ToLower(strings.TrimSpace(value)))
-	return compact == "installmode" || compact == "offlinepackageid"
+	switch compact {
+	case "installmode", "oneinstackinstallmode",
+		"offlinepackageid", "oneinstackofflinepackageid",
+		"offlinepackagepath", "oneinstackofflinepackagepath",
+		"componentstate", "componentstatedir", "oneinstackcomponentstate",
+		"bundleid", "oneinstackbundleid", "oneinstackofflinebundleid",
+		"bundledigest", "oneinstackbundledigest", "oneinstackofflinebundledigest":
+		return true
+	default:
+		return false
+	}
 }
 
 func decodeInstallParameterValue(raw json.RawMessage) (string, error) {

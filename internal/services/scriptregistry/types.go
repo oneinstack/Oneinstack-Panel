@@ -372,7 +372,7 @@ func (m Manifest) validate() error {
 		}
 	}
 	if m.Sources != nil {
-		seenSources := make(map[string]struct{}, len(m.Sources.Releases))
+		seenSources := make(map[string][]SourceRelease, len(m.Sources.Releases))
 		for _, source := range m.Sources.Releases {
 			if !softwareVersionPattern.MatchString(source.SoftwareVersion) {
 				return fmt.Errorf("invalid source software version %q", source.SoftwareVersion)
@@ -391,10 +391,12 @@ func (m Manifest) validate() error {
 				return fmt.Errorf("invalid source buildId for %s %s", source.SoftwareVersion, source.Architecture)
 			}
 			key := source.SoftwareVersion + "\x00" + source.Architecture + "\x00" + source.Runtime
-			if _, exists := seenSources[key]; exists {
-				return fmt.Errorf("duplicate source for %s %s", source.SoftwareVersion, source.Architecture)
+			for _, existing := range seenSources[key] {
+				if sourceSystemSelectorsOverlap(existing.Systems, source.Systems) {
+					return fmt.Errorf("duplicate source for %s %s: system selectors overlap", source.SoftwareVersion, source.Architecture)
+				}
 			}
-			seenSources[key] = struct{}{}
+			seenSources[key] = append(seenSources[key], source)
 			if !strings.HasPrefix(source.URL, "https://") {
 				return fmt.Errorf("source URL must use HTTPS")
 			}
@@ -421,6 +423,27 @@ func (m Manifest) validate() error {
 		}
 	}
 	return nil
+}
+
+func sourceSystemSelectorsOverlap(left, right []System) bool {
+	if len(left) == 0 || len(right) == 0 {
+		return true
+	}
+	for _, leftSystem := range left {
+		for _, rightSystem := range right {
+			if !strings.EqualFold(strings.TrimSpace(leftSystem.ID), strings.TrimSpace(rightSystem.ID)) {
+				continue
+			}
+			for _, leftVersion := range leftSystem.Versions {
+				for _, rightVersion := range rightSystem.Versions {
+					if systemVersionMatches(leftVersion, rightVersion) || systemVersionMatches(rightVersion, leftVersion) {
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
 }
 
 func (m Manifest) actionMap() map[string]string {

@@ -5,16 +5,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
+
 	"oneinstack/app"
 	"oneinstack/internal/models"
 	safeservice "oneinstack/internal/services/safe"
 	"oneinstack/internal/services/script"
 	"oneinstack/internal/services/scriptregistry"
 	"oneinstack/router/input"
-	"path/filepath"
-	"strconv"
-	"strings"
-	"time"
 )
 
 var bundledOnlySoftwareKeys = map[string]struct{}{
@@ -1214,12 +1216,21 @@ func (installer *Installer) setScriptParams(scriptInfo *script.ScriptInfo, param
 		// Installation mode and offline root are server-owned values. They are
 		// injected only after the signed package has been fixed by Panel.
 		scriptInfo.Params["ONEINSTACK_INSTALL_MODE"] = installMode
+		componentState := strings.TrimSpace(os.Getenv("ONEINSTACK_COMPONENT_STATE"))
+		if componentState == "" {
+			componentState = "/var/lib/oneinstack/components"
+		}
+		scriptInfo.Params["ONEINSTACK_COMPONENT_STATE"] = filepath.Clean(componentState)
 		if installMode == "offline" {
 			offlinePath := strings.TrimSpace(params.OfflinePackagePath)
 			if offlinePath == "" {
 				offlinePath = scriptInfo.WorkingDir
 			}
 			scriptInfo.Params["ONEINSTACK_OFFLINE_PACKAGE_PATH"] = offlinePath
+			scriptInfo.Params["ONEINSTACK_OFFLINE_BUNDLE_ID"] = strings.TrimSpace(params.OfflinePackageID)
+			if params.ResolvedPackage != nil {
+				scriptInfo.Params["ONEINSTACK_OFFLINE_BUNDLE_DIGEST"] = strings.TrimSpace(params.ResolvedPackage.PackageSHA256)
+			}
 		}
 	}
 	if strings.EqualFold(strings.TrimSpace(params.Key), "apache") || strings.EqualFold(strings.TrimSpace(params.Key), "tengine") || strings.EqualFold(strings.TrimSpace(params.Key), "openresty") || strings.EqualFold(strings.TrimSpace(params.Key), "caddy") {

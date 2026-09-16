@@ -151,8 +151,15 @@ func validateDirectory(root string) (Manifest, error) {
 		if info.Mode()&os.ModeSymlink != 0 || (!entry.IsDir() && !info.Mode().IsRegular()) {
 			return fmt.Errorf("package contains forbidden file type at %s", relative)
 		}
-		if entry.IsDir() || relative == manifestFileName || relative == checksumFileName {
+		if entry.IsDir() || relative == checksumFileName {
 			return nil
+		}
+		if relative == manifestFileName {
+			if _, exists := checksums[relative]; !exists {
+				// Existing Center component packages validate the manifest through
+				// their signed package identity and may omit it from files.sha256.
+				return nil
+			}
 		}
 		expected, exists := checksums[relative]
 		if !exists {

@@ -1225,6 +1225,9 @@ func validateParameters(scriptInfo *ScriptInfo) error {
 		}
 		envName := parameterEnvironmentName(spec)
 		readOnlyStatus := strings.EqualFold(scriptInfo.ActionName, "status")
+		nonInstallingAction := readOnlyStatus || strings.EqualFold(scriptInfo.ActionName, "uninstall") ||
+			strings.EqualFold(scriptInfo.ActionName, "configGet") || strings.EqualFold(scriptInfo.ActionName, "configApply") ||
+			isServiceControlAction(scriptInfo.ActionName)
 		value := scriptInfo.Params[envName]
 		if value == "" && spec.Default != "" &&
 			!(readOnlyStatus && spec.Type == "port" && spec.Default == "0") {
@@ -1235,8 +1238,7 @@ func validateParameters(scriptInfo *ScriptInfo) error {
 		// component. They must not prevent an uninstall or a read-only status
 		// probe: secret installation inputs are intentionally not retained, and
 		// neither action needs them to inspect an existing component.
-		if spec.Required && value == "" &&
-			!strings.EqualFold(scriptInfo.ActionName, "uninstall") && !readOnlyStatus {
+		if spec.Required && value == "" && !nonInstallingAction {
 			return fmt.Errorf("component parameter %s is required", spec.Name)
 		}
 		if value == "" {
@@ -1481,6 +1483,9 @@ func runtimeParametersFromScriptInfo(info *ScriptInfo) map[string]string {
 	}
 	result := make(map[string]string)
 	for _, spec := range info.ParameterSpecs {
+		if spec.Secret || strings.EqualFold(strings.TrimSpace(spec.Type), "password") {
+			continue
+		}
 		envName := strings.TrimSpace(spec.Env)
 		if envName == "" {
 			envName = strings.ToUpper(strings.NewReplacer("-", "_", ".", "_").Replace(strings.TrimSpace(spec.Name)))

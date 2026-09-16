@@ -743,8 +743,10 @@ func componentInstallParameters(
 }
 
 func serverOwnedInstallParameterName(name string) bool {
-	switch strings.ToUpper(strings.TrimSpace(name)) {
+	normalized := strings.ToUpper(strings.NewReplacer("-", "_", ".", "_").Replace(strings.TrimSpace(name)))
+	switch normalized {
 	case "ONEINSTACK_INSTALL_MODE", "ONEINSTACK_OFFLINE_PACKAGE_PATH", "ONEINSTACK_COMPONENT_STATE",
+		"INSTALL_MODE", "OFFLINE_PACKAGE_ID", "OFFLINE_PACKAGE_PATH", "COMPONENT_STATE_DIR",
 		"UNINSTALL_DATA_POLICY", "UNINSTALL_CONFIRM_DATA_DELETION", "WEB_VHOST_ROOT":
 		return true
 	default:
