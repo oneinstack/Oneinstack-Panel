@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"oneinstack/internal/models"
 	websiteService "oneinstack/internal/services/website"
@@ -31,7 +32,7 @@ type WebsiteDispatchInput struct {
 
 type WebsiteDispatchResult struct {
 	NodeIDs []uint               `json:"nodeIds"`
-	Tasks   []models.ClusterTask `json:"tasks"`
+	Tasks   []ClusterTaskSummary `json:"tasks"`
 }
 
 type WebsiteSyncPayload struct {
@@ -55,7 +56,7 @@ func (m *Manager) DispatchWebsite(input WebsiteDispatchInput) (WebsiteDispatchRe
 		return WebsiteDispatchResult{}, err
 	}
 	var nodes []models.ClusterNode
-	if err := m.db.Where("enabled = ?", true).Find(&nodes).Error; err != nil {
+	if err := m.db.Where("enabled = ? AND status = ? AND last_seen_at >= ?", true, models.ClusterNodeStatusOnline, time.Now().Add(-2*time.Minute)).Find(&nodes).Error; err != nil {
 		return WebsiteDispatchResult{}, err
 	}
 	strategy := strings.ToLower(strings.TrimSpace(input.Strategy))
@@ -79,7 +80,7 @@ func (m *Manager) DispatchWebsite(input WebsiteDispatchInput) (WebsiteDispatchRe
 		}
 		contentPayload, _ = json.Marshal(WebsiteContentSyncPayload{Website: site, Settings: &settingsDocument.Settings, ArchiveBase64: base64.StdEncoding.EncodeToString(archiveData), SHA256: fmt.Sprintf("%x", sha256.Sum256(archiveData))})
 	}
-	result := WebsiteDispatchResult{NodeIDs: make([]uint, 0, len(selected)), Tasks: make([]models.ClusterTask, 0, len(selected))}
+	result := WebsiteDispatchResult{NodeIDs: make([]uint, 0, len(selected)), Tasks: make([]ClusterTaskSummary, 0, len(selected))}
 	for _, node := range selected {
 		key := strings.TrimSpace(input.IdempotencyKey)
 		if key != "" && len(selected) > 1 {
@@ -90,7 +91,7 @@ func (m *Manager) DispatchWebsite(input WebsiteDispatchInput) (WebsiteDispatchRe
 			return WebsiteDispatchResult{}, err
 		}
 		result.NodeIDs = append(result.NodeIDs, node.ID)
-		result.Tasks = append(result.Tasks, task)
+		result.Tasks = append(result.Tasks, SummarizeTask(task))
 		if input.IncludeContent {
 			contentKey := key
 			if contentKey != "" {
@@ -100,7 +101,7 @@ func (m *Manager) DispatchWebsite(input WebsiteDispatchInput) (WebsiteDispatchRe
 			if err != nil {
 				return WebsiteDispatchResult{}, err
 			}
-			result.Tasks = append(result.Tasks, contentTask)
+			result.Tasks = append(result.Tasks, SummarizeTask(contentTask))
 		}
 	}
 	return result, nil

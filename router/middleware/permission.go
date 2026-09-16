@@ -60,6 +60,12 @@ var authorizationMenuRules = []menuVisibilityRule{
 		},
 	},
 	{
+		key: "cluster",
+		visible: func(has func(string) bool, access *accessservice.UserAccess) bool {
+			return has(accessservice.PermissionClusterRead) || has(accessservice.PermissionClusterWrite)
+		},
+	},
+	{
 		key: "security",
 		visible: func(has func(string) bool, access *accessservice.UserAccess) bool {
 			return has(accessservice.PermissionSecurityRead) || has(accessservice.PermissionSecurityWrite)
@@ -357,6 +363,10 @@ func BuildAuthorizationMatrix(access *accessservice.UserAccess) AuthorizationMat
 				"read":  has(accessservice.PermissionMonitoringRead),
 				"write": has(accessservice.PermissionMonitoringWrite),
 			},
+			"cluster": {
+				"read":  has(accessservice.PermissionClusterRead),
+				"write": has(accessservice.PermissionClusterWrite),
+			},
 			"system": {
 				"read":  has(accessservice.PermissionSystemRead),
 				"write": has(accessservice.PermissionSystemWrite),
@@ -569,6 +579,9 @@ func isSensitiveOperation(method, path string) bool {
 		return true
 	}
 	if method != http.MethodGet && strings.HasPrefix(path, "/v1/bastion/") {
+		return true
+	}
+	if method != http.MethodGet && strings.HasPrefix(path, "/v1/cluster/") {
 		return true
 	}
 	if method != http.MethodGet && strings.HasPrefix(path, "/v1/monitor/") {

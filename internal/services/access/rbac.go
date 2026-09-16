@@ -168,6 +168,8 @@ var builtinPermissionEnglishNames = map[string]string{
 	PermissionBastionRead:               "View bastion resources",
 	PermissionBastionWrite:              "Manage bastion resources",
 	PermissionBastionIdentityRead:       "View bastion login identities",
+	PermissionClusterRead:               "View cluster configuration",
+	PermissionClusterWrite:              "Manage cluster configuration",
 	PermissionContainerRead:             "View container resources",
 	PermissionContainerWrite:            "Manage container lifecycle",
 	PermissionContainerDelete:           "Delete container resources",
@@ -998,7 +1000,7 @@ func findMenuNode(nodes []MenuNode, id uint64) *MenuNode {
 
 var builtinRouteTargets = map[string]struct{}{
 	"/home": {}, "/website": {}, "/database": {}, "/software": {}, "/container": {}, "/file": {},
-	"/terminal": {}, "/task": {}, "/monitor": {}, "/bastion": {}, "/runtime-log": {}, "/security": {},
+	"/terminal": {}, "/task": {}, "/monitor": {}, "/bastion": {}, "/cluster": {}, "/runtime-log": {}, "/security": {},
 	"/certificate": {}, "/approval-center": {}, "/log": {}, "/config-snapshots": {},
 	"/system-management": {}, "/user-management": {}, "/menu-management": {}, "/setting": {},
 }
@@ -1059,6 +1061,15 @@ var builtinActionLabels = map[string]builtinActionLabel{
 	"audit.export":                    {Name: "导出审计日志", NameEn: "Export audit logs"},
 	"audit.verify":                    {Name: "校验审计日志", NameEn: "Verify audit logs"},
 	"certificate.issue":               {Name: "签发证书", NameEn: "Issue certificate"},
+	"cluster.agent.settings.update":   {Name: "修改节点端连接配置", NameEn: "Update node connection settings"},
+	"cluster.node.create":             {Name: "添加集群节点", NameEn: "Add cluster node"},
+	"cluster.node.delete":             {Name: "删除集群节点", NameEn: "Delete cluster node"},
+	"cluster.node.restart":            {Name: "重启节点 Panel", NameEn: "Restart node Panel"},
+	"cluster.node.token.rotate":       {Name: "轮换节点令牌", NameEn: "Rotate node token"},
+	"cluster.node.update":             {Name: "修改集群节点", NameEn: "Update cluster node"},
+	"cluster.role.reset":              {Name: "重置集群角色", NameEn: "Reset cluster role"},
+	"cluster.role.select":             {Name: "选择集群角色", NameEn: "Select cluster role"},
+	"cluster.website.dispatch":        {Name: "下发网站配置", NameEn: "Dispatch website configuration"},
 	"container.compose.change":        {Name: "变更编排项目", NameEn: "Change Compose project"},
 	"container.compose.create":        {Name: "创建编排项目", NameEn: "Create Compose project"},
 	"container.compose.delete":        {Name: "删除编排项目", NameEn: "Delete Compose project"},
@@ -1138,7 +1149,8 @@ func builtinMenuDefinitions() []builtinMenuDefinition {
 		{Key: "operations", Type: models.MenuTypeDirectory, Name: "运维工具", NameEn: "Operations", IconKey: "operations", Sort: 90},
 		{Key: "monitoring", ParentKey: "operations", Type: models.MenuTypePage, Name: "监控告警", NameEn: "Monitoring", TargetType: models.MenuTargetRoute, TargetKey: "/monitor", IconKey: "monitoring", Sort: 10, Permissions: []string{PermissionMonitoringRead, PermissionMonitoringWrite}},
 		{Key: "bastion", ParentKey: "operations", Type: models.MenuTypePage, Name: "堡垒机", NameEn: "Bastion", TargetType: models.MenuTargetRoute, TargetKey: "/bastion", IconKey: "bastion", Sort: 20, FeatureKey: MenuFeatureBastion, Permissions: []string{PermissionBastionRead, PermissionBastionWrite}},
-		{Key: "runtimeLog", ParentKey: "operations", Type: models.MenuTypePage, Name: "运行日志", NameEn: "Runtime logs", TargetType: models.MenuTargetRoute, TargetKey: "/runtime-log", IconKey: "runtime-log", Sort: 30, Permissions: []string{PermissionRuntimeLogRead}},
+		{Key: "cluster", ParentKey: "operations", Type: models.MenuTypePage, Name: "集群配置", NameEn: "Cluster configuration", TargetType: models.MenuTargetRoute, TargetKey: "/cluster", IconKey: "cluster", Sort: 30, Permissions: []string{PermissionClusterRead, PermissionClusterWrite}},
+		{Key: "runtimeLog", ParentKey: "operations", Type: models.MenuTypePage, Name: "运行日志", NameEn: "Runtime logs", TargetType: models.MenuTargetRoute, TargetKey: "/runtime-log", IconKey: "runtime-log", Sort: 40, Permissions: []string{PermissionRuntimeLogRead}},
 		{Key: "securityGroup", Type: models.MenuTypeDirectory, Name: "安全与审计", NameEn: "Security & audit", IconKey: "security-audit", Sort: 100},
 		{Key: "security", ParentKey: "securityGroup", Type: models.MenuTypePage, Name: "安全", NameEn: "Security", TargetType: models.MenuTargetRoute, TargetKey: "/security", IconKey: "security", Sort: 10, Permissions: []string{PermissionSecurityRead, PermissionSecurityWrite}},
 		{Key: "certificate", ParentKey: "securityGroup", Type: models.MenuTypePage, Name: "证书管理", NameEn: "Certificates", TargetType: models.MenuTargetRoute, TargetKey: "/certificate", IconKey: "certificate", Sort: 20, Permissions: []string{PermissionCertificateRead, PermissionCertificateWrite}},
@@ -1175,6 +1187,8 @@ func buttonParentKey(action string) string {
 		return "monitoring"
 	case strings.HasPrefix(action, "bastion."):
 		return "bastion"
+	case strings.HasPrefix(action, "cluster."):
+		return "cluster"
 	case strings.HasPrefix(action, "security."):
 		return "security"
 	case strings.HasPrefix(action, "firewall."), strings.HasPrefix(action, "fail2ban."):

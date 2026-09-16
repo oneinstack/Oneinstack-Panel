@@ -120,6 +120,7 @@ bastion:
     retentionDays: 30
     cleanupSchedule: "30 4 * * *"
 clusterAgent:
+    role: "unconfigured"
     enabled: false
     controllerUrl: ""
     token: ""
@@ -243,6 +244,7 @@ func LoadConfig(path ...string) (*viper.Viper, error) {
 	v.SetDefault("updateCenter.healthTimeoutSeconds", 60)
 	v.SetDefault("updateCenter.backupRetention", 5)
 	v.SetDefault("bastion.enabled", false)
+	v.SetDefault("clusterAgent.role", "unconfigured")
 	v.SetDefault("clusterAgent.enabled", false)
 	v.SetDefault("clusterAgent.controllerUrl", "")
 	v.SetDefault("clusterAgent.token", "")
@@ -423,7 +425,7 @@ func ConfigPath(path ...string) string {
 // PersistClusterAgentConfig updates the node-agent settings in config.yaml
 // while preserving unrelated user configuration and refreshing the in-memory
 // values used by the running agent supervisor.
-func PersistClusterAgentConfig(enabled bool, controllerURL, token string, intervalSeconds, timeoutSeconds int, path ...string) error {
+func PersistClusterAgentConfig(role string, enabled bool, controllerURL, token string, intervalSeconds, timeoutSeconds int, path ...string) error {
 	configPath := configFilePath(path...)
 	contents, err := os.ReadFile(configPath)
 	if err != nil && !os.IsNotExist(err) {
@@ -449,6 +451,7 @@ func PersistClusterAgentConfig(enabled bool, controllerURL, token string, interv
 	} else if section.Kind != yaml.MappingNode {
 		return fmt.Errorf("config section clusterAgent must be a YAML mapping")
 	}
+	setYAMLScalar(section, "role", strings.TrimSpace(role), "!!str")
 	setYAMLScalar(section, "enabled", strconv.FormatBool(enabled), "!!bool")
 	setYAMLScalar(section, "controllerUrl", strings.TrimSpace(controllerURL), "!!str")
 	setYAMLScalar(section, "token", token, "!!str")
@@ -461,6 +464,7 @@ func PersistClusterAgentConfig(enabled bool, controllerURL, token string, interv
 	if err := writeConfigAtomically(configPath, encoded); err != nil {
 		return err
 	}
+	ONE_CONFIG.ClusterAgent.Role = strings.TrimSpace(role)
 	ONE_CONFIG.ClusterAgent.Enabled = enabled
 	ONE_CONFIG.ClusterAgent.ControllerURL = strings.TrimSpace(controllerURL)
 	ONE_CONFIG.ClusterAgent.Token = token

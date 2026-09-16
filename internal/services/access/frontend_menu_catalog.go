@@ -223,6 +223,18 @@ func builtinFrontendButtonDefinitions() []builtinButtonDefinition {
 	)
 	add(PermissionBastionIdentityRead, item("bastion.session.access", "发起堡垒机连接"))
 
+	add(PermissionClusterWrite,
+		item("cluster.role.select", "选择集群角色"),
+		item("cluster.role.reset", "重置集群角色"),
+		item("cluster.agent.settings.update", "修改节点端连接配置"),
+		item("cluster.node.create", "添加集群节点"),
+		item("cluster.node.update", "修改集群节点"),
+		item("cluster.node.restart", "重启节点 Panel"),
+		item("cluster.node.token.rotate", "轮换节点令牌"),
+		item("cluster.node.delete", "删除集群节点"),
+		item("cluster.website.dispatch", "下发网站配置"),
+	)
+
 	add(PermissionSecurityRead,
 		item("security.firewall.read", "系统防火墙-查看"),
 		item("security.firewall.port-rule.read", "端口规则-查看"),
@@ -347,6 +359,7 @@ var builtinActionEnglishScopes = map[string]string{
 	"approval":    "Approval",
 	"bastion":     "Bastion",
 	"certificate": "Certificate",
+	"cluster":     "Cluster configuration",
 	"config":      "Configuration",
 	"container":   "Container management",
 	"database":    "Database",
@@ -365,10 +378,10 @@ var builtinActionEnglishWords = map[string]string{
 	"appearance": "Appearance", "apply": "Apply", "approval": "Approval", "approve": "Approve",
 	"archive": "Archive", "assign": "Assign", "backup": "Backup", "bastion": "Bastion",
 	"batch": "Batch", "bind": "Bind", "build": "Build", "cache": "Cache", "cancel": "Cancel",
-	"catalog": "Catalog", "cert": "Certificate", "certificate": "Certificate", "channel": "Channel",
+	"catalog": "Catalog", "cert": "Certificate", "certificate": "Certificate", "channel": "Channel", "cluster": "Cluster",
 	"check": "Check", "cleanup": "Clean up", "clear": "Clear", "codes": "Codes", "collect": "Collect",
 	"compose": "Compose", "config": "Configuration", "connect": "Connect", "container": "Container",
-	"create": "Create", "database": "Database", "delete": "Delete", "deploy": "Deploy",
+	"create": "Create", "database": "Database", "delete": "Delete", "deploy": "Deploy", "dispatch": "Dispatch",
 	"detail": "Details", "diff": "Differences", "disable": "Disable", "dns": "DNS", "download": "Download",
 	"edit": "Edit", "entry": "Entry", "event": "Event", "execute": "Execute", "export": "Export",
 	"file": "File", "firewall": "Firewall", "force": "Force", "forward": "Forward", "handle": "Handle",
@@ -376,7 +389,7 @@ var builtinActionEnglishWords = map[string]string{
 	"ip": "IP", "kill": "Force stop", "log": "Log", "logs": "Logs", "malicious": "Malicious",
 	"manage": "Manage", "mine": "My", "modify": "Modify", "monitor": "Monitor", "move": "Move",
 	"mysql": "MySQL", "network": "Network", "panel": "Panel", "password": "Password", "pause": "Pause",
-	"payload": "Payload", "permission": "Permission", "phpmyadmin": "phpMyAdmin", "ping": "Ping",
+	"payload": "Payload", "permission": "Permission", "phpmyadmin": "phpMyAdmin", "ping": "Ping", "rotate": "Rotate",
 	"port": "Port", "preview": "Preview", "project": "Project", "pull": "Pull", "push": "Push",
 	"read": "View", "record": "Record", "recovery": "Recovery", "regenerate": "Regenerate",
 	"region": "Region", "registry": "Registry", "reject": "Reject", "redis": "Redis", "remote": "Remote", "renew": "Renew",

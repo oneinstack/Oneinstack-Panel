@@ -16,11 +16,12 @@ import (
 )
 
 var (
-	ErrNodeNotFound    = gorm.ErrRecordNotFound
-	ErrInvalidToken    = errors.New("invalid node token")
-	ErrNodeDisabled    = errors.New("node is disabled")
-	ErrNameRequired    = errors.New("node name is required")
-	ErrEndpointInvalid = errors.New("node endpoint must be a valid http or https URL")
+	ErrNodeNotFound     = gorm.ErrRecordNotFound
+	ErrInvalidToken     = errors.New("invalid node token")
+	ErrNodeDisabled     = errors.New("node is disabled")
+	ErrNameRequired     = errors.New("node name is required")
+	ErrEndpointInvalid  = errors.New("node endpoint must be a valid http or https URL")
+	ErrNodeFieldTooLong = errors.New("node field is too long")
 )
 
 type Manager struct{ db *gorm.DB }
@@ -47,6 +48,26 @@ type UpdateNodeInput struct {
 	Enabled  *bool  `json:"enabled,omitempty"`
 }
 
+type HostSnapshot struct {
+	CPUPercent       float64 `json:"cpuPercent"`
+	CPUTotalCores    int     `json:"cpuTotalCores"`
+	CPUUsedCores     float64 `json:"cpuUsedCores"`
+	MemoryPercent    float64 `json:"memoryPercent"`
+	MemoryUsedBytes  uint64  `json:"memoryUsedBytes"`
+	MemoryTotalBytes uint64  `json:"memoryTotalBytes"`
+	DiskPercent      float64 `json:"diskPercent"`
+	DiskUsedBytes    uint64  `json:"diskUsedBytes"`
+	DiskTotalBytes   uint64  `json:"diskTotalBytes"`
+	NetworkRecvBPS   float64 `json:"networkReceiveBps"`
+	NetworkSendBPS   float64 `json:"networkSendBps"`
+	UptimeSeconds    uint64  `json:"uptimeSeconds"`
+	IPAddress        string  `json:"ipAddress,omitempty"`
+	SubnetMask       string  `json:"subnetMask,omitempty"`
+	Gateway          string  `json:"gateway,omitempty"`
+	MACAddress       string  `json:"macAddress,omitempty"`
+	InterfaceName    string  `json:"interfaceName,omitempty"`
+}
+
 type NodeRegistration struct {
 	Token         string `json:"token"`
 	Hostname      string `json:"hostname,omitempty"`
@@ -55,19 +76,31 @@ type NodeRegistration struct {
 	Architecture  string `json:"architecture,omitempty"`
 	PanelVersion  string `json:"panelVersion,omitempty"`
 	AgentVersion  string `json:"agentVersion,omitempty"`
+	HostSnapshot
 }
 
 type NodeHeartbeat struct {
-	Token          string  `json:"token"`
-	Hostname       string  `json:"hostname,omitempty"`
-	PanelVersion   string  `json:"panelVersion,omitempty"`
-	AgentVersion   string  `json:"agentVersion,omitempty"`
-	CPUPercent     float64 `json:"cpuPercent"`
-	MemoryPercent  float64 `json:"memoryPercent"`
-	DiskPercent    float64 `json:"diskPercent"`
-	NetworkRecvBPS float64 `json:"networkReceiveBps"`
-	NetworkSendBPS float64 `json:"networkSendBps"`
-	UptimeSeconds  uint64  `json:"uptimeSeconds"`
+	Token            string  `json:"token"`
+	Hostname         string  `json:"hostname,omitempty"`
+	PanelVersion     string  `json:"panelVersion,omitempty"`
+	AgentVersion     string  `json:"agentVersion,omitempty"`
+	CPUPercent       float64 `json:"cpuPercent"`
+	MemoryPercent    float64 `json:"memoryPercent"`
+	DiskPercent      float64 `json:"diskPercent"`
+	NetworkRecvBPS   float64 `json:"networkReceiveBps"`
+	NetworkSendBPS   float64 `json:"networkSendBps"`
+	UptimeSeconds    uint64  `json:"uptimeSeconds"`
+	CPUTotalCores    int     `json:"cpuTotalCores"`
+	CPUUsedCores     float64 `json:"cpuUsedCores"`
+	MemoryUsedBytes  uint64  `json:"memoryUsedBytes"`
+	MemoryTotalBytes uint64  `json:"memoryTotalBytes"`
+	DiskUsedBytes    uint64  `json:"diskUsedBytes"`
+	DiskTotalBytes   uint64  `json:"diskTotalBytes"`
+	IPAddress        string  `json:"ipAddress,omitempty"`
+	SubnetMask       string  `json:"subnetMask,omitempty"`
+	Gateway          string  `json:"gateway,omitempty"`
+	MACAddress       string  `json:"macAddress,omitempty"`
+	InterfaceName    string  `json:"interfaceName,omitempty"`
 }
 
 type CreateNodeResult struct {
@@ -82,7 +115,7 @@ func (m *Manager) CreateNode(input CreateNodeInput) (CreateNodeResult, error) {
 		return CreateNodeResult{}, ErrNameRequired
 	}
 	if len(name) > 120 || len(input.Group) > 120 || len(input.Tags) > 512 {
-		return CreateNodeResult{}, errors.New("node field is too long")
+		return CreateNodeResult{}, ErrNodeFieldTooLong
 	}
 	if !validEndpoint(endpoint) {
 		return CreateNodeResult{}, ErrEndpointInvalid
@@ -138,14 +171,18 @@ func (m *Manager) UpdateNode(id uint, input UpdateNodeInput) (models.ClusterNode
 	if err != nil {
 		return node, err
 	}
-	if strings.TrimSpace(input.Name) == "" {
+	name := strings.TrimSpace(input.Name)
+	if name == "" {
 		return node, ErrNameRequired
+	}
+	if len(name) > 120 || len(input.Group) > 120 || len(input.Tags) > 512 {
+		return node, ErrNodeFieldTooLong
 	}
 	endpoint := strings.TrimRight(strings.TrimSpace(input.Endpoint), "/")
 	if !validEndpoint(endpoint) {
 		return node, ErrEndpointInvalid
 	}
-	node.Name, node.Endpoint = strings.TrimSpace(input.Name), endpoint
+	node.Name, node.Endpoint = name, endpoint
 	node.Group, node.Tags = strings.TrimSpace(input.Group), strings.TrimSpace(input.Tags)
 	if input.Enabled != nil {
 		node.Enabled = *input.Enabled
@@ -160,7 +197,22 @@ func (m *Manager) UpdateNode(id uint, input UpdateNodeInput) (models.ClusterNode
 }
 
 func (m *Manager) DeleteNode(id uint) error {
-	return m.db.Delete(&models.ClusterNode{}, id).Error
+	return m.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("node_id = ?", id).Delete(&models.ClusterNodeMetric{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("node_id = ?", id).Delete(&models.ClusterTask{}).Error; err != nil {
+			return err
+		}
+		result := tx.Delete(&models.ClusterNode{}, id)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return ErrNodeNotFound
+		}
+		return nil
+	})
 }
 
 // RotateToken invalidates the previous agent token and returns a new one. The
@@ -194,7 +246,8 @@ func (m *Manager) RegisterNode(input NodeRegistration) (models.ClusterNode, erro
 	now := time.Now()
 	node.Hostname, node.SystemID, node.SystemVersion = strings.TrimSpace(input.Hostname), strings.TrimSpace(input.SystemID), strings.TrimSpace(input.SystemVersion)
 	node.Architecture, node.PanelVersion, node.AgentVersion = strings.TrimSpace(input.Architecture), strings.TrimSpace(input.PanelVersion), strings.TrimSpace(input.AgentVersion)
-	node.Status, node.LastError, node.LastSeenAt = models.ClusterNodeStatusOnline, "", &now
+	node.Status, node.LastError, node.LastSeenAt, node.LastRegisteredAt = models.ClusterNodeStatusOnline, "", &now, &now
+	applyHostSnapshot(&node, input.HostSnapshot)
 	if err := m.db.Save(&node).Error; err != nil {
 		return node, err
 	}
@@ -213,6 +266,11 @@ func (m *Manager) Heartbeat(input NodeHeartbeat) (models.ClusterNode, error) {
 	node.Hostname, node.PanelVersion, node.AgentVersion = strings.TrimSpace(input.Hostname), strings.TrimSpace(input.PanelVersion), strings.TrimSpace(input.AgentVersion)
 	node.CPUPercent, node.MemoryPercent, node.DiskPercent = clamp(input.CPUPercent), clamp(input.MemoryPercent), clamp(input.DiskPercent)
 	node.NetworkRecvBPS, node.NetworkSendBPS, node.UptimeSeconds = max0(input.NetworkRecvBPS), max0(input.NetworkSendBPS), input.UptimeSeconds
+	node.CPUTotalCores, node.CPUUsedCores = input.CPUTotalCores, max0(input.CPUUsedCores)
+	node.MemoryUsedBytes, node.MemoryTotalBytes = input.MemoryUsedBytes, input.MemoryTotalBytes
+	node.DiskUsedBytes, node.DiskTotalBytes = input.DiskUsedBytes, input.DiskTotalBytes
+	node.IPAddress, node.SubnetMask, node.Gateway = strings.TrimSpace(input.IPAddress), strings.TrimSpace(input.SubnetMask), strings.TrimSpace(input.Gateway)
+	node.MACAddress, node.InterfaceName = strings.TrimSpace(input.MACAddress), strings.TrimSpace(input.InterfaceName)
 	node.Status, node.LastError, node.LastSeenAt = models.ClusterNodeStatusOnline, "", &now
 	metric := models.ClusterNodeMetric{NodeID: node.ID, CapturedAt: now, CPUPercent: node.CPUPercent, MemoryPercent: node.MemoryPercent, DiskPercent: node.DiskPercent, NetworkRecvBPS: node.NetworkRecvBPS, NetworkSendBPS: node.NetworkSendBPS, UptimeSeconds: node.UptimeSeconds}
 	if err := m.db.Transaction(func(tx *gorm.DB) error {
@@ -224,6 +282,16 @@ func (m *Manager) Heartbeat(input NodeHeartbeat) (models.ClusterNode, error) {
 		return node, err
 	}
 	return node, nil
+}
+
+func applyHostSnapshot(node *models.ClusterNode, snapshot HostSnapshot) {
+	node.CPUPercent, node.MemoryPercent, node.DiskPercent = clamp(snapshot.CPUPercent), clamp(snapshot.MemoryPercent), clamp(snapshot.DiskPercent)
+	node.NetworkRecvBPS, node.NetworkSendBPS, node.UptimeSeconds = max0(snapshot.NetworkRecvBPS), max0(snapshot.NetworkSendBPS), snapshot.UptimeSeconds
+	node.CPUTotalCores, node.CPUUsedCores = snapshot.CPUTotalCores, max0(snapshot.CPUUsedCores)
+	node.MemoryUsedBytes, node.MemoryTotalBytes = snapshot.MemoryUsedBytes, snapshot.MemoryTotalBytes
+	node.DiskUsedBytes, node.DiskTotalBytes = snapshot.DiskUsedBytes, snapshot.DiskTotalBytes
+	node.IPAddress, node.SubnetMask, node.Gateway = strings.TrimSpace(snapshot.IPAddress), strings.TrimSpace(snapshot.SubnetMask), strings.TrimSpace(snapshot.Gateway)
+	node.MACAddress, node.InterfaceName = strings.TrimSpace(snapshot.MACAddress), strings.TrimSpace(snapshot.InterfaceName)
 }
 
 func (m *Manager) findByToken(token string) (models.ClusterNode, error) {

@@ -29,7 +29,7 @@ var ErrCurrentPasswordInvalid = errors.New("current password is invalid")
 var allowedNavigationPaths = map[string]struct{}{
 	"/home": {}, "/website": {}, "/database": {}, "/software": {},
 	"/container": {}, "/file": {}, "/terminal": {}, "/task": {},
-	"/monitor": {}, "/bastion": {}, "/runtime-log": {}, "/security": {},
+	"/monitor": {}, "/bastion": {}, "/cluster": {}, "/runtime-log": {}, "/security": {},
 	"/certificate": {}, "/approval-center": {}, "/log": {},
 	"/config-snapshots": {}, "/system-management": {}, "/user-management": {},
 }

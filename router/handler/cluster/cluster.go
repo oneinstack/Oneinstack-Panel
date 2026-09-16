@@ -16,6 +16,10 @@ import (
 )
 
 func manager(c *gin.Context) (*cluster.Manager, bool) {
+	if cluster.GetAgentSettings().Role != cluster.ClusterRoleController {
+		core.HandleErrorWithStatus(c, http.StatusConflict, core.NewError(core.ErrConflict, "本机未配置为集群控制端"))
+		return nil, false
+	}
 	m, err := cluster.NewManager(app.DB())
 	if err != nil {
 		core.HandleErrorWithStatus(c, http.StatusInternalServerError, core.NewError(core.ErrInternalError, err.Error()))
@@ -26,6 +30,33 @@ func manager(c *gin.Context) (*cluster.Manager, bool) {
 
 func GetAgentSettings(c *gin.Context) {
 	core.HandleSuccess(c, cluster.GetAgentSettings())
+}
+
+func SelectRole(c *gin.Context) {
+	var request cluster.SelectClusterRoleInput
+	if err := c.ShouldBindJSON(&request); err != nil {
+		core.HandleError(c, core.NewError(core.ErrInvalidParameter, "集群角色参数无效"))
+		return
+	}
+	settings, err := cluster.SelectClusterRole(request)
+	if errors.Is(err, cluster.ErrClusterRoleAlreadySelected) {
+		core.HandleErrorWithStatus(c, http.StatusConflict, core.NewError(core.ErrConflict, "集群角色已选择，请先重置角色"))
+		return
+	}
+	if err != nil {
+		core.HandleError(c, core.NewError(core.ErrInvalidParameter, "集群角色只能选择控制端或节点端"))
+		return
+	}
+	core.HandleSuccess(c, settings)
+}
+
+func ResetRole(c *gin.Context) {
+	settings, err := cluster.ResetClusterRole()
+	if err != nil {
+		core.HandleError(c, core.NewError(core.ErrInternalError, "重置集群角色失败"))
+		return
+	}
+	core.HandleSuccess(c, settings)
 }
 
 func UpdateAgentSettings(c *gin.Context) {
@@ -52,7 +83,8 @@ func ListNodes(c *gin.Context) {
 		core.HandleError(c, core.NewError(core.ErrInternalError, err.Error()))
 		return
 	}
-	core.HandleSuccess(c, gin.H{"items": nodes})
+	controller, _ := cluster.CollectLocalController(c.Request.Context())
+	core.HandleSuccess(c, gin.H{"controller": controller, "items": nodes})
 }
 
 func GetNode(c *gin.Context) {
@@ -127,6 +159,32 @@ func ListTasks(c *gin.Context) {
 	core.HandleSuccess(c, gin.H{"items": tasks})
 }
 
+func GetTask(c *gin.Context) {
+	m, ok := manager(c)
+	if !ok {
+		return
+	}
+	id, ok := nodeID(c)
+	if !ok {
+		return
+	}
+	taskID, err := strconv.ParseUint(strings.TrimSpace(c.Param("taskId")), 10, 64)
+	if err != nil || taskID == 0 {
+		core.HandleError(c, core.NewFieldError(core.ErrInvalidID, "任务 ID 必须是正整数", "taskId"))
+		return
+	}
+	detail, err := m.GetTaskDetail(id, taskID)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		core.HandleError(c, core.NewError(core.ErrNotFound, "节点任务不存在"))
+		return
+	}
+	if err != nil {
+		core.HandleError(c, core.NewError(core.ErrInternalError, "读取节点任务详情失败"))
+		return
+	}
+	core.HandleSuccess(c, detail)
+}
+
 func EnqueueTask(c *gin.Context) {
 	m, ok := manager(c)
 	if !ok {
@@ -144,6 +202,31 @@ func EnqueueTask(c *gin.Context) {
 	}
 	if err != nil {
 		core.HandleError(c, core.NewError(core.ErrInvalidParameter, err.Error()))
+		return
+	}
+	core.HandleSuccess(c, cluster.SummarizeTask(task))
+}
+
+func RestartNode(c *gin.Context) {
+	m, ok := manager(c)
+	if !ok {
+		return
+	}
+	id, ok := nodeID(c)
+	if !ok {
+		return
+	}
+	task, err := m.RestartPanel(id)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		core.HandleError(c, core.NewError(core.ErrNotFound, "节点不存在"))
+		return
+	}
+	if errors.Is(err, cluster.ErrNodeUnavailable) {
+		core.HandleErrorWithStatus(c, http.StatusConflict, core.NewError(core.ErrConflict, "仅在线且心跳正常的节点可以重启 Panel"))
+		return
+	}
+	if err != nil {
+		core.HandleError(c, core.NewError(core.ErrInternalError, "创建节点重启任务失败"))
 		return
 	}
 	core.HandleSuccess(c, task)
@@ -183,7 +266,7 @@ func CreateNode(c *gin.Context) {
 	}
 	result, err := m.CreateNode(input)
 	if err != nil {
-		core.HandleError(c, core.NewError(core.ErrInvalidParameter, err.Error()))
+		handleNodeMutationError(c, err)
 		return
 	}
 	core.HandleSuccess(c, result)
@@ -209,10 +292,23 @@ func UpdateNode(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		core.HandleError(c, core.NewError(core.ErrInvalidParameter, err.Error()))
+		handleNodeMutationError(c, err)
 		return
 	}
 	core.HandleSuccess(c, node)
+}
+
+func handleNodeMutationError(c *gin.Context, err error) {
+	switch {
+	case errors.Is(err, cluster.ErrNameRequired):
+		core.HandleValidationErrors(c, core.ValidationErrors{{Field: "name", Code: core.ErrRequiredField, Message: "节点名称不能为空"}})
+	case errors.Is(err, cluster.ErrEndpointInvalid):
+		core.HandleValidationErrors(c, core.ValidationErrors{{Field: "endpoint", Code: core.ErrInvalidParameter, Message: "Panel 地址必须是有效的 HTTP 或 HTTPS URL"}})
+	case errors.Is(err, cluster.ErrNodeFieldTooLong):
+		core.HandleValidationErrors(c, core.ValidationErrors{{Field: "node", Code: core.ErrInvalidParameter, Message: "节点名称、分组或标签长度超过限制"}})
+	default:
+		core.HandleError(c, core.NewError(core.ErrInvalidParameter, "节点参数无效"))
+	}
 }
 
 func DeleteNode(c *gin.Context) {
@@ -336,7 +432,7 @@ func CompleteTask(c *gin.Context) {
 		agentError(c, err)
 		return
 	}
-	core.HandleSuccess(c, task)
+	core.HandleSuccess(c, cluster.SummarizeTask(task))
 }
 
 func agentToken(c *gin.Context, bodyToken string) string {

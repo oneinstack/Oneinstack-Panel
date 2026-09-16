@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
 	"runtime"
 	"strings"
 	"sync"
@@ -17,8 +18,6 @@ import (
 	"oneinstack/internal/models"
 	"oneinstack/internal/services/monitoring"
 	websiteService "oneinstack/internal/services/website"
-
-	"github.com/shirou/gopsutil/v4/host"
 )
 
 type AgentConfig struct {
@@ -57,8 +56,13 @@ func (a *Agent) Start(ctx context.Context) {
 }
 
 func (a *Agent) run(ctx context.Context) {
+	registered := false
 	if err := a.register(ctx); err != nil {
+		markAgentError(err)
 		fmt.Printf("cluster agent registration failed: %v\n", err)
+	} else {
+		registered = true
+		markAgentRegistered()
 	}
 	ticker := time.NewTicker(a.cfg.Interval)
 	defer ticker.Stop()
@@ -67,10 +71,23 @@ func (a *Agent) run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			if !registered {
+				if err := a.register(ctx); err != nil {
+					markAgentError(err)
+					fmt.Printf("cluster agent registration failed: %v\n", err)
+				} else {
+					registered = true
+					markAgentRegistered()
+				}
+			}
 			if err := a.heartbeat(ctx); err != nil {
+				markAgentError(err)
 				fmt.Printf("cluster agent heartbeat failed: %v\n", err)
+			} else {
+				markAgentHeartbeat()
 			}
 			if err := a.drainTasks(ctx); err != nil {
+				markAgentError(err)
 				fmt.Printf("cluster agent task processing failed: %v\n", err)
 			}
 		}
@@ -91,6 +108,7 @@ func (a *Agent) drainTasks(ctx context.Context) error {
 		if err := a.post(ctx, "/cluster/agent/tasks/next", nil, &envelope); err != nil {
 			return err
 		}
+		markAgentTaskPoll()
 		var claimed claimData
 		if len(envelope.Data) > 0 {
 			if err := json.Unmarshal(envelope.Data, &claimed); err != nil {
@@ -111,12 +129,18 @@ func (a *Agent) drainTasks(ctx context.Context) error {
 		if err := a.post(ctx, "/cluster/agent/tasks/complete", completion, nil); err != nil {
 			return err
 		}
+		if taskErr == nil && claimed.Task.Type == "panel.restart" {
+			schedulePanelRestart()
+			return nil
+		}
 	}
 	return nil
 }
 
 func (a *Agent) executeTask(ctx context.Context, task *models.ClusterTask) (json.RawMessage, error) {
 	switch task.Type {
+	case "panel.restart":
+		return json.Marshal(map[string]interface{}{"scheduled": true, "service": "one.service"})
 	case "website.sync":
 		var payload WebsiteSyncPayload
 		if err := json.Unmarshal([]byte(task.Payload), &payload); err != nil {
@@ -134,19 +158,33 @@ func (a *Agent) executeTask(ctx context.Context, task *models.ClusterTask) (json
 
 func (a *Agent) register(ctx context.Context) error {
 	hostname, _ := os.Hostname()
-	payload := NodeRegistration{Token: a.cfg.Token, Hostname: hostname, Architecture: runtime.GOARCH, PanelVersion: buildinfo.Version, AgentVersion: buildinfo.Version}
+	snapshot, systemID, systemVersion, _ := collectHostSnapshot(ctx, a.collector)
+	payload := NodeRegistration{Token: a.cfg.Token, Hostname: hostname, SystemID: systemID, SystemVersion: systemVersion, Architecture: runtime.GOARCH, PanelVersion: buildinfo.Version, AgentVersion: buildinfo.Version, HostSnapshot: snapshot}
 	return a.post(ctx, "/cluster/agent/register", payload, nil)
 }
 
 func (a *Agent) heartbeat(ctx context.Context) error {
-	sample, err := a.collector.Collect(ctx)
+	snapshot, _, _, err := collectHostSnapshot(ctx, a.collector)
 	if err != nil {
 		return err
 	}
 	hostname, _ := os.Hostname()
-	uptime, _ := host.UptimeWithContext(ctx)
-	payload := NodeHeartbeat{Token: a.cfg.Token, Hostname: hostname, PanelVersion: buildinfo.Version, AgentVersion: buildinfo.Version, CPUPercent: sample.CPUPercent, MemoryPercent: sample.MemoryPercent, DiskPercent: sample.DiskPercent, NetworkRecvBPS: sample.NetworkReceiveBPS, NetworkSendBPS: sample.NetworkSendBPS, UptimeSeconds: uptime}
+	payload := NodeHeartbeat{Token: a.cfg.Token, Hostname: hostname, PanelVersion: buildinfo.Version, AgentVersion: buildinfo.Version, CPUPercent: snapshot.CPUPercent, MemoryPercent: snapshot.MemoryPercent, DiskPercent: snapshot.DiskPercent, NetworkRecvBPS: snapshot.NetworkRecvBPS, NetworkSendBPS: snapshot.NetworkSendBPS, UptimeSeconds: snapshot.UptimeSeconds, CPUTotalCores: snapshot.CPUTotalCores, CPUUsedCores: snapshot.CPUUsedCores, MemoryUsedBytes: snapshot.MemoryUsedBytes, MemoryTotalBytes: snapshot.MemoryTotalBytes, DiskUsedBytes: snapshot.DiskUsedBytes, DiskTotalBytes: snapshot.DiskTotalBytes, IPAddress: snapshot.IPAddress, SubnetMask: snapshot.SubnetMask, Gateway: snapshot.Gateway, MACAddress: snapshot.MACAddress, InterfaceName: snapshot.InterfaceName}
 	return a.post(ctx, "/cluster/agent/heartbeat", payload, nil)
+}
+
+func schedulePanelRestart() {
+	go func() {
+		timer := time.NewTimer(time.Second)
+		defer timer.Stop()
+		<-timer.C
+		command := exec.Command("systemctl", "restart", "one.service")
+		if err := command.Start(); err != nil {
+			markAgentError(errors.New("panel restart could not be started"))
+		} else {
+			_ = command.Process.Release()
+		}
+	}()
 }
 
 func (a *Agent) post(ctx context.Context, path string, payload interface{}, output interface{}) error {

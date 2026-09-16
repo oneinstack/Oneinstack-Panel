@@ -12,10 +12,43 @@ import (
 )
 
 var (
-	ErrTaskNotFound = gorm.ErrRecordNotFound
-	ErrTaskState    = errors.New("invalid task state")
-	ErrTaskType     = errors.New("task type is required")
+	ErrTaskNotFound    = gorm.ErrRecordNotFound
+	ErrTaskState       = errors.New("invalid task state")
+	ErrTaskType        = errors.New("task type is required")
+	ErrNodeUnavailable = errors.New("node must be enabled and online with a fresh heartbeat")
 )
+
+type ClusterTaskSummary struct {
+	ID          uint64     `json:"id"`
+	NodeID      uint       `json:"nodeId"`
+	Type        string     `json:"type"`
+	Status      string     `json:"status"`
+	Attempts    int        `json:"attempts"`
+	MaxAttempts int        `json:"maxAttempts"`
+	Error       string     `json:"error,omitempty"`
+	QueuedAt    time.Time  `json:"queuedAt"`
+	StartedAt   *time.Time `json:"startedAt,omitempty"`
+	FinishedAt  *time.Time `json:"finishedAt,omitempty"`
+	CreatedAt   time.Time  `json:"createdAt"`
+	UpdatedAt   time.Time  `json:"updatedAt"`
+}
+
+// ClusterTaskEvent is a safe, payload-free task timeline entry for the
+// controller UI. Stage and status are stable machine values localized by the
+// client; Message contains only a bounded public summary.
+type ClusterTaskEvent struct {
+	Stage      string    `json:"stage"`
+	Status     string    `json:"status"`
+	Attempt    int       `json:"attempt,omitempty"`
+	OccurredAt time.Time `json:"occurredAt"`
+	Message    string    `json:"message,omitempty"`
+}
+
+type ClusterTaskDetail struct {
+	ClusterTaskSummary
+	Progress int                `json:"progress"`
+	Events   []ClusterTaskEvent `json:"events"`
+}
 
 type EnqueueTaskInput struct {
 	NodeID         uint            `json:"nodeId"`
@@ -65,13 +98,102 @@ func (m *Manager) EnqueueTask(input EnqueueTaskInput) (models.ClusterTask, error
 	return task, nil
 }
 
-func (m *Manager) ListTasks(nodeID uint, limit int) ([]models.ClusterTask, error) {
+func (m *Manager) ListTasks(nodeID uint, limit int) ([]ClusterTaskSummary, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
 	var tasks []models.ClusterTask
 	err := m.db.Where("node_id = ?", nodeID).Order("id desc").Limit(limit).Find(&tasks).Error
-	return tasks, err
+	if err != nil {
+		return nil, err
+	}
+	summaries := make([]ClusterTaskSummary, 0, len(tasks))
+	for i := range tasks {
+		summaries = append(summaries, SummarizeTask(tasks[i]))
+	}
+	return summaries, nil
+}
+
+func SummarizeTask(task models.ClusterTask) ClusterTaskSummary {
+	errorSummary := ""
+	if strings.TrimSpace(task.Error) != "" {
+		errorSummary = "节点任务执行失败，请查看节点端日志"
+	}
+	return ClusterTaskSummary{ID: task.ID, NodeID: task.NodeID, Type: task.Type, Status: task.Status, Attempts: task.Attempts, MaxAttempts: task.MaxAttempts, Error: errorSummary, QueuedAt: task.QueuedAt, StartedAt: task.StartedAt, FinishedAt: task.FinishedAt, CreatedAt: task.CreatedAt, UpdatedAt: task.UpdatedAt}
+}
+
+func (m *Manager) GetTaskDetail(nodeID uint, taskID uint64) (ClusterTaskDetail, error) {
+	var task models.ClusterTask
+	if err := m.db.Where("id = ? AND node_id = ?", taskID, nodeID).First(&task).Error; err != nil {
+		return ClusterTaskDetail{}, err
+	}
+
+	detail := ClusterTaskDetail{
+		ClusterTaskSummary: SummarizeTask(task),
+		Progress:           taskProgress(task.Status),
+		Events: []ClusterTaskEvent{{
+			Stage:      "queued",
+			Status:     models.ClusterTaskStatusSucceeded,
+			OccurredAt: task.QueuedAt,
+		}},
+	}
+	if task.Attempts > 0 && task.StartedAt == nil && task.Status == models.ClusterTaskStatusQueued {
+		detail.Events = append(detail.Events, ClusterTaskEvent{
+			Stage:      "retrying",
+			Status:     models.ClusterTaskStatusQueued,
+			Attempt:    task.Attempts,
+			OccurredAt: task.UpdatedAt,
+		})
+	}
+	if task.StartedAt != nil {
+		detail.Events = append(detail.Events, ClusterTaskEvent{
+			Stage:      "running",
+			Status:     models.ClusterTaskStatusSucceeded,
+			Attempt:    task.Attempts,
+			OccurredAt: *task.StartedAt,
+		})
+	}
+	if task.FinishedAt != nil {
+		event := ClusterTaskEvent{
+			Stage:      task.Status,
+			Status:     task.Status,
+			Attempt:    task.Attempts,
+			OccurredAt: *task.FinishedAt,
+		}
+		if task.Status == models.ClusterTaskStatusFailed {
+			event.Message = detail.Error
+		}
+		detail.Events = append(detail.Events, event)
+	}
+	return detail, nil
+}
+
+func taskProgress(status string) int {
+	switch status {
+	case models.ClusterTaskStatusQueued:
+		return 10
+	case models.ClusterTaskStatusRunning:
+		return 60
+	case models.ClusterTaskStatusSucceeded, models.ClusterTaskStatusFailed, models.ClusterTaskStatusCanceled:
+		return 100
+	default:
+		return 0
+	}
+}
+
+func (m *Manager) RestartPanel(id uint) (ClusterTaskSummary, error) {
+	node, err := m.GetNode(id)
+	if err != nil {
+		return ClusterTaskSummary{}, err
+	}
+	if !node.Enabled || node.Status != models.ClusterNodeStatusOnline || node.LastSeenAt == nil || node.LastSeenAt.Before(time.Now().Add(-2*time.Minute)) {
+		return ClusterTaskSummary{}, ErrNodeUnavailable
+	}
+	task, err := m.EnqueueTask(EnqueueTaskInput{NodeID: id, Type: "panel.restart", Payload: json.RawMessage(`{}`), MaxAttempts: 1, IdempotencyKey: "panel-restart:" + time.Now().UTC().Format("20060102T150405.000000000") + ":" + stringID(id)})
+	if err != nil {
+		return ClusterTaskSummary{}, err
+	}
+	return SummarizeTask(task), nil
 }
 
 func (m *Manager) ClaimTask(token string) (*models.ClusterTask, error) {

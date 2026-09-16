@@ -66,6 +66,8 @@ const (
 	PermissionBastionRead               = "bastion.read"
 	PermissionBastionWrite              = "bastion.write"
 	PermissionBastionIdentityRead       = "bastion.identity.read"
+	PermissionClusterRead               = "cluster.read"
+	PermissionClusterWrite              = "cluster.write"
 	PermissionContainerRead             = "container.read"
 	PermissionContainerWrite            = "container.write"
 	PermissionContainerDelete           = "container.delete"
@@ -204,6 +206,8 @@ func builtinPermissions() []models.Permission {
 		{Code: PermissionBastionRead, Name: "堡垒机读取", Module: "bastion"},
 		{Code: PermissionBastionWrite, Name: "堡垒机管理", Module: "bastion"},
 		{Code: PermissionBastionIdentityRead, Name: "堡垒机登录身份查看", Module: "bastion"},
+		{Code: PermissionClusterRead, Name: "集群配置读取", Module: "cluster"},
+		{Code: PermissionClusterWrite, Name: "集群配置管理", Module: "cluster"},
 		{Code: PermissionContainerRead, Name: "容器资源读取", Module: "container"},
 		{Code: PermissionContainerWrite, Name: "容器生命周期操作", Module: "container"},
 		{Code: PermissionContainerDelete, Name: "容器资源删除", Module: "container"},
@@ -315,7 +319,7 @@ func builtinRoles() []struct {
 			Role: models.Role{
 				Code:        RoleSystemOperator,
 				Name:        "系统运维",
-				Description: "负责文件、软件、监控、计划任务与系统访问配置",
+				Description: "负责文件、软件、监控、计划任务、集群与系统访问配置",
 				Builtin:     true,
 			},
 			Permissions: []string{
@@ -353,6 +357,8 @@ func builtinRoles() []struct {
 				PermissionBastionRead,
 				PermissionBastionWrite,
 				PermissionBastionIdentityRead,
+				PermissionClusterRead,
+				PermissionClusterWrite,
 			},
 		},
 		{
