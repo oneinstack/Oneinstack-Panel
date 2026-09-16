@@ -266,7 +266,7 @@ func (s *Service) List(resourceType, resourceID, status, locale string, page, pa
 			StatusLabel:           statusLabel(locale, row.Status),
 			Version:               row.Version,
 			Description:           row.Description,
-			SizeBytes:             row.SizeBytes,
+			SizeBytes:             snapshotDisplaySize(row),
 			ArtifactSHA256:        row.ArtifactSHA256,
 		}
 		if item.BeforeRevision == "" {
@@ -417,6 +417,7 @@ func Equal(a, b any) bool {
 }
 
 func decodeDocument(row models.ConfigurationSnapshot) (Document, error) {
+	row.SizeBytes = snapshotDisplaySize(row)
 	var before, after any
 	if err := json.Unmarshal([]byte(row.BeforeJSON), &before); err != nil {
 		return Document{}, err
@@ -429,6 +430,13 @@ func decodeDocument(row models.ConfigurationSnapshot) (Document, error) {
 		return Document{}, err
 	}
 	return Document{Snapshot: row, Before: before, After: after, Diff: diff}, nil
+}
+
+func snapshotDisplaySize(row models.ConfigurationSnapshot) int64 {
+	if row.SizeBytes > 0 {
+		return row.SizeBytes
+	}
+	return int64(len(row.BeforeJSON) + len(row.AfterJSON) + len(row.DiffJSON))
 }
 
 func normalizeJSON(value any) ([]byte, error) {
