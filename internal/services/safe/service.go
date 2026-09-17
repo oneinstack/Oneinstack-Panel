@@ -81,6 +81,9 @@ func (s *Service) Status(ctx context.Context) (*output.IptablesStatus, error) {
 		if err := s.CleanupUninstalledBackend(BackendFirewalld); err != nil {
 			status.Warning = appendWarning(status.Warning, "清理已卸载 firewalld 的面板保护记录失败")
 		}
+		if err := s.deduplicateProtectedPortRules(ctx, state, s.panelPort); err != nil {
+			status.Warning = appendWarning(status.Warning, "清理重复的面板端口保护记录失败")
+		}
 		if err := s.db.Model(&models.IptablesRule{}).Count(&status.ManagedRuleCount).Error; err != nil {
 			return nil, err
 		}
@@ -690,11 +693,53 @@ func (s *Service) ensurePanelRule(ctx context.Context, state backendState) (*mod
 	return s.ensureProtectedPort(ctx, state, s.panelPort)
 }
 
+// deduplicateProtectedPortRules keeps one database marker for a panel port.
+// The backend is an implementation detail of the marker, so a UFW marker and
+// a firewalld marker for the same protected port must not be shown as two
+// separate panel rules after a backend switch.
+func (s *Service) deduplicateProtectedPortRules(ctx context.Context, state backendState, port int) error {
+	if s.db == nil {
+		return nil
+	}
+	var rules []models.IptablesRule
+	if err := s.db.Where(
+		"protected = ? AND direction = ? AND protocol = ? AND strategy = ? AND ports = ?",
+		true, "in", "tcp", "allow", fmt.Sprint(port),
+	).Order("id DESC").Find(&rules).Error; err != nil {
+		return err
+	}
+	if len(rules) < 2 {
+		return nil
+	}
+
+	keepID := rules[0].ID
+	for index := range rules {
+		rule := &rules[index]
+		if rule.Backend != state.Name || !s.ruleExists(ctx, rule, state) {
+			continue
+		}
+		keepID = rule.ID
+		break
+	}
+	for _, rule := range rules {
+		if rule.ID == keepID {
+			continue
+		}
+		if err := s.db.Delete(&models.IptablesRule{}, rule.ID).Error; err != nil {
+			return fmt.Errorf("删除重复的面板端口保护记录: %w", err)
+		}
+	}
+	return nil
+}
+
 func (s *Service) ensureProtectedPort(ctx context.Context, state backendState, port int) (*models.IptablesRule, []commandOperation, error) {
+	if err := s.deduplicateProtectedPortRules(ctx, state, port); err != nil {
+		return nil, nil, err
+	}
 	var existing models.IptablesRule
 	result := s.db.Where(
-		"protected = ? AND protocol = ? AND strategy = ? AND ports = ? AND backend = ?",
-		true, "tcp", "allow", fmt.Sprint(port), state.Name,
+		"protected = ? AND direction = ? AND protocol = ? AND strategy = ? AND ports = ? AND backend = ?",
+		true, "in", "tcp", "allow", fmt.Sprint(port), state.Name,
 	).First(&existing)
 	if result.Error == nil {
 		if s.ruleExists(ctx, &existing, state) {
@@ -708,6 +753,15 @@ func (s *Service) ensureProtectedPort(ctx context.Context, state backendState, p
 		}
 	} else if !errors.Is(result.Error, gorm.ErrRecordNotFound) {
 		return nil, nil, result.Error
+	}
+	// A single marker from a previous backend is still stale when the active
+	// backend changes. Remove it before creating the canonical marker for the
+	// current backend, otherwise a backend switch would create two UI rows.
+	if err := s.db.Where(
+		"protected = ? AND direction = ? AND protocol = ? AND strategy = ? AND ports = ?",
+		true, "in", "tcp", "allow", fmt.Sprint(port),
+	).Delete(&models.IptablesRule{}).Error; err != nil {
+		return nil, nil, err
 	}
 	rule := &models.IptablesRule{
 		Direction: "in", Protocol: "tcp", Strategy: "allow",
