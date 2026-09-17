@@ -707,8 +707,7 @@ func filterServerOwnedParameters(parameters []Parameter) []Parameter {
 	}
 	filtered := make([]Parameter, 0, len(parameters))
 	for _, parameter := range parameters {
-		compact := strings.NewReplacer("-", "", "_", "", ".", "", " ", "").Replace(strings.ToLower(strings.TrimSpace(parameter.Key)))
-		if compact == "installmode" || compact == "offlinepackageid" {
+		if scriptregistry.IsServerOwnedInstallParameterName(parameter.Key) {
 			continue
 		}
 		filtered = append(filtered, parameter)

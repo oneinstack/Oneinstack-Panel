@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
-	"strings"
 
 	"oneinstack/internal/services/scriptregistry"
 )
@@ -95,18 +94,7 @@ func (p *InstallParams) UnmarshalJSON(data []byte) error {
 }
 
 func isServerOwnedInstallParameter(value string) bool {
-	compact := strings.NewReplacer("-", "", "_", "", ".", "", " ", "").Replace(strings.ToLower(strings.TrimSpace(value)))
-	switch compact {
-	case "installmode", "oneinstackinstallmode",
-		"offlinepackageid", "oneinstackofflinepackageid",
-		"offlinepackagepath", "oneinstackofflinepackagepath",
-		"componentstate", "componentstatedir", "oneinstackcomponentstate",
-		"bundleid", "oneinstackbundleid", "oneinstackofflinebundleid",
-		"bundledigest", "oneinstackbundledigest", "oneinstackofflinebundledigest":
-		return true
-	default:
-		return false
-	}
+	return scriptregistry.IsServerOwnedInstallParameterName(value)
 }
 
 func decodeInstallParameterValue(raw json.RawMessage) (string, error) {

@@ -26,6 +26,23 @@ var (
 	buildIDPattern             = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 )
 
+// IsServerOwnedInstallParameterName reports whether an installation parameter
+// is controlled by Panel and must never be accepted from or exposed to clients.
+func IsServerOwnedInstallParameterName(value string) bool {
+	compact := strings.NewReplacer("-", "", "_", "", ".", "", " ", "").Replace(strings.ToLower(strings.TrimSpace(value)))
+	switch compact {
+	case "installmode", "oneinstackinstallmode",
+		"offlinepackageid", "oneinstackofflinepackageid",
+		"offlinepackagepath", "oneinstackofflinepackagepath",
+		"componentstate", "componentstatedir", "oneinstackcomponentstate",
+		"bundleid", "oneinstackbundleid", "oneinstackofflinebundleid",
+		"bundledigest", "oneinstackbundledigest", "oneinstackofflinebundledigest":
+		return true
+	default:
+		return false
+	}
+}
+
 type Manifest struct {
 	SchemaVersion int           `json:"schemaVersion" yaml:"schemaVersion"`
 	Component     Component     `json:"component" yaml:"component"`

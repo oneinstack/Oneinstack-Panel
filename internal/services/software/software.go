@@ -554,6 +554,9 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 		if params == nil {
 			params = make([]*output.SoftParam, 0)
 		}
+		params = slices.DeleteFunc(params, func(parameter *output.SoftParam) bool {
+			return parameter != nil && scriptregistry.IsServerOwnedInstallParameterName(parameter.Key)
+		})
 		installParameterValues := hydrateNginxInstallParameters(item.Component, item.Key, params)
 		if apacheValues := hydrateApacheInstallParameters(item.Component, item.Key, item.RuntimeParamsJSON, params); apacheValues != nil {
 			installParameterValues = apacheValues
