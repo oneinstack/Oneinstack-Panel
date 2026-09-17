@@ -1602,6 +1602,8 @@ func buildDocument(ctx context.Context, operation string, payload json.RawMessag
 			return previewservice.Document{}, "", err
 		}
 		document.EffectiveValues = make([]previewservice.EffectiveValue, 0, len(effectiveValues))
+		resetExistingRootPassword := false
+		resetExistingRootPasswordConfirmed := false
 		for _, value := range effectiveValues {
 			document.EffectiveValues = append(document.EffectiveValues, previewservice.EffectiveValue{
 				Key:       value.Key,
@@ -1609,6 +1611,12 @@ func buildDocument(ctx context.Context, operation string, payload json.RawMessag
 				Sensitive: value.Sensitive,
 				Source:    value.Source,
 			})
+			switch value.Key {
+			case "reset-existing-root-password":
+				resetExistingRootPassword = strings.EqualFold(value.Value, "true")
+			case "reset-existing-root-password-confirm":
+				resetExistingRootPasswordConfirmed = strings.EqualFold(value.Value, "true")
+			}
 		}
 		for key, value := range map[string]string{
 			"requestedVersion":     value.Version,
@@ -1636,6 +1644,15 @@ func buildDocument(ctx context.Context, operation string, payload json.RawMessag
 		document.Actions = []previewservice.Action{{Type: "component", Name: "执行受控软件安装动作", DisplayCommand: "由组件安装器按软件 key 和版本执行"}, {Type: "service", Name: "安装后验证服务状态", Service: "由组件探测器确定"}}
 		document.Impact = previewservice.Impact{WriteFiles: true, ModifyDatabase: true, RestartService: true}
 		document.Rollback = previewservice.Rollback{Supported: true, Summary: "任务失败时由软件任务执行器按组件策略回滚或保留失败现场"}
+		if resetExistingRootPassword && resetExistingRootPasswordConfirmed {
+			document.Actions = append(document.Actions, previewservice.Action{
+				Type: "component", Name: "通过隔离本地实例重置已有 MySQL root 密码",
+			})
+			document.Rollback = previewservice.Rollback{
+				Supported: false,
+				Summary:   "root 密码重置后无法自动恢复旧密码；新密码按一次性凭据交付",
+			}
+		}
 	case "software.uninstall":
 		var value input.RemoveParams
 		if err := json.Unmarshal(payload, &value); err != nil {

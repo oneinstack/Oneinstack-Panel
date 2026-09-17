@@ -292,6 +292,9 @@ func (installer *Installer) resolveInstallParams(ctx context.Context, params *in
 		return nil, err
 	}
 	installer.setScriptParams(scriptInfo, params)
+	if err := validateResolvedMySQLRootPasswordReset(params.Key, scriptInfo); err != nil {
+		return nil, err
+	}
 	if err := validateResolvedInstallPort(ctx, params, scriptInfo); err != nil {
 		return nil, err
 	}
@@ -908,6 +911,21 @@ func ValidateManagedMySQLInstallParams(params *input.InstallParams) error {
 		}
 	}
 	return nil
+}
+
+func validateResolvedMySQLRootPasswordReset(key string, scriptInfo *script.ScriptInfo) error {
+	if !isManagedMySQLInstallKey(key) || scriptInfo == nil {
+		return nil
+	}
+	resetRequested := strings.EqualFold(strings.TrimSpace(scriptInfo.Params["RESET_EXISTING_ROOT_PASSWORD"]), "true")
+	resetConfirmed := strings.EqualFold(strings.TrimSpace(scriptInfo.Params["RESET_EXISTING_ROOT_PASSWORD_CONFIRM"]), "true")
+	if resetRequested == resetConfirmed {
+		return nil
+	}
+	return &InstallParameterError{
+		Field:   "reset-existing-root-password-confirm",
+		Message: "重置已有 MySQL root 密码必须同时启用重置和确认重置",
+	}
 }
 
 // ValidateInstallationParams validates an installation request using the

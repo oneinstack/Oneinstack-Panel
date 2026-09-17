@@ -347,11 +347,20 @@ func submitInstallationTask(
 		req.InstallMode = "center"
 	}
 	if requiresClosedLoopPackage(req.Key) {
-		_, pin, err := softwareService.PreviewInstallationPackage(context.Background(), &req)
+		effectiveValues, pin, err := softwareService.PreviewInstallationPackage(context.Background(), &req)
 		if err != nil {
 			return nil, err
 		}
 		req.ResolvedPackage = &pin
+		for _, parameter := range effectiveValues {
+			switch parameter.Key {
+			case "reset-existing-root-password", "reset-existing-root-password-confirm":
+				if req.Parameters == nil {
+					req.Parameters = make(map[string]string)
+				}
+				req.Parameters[parameter.Key] = parameter.Value
+			}
+		}
 	}
 	if err := softwareService.ValidateManagedMySQLInstallParams(&req); err != nil {
 		return nil, err
@@ -365,6 +374,13 @@ func submitInstallationTask(
 		if strings.TrimSpace(req.Username) == "" {
 			req.Username = "root"
 		}
+		resetExistingRootPassword := strings.EqualFold(
+			installTaskParameterValue(req.Parameters, "reset-existing-root-password"),
+			"true",
+		) && strings.EqualFold(
+			installTaskParameterValue(req.Parameters, "reset-existing-root-password-confirm"),
+			"true",
+		)
 		username, password, found, err := storageService.ManagedLocalMySQLCredential(req.Port)
 		if err != nil {
 			return nil, err
@@ -381,7 +397,7 @@ func submitInstallationTask(
 				Count(&installed).Error; err != nil {
 				return nil, fmt.Errorf("check current MySQL installation: %w", err)
 			}
-			if installed > 0 {
+			if installed > 0 && !resetExistingRootPassword {
 				return nil, fmt.Errorf("MySQL is installed but its managed SQL credential is unavailable")
 			}
 			dataInitialized, inspectErr := mysqlDataDirectoryInitialized(req)
@@ -392,7 +408,7 @@ func submitInstallationTask(
 				installTaskParameterValue(req.Parameters, "migrate-external-mysql", "migrateExternalMysql"),
 				"true",
 			)
-			if !dataInitialized && !migrationRequested {
+			if resetExistingRootPassword || (!dataInitialized && !migrationRequested) {
 				password, err := utils.GenerateSecurePassword(24)
 				if err != nil {
 					return nil, err
