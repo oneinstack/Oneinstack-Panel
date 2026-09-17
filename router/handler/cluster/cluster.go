@@ -151,12 +151,31 @@ func ListTasks(c *gin.Context) {
 	if !ok {
 		return
 	}
-	tasks, err := m.ListTasks(id, 100)
+	if strings.TrimSpace(c.Query("page")) == "" && strings.TrimSpace(c.Query("pageSize")) == "" {
+		tasks, err := m.ListTasks(id, 100)
+		if err != nil {
+			core.HandleError(c, core.NewError(core.ErrInternalError, err.Error()))
+			return
+		}
+		core.HandleSuccess(c, gin.H{"items": tasks})
+		return
+	}
+	page, err := strconv.Atoi(c.DefaultQuery("page", "1"))
+	if err != nil || page < 1 {
+		core.HandleError(c, core.NewFieldError(core.ErrInvalidParameter, "page 必须是正整数", "page"))
+		return
+	}
+	pageSize, err := strconv.Atoi(c.DefaultQuery("pageSize", "20"))
+	if err != nil || pageSize < 1 || pageSize > 100 {
+		core.HandleError(c, core.NewFieldError(core.ErrInvalidParameter, "pageSize 必须是 1 到 100 之间的整数", "pageSize"))
+		return
+	}
+	tasks, err := m.ListTasksPage(id, page, pageSize)
 	if err != nil {
 		core.HandleError(c, core.NewError(core.ErrInternalError, err.Error()))
 		return
 	}
-	core.HandleSuccess(c, gin.H{"items": tasks})
+	core.HandleSuccess(c, tasks)
 }
 
 func GetTask(c *gin.Context) {

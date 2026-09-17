@@ -19,18 +19,22 @@ var (
 )
 
 type ClusterTaskSummary struct {
-	ID          uint64     `json:"id"`
-	NodeID      uint       `json:"nodeId"`
-	Type        string     `json:"type"`
-	Status      string     `json:"status"`
-	Attempts    int        `json:"attempts"`
-	MaxAttempts int        `json:"maxAttempts"`
-	Error       string     `json:"error,omitempty"`
-	QueuedAt    time.Time  `json:"queuedAt"`
-	StartedAt   *time.Time `json:"startedAt,omitempty"`
-	FinishedAt  *time.Time `json:"finishedAt,omitempty"`
-	CreatedAt   time.Time  `json:"createdAt"`
-	UpdatedAt   time.Time  `json:"updatedAt"`
+	ID            uint64     `json:"id"`
+	NodeID        uint       `json:"nodeId"`
+	Type          string     `json:"type"`
+	WebsiteID     int64      `json:"websiteId,omitempty"`
+	WebsiteName   string     `json:"websiteName,omitempty"`
+	WebsiteDomain string     `json:"websiteDomain,omitempty"`
+	WebsiteType   string     `json:"websiteType,omitempty"`
+	Status        string     `json:"status"`
+	Attempts      int        `json:"attempts"`
+	MaxAttempts   int        `json:"maxAttempts"`
+	Error         string     `json:"error,omitempty"`
+	QueuedAt      time.Time  `json:"queuedAt"`
+	StartedAt     *time.Time `json:"startedAt,omitempty"`
+	FinishedAt    *time.Time `json:"finishedAt,omitempty"`
+	CreatedAt     time.Time  `json:"createdAt"`
+	UpdatedAt     time.Time  `json:"updatedAt"`
 }
 
 // ClusterTaskEvent is a safe, payload-free task timeline entry for the
@@ -48,6 +52,13 @@ type ClusterTaskDetail struct {
 	ClusterTaskSummary
 	Progress int                `json:"progress"`
 	Events   []ClusterTaskEvent `json:"events"`
+}
+
+type TaskList struct {
+	Items    []ClusterTaskSummary `json:"items"`
+	Total    int64                `json:"total"`
+	Page     int                  `json:"page"`
+	PageSize int                  `json:"pageSize"`
 }
 
 type EnqueueTaskInput struct {
@@ -114,12 +125,56 @@ func (m *Manager) ListTasks(nodeID uint, limit int) ([]ClusterTaskSummary, error
 	return summaries, nil
 }
 
+func (m *Manager) ListTasksPage(nodeID uint, page, pageSize int) (*TaskList, error) {
+	page, pageSize = normalizeTaskPage(page, pageSize)
+	query := m.db.Model(&models.ClusterTask{}).Where("node_id = ?", nodeID)
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		return nil, err
+	}
+
+	var tasks []models.ClusterTask
+	if err := query.Order("id desc").Offset((page - 1) * pageSize).Limit(pageSize).Find(&tasks).Error; err != nil {
+		return nil, err
+	}
+	summaries := make([]ClusterTaskSummary, 0, len(tasks))
+	for i := range tasks {
+		summaries = append(summaries, SummarizeTask(tasks[i]))
+	}
+	return &TaskList{Items: summaries, Total: total, Page: page, PageSize: pageSize}, nil
+}
+
+func normalizeTaskPage(page, pageSize int) (int, int) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 {
+		pageSize = 20
+	}
+	if pageSize > 100 {
+		pageSize = 100
+	}
+	return page, pageSize
+}
+
 func SummarizeTask(task models.ClusterTask) ClusterTaskSummary {
 	errorSummary := ""
 	if strings.TrimSpace(task.Error) != "" {
 		errorSummary = "节点任务执行失败，请查看节点端日志"
 	}
-	return ClusterTaskSummary{ID: task.ID, NodeID: task.NodeID, Type: task.Type, Status: task.Status, Attempts: task.Attempts, MaxAttempts: task.MaxAttempts, Error: errorSummary, QueuedAt: task.QueuedAt, StartedAt: task.StartedAt, FinishedAt: task.FinishedAt, CreatedAt: task.CreatedAt, UpdatedAt: task.UpdatedAt}
+	summary := ClusterTaskSummary{ID: task.ID, NodeID: task.NodeID, Type: task.Type, Status: task.Status, Attempts: task.Attempts, MaxAttempts: task.MaxAttempts, Error: errorSummary, QueuedAt: task.QueuedAt, StartedAt: task.StartedAt, FinishedAt: task.FinishedAt, CreatedAt: task.CreatedAt, UpdatedAt: task.UpdatedAt}
+	if task.Type == "website.sync" || task.Type == "website.content_sync" {
+		var payload struct {
+			Website models.Website `json:"website"`
+		}
+		if err := json.Unmarshal([]byte(task.Payload), &payload); err == nil {
+			summary.WebsiteID = payload.Website.ID
+			summary.WebsiteName = strings.TrimSpace(payload.Website.Name)
+			summary.WebsiteDomain = strings.TrimSpace(payload.Website.Domain)
+			summary.WebsiteType = strings.TrimSpace(payload.Website.Type)
+		}
+	}
+	return summary
 }
 
 func (m *Manager) GetTaskDetail(nodeID uint, taskID uint64) (ClusterTaskDetail, error) {
