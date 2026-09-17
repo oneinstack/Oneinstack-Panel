@@ -116,7 +116,7 @@ func Create(c *gin.Context) {
 }
 
 func Get(c *gin.Context) {
-	document, err := configsnapshot.Default().Get(c.Param("id"), snapshotUser(c))
+	document, err := configsnapshot.Default().Get(c.Param("id"), snapshotUser(c), middleware.RequestLocale(c))
 	if err != nil {
 		handleSnapshotError(c, err, "读取配置快照失败")
 		return
@@ -125,7 +125,7 @@ func Get(c *gin.Context) {
 }
 
 func Diff(c *gin.Context) {
-	document, err := configsnapshot.Default().Get(c.Param("id"), snapshotUser(c))
+	document, err := configsnapshot.Default().Get(c.Param("id"), snapshotUser(c), middleware.RequestLocale(c))
 	if err != nil {
 		handleSnapshotError(c, err, "读取配置差异失败")
 		return
@@ -134,7 +134,7 @@ func Diff(c *gin.Context) {
 }
 
 func RestorePreview(c *gin.Context) {
-	document, err := configsnapshot.Default().Get(c.Param("id"), snapshotUser(c))
+	document, err := configsnapshot.Default().Get(c.Param("id"), snapshotUser(c), middleware.RequestLocale(c))
 	if err != nil {
 		handleSnapshotError(c, err, "读取回滚预览失败")
 		return
@@ -156,7 +156,7 @@ func Restore(c *gin.Context) {
 		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "回滚请求格式错误"))
 		return
 	}
-	document, err := configsnapshot.Default().Get(c.Param("id"), snapshotUser(c))
+	document, err := configsnapshot.Default().Get(c.Param("id"), snapshotUser(c), middleware.RequestLocale(c))
 	if err != nil {
 		handleSnapshotError(c, err, "读取配置快照失败")
 		return
@@ -463,7 +463,7 @@ func snapshotArtifact(resourceType string, current any) ([]byte, string) {
 }
 
 func Delete(c *gin.Context) {
-	document, err := configsnapshot.Default().Get(c.Param("id"), snapshotUser(c))
+	document, err := configsnapshot.Default().Get(c.Param("id"), snapshotUser(c), middleware.RequestLocale(c))
 	if err != nil {
 		handleSnapshotError(c, err, "读取配置快照失败")
 		return

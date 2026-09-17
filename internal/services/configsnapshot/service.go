@@ -181,7 +181,11 @@ func (s *Service) MarkWithAfter(id string, after any, status, failure string) er
 	if err != nil {
 		return err
 	}
-	updates := map[string]any{"after_json": string(afterJSON), "diff_json": string(diffJSON), "status": strings.TrimSpace(status), "failure_message": truncate(failure, 1024), "updated_at": time.Now().UTC()}
+	afterRevision := revision(afterJSON)
+	updates := map[string]any{"after_json": string(afterJSON), "after_revision": afterRevision, "diff_json": string(diffJSON), "status": strings.TrimSpace(status), "failure_message": truncate(failure, 1024), "updated_at": time.Now().UTC()}
+	if strings.TrimSpace(row.Version) == "" || strings.HasPrefix(strings.TrimSpace(row.Version), "rev-") {
+		updates["version"] = revisionLabel(afterRevision)
+	}
 	if status == models.ConfigurationSnapshotStatusSucceeded || strings.HasSuffix(status, "failed") || status == models.ConfigurationSnapshotStatusRolledBack {
 		now := time.Now().UTC()
 		updates["finished_at"] = &now
@@ -189,7 +193,7 @@ func (s *Service) MarkWithAfter(id string, after any, status, failure string) er
 	return s.db.Model(&models.ConfigurationSnapshot{}).Where("id = ?", row.ID).Updates(updates).Error
 }
 
-func (s *Service) Get(id string, userID int64) (Document, error) {
+func (s *Service) Get(id string, userID int64, locale string) (Document, error) {
 	var row models.ConfigurationSnapshot
 	q := s.db.Where("id = ?", strings.TrimSpace(id))
 	if userID > 0 {
@@ -201,7 +205,7 @@ func (s *Service) Get(id string, userID int64) (Document, error) {
 		}
 		return Document{}, err
 	}
-	return decodeDocument(row)
+	return decodeDocument(row, locale)
 }
 
 func (s *Service) List(resourceType, resourceID, status, locale string, page, pageSize int, userID int64) (Page, error) {
@@ -269,13 +273,9 @@ func (s *Service) List(resourceType, resourceID, status, locale string, page, pa
 			SizeBytes:             snapshotDisplaySize(row),
 			ArtifactSHA256:        row.ArtifactSHA256,
 		}
-		if item.BeforeRevision == "" {
-			item.BeforeRevision = revision([]byte(row.BeforeJSON))
-		}
-		if item.AfterRevision == "" {
-			item.AfterRevision = revision([]byte(row.AfterJSON))
-		}
-		if strings.TrimSpace(item.Version) == "" {
+		item.BeforeRevision = revision([]byte(row.BeforeJSON))
+		item.AfterRevision = revision([]byte(row.AfterJSON))
+		if strings.TrimSpace(item.Version) == "" || strings.HasPrefix(strings.TrimSpace(item.Version), "rev-") {
 			item.Version = revisionLabel(item.AfterRevision)
 		}
 		item.ResourceDisplayName = resourceFallback(row.ResourceType, row.ResourceID)
@@ -416,8 +416,13 @@ func Equal(a, b any) bool {
 	return string(x) == string(y)
 }
 
-func decodeDocument(row models.ConfigurationSnapshot) (Document, error) {
+func decodeDocument(row models.ConfigurationSnapshot, locale string) (Document, error) {
 	row.SizeBytes = snapshotDisplaySize(row)
+	row.BeforeRevision = revision([]byte(row.BeforeJSON))
+	row.AfterRevision = revision([]byte(row.AfterJSON))
+	if strings.TrimSpace(row.Version) == "" || strings.HasPrefix(strings.TrimSpace(row.Version), "rev-") {
+		row.Version = revisionLabel(row.AfterRevision)
+	}
 	var before, after any
 	if err := json.Unmarshal([]byte(row.BeforeJSON), &before); err != nil {
 		return Document{}, err
@@ -429,6 +434,16 @@ func decodeDocument(row models.ConfigurationSnapshot) (Document, error) {
 	if err := json.Unmarshal([]byte(row.DiffJSON), &diff); err != nil {
 		return Document{}, err
 	}
+	// Recalculate from the stored before/after values so snapshots created by
+	// older versions also benefit from array-aware paths instead of retaining a
+	// previously persisted root-level "$" marker.
+	if calculated, err := buildDiff([]byte(row.BeforeJSON), []byte(row.AfterJSON)); err == nil {
+		var recalculated Diff
+		if json.Unmarshal(calculated, &recalculated) == nil {
+			diff = recalculated
+		}
+	}
+	diff = presentDiff(row.ResourceType, locale, diff)
 	return Document{Snapshot: row, Before: before, After: after, Diff: diff}, nil
 }
 
@@ -485,8 +500,12 @@ func buildDiff(before, after []byte) ([]byte, error) {
 	d := Diff{}
 	leftMap, leftOK := left.(map[string]any)
 	rightMap, rightOK := right.(map[string]any)
+	leftArray, leftArrayOK := left.([]any)
+	rightArray, rightArrayOK := right.([]any)
 	if leftOK && rightOK {
 		collectDiff("", leftMap, rightMap, &d)
+	} else if leftArrayOK && rightArrayOK {
+		collectArrayDiff("$", leftArray, rightArray, &d)
 	} else if !equalJSON(left, right) {
 		d.Changed = []string{"$"}
 	}
@@ -533,10 +552,158 @@ func collectDiff(prefix string, left, right map[string]any, d *Diff) {
 		rm, rightMap := rv.(map[string]any)
 		if leftMap && rightMap {
 			collectDiff(path, lm, rm, d)
+			continue
+		}
+		la, leftArray := lv.([]any)
+		ra, rightArray := rv.([]any)
+		if leftArray && rightArray {
+			collectArrayDiff(path, la, ra, d)
 		} else {
 			d.Changed = append(d.Changed, path)
 		}
 	}
+}
+
+func collectArrayDiff(prefix string, left, right []any, d *Diff) {
+	if strings.TrimSpace(prefix) == "" {
+		prefix = "$"
+	}
+	common := len(left)
+	if len(right) < common {
+		common = len(right)
+	}
+	for index := 0; index < common; index++ {
+		lv, rv := left[index], right[index]
+		if equalJSON(lv, rv) {
+			continue
+		}
+		path := prefix + "[" + strconv.Itoa(index) + "]"
+		lm, leftMap := lv.(map[string]any)
+		rm, rightMap := rv.(map[string]any)
+		if leftMap && rightMap {
+			collectDiff(path, lm, rm, d)
+			continue
+		}
+		la, leftArray := lv.([]any)
+		ra, rightArray := rv.([]any)
+		if leftArray && rightArray {
+			collectArrayDiff(path, la, ra, d)
+			continue
+		}
+		d.Changed = append(d.Changed, path)
+	}
+	for index := common; index < len(left); index++ {
+		d.Removed = append(d.Removed, prefix+"["+strconv.Itoa(index)+"]")
+	}
+	for index := common; index < len(right); index++ {
+		d.Added = append(d.Added, prefix+"["+strconv.Itoa(index)+"]")
+	}
+}
+
+func presentDiff(resourceType, locale string, diff Diff) Diff {
+	if strings.EqualFold(strings.TrimSpace(resourceType), models.ConfigurationSnapshotResourceFirewall) {
+		diff.Added = presentFirewallPaths(diff.Added, locale)
+		diff.Changed = presentFirewallPaths(diff.Changed, locale)
+		diff.Removed = presentFirewallPaths(diff.Removed, locale)
+	}
+	diff.Summary = localizedDiffSummary(diff, locale)
+	return diff
+}
+
+func presentFirewallPaths(paths []string, locale string) []string {
+	result := make([]string, 0, len(paths))
+	for _, path := range paths {
+		result = append(result, presentFirewallPath(path, locale))
+	}
+	return result
+}
+
+func presentFirewallPath(path, locale string) string {
+	path = strings.TrimSpace(path)
+	english := isEnglishLocale(locale)
+	if path == "$" {
+		if english {
+			return "Firewall rule list"
+		}
+		return "防火墙规则列表"
+	}
+	start := strings.Index(path, "[")
+	end := strings.Index(path, "]")
+	if start < 0 || end <= start+1 {
+		if english {
+			return "Firewall rule: " + firewallFieldLabel(path, locale)
+		}
+		return "防火墙规则：" + firewallFieldLabel(path, locale)
+	}
+	index, err := strconv.Atoi(path[start+1 : end])
+	if err != nil || index < 0 {
+		if english {
+			return "Firewall rule list"
+		}
+		return "防火墙规则列表"
+	}
+	fieldPath := strings.TrimPrefix(path[end+1:], ".")
+	if fieldPath == "" {
+		if english {
+			return fmt.Sprintf("Firewall rule %d", index+1)
+		}
+		return fmt.Sprintf("第 %d 条防火墙规则", index+1)
+	}
+	if english {
+		return fmt.Sprintf("Firewall rule %d: %s", index+1, firewallFieldLabel(fieldPath, locale))
+	}
+	return fmt.Sprintf("第 %d 条防火墙规则：%s", index+1, firewallFieldLabel(fieldPath, locale))
+}
+
+func firewallFieldLabel(path, locale string) string {
+	labels := map[string][2]string{
+		"ruleType":    {"规则类型", "Rule type"},
+		"direction":   {"方向", "Direction"},
+		"protocol":    {"协议", "Protocol"},
+		"strategy":    {"策略", "Strategy"},
+		"ips":         {"IP 地址", "IP addresses"},
+		"ports":       {"端口", "Ports"},
+		"state":       {"状态", "Status"},
+		"remark":      {"备注", "Remark"},
+		"location":    {"地区", "Location"},
+		"expiresAt":   {"过期时间", "Expiration time"},
+		"create_time": {"创建时间", "Created time"},
+		"update_time": {"更新时间", "Updated time"},
+	}
+	if label, ok := labels[path]; ok {
+		if isEnglishLocale(locale) {
+			return label[1]
+		}
+		return label[0]
+	}
+	if dot := strings.LastIndex(path, "."); dot >= 0 && dot+1 < len(path) {
+		path = path[dot+1:]
+		if label, ok := labels[path]; ok {
+			if isEnglishLocale(locale) {
+				return label[1]
+			}
+			return label[0]
+		}
+	}
+	return path
+}
+
+func localizedDiffSummary(diff Diff, locale string) string {
+	added, changed, removed := len(diff.Added), len(diff.Changed), len(diff.Removed)
+	if isEnglishLocale(locale) {
+		if added+changed+removed == 0 {
+			return "No configuration changes"
+		}
+		return fmt.Sprintf("Added %d item(s), changed %d item(s), removed %d item(s)", added, changed, removed)
+	}
+	if added+changed+removed == 0 {
+		return "无配置变化"
+	}
+	return fmt.Sprintf("新增 %d 项，修改 %d 项，删除 %d 项", added, changed, removed)
+}
+
+func isEnglishLocale(locale string) bool {
+	return strings.EqualFold(strings.TrimSpace(locale), "en") || strings.EqualFold(strings.TrimSpace(locale), "en-us")
 }
 
 func equalJSON(a, b any) bool {
