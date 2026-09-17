@@ -344,7 +344,11 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 				"MAX(is_update) as is_update," +
 				"MAX(CASE WHEN installed = 1 THEN install_version ELSE '' END) as install_version," +
 				"MAX(CASE WHEN installed = 1 THEN installed_package_version ELSE '' END) as installed_package_version," +
-				"MAX(CASE WHEN catalog_visible = 1 AND recommended = 1 THEN latest_package_version ELSE '' END) as latest_package_version," +
+				"COALESCE(" +
+				"MAX(CASE WHEN catalog_visible = 1 AND recommended = 1 THEN NULLIF(latest_package_version, '') END)," +
+				"MAX(CASE WHEN catalog_visible = 1 AND installable = 1 THEN NULLIF(latest_package_version, '') END)," +
+				"''" +
+				") as latest_package_version," +
 				"MAX(CASE WHEN installed = 1 THEN 1 ELSE 0 END) as installed," +
 				"MAX(CASE WHEN catalog_visible = 1 AND installable = 1 THEN 1 ELSE 0 END) as installable," +
 				"MAX(CASE WHEN catalog_visible = 1 AND recommended = 1 THEN version ELSE '' END) as recommended_version," +
