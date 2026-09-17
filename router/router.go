@@ -237,6 +237,7 @@ func SetupRouter() *gin.Engine {
 	sys := protected.Group("/sys")
 	{
 		sys.GET("/info", system.GetSystemInfo)
+		sys.GET("/runtime-status", system.GetRuntimeStatus)
 		sys.GET("/version", health.Version)
 		sys.GET("/monitor", system.GetSystemMonitor)
 		sys.GET("/libcount", system.GetLibCount)

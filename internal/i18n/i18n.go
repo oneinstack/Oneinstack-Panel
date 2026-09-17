@@ -16,6 +16,9 @@ const (
 	MessageValidationFailed            = "validation.failed"
 	MessageRequestInvalid              = "request.invalid"
 	MessagePasswordResetRequiresChange = "password.reset.requires_change"
+	MessagePanelNonRootTitle           = "panel.runtime.non_root.title"
+	MessagePanelNonRootMessage         = "panel.runtime.non_root.message"
+	MessagePanelNonRootDetail          = "panel.runtime.non_root.detail"
 )
 
 var supportedLocales = map[string]string{
@@ -31,12 +34,18 @@ var messages = map[string]map[string]string{
 		MessageValidationFailed:            "输入验证失败",
 		MessageRequestInvalid:              "请求参数错误",
 		MessagePasswordResetRequiresChange: "密码已重置，用户下次登录需修改密码",
+		MessagePanelNonRootTitle:           "Panel 未以 root 用户运行",
+		MessagePanelNonRootMessage:         "当前 Panel 可以继续使用，但部分系统级功能可能不可用。",
+		MessagePanelNonRootDetail:          "组件安装和维护、系统服务控制、Panel 更新、备份恢复以及网络配置通常需要 Linux root 权限。",
 	},
 	LocaleEnUS: {
 		MessageOperationSucceeded:          "Operation succeeded",
 		MessageValidationFailed:            "Input validation failed",
 		MessageRequestInvalid:              "Invalid request parameters",
 		MessagePasswordResetRequiresChange: "Password reset. The user must change it at the next login.",
+		MessagePanelNonRootTitle:           "Panel is not running as root",
+		MessagePanelNonRootMessage:         "The Panel can continue running, but some system-level features may be unavailable.",
+		MessagePanelNonRootDetail:          "Component lifecycle operations, system service control, Panel updates, backup restore, and network configuration normally require Linux root privileges.",
 	},
 }
 
@@ -125,6 +134,8 @@ const (
 	CLIInitialAdminCreated = "cli.initial_admin.created"
 	CLIUsername            = "cli.username"
 	CLIPassword            = "cli.password"
+	CLINonRootWarning      = "cli.non_root.warning"
+	CLIRootRequired        = "cli.root.required"
 )
 
 var cliMessages = map[string]map[string]string{
@@ -147,6 +158,8 @@ var cliMessages = map[string]map[string]string{
 		CLIInitialAdminCreated: "管理员用户已创建",
 		CLIUsername:            "用户名",
 		CLIPassword:            "密码",
+		CLINonRootWarning:      "当前以普通用户运行。查询类命令仍可使用；安装、服务控制、更新、恢复和网络配置等操作需要 root 权限。",
+		CLIRootRequired:        "当前命令需要 Linux root 权限。请使用 root 用户或 sudo 重新执行，例如：sudo one %s",
 	},
 	LocaleEnUS: {
 		CLIShowLanguage:        "Current CLI language: %s",
@@ -167,6 +180,8 @@ var cliMessages = map[string]map[string]string{
 		CLIInitialAdminCreated: "Administrator user created",
 		CLIUsername:            "Username",
 		CLIPassword:            "Password",
+		CLINonRootWarning:      "Running as a regular user. Read-only commands remain available, but installation, service control, updates, recovery, and network configuration require root privileges.",
+		CLIRootRequired:        "This command requires Linux root privileges. Run it as root or use sudo, for example: sudo one %s",
 	},
 }
 

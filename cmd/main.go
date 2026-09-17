@@ -40,6 +40,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -115,11 +116,20 @@ var rootCmd = &cobra.Command{
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if isLinuxNonRoot() {
+			fmt.Fprintln(os.Stderr, i18n.CLIMessage(activeCLILanguage, i18n.CLINonRootWarning))
+		}
 		return printCLIMenu()
 	},
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		if err := configureCLILanguage(cmd); err != nil {
 			return err
+		}
+		if isLinuxNonRoot() && cliCommandRequiresRoot(cmd, args) {
+			return fmt.Errorf(
+				i18n.CLIMessage(activeCLILanguage, i18n.CLIRootRequired),
+				cliCommandDisplayName(cmd),
+			)
 		}
 		if cmd == cmd.Root() || cmd == langCmd || cmd == uninstallCmd {
 			return nil
@@ -146,16 +156,55 @@ func configureCLILanguage(cmd *cobra.Command) error {
 	if err != nil {
 		return fmt.Errorf("read --lang: %w", err)
 	}
+	environmentValue := os.Getenv("ONEINSTACK_LANG")
+	if strings.TrimSpace(flagValue) != "" || strings.TrimSpace(environmentValue) != "" {
+		locale, resolveErr := i18n.ResolveCLILanguage(flagValue, environmentValue, "")
+		if resolveErr != nil {
+			return resolveErr
+		}
+		activeCLILanguage = locale
+		return nil
+	}
+
 	persisted, err := app.ReadCLILanguage()
 	if err != nil {
-		return err
+		if !isLinuxNonRoot() {
+			return err
+		}
+		persisted = ""
 	}
-	locale, err := i18n.ResolveCLILanguage(flagValue, os.Getenv("ONEINSTACK_LANG"), persisted)
+	locale, err := i18n.ResolveCLILanguage("", "", persisted)
 	if err != nil {
 		return err
 	}
 	activeCLILanguage = locale
 	return nil
+}
+
+func isLinuxNonRoot() bool {
+	return runtime.GOOS == "linux" && os.Geteuid() != 0
+}
+
+func cliCommandRequiresRoot(cmd *cobra.Command, args []string) bool {
+	switch cmd {
+	case install, initCmd, resetPwdCmd, resetUserCmd, serverCmd, changePortCmd,
+		updateApplyCmd, updateRollbackCmd, updatePreflightCmd,
+		networkApplyCmd, networkRecoverCmd, backupRestoreCmd, backupRecoverCmd,
+		defaultCmd, panelEntryCmd, uninstallCmd:
+		return true
+	case langCmd:
+		return len(args) > 0
+	default:
+		return false
+	}
+}
+
+func cliCommandDisplayName(cmd *cobra.Command) string {
+	name := strings.TrimSpace(strings.TrimPrefix(cmd.CommandPath(), cmd.Root().Name()))
+	if name == "" {
+		return "<command>"
+	}
+	return name
 }
 
 // versionCmd 显示版本信息
@@ -337,6 +386,11 @@ var serverCmd = &cobra.Command{
 
 // 启动服务器
 func startServer() error {
+	runtimeStatus := systemservice.GetRuntimeStatus(activeCLILanguage)
+	if runtimeStatus.Warning != nil {
+		log.Printf("WARNING: %s %s", runtimeStatus.Warning.Title, runtimeStatus.Warning.Detail)
+	}
+
 	// 检查是否已经在运行
 	if isServerRunning() {
 		return fmt.Errorf("server is already running")

@@ -30,6 +30,10 @@ func GetSystemInfo(c *gin.Context) {
 	core.HandleSuccess(c, info)
 }
 
+func GetRuntimeStatus(c *gin.Context) {
+	core.HandleSuccess(c, system.GetRuntimeStatus(middleware.RequestLocale(c)))
+}
+
 func GetSystemMonitor(c *gin.Context) {
 	monitor, err := system.GetSystemMonitor()
 	if err != nil {

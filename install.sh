@@ -219,6 +219,9 @@ localize_message() {
     "健康检查超时必须是正整数") printf 'Health-check timeout must be a positive integer' ;;
     "测试根目录不能是 /") printf 'Test root must not be /' ;;
     "请使用 root 用户安装或卸载") printf 'Run installation or uninstallation as root' ;;
+    "安装或卸载 OneinStack Panel 需要 Linux root 权限；请切换到 root 用户，或使用 sudo 重新执行，例如: "*)
+      printf 'Installing or uninstalling OneinStack Panel requires Linux root privileges. Switch to root or run it again with sudo, for example: %s' "${message#*: }"
+      ;;
     "生产安装仅支持 Linux") printf 'Production installation supports Linux only' ;;
     "无法识别 Linux 发行版，可使用 --allow-unsupported") printf 'Unable to identify the Linux distribution; use --allow-unsupported to continue' ;;
     "尚未验证当前发行版 "*) printf 'The Linux distribution %s is not verified; use --allow-unsupported to continue' "${message#尚未验证当前发行版 }" ;;
@@ -460,6 +463,17 @@ parse_arguments() {
         ;;
     esac
   done
+}
+
+check_root_preflight() {
+  [[ -n "$root_prefix" ]] && return 0
+  [[ "${EUID}" -eq 0 ]] && return 0
+
+  local example="sudo ./install.sh --yes"
+  if [[ "$action" == "uninstall" ]]; then
+    example="sudo ./install.sh uninstall"
+  fi
+  die "安装或卸载 OneinStack Panel 需要 Linux root 权限；请切换到 root 用户，或使用 sudo 重新执行，例如: ${example}"
 }
 
 print_install_notice() {
@@ -1351,6 +1365,7 @@ main() {
   local -a original_arguments=("$@")
   select_cli_language "$@"
   parse_arguments "$@"
+  check_root_preflight
   if should_bootstrap_from_manifest; then
     bootstrap_from_manifest "${original_arguments[@]}"
   fi
