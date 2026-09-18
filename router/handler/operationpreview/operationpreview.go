@@ -329,7 +329,11 @@ func Preview(c *gin.Context) {
 			if handleSoftwareInstallPreviewError(c, err, installPreviewPayload, userID) {
 				return
 			}
-			core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "软件安装预览参数无效"))
+			if isSoftwareInstallPayloadDecodeError(err) {
+				core.HandleError(c, core.NewError(core.ErrInvalidParameter, "软件安装请求格式错误，请检查参数类型和字段名"))
+				return
+			}
+			core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "组件安装包解析失败"))
 			return
 		}
 	}
@@ -479,8 +483,20 @@ func handleSoftwareInstallParameterError(c *gin.Context, err error) bool {
 	if message == "" {
 		message = "安装参数无效，请检查字段类型、格式和取值范围后重试"
 	}
-	core.HandleSimpleError(c, core.NewError(core.ErrInvalidParameter, message))
+	appErr := core.NewError(core.ErrInvalidParameter, message)
+	appErr.Field = strings.TrimSpace(parameterErr.Field)
+	core.HandleSimpleError(c, appErr)
 	return true
+}
+
+func isSoftwareInstallPayloadDecodeError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if isJSONDecodeError(err) {
+		return true
+	}
+	return strings.HasPrefix(strings.TrimSpace(err.Error()), "install parameter ")
 }
 
 func softwareStableErrorCode(err error) string {

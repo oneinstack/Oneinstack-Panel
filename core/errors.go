@@ -156,6 +156,7 @@ type APIResponse struct {
 	Success bool             `json:"success"`
 	Code    ErrorCode        `json:"code"`
 	Message string           `json:"message"`
+	Field   string           `json:"field,omitempty"`
 	Data    interface{}      `json:"data"`
 	Error   *APIError        `json:"error,omitempty"`
 	Errors  ValidationErrors `json:"errors,omitempty"`
@@ -199,6 +200,7 @@ func ErrorResponse(err *AppError) *APIResponse {
 		Success: false,
 		Code:    err.Code,
 		Message: message,
+		Field:   err.Field,
 		Data:    nil,
 		Error: &APIError{
 			Code:       err.Code,

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -98,9 +99,18 @@ func (e *InstallParameterError) InstallationMessage() string {
 		return message
 	case "MariaDB 版本必须是 10.11.19 或 11.4.13":
 		return message
+	case "OpenSearch 版本必须选择 Center 发布的精确版本 3.7.0",
+		"OpenSearch 管理员密码必须为 12-128 个字符，并同时包含大写字母、小写字母、数字和符号":
+		return message
 	case "MySQL 运行账户必须以小写字母或下划线开头，仅允许小写字母、数字、下划线和连字符，长度为 1-32 个字符",
+		"数据库运行账户必须以小写字母或下划线开头，仅允许小写字母、数字、下划线和连字符，长度为 1-32 个字符",
 		"MySQL 登录用户必须以小写字母或下划线开头，仅允许小写字母、数字、下划线和连字符，长度为 1-32 个字符",
-		"MySQL 密码必须为 12-128 个字符，仅允许字母、数字及 _ @ % + = : , . ! # ? -":
+		"数据库登录用户必须以小写字母或下划线开头，仅允许小写字母、数字、下划线和连字符，长度为 1-32 个字符",
+		"MySQL 密码必须为 12-128 个字符，仅允许字母、数字及 _ @ % + = : , . ! # ? -",
+		"数据库密码必须为 12-128 个字符，仅允许字母、数字及 _ @ % + = : , . ! # ? -",
+		"MySQL 绑定地址必须是合法 IPv4 或 IPv6 地址",
+		"MySQL 运行账号格式无效，仅允许小写字母、数字、下划线和连字符，长度为 1-32 个字符",
+		"MySQL 运行用户组格式无效，仅允许小写字母、数字、下划线和连字符，长度为 1-32 个字符":
 		return message
 	}
 	if strings.HasPrefix(message, "MySQL 版本 ") ||
@@ -200,6 +210,11 @@ var (
 	managedMySQLUsernamePattern         = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
 	managedMySQLDatabaseUsernamePattern = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
 	managedMySQLPasswordPattern         = regexp.MustCompile(`^[A-Za-z0-9_@%+=:,.!#?-]{12,128}$`)
+	managedOpenSearchPasswordPattern    = regexp.MustCompile(`^[A-Za-z0-9_@%+=:,.!#?-]{12,128}$`)
+	uppercasePasswordPattern            = regexp.MustCompile(`[A-Z]`)
+	lowercasePasswordPattern            = regexp.MustCompile(`[a-z]`)
+	numericPasswordPattern              = regexp.MustCompile(`[0-9]`)
+	symbolPasswordPattern               = regexp.MustCompile(`[_@%+=:,.!#?-]`)
 	phpExactVersionPattern              = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+$`)
 	openRestyExactVersionPattern        = regexp.MustCompile(`^[0-9]+(?:\.[0-9]+){3}$`)
 	phpVersionLinePattern               = regexp.MustCompile(`^[0-9]+\.[0-9]+\.x$`)
@@ -284,6 +299,9 @@ func (installer *Installer) resolveInstallParams(ctx context.Context, params *in
 	if err := validateMongoDBInstallParams(params); err != nil {
 		return nil, err
 	}
+	if err := validateOpenSearchInstallParams(params); err != nil {
+		return nil, err
+	}
 	if err := validateClosedLoopCatalogVersion(params); err != nil {
 		return nil, err
 	}
@@ -299,9 +317,22 @@ func (installer *Installer) resolveInstallParams(ctx context.Context, params *in
 		return nil, err
 	}
 	if err := script.ValidateParameters(scriptInfo); err != nil {
-		return nil, &InstallParameterError{Field: "parameters", Message: err.Error()}
+		return nil, scriptParameterError(err)
 	}
 	return scriptInfo, nil
+}
+
+func scriptParameterError(err error) *InstallParameterError {
+	message := strings.TrimSpace(err.Error())
+	field := "parameters"
+	const prefix = "component parameter "
+	if strings.HasPrefix(message, prefix) {
+		remaining := strings.TrimPrefix(message, prefix)
+		if separator := strings.IndexByte(remaining, ' '); separator > 0 {
+			field = strings.TrimSpace(remaining[:separator])
+		}
+	}
+	return &InstallParameterError{Field: field, Message: message}
 }
 
 func validateMongoDBInstallParams(params *input.InstallParams) error {
@@ -336,6 +367,27 @@ func validateMongoDBInstallParams(params *input.InstallParams) error {
 		if value != "" && !systemAccountPattern.MatchString(value) {
 			return &InstallParameterError{Field: key, Message: "MongoDB 运行账号或组格式无效"}
 		}
+	}
+	return nil
+}
+
+func validateOpenSearchInstallParams(params *input.InstallParams) error {
+	if params == nil || !strings.EqualFold(strings.TrimSpace(params.Key), "opensearch") {
+		return nil
+	}
+	if strings.TrimSpace(params.Version) != "3.7.0" {
+		return &InstallParameterError{Field: "version", Message: "OpenSearch 版本必须选择 Center 发布的精确版本 3.7.0"}
+	}
+	password := params.Pwd
+	if password == "" {
+		password = installParameterValue(params.Parameters, "opensearch-initial-admin-password")
+	}
+	if !managedOpenSearchPasswordPattern.MatchString(password) ||
+		!uppercasePasswordPattern.MatchString(password) ||
+		!lowercasePasswordPattern.MatchString(password) ||
+		!numericPasswordPattern.MatchString(password) ||
+		!symbolPasswordPattern.MatchString(password) {
+		return &InstallParameterError{Field: "opensearch-initial-admin-password", Message: "OpenSearch 管理员密码必须为 12-128 个字符，并同时包含大写字母、小写字母、数字和符号"}
 	}
 	return nil
 }
@@ -513,6 +565,8 @@ func closedLoopCatalogIdentity(key string) (catalogKey, catalogComponent string,
 		return "mariadb", "mariadb", true
 	case "mongodb":
 		return "mongodb", "mongodb", true
+	case "opensearch":
+		return "opensearch", "opensearch", true
 	case "webserver", "nginx":
 		return "webserver", "nginx", true
 	case "tengine":
@@ -716,6 +770,8 @@ func closedLoopPackageComponent(key string) (string, bool) {
 		return "mariadb", true
 	case "mongodb":
 		return "mongodb", true
+	case "opensearch":
+		return "opensearch", true
 	case "webserver", "nginx":
 		return "nginx", true
 	case "tengine":
@@ -880,6 +936,24 @@ func ValidateManagedMySQLInstallParams(params *input.InstallParams) error {
 	if params == nil || !isManagedMySQLProtocolInstallKey(params.Key) {
 		return nil
 	}
+	if bindAddress := installParameterValue(params.Parameters, "mysql-bind-address", "mysqlBindAddress"); bindAddress != "" && net.ParseIP(bindAddress) == nil {
+		return &InstallParameterError{Field: "mysql-bind-address", Message: "MySQL 绑定地址必须是合法 IPv4 或 IPv6 地址"}
+	}
+	for _, field := range []string{"install-dir", "data-dir", "log-dir"} {
+		if value := installParameterValue(params.Parameters, field); value != "" {
+			if err := validateManagedMySQLPath(field, value); err != nil {
+				return err
+			}
+		}
+	}
+	if runUser := installParameterValue(params.Parameters, "run-user", "runUser"); runUser != "" &&
+		!managedMySQLUsernamePattern.MatchString(runUser) {
+		return &InstallParameterError{Field: "run-user", Message: "MySQL 运行账号格式无效，仅允许小写字母、数字、下划线和连字符，长度为 1-32 个字符"}
+	}
+	if runGroup := installParameterValue(params.Parameters, "run-group", "runGroup"); runGroup != "" &&
+		!managedMySQLUsernamePattern.MatchString(runGroup) {
+		return &InstallParameterError{Field: "run-group", Message: "MySQL 运行用户组格式无效，仅允许小写字母、数字、下划线和连字符，长度为 1-32 个字符"}
+	}
 	if username := strings.TrimSpace(params.Username); username != "" && !managedMySQLUsernamePattern.MatchString(username) {
 		return &InstallParameterError{
 			Field:   "username",
@@ -893,8 +967,12 @@ func ValidateManagedMySQLInstallParams(params *input.InstallParams) error {
 		}
 	}
 	if params.Pwd != "" && !managedMySQLPasswordPattern.MatchString(params.Pwd) {
+		field := "pwd"
+		if installParameterValue(params.Parameters, "mysql-password", "mysqlPassword") != "" {
+			field = "mysql-password"
+		}
 		return &InstallParameterError{
-			Field:   "pwd",
+			Field:   field,
 			Message: "数据库密码必须为 12-128 个字符，仅允许字母、数字及 _ @ % + = : , . ! # ? -",
 		}
 	}
@@ -911,6 +989,19 @@ func ValidateManagedMySQLInstallParams(params *input.InstallParams) error {
 		}
 	}
 	return nil
+}
+
+func validateManagedMySQLPath(field, value string) error {
+	cleaned := filepath.Clean(value)
+	if !filepath.IsAbs(value) || cleaned != value || cleaned == string(filepath.Separator) {
+		return &InstallParameterError{Field: field, Message: "必须是规范化的绝对路径"}
+	}
+	switch cleaned {
+	case "/usr", "/usr/local", "/etc", "/var", "/data", "/home", "/root":
+		return &InstallParameterError{Field: field, Message: "目录范围过宽"}
+	default:
+		return nil
+	}
 }
 
 func validateResolvedMySQLRootPasswordReset(key string, scriptInfo *script.ScriptInfo) error {
