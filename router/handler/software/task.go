@@ -136,9 +136,18 @@ func getTaskManager() (*softwaretask.Manager, error) {
 				if _, err := installer.InstallTask(ctx, params, logPath, reporter); err != nil {
 					return err
 				}
-				if strings.EqualFold(strings.TrimSpace(params.Key), "firewalld") ||
-					strings.EqualFold(strings.TrimSpace(params.Key), "opensearch") {
-					if runtimeVersion, runtimeErr := installer.RefreshInstalledRuntimeVersion(ctx, params.Key, params.Version); runtimeErr == nil {
+				componentKey := strings.ToLower(strings.TrimSpace(params.Key))
+				if componentKey == "opensearch" {
+					// OpenSearch's verify action already checks the exact runtime
+					// version. Re-running status here starts a second JVM-backed
+					// probe after verification and can unnecessarily hold the task
+					// at 96% on otherwise successful installations.
+					reporter.OnRuntimeVersion(params.Version)
+				} else if componentKey == "firewalld" {
+					runtimeVersionCtx, cancelRuntimeVersionRefresh := context.WithTimeout(ctx, 15*time.Second)
+					runtimeVersion, runtimeErr := installer.RefreshInstalledRuntimeVersion(runtimeVersionCtx, params.Key, params.Version)
+					cancelRuntimeVersionRefresh()
+					if runtimeErr == nil {
 						reporter.OnRuntimeVersion(runtimeVersion)
 					}
 				}

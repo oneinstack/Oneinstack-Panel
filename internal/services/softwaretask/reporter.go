@@ -320,12 +320,22 @@ func (r *Reporter) finishWithRecovery(status, errorCode, message, recoveryStatus
 		update.errorMessage = message
 		update.setFailurePhase = true
 	}
-	err := r.publishLocked(update, eventData{
+	event := eventData{
 		eventType: "terminal",
 		level:     level,
 		code:      errorCode,
 		message:   message,
-	})
+	}
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Duration(attempt) * 100 * time.Millisecond)
+		}
+		err = r.publishLocked(update, event)
+		if err == nil {
+			break
+		}
+	}
 	if err != nil {
 		return err
 	}

@@ -438,7 +438,7 @@ func (installer *Installer) RefreshInstalledRuntimeVersion(ctx context.Context, 
 	if runtimeVersion == "" || app.DB() == nil {
 		return runtimeVersion, nil
 	}
-	result := app.DB().Model(&models.Software{}).
+	result := app.DB().WithContext(ctx).Model(&models.Software{}).
 		Where("installed = ? AND (`key` = ? OR component = ?)", true, component, component).
 		Updates(map[string]interface{}{"runtime_version": runtimeVersion})
 	if result.Error != nil {

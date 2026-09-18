@@ -924,7 +924,9 @@ func (m *Manager) run(item queuedTask) {
 	}
 
 	heartbeatDone := make(chan struct{})
+	heartbeatStopped := make(chan struct{})
 	go func() {
+		defer close(heartbeatStopped)
 		ticker := time.NewTicker(10 * time.Second)
 		defer ticker.Stop()
 		for {
@@ -936,7 +938,14 @@ func (m *Manager) run(item queuedTask) {
 			}
 		}
 	}()
-	defer close(heartbeatDone)
+	var stopHeartbeatOnce sync.Once
+	stopHeartbeat := func() {
+		stopHeartbeatOnce.Do(func() {
+			close(heartbeatDone)
+			<-heartbeatStopped
+		})
+	}
+	defer stopHeartbeat()
 
 	reporter := newReporter(m, task.ID)
 	resolvingMessage := "正在解析并校验" + operationLabel(task.Operation) + "脚本包"
@@ -944,10 +953,18 @@ func (m *Manager) run(item queuedTask) {
 		return
 	}
 	err := m.executor(ctx, item.request, task.LogPath, reporter)
+	// Stop and join the heartbeat writer before persisting the terminal event.
+	// Otherwise its periodic UPDATE can contend with the final task transaction
+	// and leave a successfully verified task indefinitely at 96%.
+	stopHeartbeat()
 	if err == nil {
 		finalMessage := operationSuccessMessage(task.Operation)
-		_ = reporter.setPhase("finalizing", intPointer(0), "正在保存任务状态", "task_finalizing")
-		_ = reporter.finish(models.SoftwareTaskStatusSucceeded, "", finalMessage)
+		if phaseErr := reporter.setPhase("finalizing", intPointer(0), "正在保存任务状态", "task_finalizing"); phaseErr != nil {
+			fmt.Printf("Set software task %s finalizing phase failed: %v\n", task.ID, phaseErr)
+		}
+		if finishErr := reporter.finish(models.SoftwareTaskStatusSucceeded, "", finalMessage); finishErr != nil {
+			fmt.Printf("Finalize software task %s failed after retries: %v\n", task.ID, finishErr)
+		}
 		return
 	}
 	if errors.Is(err, context.Canceled) || m.isCancelRequested(task.ID) {
