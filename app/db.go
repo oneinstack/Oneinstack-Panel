@@ -318,7 +318,18 @@ func createTables() error {
 	if err := db.AutoMigrate(&models.BastionServer{}, &models.BastionMetricSample{}); err != nil {
 		return err
 	}
-	if err := db.AutoMigrate(&models.ClusterNode{}, &models.ClusterNodeMetric{}, &models.ClusterTask{}); err != nil {
+	if err := db.AutoMigrate(
+		&models.ClusterNode{},
+		&models.ClusterNodeMetric{},
+		&models.ClusterPolicy{},
+		&models.ClusterTask{},
+		&models.ClusterTaskEvent{},
+		&models.ClusterBatchOperation{},
+		&models.ClusterBatchPreview{},
+	); err != nil {
+		return err
+	}
+	if err := migrateClusterSchema(); err != nil {
 		return err
 	}
 	if err := accessservice.SeedBuiltin(db); err != nil {

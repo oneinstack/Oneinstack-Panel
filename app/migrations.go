@@ -27,6 +27,80 @@ func wrapDatabaseMigration(stage string, err error) error {
 	return fmt.Errorf("%w: %s: %v", ErrDatabaseMigration, stage, err)
 }
 
+// migrateClusterSchema verifies the fields required by lifecycle, diagnosis,
+// cooperative cancellation, and batch execution after AutoMigrate. The
+// backfills are idempotent and keep legacy disabled nodes disabled instead of
+// accidentally returning them to the active lifecycle during an upgrade.
+func migrateClusterSchema() error {
+	requiredColumns := []struct {
+		model  any
+		column string
+	}{
+		{&models.ClusterNode{}, "lifecycle_status"},
+		{&models.ClusterNode{}, "capabilities"},
+		{&models.ClusterNode{}, "deleted_at"},
+		{&models.ClusterTask{}, "batch_id"},
+		{&models.ClusterTask{}, "requested_by"},
+		{&models.ClusterTask{}, "cancel_requested"},
+		{&models.ClusterTask{}, "cancelable"},
+		{&models.ClusterTask{}, "stage"},
+		{&models.ClusterTask{}, "progress"},
+		{&models.ClusterTask{}, "lease_expires_at"},
+	}
+	for _, required := range requiredColumns {
+		if !db.Migrator().HasColumn(required.model, required.column) {
+			return wrapDatabaseMigration("verify cluster schema", fmt.Errorf("required column %s is missing", required.column))
+		}
+	}
+	for _, model := range []any{
+		&models.ClusterPolicy{},
+		&models.ClusterTaskEvent{},
+		&models.ClusterBatchOperation{},
+		&models.ClusterBatchPreview{},
+	} {
+		if !db.Migrator().HasTable(model) {
+			return wrapDatabaseMigration("verify cluster schema", errors.New("required cluster table is missing"))
+		}
+	}
+
+	if err := db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&models.ClusterNode{}).
+			Where(
+				"lifecycle_status IS NULL OR lifecycle_status = '' OR (enabled = ? AND lifecycle_status = ?)",
+				false,
+				models.ClusterNodeLifecycleActive,
+			).
+			UpdateColumn("lifecycle_status", gorm.Expr(
+				"CASE WHEN enabled = ? THEN ? ELSE ? END",
+				false,
+				models.ClusterNodeLifecycleDisabled,
+				models.ClusterNodeLifecycleActive,
+			)).Error; err != nil {
+			return wrapDatabaseMigration("backfill cluster node lifecycle", err)
+		}
+		if err := tx.Model(&models.ClusterTask{}).
+			Where("stage IS NULL OR stage = ''").
+			UpdateColumn("stage", gorm.Expr("status")).Error; err != nil {
+			return wrapDatabaseMigration("backfill cluster task stage", err)
+		}
+		if err := tx.Model(&models.ClusterTask{}).
+			Where("progress IS NULL OR progress = 0").
+			UpdateColumn("progress", gorm.Expr(
+				"CASE WHEN status IN (?, ?, ?) THEN 100 WHEN status = ? THEN 50 ELSE 10 END",
+				models.ClusterTaskStatusSucceeded,
+				models.ClusterTaskStatusFailed,
+				models.ClusterTaskStatusCanceled,
+				models.ClusterTaskStatusRunning,
+			)).Error; err != nil {
+			return wrapDatabaseMigration("backfill cluster task progress", err)
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	return nil
+}
+
 // migrateCertificateBindingSchema repairs the certificate binding table from
 // panel versions that created it before force_https was part of the model.
 // AutoMigrate normally handles this change, but the explicit check keeps
