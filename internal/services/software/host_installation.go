@@ -240,22 +240,40 @@ func hydrateFirewalldInstallation(item *output.Software) {
 	options := make([]output.VersionOption, 0, len(availableVersions))
 	versions := make([]string, 0, len(availableVersions))
 	for _, version := range availableVersions {
+		var selected output.VersionOption
+		var fallback output.VersionOption
+		matched, hasFallback := false, false
 		for _, option := range item.VersionOptions {
 			if !option.Enabled {
 				continue
 			}
+			if !hasFallback || option.Recommended {
+				fallback, hasFallback = option, true
+			}
 			if option.Version != version && !(option.AllowCustomVersion && scriptregistry.SupportsSoftwareVersion([]string{option.Line}, version)) {
 				continue
 			}
-			option.Version, option.Recommended = version, len(versions) == 0
-			// The list exposes only the exact host candidate. Version lines and
-			// custom-version flags remain an internal catalog resolution detail.
-			option.Line = ""
-			option.AllowCustomVersion = false
-			option.Installable = firewalldInstallationAllowed(info)
-			options, versions = append(options, option), append(versions, version)
+			selected, matched = option, true
 			break
 		}
+		if !matched {
+			if !hasFallback {
+				continue
+			}
+			// The signed component probe already proved that this exact installed
+			// runtime is supported. Older catalogs used a synthetic firewalld
+			// profile version instead of a matching version line, so reuse its
+			// enabled presentation metadata instead of hiding an adoptable host
+			// package behind installable=false.
+			selected = fallback
+		}
+		selected.Version, selected.Recommended = version, len(versions) == 0
+		// The list exposes only the exact host candidate. Version lines and
+		// custom-version flags remain an internal catalog resolution detail.
+		selected.Line = ""
+		selected.AllowCustomVersion = false
+		selected.Installable = firewalldInstallationAllowed(info)
+		options, versions = append(options, selected), append(versions, version)
 	}
 	info.AvailableVersions = slices.Clone(versions)
 	info.RecommendedVersion = ""
