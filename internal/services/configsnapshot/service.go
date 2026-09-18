@@ -6,12 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"oneinstack/app"
 	"oneinstack/internal/models"
@@ -58,10 +60,22 @@ type Diff struct {
 }
 
 type Document struct {
-	Snapshot models.ConfigurationSnapshot `json:"snapshot"`
-	Before   any                          `json:"before"`
-	After    any                          `json:"after"`
-	Diff     Diff                         `json:"diff"`
+	Snapshot            models.ConfigurationSnapshot `json:"snapshot"`
+	Before              any                          `json:"before"`
+	After               any                          `json:"after"`
+	Diff                Diff                         `json:"diff"`
+	DiffAvailable       bool                         `json:"diffAvailable"`
+	ContentAvailability ContentAvailability          `json:"contentAvailability"`
+	ArtifactContent     *string                      `json:"artifactContent,omitempty"`
+}
+
+type ContentAvailability struct {
+	State             string `json:"state"`
+	BeforeStored      bool   `json:"beforeStored"`
+	AfterStored       bool   `json:"afterStored"`
+	ArtifactAvailable bool   `json:"artifactAvailable"`
+	ArtifactSide      string `json:"artifactSide,omitempty"`
+	ArtifactState     string `json:"artifactState"`
 }
 
 type Page struct {
@@ -273,8 +287,12 @@ func (s *Service) List(resourceType, resourceID, status, locale string, page, pa
 			SizeBytes:             snapshotDisplaySize(row),
 			ArtifactSHA256:        row.ArtifactSHA256,
 		}
-		item.BeforeRevision = revision([]byte(row.BeforeJSON))
-		item.AfterRevision = revision([]byte(row.AfterJSON))
+		if _, available := decodeSnapshotValue(row, row.BeforeJSON); available {
+			item.BeforeRevision = revision([]byte(row.BeforeJSON))
+		}
+		if _, available := decodeSnapshotValue(row, row.AfterJSON); available {
+			item.AfterRevision = revision([]byte(row.AfterJSON))
+		}
 		if strings.TrimSpace(item.Version) == "" || strings.HasPrefix(strings.TrimSpace(item.Version), "rev-") {
 			item.Version = revisionLabel(item.AfterRevision)
 		}
@@ -418,33 +436,170 @@ func Equal(a, b any) bool {
 
 func decodeDocument(row models.ConfigurationSnapshot, locale string) (Document, error) {
 	row.SizeBytes = snapshotDisplaySize(row)
-	row.BeforeRevision = revision([]byte(row.BeforeJSON))
-	row.AfterRevision = revision([]byte(row.AfterJSON))
+	before, beforeStored := decodeSnapshotValue(row, row.BeforeJSON)
+	after, afterStored := decodeSnapshotValue(row, row.AfterJSON)
+	if beforeStored {
+		row.BeforeRevision = revision([]byte(row.BeforeJSON))
+	}
+	if afterStored {
+		row.AfterRevision = revision([]byte(row.AfterJSON))
+	}
 	if strings.TrimSpace(row.Version) == "" || strings.HasPrefix(strings.TrimSpace(row.Version), "rev-") {
 		row.Version = revisionLabel(row.AfterRevision)
 	}
-	var before, after any
-	if err := json.Unmarshal([]byte(row.BeforeJSON), &before); err != nil {
-		return Document{}, err
+
+	document := Document{
+		Snapshot: row,
+		Before:   before,
+		After:    after,
+		ContentAvailability: ContentAvailability{
+			BeforeStored:  beforeStored,
+			AfterStored:   afterStored,
+			ArtifactState: "not_needed",
+		},
 	}
-	if err := json.Unmarshal([]byte(row.AfterJSON), &after); err != nil {
-		return Document{}, err
+	if beforeStored && afterStored {
+		document.ContentAvailability.State = "complete"
+		document.DiffAvailable = true
+		// Always recalculate from the stored values so older snapshots also
+		// benefit from the current array-aware path presentation.
+		calculated, err := buildDiff([]byte(row.BeforeJSON), []byte(row.AfterJSON))
+		if err != nil {
+			return Document{}, err
+		}
+		if err := json.Unmarshal(calculated, &document.Diff); err != nil {
+			return Document{}, err
+		}
+		document.Diff = presentDiff(row.ResourceType, locale, document.Diff)
+		return document, nil
 	}
-	var diff Diff
-	if err := json.Unmarshal([]byte(row.DiffJSON), &diff); err != nil {
-		return Document{}, err
+
+	document.ContentAvailability.State = "partial"
+	if !beforeStored && !afterStored {
+		document.ContentAvailability.State = "missing"
 	}
-	// Recalculate from the stored before/after values so snapshots created by
-	// older versions also benefit from array-aware paths instead of retaining a
-	// previously persisted root-level "$" marker.
-	if calculated, err := buildDiff([]byte(row.BeforeJSON), []byte(row.AfterJSON)); err == nil {
-		var recalculated Diff
-		if json.Unmarshal(calculated, &recalculated) == nil {
-			diff = recalculated
+	if supportsDisplayArtifact(row) && !beforeStored {
+		artifact, state := readDisplayArtifact(row)
+		document.ContentAvailability.ArtifactState = state
+		if state == "available" {
+			document.ArtifactContent = &artifact
+			document.ContentAvailability.ArtifactAvailable = true
+			document.ContentAvailability.ArtifactSide = "before"
+			document.ContentAvailability.State = "partial"
+		}
+	} else if supportsDisplayArtifact(row) {
+		document.ContentAvailability.ArtifactState = "not_needed"
+	} else if strings.TrimSpace(row.ArtifactPath) != "" {
+		document.ContentAvailability.ArtifactState = "unsupported"
+	} else {
+		document.ContentAvailability.ArtifactState = "not_recorded"
+	}
+	return document, nil
+}
+
+func decodeSnapshotValue(row models.ConfigurationSnapshot, raw string) (any, bool) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, false
+	}
+	var value any
+	if err := json.Unmarshal([]byte(raw), &value); err != nil {
+		return nil, false
+	}
+	if requiresConfigContent(row) && !hasConfigContent(value) {
+		return nil, false
+	}
+	return value, true
+}
+
+func requiresConfigContent(row models.ConfigurationSnapshot) bool {
+	resourceType := strings.ToLower(strings.TrimSpace(row.ResourceType))
+	if resourceType == models.ConfigurationSnapshotResourceWebsite {
+		return strings.EqualFold(strings.TrimSpace(row.Operation), "config.update")
+	}
+	switch resourceType {
+	case "nginx", "openresty", "tengine", "caddy", "apache", "web-server":
+		return true
+	default:
+		return false
+	}
+}
+
+func hasConfigContent(value any) bool {
+	object, ok := value.(map[string]any)
+	if !ok {
+		return false
+	}
+	_, ok = object["content"].(string)
+	return ok
+}
+
+func supportsDisplayArtifact(row models.ConfigurationSnapshot) bool {
+	return requiresConfigContent(row) && strings.TrimSpace(row.ArtifactPath) != ""
+}
+
+func readDisplayArtifact(row models.ConfigurationSnapshot) (string, string) {
+	parsedID, err := uuid.Parse(strings.TrimSpace(row.ID))
+	if err != nil || parsedID.String() != strings.ToLower(strings.TrimSpace(row.ID)) {
+		return "", "invalid_path"
+	}
+	baseDir := filepath.Join(app.GetBasePath(), "configuration-snapshots", row.ID)
+	artifactPath := filepath.Clean(strings.TrimSpace(row.ArtifactPath))
+	if artifactPath == "." || artifactPath == "" {
+		return "", "not_recorded"
+	}
+	relative, err := filepath.Rel(baseDir, artifactPath)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.IsAbs(relative) || filepath.Dir(artifactPath) != filepath.Clean(baseDir) {
+		return "", "invalid_path"
+	}
+	dirInfo, err := os.Lstat(baseDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", "missing"
+		}
+		return "", "unreadable"
+	}
+	if !dirInfo.IsDir() || dirInfo.Mode()&os.ModeSymlink != 0 {
+		return "", "invalid_path"
+	}
+	info, err := os.Lstat(artifactPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", "missing"
+		}
+		return "", "unreadable"
+	}
+	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		return "", "invalid_type"
+	}
+	if info.Size() < 0 || info.Size() > maxSnapshotJSONBytes {
+		return "", "too_large"
+	}
+	file, err := os.Open(artifactPath)
+	if err != nil {
+		return "", "unreadable"
+	}
+	defer file.Close()
+	openedInfo, err := file.Stat()
+	if err != nil || !openedInfo.Mode().IsRegular() || !os.SameFile(info, openedInfo) {
+		return "", "invalid_type"
+	}
+	data, err := io.ReadAll(io.LimitReader(file, maxSnapshotJSONBytes+1))
+	if err != nil {
+		return "", "unreadable"
+	}
+	if len(data) > maxSnapshotJSONBytes {
+		return "", "too_large"
+	}
+	if !utf8.Valid(data) {
+		return "", "not_text"
+	}
+	if expected := strings.ToLower(strings.TrimSpace(row.ArtifactSHA256)); expected != "" {
+		digest := sha256.Sum256(data)
+		if hex.EncodeToString(digest[:]) != expected {
+			return "", "checksum_mismatch"
 		}
 	}
-	diff = presentDiff(row.ResourceType, locale, diff)
-	return Document{Snapshot: row, Before: before, After: after, Diff: diff}, nil
+	return string(data), "available"
 }
 
 func snapshotDisplaySize(row models.ConfigurationSnapshot) int64 {

@@ -926,6 +926,7 @@ var englishTerms = map[string]string{
 }
 
 var englishErrorTexts = map[string]string{
+	"历史快照未保存可恢复的结构化正文，不能执行回滚":                     "The historical snapshot does not contain restorable structured content and cannot be rolled back.",
 	"任务 ID 必须是正整数":                                "Task ID must be a positive integer",
 	"节点任务不存在":                                     "The cluster node task does not exist",
 	"读取节点任务详情失败":                                  "Failed to read the cluster node task details",

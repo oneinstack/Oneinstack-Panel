@@ -130,13 +130,22 @@ func Diff(c *gin.Context) {
 		handleSnapshotError(c, err, "读取配置差异失败")
 		return
 	}
-	core.HandleSuccess(c, gin.H{"snapshot": document.Snapshot, "diff": document.Diff})
+	core.HandleSuccess(c, gin.H{
+		"snapshot":            document.Snapshot,
+		"diff":                document.Diff,
+		"diffAvailable":       document.DiffAvailable,
+		"contentAvailability": document.ContentAvailability,
+	})
 }
 
 func RestorePreview(c *gin.Context) {
 	document, err := configsnapshot.Default().Get(c.Param("id"), snapshotUser(c), middleware.RequestLocale(c))
 	if err != nil {
 		handleSnapshotError(c, err, "读取回滚预览失败")
+		return
+	}
+	if !document.ContentAvailability.BeforeStored {
+		core.HandleError(c, core.NewError(core.ErrConfigError, "历史快照未保存可恢复的结构化正文，不能执行回滚"))
 		return
 	}
 	current, _, err := currentSnapshotResource(document)
@@ -159,6 +168,10 @@ func Restore(c *gin.Context) {
 	document, err := configsnapshot.Default().Get(c.Param("id"), snapshotUser(c), middleware.RequestLocale(c))
 	if err != nil {
 		handleSnapshotError(c, err, "读取配置快照失败")
+		return
+	}
+	if !document.ContentAvailability.BeforeStored {
+		core.HandleError(c, core.NewError(core.ErrConfigError, "历史快照未保存可恢复的结构化正文，不能执行回滚"))
 		return
 	}
 	current, _, err := currentSnapshotResource(document)
