@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,6 +20,7 @@ var (
 	ErrNodeNotFound     = gorm.ErrRecordNotFound
 	ErrInvalidToken     = errors.New("invalid node token")
 	ErrNodeDisabled     = errors.New("node is disabled")
+	ErrNodeDeparted     = errors.New("node has left the cluster and must register again")
 	ErrNameRequired     = errors.New("node name is required")
 	ErrEndpointInvalid  = errors.New("node endpoint must be a valid http or https URL")
 	ErrNodeFieldTooLong = errors.New("node field is too long")
@@ -69,38 +71,42 @@ type HostSnapshot struct {
 }
 
 type NodeRegistration struct {
-	Token         string `json:"token"`
-	Hostname      string `json:"hostname,omitempty"`
-	SystemID      string `json:"systemId,omitempty"`
-	SystemVersion string `json:"systemVersion,omitempty"`
-	Architecture  string `json:"architecture,omitempty"`
-	PanelVersion  string `json:"panelVersion,omitempty"`
-	AgentVersion  string `json:"agentVersion,omitempty"`
+	Token                    string   `json:"token"`
+	Hostname                 string   `json:"hostname,omitempty"`
+	SystemID                 string   `json:"systemId,omitempty"`
+	SystemVersion            string   `json:"systemVersion,omitempty"`
+	Architecture             string   `json:"architecture,omitempty"`
+	PanelVersion             string   `json:"panelVersion,omitempty"`
+	AgentVersion             string   `json:"agentVersion,omitempty"`
+	Capabilities             []string `json:"capabilities,omitempty"`
+	HeartbeatIntervalSeconds int      `json:"heartbeatIntervalSeconds,omitempty"`
 	HostSnapshot
 }
 
 type NodeHeartbeat struct {
-	Token            string  `json:"token"`
-	Hostname         string  `json:"hostname,omitempty"`
-	PanelVersion     string  `json:"panelVersion,omitempty"`
-	AgentVersion     string  `json:"agentVersion,omitempty"`
-	CPUPercent       float64 `json:"cpuPercent"`
-	MemoryPercent    float64 `json:"memoryPercent"`
-	DiskPercent      float64 `json:"diskPercent"`
-	NetworkRecvBPS   float64 `json:"networkReceiveBps"`
-	NetworkSendBPS   float64 `json:"networkSendBps"`
-	UptimeSeconds    uint64  `json:"uptimeSeconds"`
-	CPUTotalCores    int     `json:"cpuTotalCores"`
-	CPUUsedCores     float64 `json:"cpuUsedCores"`
-	MemoryUsedBytes  uint64  `json:"memoryUsedBytes"`
-	MemoryTotalBytes uint64  `json:"memoryTotalBytes"`
-	DiskUsedBytes    uint64  `json:"diskUsedBytes"`
-	DiskTotalBytes   uint64  `json:"diskTotalBytes"`
-	IPAddress        string  `json:"ipAddress,omitempty"`
-	SubnetMask       string  `json:"subnetMask,omitempty"`
-	Gateway          string  `json:"gateway,omitempty"`
-	MACAddress       string  `json:"macAddress,omitempty"`
-	InterfaceName    string  `json:"interfaceName,omitempty"`
+	Token                    string   `json:"token"`
+	Hostname                 string   `json:"hostname,omitempty"`
+	PanelVersion             string   `json:"panelVersion,omitempty"`
+	AgentVersion             string   `json:"agentVersion,omitempty"`
+	Capabilities             []string `json:"capabilities,omitempty"`
+	HeartbeatIntervalSeconds int      `json:"heartbeatIntervalSeconds,omitempty"`
+	CPUPercent               float64  `json:"cpuPercent"`
+	MemoryPercent            float64  `json:"memoryPercent"`
+	DiskPercent              float64  `json:"diskPercent"`
+	NetworkRecvBPS           float64  `json:"networkReceiveBps"`
+	NetworkSendBPS           float64  `json:"networkSendBps"`
+	UptimeSeconds            uint64   `json:"uptimeSeconds"`
+	CPUTotalCores            int      `json:"cpuTotalCores"`
+	CPUUsedCores             float64  `json:"cpuUsedCores"`
+	MemoryUsedBytes          uint64   `json:"memoryUsedBytes"`
+	MemoryTotalBytes         uint64   `json:"memoryTotalBytes"`
+	DiskUsedBytes            uint64   `json:"diskUsedBytes"`
+	DiskTotalBytes           uint64   `json:"diskTotalBytes"`
+	IPAddress                string   `json:"ipAddress,omitempty"`
+	SubnetMask               string   `json:"subnetMask,omitempty"`
+	Gateway                  string   `json:"gateway,omitempty"`
+	MACAddress               string   `json:"macAddress,omitempty"`
+	InterfaceName            string   `json:"interfaceName,omitempty"`
 }
 
 type CreateNodeResult struct {
@@ -132,19 +138,35 @@ func (m *Manager) CreateNode(input CreateNodeInput) (CreateNodeResult, error) {
 }
 
 func (m *Manager) ListNodes() ([]models.ClusterNode, error) {
-	var nodes []models.ClusterNode
-	err := m.db.Order("id asc").Find(&nodes).Error
-	if err != nil {
+	if _, err := m.ExpireStaleNodes(time.Now()); err != nil {
 		return nil, err
 	}
-	staleBefore := time.Now().Add(-2 * time.Minute)
-	for i := range nodes {
-		if nodes[i].Enabled && nodes[i].Status == models.ClusterNodeStatusOnline && (nodes[i].LastSeenAt == nil || nodes[i].LastSeenAt.Before(staleBefore)) {
-			nodes[i].Status = models.ClusterNodeStatusOffline
-			_ = m.db.Model(&models.ClusterNode{}).Where("id = ? AND status = ?", nodes[i].ID, models.ClusterNodeStatusOnline).Updates(map[string]interface{}{"status": models.ClusterNodeStatusOffline}).Error
-		}
+	var nodes []models.ClusterNode
+	err := m.db.Order("id asc").Find(&nodes).Error
+	return nodes, err
+}
+
+// ExpireStaleNodes persists heartbeat-based offline transitions independently
+// of whether an operator currently has the cluster page open.
+func (m *Manager) ExpireStaleNodes(now time.Time) (int64, error) {
+	var nodes []models.ClusterNode
+	if err := m.db.Where("enabled = ? AND status = ?", true, models.ClusterNodeStatusOnline).Find(&nodes).Error; err != nil {
+		return 0, err
 	}
-	return nodes, nil
+	var expired int64
+	for i := range nodes {
+		if nodeHeartbeatFresh(nodes[i], now) {
+			continue
+		}
+		result := m.db.Model(&models.ClusterNode{}).
+			Where("id = ? AND status = ?", nodes[i].ID, models.ClusterNodeStatusOnline).
+			Update("status", models.ClusterNodeStatusOffline)
+		if result.Error != nil {
+			return expired, result.Error
+		}
+		expired += result.RowsAffected
+	}
+	return expired, nil
 }
 
 func (m *Manager) GetNode(id uint) (models.ClusterNode, error) {
@@ -246,7 +268,9 @@ func (m *Manager) RegisterNode(input NodeRegistration) (models.ClusterNode, erro
 	now := time.Now()
 	node.Hostname, node.SystemID, node.SystemVersion = strings.TrimSpace(input.Hostname), strings.TrimSpace(input.SystemID), strings.TrimSpace(input.SystemVersion)
 	node.Architecture, node.PanelVersion, node.AgentVersion = strings.TrimSpace(input.Architecture), strings.TrimSpace(input.PanelVersion), strings.TrimSpace(input.AgentVersion)
-	node.Status, node.LastError, node.LastSeenAt, node.LastRegisteredAt = models.ClusterNodeStatusOnline, "", &now, &now
+	node.Capabilities = normalizeCapabilities(input.Capabilities)
+	node.HeartbeatIntervalSeconds = normalizeHeartbeatInterval(input.HeartbeatIntervalSeconds)
+	node.Status, node.LastError, node.LastSeenAt, node.LastRegisteredAt, node.DepartedAt = models.ClusterNodeStatusOnline, "", &now, &now, nil
 	applyHostSnapshot(&node, input.HostSnapshot)
 	if err := m.db.Save(&node).Error; err != nil {
 		return node, err
@@ -262,8 +286,13 @@ func (m *Manager) Heartbeat(input NodeHeartbeat) (models.ClusterNode, error) {
 	if !node.Enabled {
 		return node, ErrNodeDisabled
 	}
+	if node.DepartedAt != nil {
+		return node, ErrNodeDeparted
+	}
 	now := time.Now()
 	node.Hostname, node.PanelVersion, node.AgentVersion = strings.TrimSpace(input.Hostname), strings.TrimSpace(input.PanelVersion), strings.TrimSpace(input.AgentVersion)
+	node.Capabilities = normalizeCapabilities(input.Capabilities)
+	node.HeartbeatIntervalSeconds = normalizeHeartbeatInterval(input.HeartbeatIntervalSeconds)
 	node.CPUPercent, node.MemoryPercent, node.DiskPercent = clamp(input.CPUPercent), clamp(input.MemoryPercent), clamp(input.DiskPercent)
 	node.NetworkRecvBPS, node.NetworkSendBPS, node.UptimeSeconds = max0(input.NetworkRecvBPS), max0(input.NetworkSendBPS), input.UptimeSeconds
 	node.CPUTotalCores, node.CPUUsedCores = input.CPUTotalCores, max0(input.CPUUsedCores)
@@ -282,6 +311,73 @@ func (m *Manager) Heartbeat(input NodeHeartbeat) (models.ClusterNode, error) {
 		return node, err
 	}
 	return node, nil
+}
+
+// MarkOffline handles a graceful agent departure. Unexpected failures still
+// fall back to the heartbeat expiry supervisor.
+func (m *Manager) MarkOffline(token string) (models.ClusterNode, error) {
+	node, err := m.findByToken(token)
+	if err != nil {
+		return node, err
+	}
+	now := time.Now()
+	if err := m.db.Model(&models.ClusterNode{}).Where("id = ?", node.ID).Updates(map[string]interface{}{
+		"status":      models.ClusterNodeStatusOffline,
+		"last_error":  "",
+		"departed_at": now,
+	}).Error; err != nil {
+		return node, err
+	}
+	node.Status, node.LastError, node.DepartedAt = models.ClusterNodeStatusOffline, "", &now
+	return node, nil
+}
+
+func nodeHeartbeatFresh(node models.ClusterNode, now time.Time) bool {
+	if !node.Enabled || node.Status != models.ClusterNodeStatusOnline || node.LastSeenAt == nil {
+		return false
+	}
+	interval := time.Duration(normalizeHeartbeatInterval(node.HeartbeatIntervalSeconds)) * time.Second
+	staleAfter := 3 * interval
+	if staleAfter < time.Minute {
+		staleAfter = time.Minute
+	}
+	return !node.LastSeenAt.Before(now.Add(-staleAfter))
+}
+
+func normalizeHeartbeatInterval(interval int) int {
+	if interval < 5 || interval > 3600 {
+		return defaultAgentIntervalSeconds
+	}
+	return interval
+}
+
+func normalizeCapabilities(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || len(value) > 120 {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+		if len(result) == 64 {
+			break
+		}
+	}
+	return result
+}
+
+func nodeHasCapability(node models.ClusterNode, capability string) bool {
+	for _, value := range node.Capabilities {
+		if value == capability {
+			return true
+		}
+	}
+	return false
 }
 
 func applyHostSnapshot(node *models.ClusterNode, snapshot HostSnapshot) {
@@ -309,8 +405,17 @@ func (m *Manager) findByToken(token string) (models.ClusterNode, error) {
 }
 
 func validEndpoint(raw string) bool {
-	u, err := url.Parse(raw)
-	return err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != ""
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Opaque != "" {
+		return false
+	}
+	if port := u.Port(); port != "" {
+		parsedPort, err := strconv.Atoi(port)
+		if err != nil || parsedPort < 1 || parsedPort > 65535 {
+			return false
+		}
+	}
+	return true
 }
 
 func generateToken() (string, error) {

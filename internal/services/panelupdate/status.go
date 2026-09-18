@@ -52,6 +52,7 @@ func (m *Manager) withRecoveryState(status Status) (Status, error) {
 	}
 	if needed {
 		status.State = StateRecoveryNeeded
+		status.ErrorCode = StatusErrorRecoveryNeeded
 		status.Message = "检测到中断的更新事务，请执行 one update rollback --yes"
 		status.UpdatedAt = m.now().UTC()
 	}

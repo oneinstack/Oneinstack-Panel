@@ -1,9 +1,12 @@
 package cluster
 
 import (
+	"context"
 	"errors"
+	"log"
 	"net/url"
 	"strings"
+	"time"
 
 	"oneinstack/app"
 	"oneinstack/config"
@@ -100,12 +103,33 @@ func SelectClusterRole(input SelectClusterRoleInput) (AgentSettings, error) {
 }
 
 func ResetClusterRole() (AgentSettings, error) {
+	previous := app.ONE_CONFIG.ClusterAgent
 	if err := app.PersistClusterAgentConfig(ClusterRoleUnconfigured, false, "", "", defaultAgentIntervalSeconds, defaultAgentTimeoutSeconds); err != nil {
 		return AgentSettings{}, err
 	}
 	stopActiveAgent()
+	notifyControllerOffline(previous)
 	ResetAgentRuntime()
 	return GetAgentSettings(), nil
+}
+
+func notifyControllerOffline(cfg config.ClusterAgent) {
+	if EffectiveClusterRole(cfg) != ClusterRoleNode || !cfg.Enabled || strings.TrimSpace(cfg.ControllerURL) == "" || strings.TrimSpace(cfg.Token) == "" {
+		return
+	}
+	timeout := time.Duration(cfg.RequestTimeoutSec) * time.Second
+	if timeout <= 0 || timeout > 3*time.Second {
+		timeout = 3 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	agent, err := NewAgent(AgentConfig{ControllerURL: cfg.ControllerURL, Token: cfg.Token, Interval: time.Duration(cfg.IntervalSeconds) * time.Second, RequestTimeout: timeout})
+	if err == nil {
+		err = agent.offline(ctx)
+	}
+	if err != nil {
+		log.Printf("cluster agent offline notification failed: %v", err)
+	}
 }
 
 func UpdateAgentSettings(input UpdateAgentSettingsInput) (AgentSettings, error) {

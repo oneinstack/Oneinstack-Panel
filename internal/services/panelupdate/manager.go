@@ -102,6 +102,13 @@ func (m *Manager) Apply(ctx context.Context) (finalStatus Status, finalErr error
 		return Status{}, err
 	}
 	defer releaseLock(lock)
+	pending, hasPending, err := m.readPendingUpdate()
+	if err != nil {
+		return Status{}, err
+	}
+	if hasPending {
+		defer func() { _ = m.clearPendingUpdate() }()
+	}
 	if _, err := os.Stat(m.journalPath()); err == nil {
 		return Status{}, ErrRecoveryNeeded
 	} else if !errors.Is(err, os.ErrNotExist) {
@@ -127,6 +134,14 @@ func (m *Manager) Apply(ctx context.Context) (finalStatus Status, finalErr error
 	status.TargetVersion = manifest.Version
 	if !result.UpdateAvailable {
 		return m.fail(&status, ErrNoUpdate)
+	}
+	if hasPending && pending.ExpectedVersion != strings.TrimSpace(manifest.Version) {
+		return m.fail(&status, fmt.Errorf(
+			"%w: assigned release changed from %q to %q",
+			ErrTargetChanged,
+			pending.ExpectedVersion,
+			manifest.Version,
+		))
 	}
 	if err := m.transition(&status, StateDownloading, "正在下载并校验签名发布包"); err != nil {
 		return status, err
@@ -401,10 +416,26 @@ func (m *Manager) RollbackLast(ctx context.Context) (Status, error) {
 func (m *Manager) fail(status *Status, err error) (Status, error) {
 	finished := m.now().UTC()
 	status.State = StateFailed
+	status.ErrorCode = statusErrorCode(err)
 	status.Message = err.Error()
 	status.FinishedAt = &finished
 	_ = m.writeStatus(*status)
 	return *status, err
+}
+
+func statusErrorCode(err error) string {
+	switch {
+	case errors.Is(err, ErrNoUpdate):
+		return StatusErrorNoUpdate
+	case errors.Is(err, ErrIncompatible):
+		return StatusErrorIncompatible
+	case errors.Is(err, ErrTargetChanged):
+		return StatusErrorTargetChanged
+	case errors.Is(err, ErrRecoveryNeeded):
+		return StatusErrorRecoveryNeeded
+	default:
+		return ""
+	}
 }
 
 func (m *Manager) downloadArtifact(ctx context.Context, artifact Artifact, destination string) error {

@@ -111,10 +111,12 @@ func SetupRouter() *gin.Engine {
 			middleware.RateLimitMiddleware(30, time.Minute),
 			ftp.DownloadSharedFile,
 		)
-		// Agent endpoints authenticate with a per-node token in the request body.
+		// Agent endpoints authenticate with a per-node bearer token; legacy body tokens remain accepted.
 		r.POST("/cluster/agent/register", middleware.RateLimitMiddleware(30, time.Minute), clusterHandler.RegisterNode)
 		r.POST("/cluster/agent/heartbeat", middleware.RateLimitMiddleware(240, time.Minute), clusterHandler.Heartbeat)
+		r.POST("/cluster/agent/offline", middleware.RateLimitMiddleware(60, time.Minute), clusterHandler.MarkOffline)
 		r.POST("/cluster/agent/tasks/next", middleware.RateLimitMiddleware(120, time.Minute), clusterHandler.ClaimTask)
+		r.POST("/cluster/agent/tasks/progress", middleware.RateLimitMiddleware(240, time.Minute), clusterHandler.ProgressTask)
 		r.POST("/cluster/agent/tasks/complete", middleware.RateLimitMiddleware(240, time.Minute), clusterHandler.CompleteTask)
 	}
 
@@ -141,6 +143,9 @@ func SetupRouter() *gin.Engine {
 		clusterg.POST("/nodes", middleware.RequirePermission(accessservice.PermissionClusterWrite), clusterHandler.CreateNode)
 		clusterg.PUT("/nodes/:id", middleware.RequirePermission(accessservice.PermissionClusterWrite), clusterHandler.UpdateNode)
 		clusterg.POST("/nodes/:id/restart", middleware.RequirePermission(accessservice.PermissionClusterWrite), clusterHandler.RestartNode)
+		clusterg.GET("/nodes/:id/panel-update", middleware.RequirePermission(accessservice.PermissionClusterRead), clusterHandler.GetPanelUpdate)
+		clusterg.POST("/nodes/:id/panel-update/check", middleware.RequirePermission(accessservice.PermissionClusterWrite), clusterHandler.CheckPanelUpdate)
+		clusterg.POST("/nodes/:id/panel-update/apply", middleware.RequirePermission(accessservice.PermissionClusterWrite), clusterHandler.ApplyPanelUpdate)
 		clusterg.POST("/nodes/:id/token/rotate", middleware.RequirePermission(accessservice.PermissionClusterWrite), clusterHandler.RotateToken)
 		clusterg.GET("/nodes/:id/tasks", middleware.RequirePermission(accessservice.PermissionClusterRead), clusterHandler.ListTasks)
 		clusterg.GET("/nodes/:id/tasks/:taskId", middleware.RequirePermission(accessservice.PermissionClusterRead), clusterHandler.GetTask)

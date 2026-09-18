@@ -56,9 +56,20 @@ func (m *Manager) DispatchWebsite(input WebsiteDispatchInput) (WebsiteDispatchRe
 		return WebsiteDispatchResult{}, err
 	}
 	var nodes []models.ClusterNode
-	if err := m.db.Where("enabled = ? AND status = ? AND last_seen_at >= ?", true, models.ClusterNodeStatusOnline, time.Now().Add(-2*time.Minute)).Find(&nodes).Error; err != nil {
+	now := time.Now()
+	if _, err := m.ExpireStaleNodes(now); err != nil {
 		return WebsiteDispatchResult{}, err
 	}
+	if err := m.db.Where("enabled = ? AND status = ?", true, models.ClusterNodeStatusOnline).Find(&nodes).Error; err != nil {
+		return WebsiteDispatchResult{}, err
+	}
+	freshNodes := nodes[:0]
+	for i := range nodes {
+		if nodeHeartbeatFresh(nodes[i], now) {
+			freshNodes = append(freshNodes, nodes[i])
+		}
+	}
+	nodes = freshNodes
 	strategy := strings.ToLower(strings.TrimSpace(input.Strategy))
 	if strategy == "" {
 		strategy = "least_load"

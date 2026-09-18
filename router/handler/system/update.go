@@ -2,7 +2,6 @@ package system
 
 import (
 	"errors"
-	"fmt"
 
 	"github.com/gin-gonic/gin"
 
@@ -74,27 +73,9 @@ func ApplyPanelUpdate(c *gin.Context) {
 		handlePanelUpdateError(c, panelupdate.ErrRecoveryNeeded)
 		return
 	}
-	result, err := manager.Check(c.Request.Context())
+	result, err := manager.QueueApplicationUpdate(c.Request.Context(), "")
 	if err != nil {
 		handlePanelUpdateError(c, err)
-		return
-	}
-	if !result.UpdateAvailable {
-		handlePanelUpdateError(c, panelupdate.ErrNoUpdate)
-		return
-	}
-
-	runner := panelupdate.OSCommandRunner{}
-	if _, err := runner.Run(c.Request.Context(), panelupdate.Command{
-		Name: "systemctl", Args: []string{"is-active", "--quiet", "one-update.service"},
-	}); err == nil {
-		handlePanelUpdateError(c, panelupdate.ErrUpdateBusy)
-		return
-	}
-	if _, err := runner.Run(c.Request.Context(), panelupdate.Command{
-		Name: "systemctl", Args: []string{"start", "--no-block", "one-update.service"},
-	}); err != nil {
-		handlePanelUpdateError(c, fmt.Errorf("启动独立更新服务: %w", err))
 		return
 	}
 	core.HandleSuccess(c, gin.H{
@@ -110,6 +91,10 @@ func handlePanelUpdateError(c *gin.Context, err error) {
 		core.HandleError(c, core.WrapError(err, core.ErrConfigError, "面板更新中心未启用，请先在配置中开启更新中心"))
 	case errors.Is(err, panelupdate.ErrInvalidManifest):
 		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "更新清单校验失败"))
+	case errors.Is(err, panelupdate.ErrIncompatible):
+		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "当前系统、架构或面板版本与目标版本不兼容"))
+	case errors.Is(err, panelupdate.ErrTargetChanged):
+		core.HandleError(c, core.WrapError(err, core.ErrConflict, "Center 分配的目标版本已变化，请重新检查"))
 	case errors.Is(err, panelupdate.ErrNoUpdate):
 		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "当前没有可安装的新版本"))
 	case errors.Is(err, panelupdate.ErrUpdateBusy):

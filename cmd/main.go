@@ -714,6 +714,7 @@ func startServer() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	clusterService.RunAgentSupervisor(ctx)
+	clusterService.RunNodeStatusSupervisor(ctx)
 	fail2banservice.DefaultManager().Start(ctx)
 	go safeservice.RunMaintenance(ctx)
 

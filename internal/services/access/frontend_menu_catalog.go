@@ -230,6 +230,8 @@ func builtinFrontendButtonDefinitions() []builtinButtonDefinition {
 		item("cluster.node.create", "添加集群节点"),
 		item("cluster.node.update", "修改集群节点"),
 		item("cluster.node.restart", "重启节点 Panel"),
+		item("cluster.panel-update.check", "检查节点 Panel 更新"),
+		item("cluster.panel-update.apply", "执行节点 Panel 更新"),
 		item("cluster.node.token.rotate", "轮换节点令牌"),
 		item("cluster.node.delete", "删除集群节点"),
 		item("cluster.website.dispatch", "下发网站配置"),

@@ -26,9 +26,19 @@ const (
 var (
 	ErrDisabled        = errors.New("panel updates are disabled")
 	ErrInvalidManifest = errors.New("invalid update manifest")
+	ErrIncompatible    = errors.New("panel update is incompatible with this installation")
+	ErrTargetChanged   = errors.New("Center-assigned panel update target changed")
 	ErrNoUpdate        = errors.New("no newer update is available")
 	ErrUpdateBusy      = errors.New("another panel update is running")
+	ErrUpdateStart     = errors.New("independent panel update service could not be started")
 	ErrRecoveryNeeded  = errors.New("an interrupted panel update must be rolled back before retrying")
+)
+
+const (
+	StatusErrorNoUpdate       = "no_update"
+	StatusErrorIncompatible   = "incompatible"
+	StatusErrorTargetChanged  = "target_changed"
+	StatusErrorRecoveryNeeded = "recovery_required"
 )
 
 type Config struct {
@@ -101,6 +111,7 @@ type CheckResult struct {
 
 type Status struct {
 	State             string     `json:"state"`
+	ErrorCode         string     `json:"errorCode,omitempty"`
 	CurrentVersion    string     `json:"currentVersion,omitempty"`
 	TargetVersion     string     `json:"targetVersion,omitempty"`
 	Message           string     `json:"message,omitempty"`

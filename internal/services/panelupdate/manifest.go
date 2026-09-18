@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -153,7 +154,7 @@ func VerifyManifest(manifest Manifest, config Config) (Artifact, error) {
 		}
 	}
 	if selected == nil {
-		return Artifact{}, fmt.Errorf("%w: no artifact for %s/%s", ErrInvalidManifest, config.OS, config.Arch)
+		return Artifact{}, fmt.Errorf("%w: no artifact for %s/%s", ErrIncompatible, config.OS, config.Arch)
 	}
 	return *selected, nil
 }
@@ -268,7 +269,7 @@ func CheckUpdate(ctx context.Context, client *http.Client, config Config) (Check
 		result.Compatible = false
 		return result, Manifest{}, Artifact{}, fmt.Errorf(
 			"%w: current build version %q is not a release version",
-			ErrInvalidManifest,
+			ErrIncompatible,
 			config.CurrentVersion,
 		)
 	}
@@ -303,6 +304,14 @@ func CheckUpdate(ctx context.Context, client *http.Client, config Config) (Check
 	}
 	artifact, err := VerifyManifest(manifest, config)
 	if err != nil {
+		if errors.Is(err, ErrIncompatible) {
+			result.LatestVersion = manifest.Version
+			result.PublishedAt = manifest.PublishedAt
+			result.ReleaseNotes = manifest.ReleaseNotes
+			result.MinimumVersion = manifest.MinimumVersion
+			result.SigningKeyID = manifest.Signature.KeyID
+			result.Compatible = false
+		}
 		return result, Manifest{}, Artifact{}, err
 	}
 	result.LatestVersion = manifest.Version
@@ -313,7 +322,7 @@ func CheckUpdate(ctx context.Context, client *http.Client, config Config) (Check
 	result.SigningKeyID = manifest.Signature.KeyID
 	if manifest.MinimumVersion != "" && semver.Compare(current, canonicalVersion(manifest.MinimumVersion)) < 0 {
 		result.Compatible = false
-		return result, manifest, artifact, fmt.Errorf("%w: current version is below minimum upgrade version %s", ErrInvalidManifest, manifest.MinimumVersion)
+		return result, manifest, artifact, fmt.Errorf("%w: current version is below minimum upgrade version %s", ErrIncompatible, manifest.MinimumVersion)
 	}
 	result.UpdateAvailable = semver.Compare(canonicalVersion(manifest.Version), current) > 0
 	return result, manifest, artifact, nil

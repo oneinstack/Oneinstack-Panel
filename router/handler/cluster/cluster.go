@@ -251,6 +251,87 @@ func RestartNode(c *gin.Context) {
 	core.HandleSuccess(c, task)
 }
 
+func GetPanelUpdate(c *gin.Context) {
+	m, ok := manager(c)
+	if !ok {
+		return
+	}
+	id, ok := nodeID(c)
+	if !ok {
+		return
+	}
+	state, err := m.GetPanelUpdateState(id)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		core.HandleError(c, core.NewError(core.ErrNotFound, "节点不存在"))
+		return
+	}
+	if err != nil {
+		core.HandleError(c, core.NewError(core.ErrInternalError, "读取节点面板更新状态失败"))
+		return
+	}
+	core.HandleSuccess(c, state)
+}
+
+func CheckPanelUpdate(c *gin.Context) {
+	m, ok := manager(c)
+	if !ok {
+		return
+	}
+	id, ok := nodeID(c)
+	if !ok {
+		return
+	}
+	task, err := m.EnqueuePanelUpdateCheck(id)
+	if handlePanelUpdateMutationError(c, err) {
+		return
+	}
+	c.JSON(http.StatusAccepted, core.SuccessResponseForContext(c, task))
+}
+
+func ApplyPanelUpdate(c *gin.Context) {
+	m, ok := manager(c)
+	if !ok {
+		return
+	}
+	id, ok := nodeID(c)
+	if !ok {
+		return
+	}
+	var input cluster.PanelUpdateApplyInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		core.HandleErrorWithStatus(c, http.StatusBadRequest, core.NewError(core.ErrInvalidParameter, "请求参数无效"))
+		return
+	}
+	task, err := m.EnqueuePanelUpdateApply(id, input)
+	if handlePanelUpdateMutationError(c, err) {
+		return
+	}
+	c.JSON(http.StatusAccepted, core.SuccessResponseForContext(c, task))
+}
+
+func handlePanelUpdateMutationError(c *gin.Context, err error) bool {
+	if err == nil {
+		return false
+	}
+	switch {
+	case errors.Is(err, gorm.ErrRecordNotFound):
+		core.HandleError(c, core.NewError(core.ErrNotFound, "节点不存在"))
+	case errors.Is(err, cluster.ErrNodeUnavailable):
+		core.HandleErrorWithStatus(c, http.StatusConflict, core.NewError(core.ErrConflict, "仅在线、已启用且心跳正常的节点可以检查或执行更新"))
+	case errors.Is(err, cluster.ErrPanelUpdateCapability):
+		core.HandleErrorWithStatus(c, http.StatusConflict, core.NewError(core.ErrConflict, "节点 Agent 版本不支持面板更新，请先在节点端升级 Panel"))
+	case errors.Is(err, cluster.ErrPanelUpdateActive):
+		core.HandleErrorWithStatus(c, http.StatusConflict, core.NewError(core.ErrConflict, "该节点已有面板更新任务正在执行"))
+	case errors.Is(err, cluster.ErrPanelUpdateTarget):
+		core.HandleErrorWithStatus(c, http.StatusConflict, core.NewError(core.ErrConflict, "更新检查结果已失效，请重新检查可用版本"))
+	case errors.Is(err, cluster.ErrPanelUpdateConfirm):
+		core.HandleError(c, core.NewError(core.ErrBadRequest, "确认文本必须为 UPDATE PANEL"))
+	default:
+		core.HandleError(c, core.NewError(core.ErrInternalError, "创建节点面板更新任务失败"))
+	}
+	return true
+}
+
 func DispatchWebsite(c *gin.Context) {
 	m, ok := manager(c)
 	if !ok {
@@ -410,6 +491,19 @@ func Heartbeat(c *gin.Context) {
 	core.HandleSuccess(c, gin.H{"nodeId": node.ID, "status": node.Status, "lastSeenAt": node.LastSeenAt})
 }
 
+func MarkOffline(c *gin.Context) {
+	m, ok := manager(c)
+	if !ok {
+		return
+	}
+	node, err := m.MarkOffline(agentToken(c, ""))
+	if err != nil {
+		agentError(c, err)
+		return
+	}
+	core.HandleSuccess(c, gin.H{"nodeId": node.ID, "status": node.Status})
+}
+
 func ClaimTask(c *gin.Context) {
 	m, ok := manager(c)
 	if !ok {
@@ -454,6 +548,33 @@ func CompleteTask(c *gin.Context) {
 	core.HandleSuccess(c, cluster.SummarizeTask(task))
 }
 
+func ProgressTask(c *gin.Context) {
+	m, ok := manager(c)
+	if !ok {
+		return
+	}
+	var input cluster.TaskProgressInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		core.HandleErrorWithStatus(c, http.StatusBadRequest, core.NewError(core.ErrInvalidParameter, "请求参数无效"))
+		return
+	}
+	input.Token = agentToken(c, input.Token)
+	task, err := m.ReportTaskProgress(input)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		core.HandleErrorWithStatus(c, http.StatusNotFound, core.NewError(core.ErrNotFound, "任务不存在"))
+		return
+	}
+	if errors.Is(err, cluster.ErrTaskState) {
+		core.HandleErrorWithStatus(c, http.StatusConflict, core.NewError(core.ErrConflict, "任务状态无效"))
+		return
+	}
+	if err != nil {
+		agentError(c, err)
+		return
+	}
+	core.HandleSuccess(c, cluster.SummarizeTask(task))
+}
+
 func agentToken(c *gin.Context, bodyToken string) string {
 	if strings.TrimSpace(bodyToken) != "" {
 		return bodyToken
@@ -481,6 +602,8 @@ func agentError(c *gin.Context, err error) {
 		core.HandleErrorWithStatus(c, http.StatusUnauthorized, core.NewError(core.ErrUnauthorized, "节点令牌无效"))
 	case errors.Is(err, cluster.ErrNodeDisabled):
 		core.HandleErrorWithStatus(c, http.StatusForbidden, core.NewError(core.ErrForbidden, "节点已被禁用"))
+	case errors.Is(err, cluster.ErrNodeDeparted):
+		core.HandleErrorWithStatus(c, http.StatusConflict, core.NewError(core.ErrConflict, "节点已离开集群，请重新注册"))
 	default:
 		core.HandleError(c, core.NewError(core.ErrInternalError, err.Error()))
 	}

@@ -27,9 +27,12 @@ type ClusterTaskSummary struct {
 	WebsiteDomain string     `json:"websiteDomain,omitempty"`
 	WebsiteType   string     `json:"websiteType,omitempty"`
 	Status        string     `json:"status"`
+	Stage         string     `json:"stage,omitempty"`
+	Progress      int        `json:"progress"`
 	Attempts      int        `json:"attempts"`
 	MaxAttempts   int        `json:"maxAttempts"`
 	Error         string     `json:"error,omitempty"`
+	ErrorCode     string     `json:"errorCode,omitempty"`
 	QueuedAt      time.Time  `json:"queuedAt"`
 	StartedAt     *time.Time `json:"startedAt,omitempty"`
 	FinishedAt    *time.Time `json:"finishedAt,omitempty"`
@@ -67,6 +70,7 @@ type EnqueueTaskInput struct {
 	Payload        json.RawMessage `json:"payload"`
 	IdempotencyKey string          `json:"idempotencyKey,omitempty"`
 	MaxAttempts    int             `json:"maxAttempts,omitempty"`
+	internal       bool
 }
 
 type TaskCompletion struct {
@@ -77,11 +81,22 @@ type TaskCompletion struct {
 	Error  string          `json:"error,omitempty"`
 }
 
+type TaskProgressInput struct {
+	Token        string `json:"token,omitempty"`
+	TaskID       uint64 `json:"taskId"`
+	Stage        string `json:"stage"`
+	Progress     int    `json:"progress"`
+	LeaseSeconds int    `json:"leaseSeconds,omitempty"`
+}
+
 func (m *Manager) EnqueueTask(input EnqueueTaskInput) (models.ClusterTask, error) {
 	if input.NodeID == 0 {
 		return models.ClusterTask{}, errors.New("node id is required")
 	}
 	if strings.TrimSpace(input.Type) == "" || len(input.Type) > 120 {
+		return models.ClusterTask{}, ErrTaskType
+	}
+	if isPanelUpdateTask(strings.TrimSpace(input.Type)) && !input.internal {
 		return models.ClusterTask{}, ErrTaskType
 	}
 	if len(input.Payload) == 0 || !json.Valid(input.Payload) {
@@ -94,7 +109,7 @@ func (m *Manager) EnqueueTask(input EnqueueTaskInput) (models.ClusterTask, error
 	if maxAttempts <= 0 || maxAttempts > 10 {
 		maxAttempts = 3
 	}
-	task := models.ClusterTask{NodeID: input.NodeID, Type: strings.TrimSpace(input.Type), IdempotencyKey: strings.TrimSpace(input.IdempotencyKey), Payload: string(input.Payload), Status: models.ClusterTaskStatusQueued, MaxAttempts: maxAttempts, QueuedAt: time.Now()}
+	task := models.ClusterTask{NodeID: input.NodeID, Type: strings.TrimSpace(input.Type), IdempotencyKey: strings.TrimSpace(input.IdempotencyKey), Payload: string(input.Payload), Status: models.ClusterTaskStatusQueued, Stage: "queued", Progress: 10, MaxAttempts: maxAttempts, QueuedAt: time.Now()}
 	if task.IdempotencyKey != "" {
 		var existing models.ClusterTask
 		if err := m.db.Where("idempotency_key = ?", task.IdempotencyKey).First(&existing).Error; err == nil {
@@ -162,7 +177,14 @@ func SummarizeTask(task models.ClusterTask) ClusterTaskSummary {
 	if strings.TrimSpace(task.Error) != "" {
 		errorSummary = "节点任务执行失败，请查看节点端日志"
 	}
-	summary := ClusterTaskSummary{ID: task.ID, NodeID: task.NodeID, Type: task.Type, Status: task.Status, Attempts: task.Attempts, MaxAttempts: task.MaxAttempts, Error: errorSummary, QueuedAt: task.QueuedAt, StartedAt: task.StartedAt, FinishedAt: task.FinishedAt, CreatedAt: task.CreatedAt, UpdatedAt: task.UpdatedAt}
+	progress := task.Progress
+	if progress <= 0 {
+		progress = taskProgress(task.Status)
+	}
+	summary := ClusterTaskSummary{ID: task.ID, NodeID: task.NodeID, Type: task.Type, Status: task.Status, Stage: task.Stage, Progress: progress, Attempts: task.Attempts, MaxAttempts: task.MaxAttempts, Error: errorSummary, QueuedAt: task.QueuedAt, StartedAt: task.StartedAt, FinishedAt: task.FinishedAt, CreatedAt: task.CreatedAt, UpdatedAt: task.UpdatedAt}
+	if isPanelUpdateTask(task.Type) {
+		summary.ErrorCode = safePanelUpdateErrorCode(task.Error)
+	}
 	if task.Type == "website.sync" || task.Type == "website.content_sync" {
 		var payload struct {
 			Website models.Website `json:"website"`
@@ -183,9 +205,10 @@ func (m *Manager) GetTaskDetail(nodeID uint, taskID uint64) (ClusterTaskDetail, 
 		return ClusterTaskDetail{}, err
 	}
 
+	summary := SummarizeTask(task)
 	detail := ClusterTaskDetail{
-		ClusterTaskSummary: SummarizeTask(task),
-		Progress:           taskProgress(task.Status),
+		ClusterTaskSummary: summary,
+		Progress:           summary.Progress,
 		Events: []ClusterTaskEvent{{
 			Stage:      "queued",
 			Status:     models.ClusterTaskStatusSucceeded,
@@ -206,6 +229,14 @@ func (m *Manager) GetTaskDetail(nodeID uint, taskID uint64) (ClusterTaskDetail, 
 			Status:     models.ClusterTaskStatusSucceeded,
 			Attempt:    task.Attempts,
 			OccurredAt: *task.StartedAt,
+		})
+	}
+	if task.Stage != "" && task.Stage != "queued" && task.Stage != "running" && task.FinishedAt == nil {
+		detail.Events = append(detail.Events, ClusterTaskEvent{
+			Stage:      task.Stage,
+			Status:     task.Status,
+			Attempt:    task.Attempts,
+			OccurredAt: task.UpdatedAt,
 		})
 	}
 	if task.FinishedAt != nil {
@@ -241,7 +272,7 @@ func (m *Manager) RestartPanel(id uint) (ClusterTaskSummary, error) {
 	if err != nil {
 		return ClusterTaskSummary{}, err
 	}
-	if !node.Enabled || node.Status != models.ClusterNodeStatusOnline || node.LastSeenAt == nil || node.LastSeenAt.Before(time.Now().Add(-2*time.Minute)) {
+	if !nodeHeartbeatFresh(node, time.Now()) {
 		return ClusterTaskSummary{}, ErrNodeUnavailable
 	}
 	task, err := m.EnqueueTask(EnqueueTaskInput{NodeID: id, Type: "panel.restart", Payload: json.RawMessage(`{}`), MaxAttempts: 1, IdempotencyKey: "panel-restart:" + time.Now().UTC().Format("20060102T150405.000000000") + ":" + stringID(id)})
@@ -270,7 +301,13 @@ func (m *Manager) ClaimTask(token string) (*models.ClusterTask, error) {
 			return err
 		}
 		now := time.Now()
-		task.Status, task.Attempts, task.StartedAt = models.ClusterTaskStatusRunning, task.Attempts+1, &now
+		leaseDuration := 15 * time.Minute
+		if task.Type == TaskPanelUpdateApply {
+			leaseDuration = 40 * time.Minute
+		}
+		leaseExpiresAt := now.Add(leaseDuration)
+		task.Status, task.Stage, task.Progress = models.ClusterTaskStatusRunning, "running", 20
+		task.Attempts, task.StartedAt, task.LeaseExpiresAt = task.Attempts+1, &now, &leaseExpiresAt
 		return tx.Save(&task).Error
 	})
 	if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -288,25 +325,44 @@ func (m *Manager) RecoverStaleTasks(timeout time.Duration) error {
 	if timeout <= 0 {
 		timeout = 15 * time.Minute
 	}
-	cutoff := time.Now().Add(-timeout)
+	now := time.Now()
+	cutoff := now.Add(-timeout)
 	var stale []models.ClusterTask
-	if err := m.db.Where("status = ? AND started_at IS NOT NULL AND started_at < ?", models.ClusterTaskStatusRunning, cutoff).Find(&stale).Error; err != nil {
+	if err := m.db.Where(
+		"status = ? AND ((lease_expires_at IS NOT NULL AND lease_expires_at < ?) OR (lease_expires_at IS NULL AND started_at IS NOT NULL AND started_at < ?))",
+		models.ClusterTaskStatusRunning,
+		now,
+		cutoff,
+	).Find(&stale).Error; err != nil {
 		return err
 	}
 	for i := range stale {
 		task := &stale[i]
 		if task.Attempts < task.MaxAttempts {
 			task.Status = models.ClusterTaskStatusQueued
+			task.Stage = "retrying"
+			task.Progress = 10
 			task.QueuedAt = time.Now()
 			task.StartedAt = nil
+			task.LeaseExpiresAt = nil
 		} else {
 			task.Status = models.ClusterTaskStatusFailed
-			task.Error = "task timed out after maximum attempts"
+			task.Stage = models.ClusterTaskStatusFailed
+			task.Progress = 100
+			if isPanelUpdateTask(task.Type) {
+				task.Error = panelUpdateErrorResultUnknown
+			} else {
+				task.Error = "task timed out after maximum attempts"
+			}
 			now := time.Now()
 			task.FinishedAt = &now
+			task.LeaseExpiresAt = nil
 		}
 		if err := m.db.Save(task).Error; err != nil {
 			return err
+		}
+		if task.Type == TaskPanelUpdateApply && task.Status == models.ClusterTaskStatusFailed {
+			recordPanelUpdateAudit(*task, "failure")
 		}
 	}
 	return nil
@@ -321,15 +377,27 @@ func (m *Manager) CompleteTask(input TaskCompletion) (models.ClusterTask, error)
 	if err := m.db.Where("id = ? AND node_id = ?", input.TaskID, node.ID).First(&task).Error; err != nil {
 		return models.ClusterTask{}, err
 	}
-	if task.Status != models.ClusterTaskStatusRunning {
+	if input.Status != models.ClusterTaskStatusSucceeded && input.Status != models.ClusterTaskStatusFailed {
 		return task, ErrTaskState
 	}
-	if input.Status != models.ClusterTaskStatusSucceeded && input.Status != models.ClusterTaskStatusFailed {
+	if isPanelUpdateTask(task.Type) {
+		input, err = sanitizePanelUpdateCompletion(node, task, input)
+		if err != nil {
+			return task, err
+		}
+	}
+	if task.Status != models.ClusterTaskStatusRunning {
+		if task.Status == input.Status {
+			return task, nil
+		}
 		return task, ErrTaskState
 	}
 	now := time.Now()
 	task.Result, task.Error = string(input.Result), strings.TrimSpace(input.Error)
 	task.FinishedAt = &now
+	task.Stage = input.Status
+	task.Progress = 100
+	task.LeaseExpiresAt = nil
 	if input.Status == models.ClusterTaskStatusFailed && task.Attempts < task.MaxAttempts {
 		task.Status, task.FinishedAt = models.ClusterTaskStatusQueued, nil
 		task.QueuedAt = now
@@ -339,5 +407,65 @@ func (m *Manager) CompleteTask(input TaskCompletion) (models.ClusterTask, error)
 	if err := m.db.Save(&task).Error; err != nil {
 		return models.ClusterTask{}, err
 	}
+	if task.Type == TaskPanelUpdateApply {
+		outcome := "success"
+		if task.Status != models.ClusterTaskStatusSucceeded {
+			outcome = "failure"
+		}
+		recordPanelUpdateAudit(task, outcome)
+	}
+	return task, nil
+}
+
+func (m *Manager) ReportTaskProgress(input TaskProgressInput) (models.ClusterTask, error) {
+	node, err := m.findByToken(input.Token)
+	if err != nil {
+		return models.ClusterTask{}, err
+	}
+	var task models.ClusterTask
+	if err := m.db.Where("id = ? AND node_id = ?", input.TaskID, node.ID).First(&task).Error; err != nil {
+		return models.ClusterTask{}, err
+	}
+	if task.Status != models.ClusterTaskStatusRunning {
+		return task, ErrTaskState
+	}
+	stage := strings.TrimSpace(input.Stage)
+	if stage == "" || len(stage) > 64 {
+		return task, ErrTaskState
+	}
+	if isPanelUpdateTask(task.Type) && !validPanelUpdateProgressStage(stage) {
+		return task, ErrTaskState
+	}
+	progress := input.Progress
+	if progress < 1 {
+		progress = 1
+	}
+	if progress > 99 {
+		progress = 99
+	}
+	leaseSeconds := input.LeaseSeconds
+	if leaseSeconds <= 0 {
+		leaseSeconds = 15 * 60
+	}
+	if leaseSeconds > 40*60 {
+		leaseSeconds = 40 * 60
+	}
+	leaseExpiresAt := time.Now().Add(time.Duration(leaseSeconds) * time.Second)
+	updates := map[string]interface{}{
+		"stage":            stage,
+		"progress":         progress,
+		"lease_expires_at": leaseExpiresAt,
+	}
+	result := m.db.Model(&models.ClusterTask{}).
+		Where("id = ? AND node_id = ? AND status = ?", task.ID, node.ID, models.ClusterTaskStatusRunning).
+		Updates(updates)
+	if result.Error != nil {
+		return task, result.Error
+	}
+	if result.RowsAffected == 0 {
+		return task, ErrTaskState
+	}
+	task.Stage, task.Progress, task.LeaseExpiresAt = stage, progress, &leaseExpiresAt
+	task.UpdatedAt = time.Now()
 	return task, nil
 }

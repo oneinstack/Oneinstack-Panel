@@ -194,6 +194,39 @@ func RunAgentSupervisor(ctx context.Context) {
 	}()
 }
 
+// RunNodeStatusSupervisor expires stale workers and task leases even when no
+// user is viewing the cluster page. Role changes use the live in-memory config.
+func RunNodeStatusSupervisor(ctx context.Context) {
+	go func() {
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+		expire := func() {
+			if EffectiveClusterRole(app.ONE_CONFIG.ClusterAgent) != ClusterRoleController {
+				return
+			}
+			manager, err := NewManager(app.DB())
+			if err == nil {
+				_, err = manager.ExpireStaleNodes(time.Now())
+			}
+			if err == nil {
+				err = manager.RecoverStaleTasks(15 * time.Minute)
+			}
+			if err != nil {
+				log.Printf("expire stale cluster nodes or tasks: %v", err)
+			}
+		}
+		expire()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				expire()
+			}
+		}
+	}()
+}
+
 func cfgFingerprint(role string, enabled bool, controllerURL, token string, interval, timeout int) string {
 	return fmt.Sprintf("%s|%t|%s|%s|%d|%d", role, enabled, controllerURL, token, interval, timeout)
 }
