@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"oneinstack/internal/buildinfo"
+	"oneinstack/internal/models"
 	"oneinstack/internal/services/monitoring"
 
 	"github.com/shirou/gopsutil/v4/cpu"
@@ -20,19 +21,23 @@ import (
 )
 
 type ControllerNode struct {
-	ID            string    `json:"id"`
-	Local         bool      `json:"local"`
-	Role          string    `json:"role"`
-	Name          string    `json:"name"`
-	Hostname      string    `json:"hostname"`
-	Status        string    `json:"status"`
-	Enabled       bool      `json:"enabled"`
-	SystemID      string    `json:"systemId,omitempty"`
-	SystemVersion string    `json:"systemVersion,omitempty"`
-	Architecture  string    `json:"architecture,omitempty"`
-	PanelVersion  string    `json:"panelVersion,omitempty"`
-	AgentVersion  string    `json:"agentVersion,omitempty"`
-	LastSeenAt    time.Time `json:"lastSeenAt"`
+	ID               string                     `json:"id"`
+	Local            bool                       `json:"local"`
+	Role             string                     `json:"role"`
+	Name             string                     `json:"name"`
+	Hostname         string                     `json:"hostname"`
+	Status           string                     `json:"status"`
+	ConnectionStatus string                     `json:"connectionStatus"`
+	LifecycleStatus  string                     `json:"lifecycleStatus"`
+	EffectiveStatus  string                     `json:"effectiveStatus"`
+	MetricHealth     models.ClusterMetricHealth `json:"metricHealth"`
+	Enabled          bool                       `json:"enabled"`
+	SystemID         string                     `json:"systemId,omitempty"`
+	SystemVersion    string                     `json:"systemVersion,omitempty"`
+	Architecture     string                     `json:"architecture,omitempty"`
+	PanelVersion     string                     `json:"panelVersion,omitempty"`
+	AgentVersion     string                     `json:"agentVersion,omitempty"`
+	LastSeenAt       time.Time                  `json:"lastSeenAt"`
 	HostSnapshot
 }
 

@@ -205,14 +205,21 @@ func RunNodeStatusSupervisor(ctx context.Context) {
 				return
 			}
 			manager, err := NewManager(app.DB())
+			var repaired int
 			if err == nil {
 				_, err = manager.ExpireStaleNodes(time.Now())
 			}
 			if err == nil {
 				err = manager.RecoverStaleTasks(15 * time.Minute)
 			}
+			if err == nil {
+				repaired, err = manager.RecoverMissingBatchTasks(30 * time.Second)
+			}
+			if err == nil && repaired > 0 {
+				log.Printf("recovered %d missing cluster batch tasks", repaired)
+			}
 			if err != nil {
-				log.Printf("expire stale cluster nodes or tasks: %v", err)
+				log.Printf("recover cluster node or task state: %v", err)
 			}
 		}
 		expire()

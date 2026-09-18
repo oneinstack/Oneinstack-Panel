@@ -44,10 +44,6 @@ type softwareUninstallTask struct {
 }
 
 type serviceTask struct{ Component, Action string }
-type commandTask struct {
-	Argv           []string `json:"argv"`
-	TimeoutSeconds int      `json:"timeoutSeconds,omitempty"`
-}
 type fileUploadTask struct {
 	Path, ContentBase64, SHA256 string
 	Mode                        uint32 `json:"mode,omitempty"`
@@ -94,12 +90,6 @@ func (a *Agent) executeExtendedTask(ctx context.Context, task *models.ClusterTas
 			p.Action = strings.TrimPrefix(task.Type, "service.")
 		}
 		return executeServiceTask(ctx, p)
-	case "system.command":
-		var p commandTask
-		if err := json.Unmarshal([]byte(task.Payload), &p); err != nil {
-			return nil, err
-		}
-		return executeCommandTask(ctx, p)
 	case "file.upload":
 		var p fileUploadTask
 		if err := json.Unmarshal([]byte(task.Payload), &p); err != nil {
@@ -213,36 +203,6 @@ func executeServiceTask(ctx context.Context, p serviceTask) (json.RawMessage, er
 		return nil, fmt.Errorf("systemctl %s %s: %w", p.Action, unit, err)
 	}
 	return json.Marshal(map[string]string{"component": definition.Component, "action": p.Action, "service": unit})
-}
-
-func executeCommandTask(ctx context.Context, p commandTask) (json.RawMessage, error) {
-	if len(p.Argv) == 0 || strings.TrimSpace(p.Argv[0]) == "" {
-		return nil, errors.New("argv is required")
-	}
-	allowed := map[string]bool{"systemctl": true, "journalctl": true, "df": true, "du": true, "ip": true, "ss": true, "uname": true, "ps": true, "free": true, "ls": true, "find": true, "stat": true, "cat": true, "mkdir": true, "cp": true, "mv": true, "sha256sum": true, "id": true, "uptime": true}
-	name := filepath.Base(p.Argv[0])
-	if !allowed[name] {
-		return nil, fmt.Errorf("command %q is not allowed", name)
-	}
-	for _, arg := range p.Argv {
-		if len(arg) > 4096 {
-			return nil, errors.New("command argument is too long")
-		}
-	}
-	if p.TimeoutSeconds <= 0 || p.TimeoutSeconds > 600 {
-		p.TimeoutSeconds = 120
-	}
-	commandCtx, cancel := context.WithTimeout(ctx, time.Duration(p.TimeoutSeconds)*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(commandCtx, p.Argv[0], p.Argv[1:]...)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return nil, fmt.Errorf("command failed: %w: %s", err, strings.TrimSpace(string(output)))
-	}
-	if len(output) > 64*1024 {
-		output = output[:64*1024]
-	}
-	return json.Marshal(map[string]string{"command": strings.Join(p.Argv, " "), "output": string(output)})
 }
 
 func executeFileUpload(p fileUploadTask) (json.RawMessage, error) {

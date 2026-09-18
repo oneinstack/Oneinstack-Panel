@@ -11,6 +11,7 @@ import (
 	"oneinstack/internal/models"
 	auditservice "oneinstack/internal/services/audit"
 
+	"golang.org/x/mod/semver"
 	"gorm.io/gorm"
 )
 
@@ -88,7 +89,7 @@ type panelUpdateApplyPayload struct {
 }
 
 func PanelUpdateCapabilities() []string {
-	return []string{CapabilityPanelUpdateCheck, CapabilityPanelUpdateApply}
+	return []string{CapabilityPanelUpdateCheck, CapabilityPanelUpdateApply, CapabilityNodeDiagnose, CapabilityTaskCancel}
 }
 
 func isPanelUpdateTask(taskType string) bool {
@@ -116,66 +117,105 @@ func safePanelUpdateErrorCode(value string) string {
 }
 
 func (m *Manager) GetPanelUpdateState(id uint) (PanelUpdateState, error) {
-	node, err := m.GetNode(id)
+	states, err := m.GetPanelUpdateStates([]uint{id})
 	if err != nil {
 		return PanelUpdateState{}, err
 	}
-	state := PanelUpdateState{
-		NodeID:         node.ID,
-		CurrentVersion: node.PanelVersion,
-		CanCheck:       nodeHasCapability(node, CapabilityPanelUpdateCheck),
-		CanApply:       nodeHasCapability(node, CapabilityPanelUpdateApply),
+	if len(states) == 0 {
+		return PanelUpdateState{}, gorm.ErrRecordNotFound
+	}
+	return states[0], nil
+}
+
+// GetPanelUpdateStates keeps list-page refreshes on one HTTP request. Missing
+// nodes are ignored because they may have been soft-deleted between the node
+// list request and this status refresh.
+func (m *Manager) GetPanelUpdateStates(ids []uint) ([]PanelUpdateState, error) {
+	if len(ids) == 0 {
+		return []PanelUpdateState{}, nil
+	}
+	var nodes []models.ClusterNode
+	if err := m.db.Where("id IN ?", ids).Find(&nodes).Error; err != nil {
+		return nil, err
+	}
+	statesByNode := make(map[uint]*PanelUpdateState, len(nodes))
+	for i := range nodes {
+		node := nodes[i]
+		statesByNode[node.ID] = &PanelUpdateState{
+			NodeID: node.ID, CurrentVersion: node.PanelVersion,
+			CanCheck: nodeHasCapability(node, CapabilityPanelUpdateCheck),
+			CanApply: nodeHasCapability(node, CapabilityPanelUpdateApply),
+		}
 	}
 
-	var active models.ClusterTask
-	err = m.db.Where(
-		"node_id = ? AND type IN ? AND status IN ?",
-		node.ID,
-		[]string{TaskPanelUpdateCheck, TaskPanelUpdateApply},
-		[]string{models.ClusterTaskStatusQueued, models.ClusterTaskStatusRunning},
-	).Order("id desc").First(&active).Error
-	if err == nil {
-		summary := SummarizeTask(active)
-		state.ActiveTask = &summary
-	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
-		return PanelUpdateState{}, err
+	panelTypes := []string{TaskPanelUpdateCheck, TaskPanelUpdateApply}
+	lastSubquery := m.db.Model(&models.ClusterTask{}).
+		Select("MAX(id)").
+		Where("node_id IN ? AND type IN ?", ids, panelTypes).
+		Group("node_id")
+	var lastTasks []models.ClusterTask
+	if err := m.db.Where("id IN (?)", lastSubquery).Find(&lastTasks).Error; err != nil {
+		return nil, err
 	}
-
-	var last models.ClusterTask
-	err = m.db.Where("node_id = ? AND type IN ?", node.ID, []string{TaskPanelUpdateCheck, TaskPanelUpdateApply}).Order("id desc").First(&last).Error
-	if err == nil {
-		summary := SummarizeTask(last)
+	for i := range lastTasks {
+		state := statesByNode[lastTasks[i].NodeID]
+		if state == nil {
+			continue
+		}
+		summary := SummarizeTask(lastTasks[i])
 		state.LastTask = &summary
-	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
-		return PanelUpdateState{}, err
+		if lastTasks[i].Status == models.ClusterTaskStatusQueued || lastTasks[i].Status == models.ClusterTaskStatusRunning {
+			state.ActiveTask = &summary
+		}
 	}
 
-	var executionTask models.ClusterTask
-	err = m.db.Where("node_id = ? AND type = ?", node.ID, TaskPanelUpdateApply).Order("id desc").First(&executionTask).Error
-	if err == nil && strings.TrimSpace(executionTask.Result) != "" {
+	applySubquery := m.db.Model(&models.ClusterTask{}).
+		Select("MAX(id)").
+		Where("node_id IN ? AND type = ?", ids, TaskPanelUpdateApply).
+		Group("node_id")
+	var executionTasks []models.ClusterTask
+	if err := m.db.Where("id IN (?)", applySubquery).Find(&executionTasks).Error; err != nil {
+		return nil, err
+	}
+	for i := range executionTasks {
+		state := statesByNode[executionTasks[i].NodeID]
+		if state == nil || strings.TrimSpace(executionTasks[i].Result) == "" {
+			continue
+		}
 		var execution PanelUpdateExecutionResult
-		if json.Unmarshal([]byte(executionTask.Result), &execution) == nil {
+		if json.Unmarshal([]byte(executionTasks[i].Result), &execution) == nil {
 			execution.ErrorCode = safePanelUpdateErrorCode(execution.ErrorCode)
 			state.LastExecution = &execution
 		}
-	} else if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
-		return PanelUpdateState{}, err
 	}
 
-	var checkTask models.ClusterTask
-	err = m.db.Where("node_id = ? AND type = ? AND status = ?", node.ID, TaskPanelUpdateCheck, models.ClusterTaskStatusSucceeded).Order("id desc").First(&checkTask).Error
-	if err == nil && strings.TrimSpace(checkTask.Result) != "" {
+	checkSubquery := m.db.Model(&models.ClusterTask{}).
+		Select("MAX(id)").
+		Where("node_id IN ? AND type = ? AND status = ?", ids, TaskPanelUpdateCheck, models.ClusterTaskStatusSucceeded).
+		Group("node_id")
+	var checkTasks []models.ClusterTask
+	if err := m.db.Where("id IN (?)", checkSubquery).Find(&checkTasks).Error; err != nil {
+		return nil, err
+	}
+	for i := range checkTasks {
+		state := statesByNode[checkTasks[i].NodeID]
+		if state == nil || strings.TrimSpace(checkTasks[i].Result) == "" {
+			continue
+		}
 		var check PanelUpdateCheckResult
-		if json.Unmarshal([]byte(checkTask.Result), &check) == nil {
-			if samePanelVersion(node.PanelVersion, check.LatestVersion) {
-				check.UpdateAvailable = false
-			}
+		if json.Unmarshal([]byte(checkTasks[i].Result), &check) == nil {
+			check.UpdateAvailable = panelVersionUpdateAvailable(state.CurrentVersion, check.LatestVersion)
 			state.LastCheck = &check
 		}
-	} else if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
-		return PanelUpdateState{}, err
 	}
-	return state, nil
+
+	states := make([]PanelUpdateState, 0, len(statesByNode))
+	for _, id := range ids {
+		if state := statesByNode[id]; state != nil {
+			states = append(states, *state)
+		}
+	}
+	return states, nil
 }
 
 func (m *Manager) EnqueuePanelUpdateCheck(id uint) (ClusterTaskSummary, error) {
@@ -267,10 +307,24 @@ func (m *Manager) hasActivePanelUpdateTask(nodeID uint) (bool, error) {
 	return count > 0, err
 }
 
-func samePanelVersion(left, right string) bool {
-	left = strings.TrimPrefix(strings.ToLower(strings.TrimSpace(left)), "v")
-	right = strings.TrimPrefix(strings.ToLower(strings.TrimSpace(right)), "v")
-	return left != "" && left == right
+func panelVersionUpdateAvailable(current, latest string) bool {
+	current = canonicalPanelVersion(current)
+	latest = canonicalPanelVersion(latest)
+	return current != "" && latest != "" && semver.Compare(latest, current) > 0
+}
+
+func canonicalPanelVersion(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if !strings.HasPrefix(value, "v") {
+		value = "v" + value
+	}
+	if !semver.IsValid(value) {
+		return ""
+	}
+	return value
 }
 
 func exactPanelVersion(left, right string) bool {

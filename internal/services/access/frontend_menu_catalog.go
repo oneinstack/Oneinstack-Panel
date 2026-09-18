@@ -234,6 +234,13 @@ func builtinFrontendButtonDefinitions() []builtinButtonDefinition {
 		item("cluster.panel-update.apply", "执行节点 Panel 更新"),
 		item("cluster.node.token.rotate", "轮换节点令牌"),
 		item("cluster.node.delete", "删除集群节点"),
+		item("cluster.policy.update", "修改集群策略"),
+		item("cluster.node.diagnose", "执行节点诊断"),
+		item("cluster.node.lifecycle", "修改节点生命周期"),
+		item("cluster.batch.restart", "批量重启节点"),
+		item("cluster.batch.update", "批量更新节点"),
+		item("cluster.task.cancel", "取消集群任务"),
+		item("cluster.node.delete.confirm", "确认删除集群节点"),
 		item("cluster.website.dispatch", "下发网站配置"),
 	)
 

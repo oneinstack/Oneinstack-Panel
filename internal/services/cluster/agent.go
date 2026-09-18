@@ -119,6 +119,10 @@ type claimData struct {
 	Task *models.ClusterTask `json:"task"`
 }
 
+type taskControlData struct {
+	TaskControl TaskControl `json:"taskControl"`
+}
+
 func (a *Agent) drainTasks(ctx context.Context) error {
 	for i := 0; i < 20; i++ {
 		var envelope apiEnvelope
@@ -135,12 +139,22 @@ func (a *Agent) drainTasks(ctx context.Context) error {
 		if claimed.Task == nil {
 			return nil
 		}
-		result, taskErr := a.executeTask(ctx, claimed.Task)
+		taskCtx, cancelTask := context.WithCancel(ctx)
+		watchDone := make(chan struct{})
+		if claimed.Task.Cancelable {
+			go a.watchTaskCancellation(taskCtx, claimed.Task.ID, cancelTask, watchDone)
+		}
+		result, taskErr := a.executeTask(taskCtx, claimed.Task)
+		close(watchDone)
+		cancelTask()
 		if errors.Is(taskErr, errPanelUpdateDeferred) {
 			return nil
 		}
 		completion := TaskCompletion{TaskID: claimed.Task.ID, Result: result}
-		if taskErr != nil {
+		if errors.Is(taskErr, context.Canceled) && claimed.Task.Cancelable {
+			completion.Status = models.ClusterTaskStatusCanceled
+			completion.Error = "task canceled"
+		} else if taskErr != nil {
 			completion.Status = models.ClusterTaskStatusFailed
 			completion.Error = taskErr.Error()
 		} else {
@@ -157,6 +171,29 @@ func (a *Agent) drainTasks(ctx context.Context) error {
 	return nil
 }
 
+func (a *Agent) watchTaskCancellation(ctx context.Context, taskID uint64, cancel context.CancelFunc, done <-chan struct{}) {
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-done:
+			return
+		case <-ticker.C:
+			var envelope apiEnvelope
+			if err := a.post(ctx, "/cluster/agent/tasks/control", map[string]uint64{"taskId": taskID}, &envelope); err != nil {
+				continue
+			}
+			var control TaskControl
+			if err := json.Unmarshal(envelope.Data, &control); err == nil && control.CancelRequested && control.Cancelable {
+				cancel()
+				return
+			}
+		}
+	}
+}
+
 func (a *Agent) executeTask(ctx context.Context, task *models.ClusterTask) (json.RawMessage, error) {
 	switch task.Type {
 	case "panel.restart":
@@ -165,6 +202,8 @@ func (a *Agent) executeTask(ctx context.Context, task *models.ClusterTask) (json
 		return a.executePanelUpdateCheck(ctx)
 	case TaskPanelUpdateApply:
 		return a.executePanelUpdateApply(ctx, task)
+	case TaskNodeDiagnose:
+		return a.executeDiagnosis(ctx, task.Payload)
 	case "website.sync":
 		var payload WebsiteSyncPayload
 		if err := json.Unmarshal([]byte(task.Payload), &payload); err != nil {

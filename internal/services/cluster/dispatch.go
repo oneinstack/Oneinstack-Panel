@@ -60,7 +60,7 @@ func (m *Manager) DispatchWebsite(input WebsiteDispatchInput) (WebsiteDispatchRe
 	if _, err := m.ExpireStaleNodes(now); err != nil {
 		return WebsiteDispatchResult{}, err
 	}
-	if err := m.db.Where("enabled = ? AND status = ?", true, models.ClusterNodeStatusOnline).Find(&nodes).Error; err != nil {
+	if err := m.db.Where("enabled = ? AND status = ? AND lifecycle_status = ?", true, models.ClusterNodeStatusOnline, models.ClusterNodeLifecycleActive).Find(&nodes).Error; err != nil {
 		return WebsiteDispatchResult{}, err
 	}
 	freshNodes := nodes[:0]

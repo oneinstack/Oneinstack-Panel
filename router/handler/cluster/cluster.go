@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"oneinstack/app"
 	"oneinstack/core"
 	"oneinstack/internal/services/cluster"
+	"oneinstack/router/middleware"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -84,6 +86,9 @@ func ListNodes(c *gin.Context) {
 		return
 	}
 	controller, _ := cluster.CollectLocalController(c.Request.Context())
+	if policy, policyErr := m.GetPolicy(); policyErr == nil {
+		cluster.ApplyControllerPolicy(&controller, policy)
+	}
 	core.HandleSuccess(c, gin.H{"controller": controller, "items": nodes})
 }
 
@@ -214,6 +219,7 @@ func EnqueueTask(c *gin.Context) {
 		core.HandleError(c, core.NewError(core.ErrInvalidParameter, "请求参数无效"))
 		return
 	}
+	input.RequestedBy, _ = middleware.AuthenticatedUserID(c)
 	task, err := m.EnqueueTask(input)
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		core.HandleError(c, core.NewError(core.ErrNotFound, "节点不存在"))
@@ -223,32 +229,20 @@ func EnqueueTask(c *gin.Context) {
 		core.HandleError(c, core.NewError(core.ErrInvalidParameter, err.Error()))
 		return
 	}
+	recordClusterAudit(c, "cluster.task.create", http.StatusOK, fmt.Sprintf("node=%d task=%d type=%s", task.NodeID, task.ID, task.Type))
 	core.HandleSuccess(c, cluster.SummarizeTask(task))
 }
 
 func RestartNode(c *gin.Context) {
-	m, ok := manager(c)
+	_, ok := manager(c)
 	if !ok {
 		return
 	}
-	id, ok := nodeID(c)
+	_, ok = nodeID(c)
 	if !ok {
 		return
 	}
-	task, err := m.RestartPanel(id)
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		core.HandleError(c, core.NewError(core.ErrNotFound, "节点不存在"))
-		return
-	}
-	if errors.Is(err, cluster.ErrNodeUnavailable) {
-		core.HandleErrorWithStatus(c, http.StatusConflict, core.NewError(core.ErrConflict, "仅在线且心跳正常的节点可以重启 Panel"))
-		return
-	}
-	if err != nil {
-		core.HandleError(c, core.NewError(core.ErrInternalError, "创建节点重启任务失败"))
-		return
-	}
-	core.HandleSuccess(c, task)
+	core.HandleErrorWithStatus(c, http.StatusConflict, core.NewError(core.ErrConflict, "节点重启必须通过批次预览并输入 RESTART NODES 确认"))
 }
 
 func GetPanelUpdate(c *gin.Context) {
@@ -272,6 +266,44 @@ func GetPanelUpdate(c *gin.Context) {
 	core.HandleSuccess(c, state)
 }
 
+func ListPanelUpdates(c *gin.Context) {
+	m, ok := manager(c)
+	if !ok {
+		return
+	}
+	raw := strings.TrimSpace(c.Query("nodeIds"))
+	if raw == "" {
+		core.HandleError(c, core.NewError(core.ErrInvalidParameter, "节点 ID 列表不能为空"))
+		return
+	}
+	parts := strings.Split(raw, ",")
+	if len(parts) > 100 {
+		core.HandleError(c, core.NewError(core.ErrInvalidParameter, "单次最多查询 100 个节点"))
+		return
+	}
+	ids := make([]uint, 0, len(parts))
+	seen := make(map[uint]struct{}, len(parts))
+	for _, part := range parts {
+		value, err := strconv.ParseUint(strings.TrimSpace(part), 10, 32)
+		id := uint(value)
+		if err != nil || id == 0 {
+			core.HandleError(c, core.NewError(core.ErrInvalidParameter, "节点 ID 列表格式无效"))
+			return
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	states, err := m.GetPanelUpdateStates(ids)
+	if err != nil {
+		core.HandleError(c, core.NewError(core.ErrInternalError, "读取节点面板更新状态失败"))
+		return
+	}
+	core.HandleSuccess(c, gin.H{"items": states})
+}
+
 func CheckPanelUpdate(c *gin.Context) {
 	m, ok := manager(c)
 	if !ok {
@@ -289,24 +321,15 @@ func CheckPanelUpdate(c *gin.Context) {
 }
 
 func ApplyPanelUpdate(c *gin.Context) {
-	m, ok := manager(c)
+	_, ok := manager(c)
 	if !ok {
 		return
 	}
-	id, ok := nodeID(c)
+	_, ok = nodeID(c)
 	if !ok {
 		return
 	}
-	var input cluster.PanelUpdateApplyInput
-	if err := c.ShouldBindJSON(&input); err != nil {
-		core.HandleErrorWithStatus(c, http.StatusBadRequest, core.NewError(core.ErrInvalidParameter, "请求参数无效"))
-		return
-	}
-	task, err := m.EnqueuePanelUpdateApply(id, input)
-	if handlePanelUpdateMutationError(c, err) {
-		return
-	}
-	c.JSON(http.StatusAccepted, core.SuccessResponseForContext(c, task))
+	core.HandleErrorWithStatus(c, http.StatusConflict, core.NewError(core.ErrConflict, "执行更新必须通过批次预览并输入 UPDATE NODES 确认"))
 }
 
 func handlePanelUpdateMutationError(c *gin.Context, err error) bool {
@@ -322,6 +345,8 @@ func handlePanelUpdateMutationError(c *gin.Context, err error) bool {
 		core.HandleErrorWithStatus(c, http.StatusConflict, core.NewError(core.ErrConflict, "节点 Agent 版本不支持面板更新，请先在节点端升级 Panel"))
 	case errors.Is(err, cluster.ErrPanelUpdateActive):
 		core.HandleErrorWithStatus(c, http.StatusConflict, core.NewError(core.ErrConflict, "该节点已有面板更新任务正在执行"))
+	case errors.Is(err, cluster.ErrNodeLifecycle):
+		core.HandleErrorWithStatus(c, http.StatusConflict, core.NewError(core.ErrConflict, "节点正在排空，暂不接受新的更新任务"))
 	case errors.Is(err, cluster.ErrPanelUpdateTarget):
 		core.HandleErrorWithStatus(c, http.StatusConflict, core.NewError(core.ErrConflict, "更新检查结果已失效，请重新检查可用版本"))
 	case errors.Is(err, cluster.ErrPanelUpdateConfirm):
@@ -406,30 +431,23 @@ func handleNodeMutationError(c *gin.Context, err error) {
 		core.HandleValidationErrors(c, core.ValidationErrors{{Field: "endpoint", Code: core.ErrInvalidParameter, Message: "Panel 地址必须是有效的 HTTP 或 HTTPS URL"}})
 	case errors.Is(err, cluster.ErrNodeFieldTooLong):
 		core.HandleValidationErrors(c, core.ValidationErrors{{Field: "node", Code: core.ErrInvalidParameter, Message: "节点名称、分组或标签长度超过限制"}})
+	case errors.Is(err, cluster.ErrNodeLifecycle):
+		core.HandleErrorWithStatus(c, http.StatusConflict, core.NewError(core.ErrConflict, "当前节点生命周期状态不允许此操作"))
 	default:
 		core.HandleError(c, core.NewError(core.ErrInvalidParameter, "节点参数无效"))
 	}
 }
 
 func DeleteNode(c *gin.Context) {
-	m, ok := manager(c)
+	_, ok := manager(c)
 	if !ok {
 		return
 	}
-	id, ok := nodeID(c)
+	_, ok = nodeID(c)
 	if !ok {
 		return
 	}
-	err := m.DeleteNode(id)
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		core.HandleError(c, core.NewError(core.ErrNotFound, "节点不存在"))
-		return
-	}
-	if err != nil {
-		core.HandleError(c, core.NewError(core.ErrInternalError, err.Error()))
-		return
-	}
-	core.HandleSuccess(c, gin.H{"deleted": true})
+	core.HandleErrorWithStatus(c, http.StatusConflict, core.NewError(core.ErrConflict, "最终删除必须通过批次预览并输入 DELETE NODES 确认"))
 }
 
 func RotateToken(c *gin.Context) {
@@ -444,6 +462,10 @@ func RotateToken(c *gin.Context) {
 	result, err := m.RotateToken(id)
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		core.HandleError(c, core.NewError(core.ErrNotFound, "节点不存在"))
+		return
+	}
+	if errors.Is(err, cluster.ErrNodeLifecycle) {
+		core.HandleErrorWithStatus(c, http.StatusConflict, core.NewError(core.ErrConflict, "已禁用或待删除节点不能轮换令牌"))
 		return
 	}
 	if err != nil {

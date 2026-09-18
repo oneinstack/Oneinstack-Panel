@@ -24,6 +24,8 @@ var (
 	ErrNameRequired     = errors.New("node name is required")
 	ErrEndpointInvalid  = errors.New("node endpoint must be a valid http or https URL")
 	ErrNodeFieldTooLong = errors.New("node field is too long")
+	ErrNodeLifecycle    = errors.New("node lifecycle transition is not allowed")
+	ErrNodeDeleteState  = errors.New("node must be pending deletion")
 )
 
 type Manager struct{ db *gorm.DB }
@@ -130,8 +132,11 @@ func (m *Manager) CreateNode(input CreateNodeInput) (CreateNodeResult, error) {
 	if err != nil {
 		return CreateNodeResult{}, err
 	}
-	node := models.ClusterNode{Name: name, Endpoint: endpoint, TokenHash: hashToken(token), Enabled: true, Group: strings.TrimSpace(input.Group), Tags: strings.TrimSpace(input.Tags), Status: models.ClusterNodeStatusPending}
+	node := models.ClusterNode{Name: name, Endpoint: endpoint, TokenHash: hashToken(token), Enabled: true, Group: strings.TrimSpace(input.Group), Tags: strings.TrimSpace(input.Tags), Status: models.ClusterNodeStatusPending, LifecycleStatus: models.ClusterNodeLifecycleActive}
 	if err := m.db.Create(&node).Error; err != nil {
+		return CreateNodeResult{}, err
+	}
+	if err := m.enrichNode(&node); err != nil {
 		return CreateNodeResult{}, err
 	}
 	return CreateNodeResult{Node: node, Token: token}, nil
@@ -142,8 +147,15 @@ func (m *Manager) ListNodes() ([]models.ClusterNode, error) {
 		return nil, err
 	}
 	var nodes []models.ClusterNode
-	err := m.db.Order("id asc").Find(&nodes).Error
-	return nodes, err
+	if err := m.db.Order("id asc").Find(&nodes).Error; err != nil {
+		return nil, err
+	}
+	for i := range nodes {
+		if err := m.enrichNode(&nodes[i]); err != nil {
+			return nil, err
+		}
+	}
+	return nodes, nil
 }
 
 // ExpireStaleNodes persists heartbeat-based offline transitions independently
@@ -171,8 +183,10 @@ func (m *Manager) ExpireStaleNodes(now time.Time) (int64, error) {
 
 func (m *Manager) GetNode(id uint) (models.ClusterNode, error) {
 	var node models.ClusterNode
-	err := m.db.First(&node, id).Error
-	return node, err
+	if err := m.db.First(&node, id).Error; err != nil {
+		return node, err
+	}
+	return node, m.enrichNode(&node)
 }
 
 func (m *Manager) ListMetrics(id uint, since time.Time, limit int) ([]models.ClusterNodeMetric, error) {
@@ -207,34 +221,40 @@ func (m *Manager) UpdateNode(id uint, input UpdateNodeInput) (models.ClusterNode
 	node.Name, node.Endpoint = name, endpoint
 	node.Group, node.Tags = strings.TrimSpace(input.Group), strings.TrimSpace(input.Tags)
 	if input.Enabled != nil {
-		node.Enabled = *input.Enabled
-		if !node.Enabled {
-			node.Status = models.ClusterNodeStatusOffline
+		if *input.Enabled != node.Enabled {
+			action := LifecycleDisable
+			if *input.Enabled {
+				action = LifecycleEnable
+			}
+			next, enabled, transitionErr := lifecycleTransition(node, action)
+			if transitionErr != nil {
+				return node, transitionErr
+			}
+			node.LifecycleStatus, node.Enabled = next, enabled
 		}
 	}
 	if err := m.db.Save(&node).Error; err != nil {
 		return node, err
 	}
-	return node, nil
+	return node, m.enrichNode(&node)
 }
 
 func (m *Manager) DeleteNode(id uint) error {
-	return m.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Where("node_id = ?", id).Delete(&models.ClusterNodeMetric{}).Error; err != nil {
-			return err
-		}
-		if err := tx.Where("node_id = ?", id).Delete(&models.ClusterTask{}).Error; err != nil {
-			return err
-		}
-		result := tx.Delete(&models.ClusterNode{}, id)
-		if result.Error != nil {
-			return result.Error
-		}
-		if result.RowsAffected == 0 {
-			return ErrNodeNotFound
-		}
-		return nil
-	})
+	node, err := m.GetNode(id)
+	if err != nil {
+		return err
+	}
+	if node.LifecycleStatus != models.ClusterNodeLifecyclePendingDelete {
+		return ErrNodeDeleteState
+	}
+	var active int64
+	if err := m.db.Model(&models.ClusterTask{}).Where("node_id = ? AND status IN ?", id, []string{models.ClusterTaskStatusQueued, models.ClusterTaskStatusRunning}).Count(&active).Error; err != nil {
+		return err
+	}
+	if active > 0 {
+		return ErrNodeLifecycle
+	}
+	return m.db.Delete(&models.ClusterNode{}, id).Error
 }
 
 // RotateToken invalidates the previous agent token and returns a new one. The
@@ -243,6 +263,9 @@ func (m *Manager) RotateToken(id uint) (CreateNodeResult, error) {
 	node, err := m.GetNode(id)
 	if err != nil {
 		return CreateNodeResult{}, err
+	}
+	if node.LifecycleStatus == models.ClusterNodeLifecycleDisabled || node.LifecycleStatus == models.ClusterNodeLifecyclePendingDelete {
+		return CreateNodeResult{}, ErrNodeLifecycle
 	}
 	token, err := generateToken()
 	if err != nil {
@@ -262,7 +285,7 @@ func (m *Manager) RegisterNode(input NodeRegistration) (models.ClusterNode, erro
 	if err != nil {
 		return node, err
 	}
-	if !node.Enabled {
+	if !node.Enabled || node.LifecycleStatus == models.ClusterNodeLifecycleDisabled || node.LifecycleStatus == models.ClusterNodeLifecyclePendingDelete {
 		return node, ErrNodeDisabled
 	}
 	now := time.Now()
@@ -283,7 +306,7 @@ func (m *Manager) Heartbeat(input NodeHeartbeat) (models.ClusterNode, error) {
 	if err != nil {
 		return node, err
 	}
-	if !node.Enabled {
+	if !node.Enabled || node.LifecycleStatus == models.ClusterNodeLifecycleDisabled || node.LifecycleStatus == models.ClusterNodeLifecyclePendingDelete {
 		return node, ErrNodeDisabled
 	}
 	if node.DepartedAt != nil {
@@ -333,7 +356,7 @@ func (m *Manager) MarkOffline(token string) (models.ClusterNode, error) {
 }
 
 func nodeHeartbeatFresh(node models.ClusterNode, now time.Time) bool {
-	if !node.Enabled || node.Status != models.ClusterNodeStatusOnline || node.LastSeenAt == nil {
+	if !node.Enabled || node.Status != models.ClusterNodeStatusOnline || node.LastSeenAt == nil || node.LifecycleStatus == models.ClusterNodeLifecycleDisabled || node.LifecycleStatus == models.ClusterNodeLifecyclePendingDelete {
 		return false
 	}
 	interval := time.Duration(normalizeHeartbeatInterval(node.HeartbeatIntervalSeconds)) * time.Second
