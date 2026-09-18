@@ -142,4 +142,4 @@ jobs:
           ./scripts/verify-release.sh packages/one-linux-amd64-ci.tar.gz
 
       - name: Run release lifecycle smoke test
-        run: ./scripts/ci-install-smoke.sh packages/one-linux-amd64-ci.tar.gz
+        run: sudo ./scripts/ci-install-smoke.sh packages/one-linux-amd64-ci.tar.gz
