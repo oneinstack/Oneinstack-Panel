@@ -333,12 +333,34 @@ func verifyServiceActionReady(
 	action string,
 ) error {
 	action = strings.ToLower(strings.TrimSpace(action))
-	if action != "start" && action != "restart" && action != "reload" {
-		return nil
-	}
 	serviceName := strings.TrimSpace(definition.ServiceName)
 	if serviceName == "" {
 		return fmt.Errorf("%s action verification failed: service name is missing", action)
+	}
+	if action == "stop" {
+		loadedUnit := false
+		for _, unit := range serviceUnitCandidates(definition) {
+			loadState, err := exec.CommandContext(
+				ctx, "systemctl", "show", "--property=LoadState", "--value", unit,
+			).Output()
+			if err != nil || strings.TrimSpace(string(loadState)) != "loaded" {
+				continue
+			}
+			loadedUnit = true
+			if err := exec.CommandContext(ctx, "systemctl", "is-active", "--quiet", unit).Run(); err == nil {
+				return fmt.Errorf("stop action verification failed: service %s is still active", serviceName)
+			}
+			if err := exec.CommandContext(ctx, "systemctl", "reset-failed", unit).Run(); err != nil {
+				return fmt.Errorf("stop action verification failed: clear service %s failure state: %w", serviceName, err)
+			}
+		}
+		if !loadedUnit {
+			return fmt.Errorf("stop action verification failed: service %s is not loaded", serviceName)
+		}
+		return nil
+	}
+	if action != "start" && action != "restart" && action != "reload" {
+		return nil
 	}
 	if activeServiceUnit(ctx, definition) == "" {
 		return fmt.Errorf("%s action verification failed: service %s is not active", action, serviceName)
