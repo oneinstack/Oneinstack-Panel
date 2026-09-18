@@ -185,7 +185,55 @@ func (s *Service) List(param *input.IptablesRuleParam) (*services.PaginatedResul
 func (s *Service) Add(ctx context.Context, rule *models.IptablesRule) error {
 	operationMu.Lock()
 	defer operationMu.Unlock()
+	normalized, err := normalizeRule(rule, s.panelPort)
+	if err != nil {
+		return err
+	}
+	if err := s.rejectDuplicateRule(normalized, 0); err != nil {
+		return err
+	}
 	return s.addLocked(ctx, rule)
+}
+
+func (s *Service) rejectDuplicateRule(requested normalizedRule, excludeID int64) error {
+	tx := s.db.Where(
+		"direction = ? AND protocol = ? AND strategy = ?",
+		requested.Direction, requested.Protocol, requested.Strategy,
+	)
+	if requested.RuleType == "port" {
+		tx = tx.Where("(rule_type = ? OR rule_type IS NULL OR rule_type = '')", requested.RuleType)
+	} else {
+		tx = tx.Where("rule_type = ?", requested.RuleType)
+	}
+	if excludeID > 0 {
+		tx = tx.Where("id <> ?", excludeID)
+	}
+
+	var candidates []models.IptablesRule
+	if err := tx.Find(&candidates).Error; err != nil {
+		return err
+	}
+	for index := range candidates {
+		candidate, err := normalizeRule(&candidates[index], s.panelPort)
+		if err != nil || !sameRuleIdentity(candidate, requested) {
+			continue
+		}
+		if candidates[index].Protected {
+			return validationError("相同防火墙规则已存在，且为系统保护规则，请勿重复添加")
+		}
+		return validationError("相同防火墙规则已存在，请勿重复添加")
+	}
+	return nil
+}
+
+func sameRuleIdentity(left, right normalizedRule) bool {
+	// Metadata and lifecycle fields do not change the host-side rule itself.
+	return left.RuleType == right.RuleType &&
+		left.Direction == right.Direction &&
+		left.Protocol == right.Protocol &&
+		left.Strategy == right.Strategy &&
+		strings.Join(left.IPs, ",") == strings.Join(right.IPs, ",") &&
+		strings.Join(left.Ports, ",") == strings.Join(right.Ports, ",")
 }
 
 func (s *Service) addLocked(ctx context.Context, rule *models.IptablesRule) error {
@@ -301,6 +349,9 @@ func (s *Service) Update(ctx context.Context, requested *models.IptablesRule) er
 		return err
 	}
 	applyNormalized(requested, normalized)
+	if err := s.rejectDuplicateRule(normalized, old.ID); err != nil {
+		return err
+	}
 	requested.Backend = old.Backend
 	if requested.Backend == "" {
 		requested.Backend = s.detectBackend(ctx).Name
