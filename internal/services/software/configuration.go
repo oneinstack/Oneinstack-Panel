@@ -106,6 +106,8 @@ type ComponentRuntime struct {
 	// production database components. Version remains for compatibility with
 	// existing managed-configuration consumers.
 	RuntimeVersion string `json:"runtimeVersion,omitempty"`
+	HTTPSState     string `json:"httpsState,omitempty"`
+	SystemdState   string `json:"systemdState,omitempty"`
 }
 
 type ConfigurationChange struct {
@@ -357,6 +359,10 @@ func componentConfigurationDefinition(component string) (configurationDefinition
 			"operationProfilingMode": "ONEINSTACK_CONFIG_OPERATION_PROFILING_MODE",
 			"slowOpThresholdMs":      "ONEINSTACK_CONFIG_SLOW_OP_THRESHOLD_MS",
 		}
+	case "opensearch":
+		// The signed component manifest owns the complete field schema. This
+		// base registration only enables package resolution and service control.
+		result.ApplyMode = "restart"
 	case "php":
 		result.ApplyMode = "reload"
 		result.Fields = []ConfigurationField{
@@ -822,7 +828,7 @@ func serverOwnedInstallParameterName(name string) bool {
 	switch normalized {
 	case "ONEINSTACK_INSTALL_MODE", "ONEINSTACK_OFFLINE_PACKAGE_PATH", "ONEINSTACK_COMPONENT_STATE",
 		"INSTALL_MODE", "OFFLINE_PACKAGE_ID", "OFFLINE_PACKAGE_PATH", "COMPONENT_STATE_DIR",
-		"UNINSTALL_DATA_POLICY", "UNINSTALL_CONFIRM_DATA_DELETION", "WEB_VHOST_ROOT":
+		"UNINSTALL_DATA_POLICY", "UNINSTALL_CONFIRM_DATA_DELETION", "DATA_POLICY", "DELETE_DATA_CONFIRM", "WEB_VHOST_ROOT":
 		return true
 	default:
 		return false
@@ -868,6 +874,18 @@ func componentInstallParameterLabel(name string) string {
 		return "MongoDB administrator username"
 	case "MONGODB_ADMIN_PASSWORD":
 		return "MongoDB administrator password"
+	case "OPENSEARCH_INITIAL_ADMIN_PASSWORD":
+		return "OpenSearch administrator password"
+	case "OPENSEARCH_PORT":
+		return "OpenSearch HTTPS listener port"
+	case "OPENSEARCH_BIND_ADDRESS":
+		return "OpenSearch bind address"
+	case "OPENSEARCH_CLUSTER_NAME":
+		return "OpenSearch cluster name"
+	case "OPENSEARCH_NODE_NAME":
+		return "OpenSearch node name"
+	case "OPENSEARCH_HEAP_SIZE_MB":
+		return "OpenSearch JVM heap size"
 	case "PORT":
 		return "HTTP listener port"
 	case "TENGINE_PORT":
@@ -1057,10 +1075,56 @@ func persistManagedConfiguration(params *input.InstallParams, values map[string]
 	if strings.EqualFold(strings.TrimSpace(params.Key), "mongodb") {
 		return persistManagedMongoDBConfiguration(params, values)
 	}
+	if strings.EqualFold(strings.TrimSpace(params.Key), "opensearch") {
+		return persistManagedOpenSearchConfiguration(params, values)
+	}
 	if strings.EqualFold(strings.TrimSpace(params.Key), "mariadb") {
 		return persistManagedMariaDBConfiguration(params, values)
 	}
 	return persistManagedMySQLConfiguration(params, values)
+}
+
+func persistManagedOpenSearchConfiguration(params *input.InstallParams, values map[string]string) error {
+	if params == nil || app.DB() == nil {
+		return nil
+	}
+	var row models.Software
+	if err := app.DB().Where("installed = ?", true).
+		Where("(`key` = ? OR component = ?)", "opensearch", "opensearch").
+		Order("install_time DESC, id DESC").First(&row).Error; err != nil {
+		return err
+	}
+	runtime := make(map[string]string)
+	if strings.TrimSpace(row.RuntimeParamsJSON) != "" {
+		if err := json.Unmarshal([]byte(row.RuntimeParamsJSON), &runtime); err != nil {
+			return fmt.Errorf("decode OpenSearch runtime parameters: %w", err)
+		}
+	}
+	for valueKey, runtimeKey := range map[string]string{
+		"httpPort": "opensearch-port", "bindAddress": "opensearch-bind-address",
+		"clusterName": "opensearch-cluster-name", "nodeName": "opensearch-node-name",
+		"heapSizeMB": "opensearch-heap-size-mb", "memoryLock": "opensearch-memory-lock",
+	} {
+		if value := strings.TrimSpace(values[valueKey]); value != "" {
+			runtime[runtimeKey] = value
+		}
+	}
+	encoded, err := json.Marshal(runtime)
+	if err != nil {
+		return fmt.Errorf("encode OpenSearch runtime parameters: %w", err)
+	}
+	updates := map[string]interface{}{"runtime_params": string(encoded)}
+	if port := strings.TrimSpace(values["httpPort"]); port != "" {
+		updates["http_port"] = port
+	}
+	result := app.DB().Model(&models.Software{}).Where("id = ?", row.Id).Updates(updates)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return errors.New("OpenSearch software runtime parameters were not updated")
+	}
+	return nil
 }
 
 func persistManagedMongoDBConfiguration(params *input.InstallParams, values map[string]string) error {
@@ -1506,7 +1570,7 @@ func parseComponentConfiguration(
 	}
 	optional := make(map[string]struct{})
 	var runtime *ComponentRuntime
-	if definition.Component == "mysql" || definition.Component == "mariadb" || definition.Component == "mongodb" || definition.Component == "php" || definition.Component == "firewalld" || definition.Component == "apache" || definition.Component == "openresty" || definition.Component == "caddy" {
+	if definition.Component == "mysql" || definition.Component == "mariadb" || definition.Component == "mongodb" || definition.Component == "opensearch" || definition.Component == "php" || definition.Component == "firewalld" || definition.Component == "apache" || definition.Component == "openresty" || definition.Component == "caddy" {
 		runtime = &ComponentRuntime{}
 		runtimeKeys := []string{"runtime.port", "runtime.bindAddress", "runtime.installDir", "runtime.dataDir", "runtime.logDir", "runtime.runUser", "runtime.runGroup"}
 		if definition.Component == "mariadb" {
@@ -1519,12 +1583,14 @@ func parseComponentConfiguration(
 			runtimeKeys = []string{"runtime.port", "runtime.bindAddress", "runtime.socketPath", "runtime.installDir", "runtime.dataDir", "runtime.logDir", "runtime.runUser", "runtime.runGroup", "runtime.configFile", "runtime.vhostDir", "runtime.serviceName", "runtime.version"}
 		} else if definition.Component == "mongodb" {
 			runtimeKeys = []string{"runtime.port", "runtime.bindAddress", "runtime.installDir", "runtime.dataDir", "runtime.logDir", "runtime.runUser", "runtime.runGroup", "runtime.configFile", "runtime.serviceName", "runtime.version"}
+		} else if definition.Component == "opensearch" {
+			runtimeKeys = []string{"runtime.port", "runtime.bindAddress", "runtime.installDir", "runtime.dataDir", "runtime.logDir", "runtime.runUser", "runtime.runGroup", "runtime.configFile", "runtime.serviceName", "runtime.version", "runtime.httpsState", "runtime.systemdState"}
 		}
 		for _, key := range runtimeKeys {
 			allowed[key] = struct{}{}
 		}
 	}
-	if definition.Component == "redis" || definition.Component == "mongodb" {
+	if definition.Component == "redis" || definition.Component == "mongodb" || definition.Component == "opensearch" {
 		for _, key := range []string{
 			"connection.port",
 			"connection.bindAddress",
@@ -1599,6 +1665,8 @@ func parseComponentConfiguration(
 		runtime.VhostDir = fields["runtime.vhostDir"]
 		runtime.ServiceName = fields["runtime.serviceName"]
 		runtime.Version = fields["runtime.version"]
+		runtime.HTTPSState = fields["runtime.httpsState"]
+		runtime.SystemdState = fields["runtime.systemdState"]
 		if definition.Component == "mariadb" {
 			runtime.RuntimeVersion = runtime.Version
 		}
@@ -1629,6 +1697,18 @@ func parseComponentConfiguration(
 				!systemAccountPattern.MatchString(runtime.RunUser) || !systemAccountPattern.MatchString(runtime.RunGroup) ||
 				runtime.ConfigFile != "/etc/mongod.conf" || runtime.ServiceName != "mongod" || !runtimeVersionPattern.MatchString(runtime.Version) {
 				return ComponentConfiguration{}, errors.New("MongoDB component runtime identity is invalid")
+			}
+		} else if definition.Component == "opensearch" {
+			port, parseErr := strconv.Atoi(runtime.Port)
+			if parseErr != nil || port < 1 || port > 65535 || runtime.BindAddress == "" ||
+				runtime.InstallDir == "" || !strings.HasPrefix(runtime.InstallDir, "/") || filepath.Clean(runtime.InstallDir) != runtime.InstallDir ||
+				runtime.DataDir == "" || !strings.HasPrefix(runtime.DataDir, "/") || filepath.Clean(runtime.DataDir) != runtime.DataDir ||
+				runtime.LogDir == "" || !strings.HasPrefix(runtime.LogDir, "/") || filepath.Clean(runtime.LogDir) != runtime.LogDir ||
+				runtime.RunUser != "opensearch" || runtime.RunGroup != "opensearch" || runtime.ServiceName != "opensearch" ||
+				!runtimeVersionPattern.MatchString(runtime.Version) ||
+				(runtime.HTTPSState != "ready" && runtime.HTTPSState != "unavailable") ||
+				(runtime.SystemdState != "active" && runtime.SystemdState != "inactive") {
+				return ComponentConfiguration{}, errors.New("OpenSearch component runtime identity is invalid")
 			}
 		} else if definition.Component == "php" {
 			if runtime.Port != "" || runtime.BindAddress != "unix" || runtime.SocketPath == "" ||
@@ -1674,7 +1754,7 @@ func parseComponentConfiguration(
 		}
 	}
 	var connection *ComponentConnection
-	if definition.Component == "redis" || definition.Component == "mongodb" {
+	if definition.Component == "redis" || definition.Component == "mongodb" || definition.Component == "opensearch" {
 		connectionKeys := []string{
 			"connection.port",
 			"connection.bindAddress",
@@ -1696,6 +1776,8 @@ func parseComponentConfiguration(
 			usernameValid := redisUsernamePattern.MatchString(username)
 			if definition.Component == "mongodb" {
 				usernameValid = mongodbUsernamePattern.MatchString(username)
+			} else if definition.Component == "opensearch" {
+				usernameValid = username == "admin"
 			}
 			if parseErr != nil || port < 1 || port > 65535 || strings.TrimSpace(fields["connection.bindAddress"]) == "" ||
 				!usernameValid {

@@ -39,16 +39,18 @@ func RunInstallation(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusAccepted, core.SuccessResponseForContext(c, gin.H{
-		"taskId":        task.ID,
-		"installName":   task.ID,
-		"operation":     task.Operation,
-		"component":     task.Component,
-		"installSource": taskInstallSource(task),
-		"summary":       "在线安装任务已创建",
-		"status":        task.Status,
-		"progress":      task.Progress,
-		"statusUrl":     "/v1/soft/tasks/" + task.ID,
-		"streamUrl":     "/v1/soft/tasks/" + task.ID + "/events",
+		"taskId":           task.ID,
+		"installName":      task.ID,
+		"operation":        task.Operation,
+		"component":        task.Component,
+		"requestedVersion": task.RequestedVersion,
+		"resolvedVersion":  task.ResolvedVersion,
+		"installSource":    taskInstallSource(task),
+		"summary":          "在线安装任务已创建",
+		"status":           task.Status,
+		"progress":         task.Progress,
+		"statusUrl":        "/v1/soft/tasks/" + task.ID,
+		"streamUrl":        "/v1/soft/tasks/" + task.ID + "/events",
 	}))
 }
 
@@ -95,6 +97,15 @@ func RunOfflineInstallation(c *gin.Context) {
 		"default-bantime",
 		"ignore-ip",
 		"component-state-dir",
+		"opensearch-initial-admin-password",
+		"opensearch-port",
+		"opensearch-bind-address",
+		"opensearch-cluster-name",
+		"opensearch-node-name",
+		"opensearch-heap-size-mb",
+		"data-dir",
+		"log-dir",
+		"install-dir",
 	} {
 		if value := c.PostForm(key); value != "" {
 			parameters[key] = value
@@ -127,16 +138,18 @@ func RunOfflineInstallation(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusAccepted, core.SuccessResponseForContext(c, gin.H{
-		"taskId":        task.ID,
-		"installName":   task.ID,
-		"operation":     task.Operation,
-		"component":     task.Component,
-		"installSource": taskInstallSource(task),
-		"summary":       "离线安装任务已创建",
-		"status":        task.Status,
-		"progress":      task.Progress,
-		"statusUrl":     "/v1/soft/tasks/" + task.ID,
-		"streamUrl":     "/v1/soft/tasks/" + task.ID + "/events",
+		"taskId":           task.ID,
+		"installName":      task.ID,
+		"operation":        task.Operation,
+		"component":        task.Component,
+		"requestedVersion": task.RequestedVersion,
+		"resolvedVersion":  task.ResolvedVersion,
+		"installSource":    taskInstallSource(task),
+		"summary":          "离线安装任务已创建",
+		"status":           task.Status,
+		"progress":         task.Progress,
+		"statusUrl":        "/v1/soft/tasks/" + task.ID,
+		"streamUrl":        "/v1/soft/tasks/" + task.ID + "/events",
 	}))
 }
 

@@ -57,10 +57,10 @@ func TestParseComponentServiceProbeRejectsUntrustedFields(t *testing.T) {
 
 func TestSupportedComponentServicesAreStable(t *testing.T) {
 	definitions := SupportedComponentServices()
-	if len(definitions) != 11 {
+	if len(definitions) != 12 {
 		t.Fatalf("service definitions = %d", len(definitions))
 	}
-	for _, value := range []string{"nginx", "openresty", "tengine", "caddy", "apache", "mysql", "mariadb", "php-fpm", "redis", "firewalld", "fail2ban"} {
+	for _, value := range []string{"nginx", "openresty", "tengine", "caddy", "apache", "mysql", "mariadb", "php-fpm", "redis", "opensearch", "firewalld", "fail2ban"} {
 		if _, err := NormalizeServiceComponent(value); err != nil {
 			t.Fatalf("normalize %s: %v", value, err)
 		}

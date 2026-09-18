@@ -71,6 +71,7 @@ func SupportedComponentServices() []ComponentServiceDefinition {
 		{Component: "mariadb", SoftwareKey: "mariadb", DisplayName: "MariaDB", ServiceName: "mariadb", RuntimeGroup: "database", ManageScopes: []string{"database"}},
 		{Component: "php", SoftwareKey: "php", DisplayName: "PHP-FPM", ServiceName: "php-fpm", RuntimeGroup: "php-runtime", ManageScopes: []string{"runtime"}},
 		{Component: "redis", SoftwareKey: "redis", DisplayName: "Redis", ServiceName: "redis-server", ManageScopes: []string{"cache"}},
+		{Component: "opensearch", SoftwareKey: "opensearch", DisplayName: "OpenSearch", ServiceName: "opensearch", ManageScopes: []string{"middleware"}},
 		{Component: "firewalld", SoftwareKey: "firewalld", DisplayName: "firewalld", ServiceName: "firewalld", RuntimeGroup: "firewall", ManageScopes: []string{"security"}},
 		{Component: "fail2ban", SoftwareKey: "fail2ban", DisplayName: "Fail2ban", ServiceName: "fail2ban", ManageScopes: []string{"security"}},
 	}

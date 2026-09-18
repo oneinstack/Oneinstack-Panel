@@ -136,8 +136,9 @@ func getTaskManager() (*softwaretask.Manager, error) {
 				if _, err := installer.InstallTask(ctx, params, logPath, reporter); err != nil {
 					return err
 				}
-				if strings.EqualFold(strings.TrimSpace(params.Key), "firewalld") {
-					if runtimeVersion, runtimeErr := installer.RefreshInstalledRuntimeVersion(ctx, "firewalld", params.Version); runtimeErr == nil {
+				if strings.EqualFold(strings.TrimSpace(params.Key), "firewalld") ||
+					strings.EqualFold(strings.TrimSpace(params.Key), "opensearch") {
+					if runtimeVersion, runtimeErr := installer.RefreshInstalledRuntimeVersion(ctx, params.Key, params.Version); runtimeErr == nil {
 						reporter.OnRuntimeVersion(runtimeVersion)
 					}
 				}
@@ -321,7 +322,7 @@ func SubmitOfflineInstallationTask(
 	}
 	componentKey := strings.ToLower(strings.TrimSpace(req.Key))
 	switch componentKey {
-	case "fail2ban", "docker", "docker-compose", "phpmyadmin", "redis", "mongodb", "firewalld", "db", "mysql", "mariadb", "webserver", "nginx", "openresty", "tengine", "caddy", "apache", "php", "nodejs":
+	case "fail2ban", "docker", "docker-compose", "phpmyadmin", "redis", "mongodb", "opensearch", "firewalld", "db", "mysql", "mariadb", "webserver", "nginx", "openresty", "tengine", "caddy", "apache", "php", "nodejs":
 	default:
 		return nil, fmt.Errorf("offline installation is not supported for component %s", componentKey)
 	}
@@ -445,7 +446,7 @@ func submitInstallationTask(
 
 func requiresClosedLoopPackage(key string) bool {
 	switch strings.ToLower(strings.TrimSpace(key)) {
-	case "firewalld", "db", "mysql", "mariadb", "mongodb", "webserver", "nginx", "openresty", "tengine", "caddy", "apache", "php", "nodejs":
+	case "firewalld", "db", "mysql", "mariadb", "mongodb", "opensearch", "webserver", "nginx", "openresty", "tengine", "caddy", "apache", "php", "nodejs":
 		return true
 	default:
 		return false
