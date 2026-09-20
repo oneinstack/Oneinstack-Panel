@@ -2,6 +2,8 @@
 
 set -euo pipefail
 
+export ONEINSTACK_ALLOW_NON_ROOT=1
+
 if [[ $# -ne 1 ]]; then
   echo "Usage: $0 RELEASE_ARCHIVE" >&2
   exit 2
