@@ -72,6 +72,11 @@ func DiagnoseNode(c *gin.Context) {
 		core.HandleErrorWithStatus(c, http.StatusConflict, core.NewError(core.ErrConflict, "节点正在排空，暂不接受新的诊断任务"))
 		return
 	}
+	if errors.Is(err, clusterservice.ErrNodeNotRegistered) {
+		recordClusterAudit(c, "cluster.node.diagnose", http.StatusConflict, fmt.Sprintf("node=%d result=failed reason=not_registered", id))
+		core.HandleErrorWithStatus(c, http.StatusConflict, core.NewError(core.ErrConflict, "节点尚未注册，无法执行主机诊断"))
+		return
+	}
 	if err != nil && !errors.Is(err, clusterservice.ErrDiagnosisCapability) {
 		log.Printf("cluster diagnosis enqueue failed node=%d: %v", id, err)
 		recordClusterAudit(c, "cluster.node.diagnose", http.StatusInternalServerError, fmt.Sprintf("node=%d result=failed reason=enqueue_failed", id))

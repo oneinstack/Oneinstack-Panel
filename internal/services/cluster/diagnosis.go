@@ -29,6 +29,7 @@ const (
 
 var (
 	ErrDiagnosisCapability = errors.New("node agent does not support diagnostics")
+	ErrNodeNotRegistered   = errors.New("node has not registered")
 	diagnosticSecret       = regexp.MustCompile(`(?i)("?(?:authorization|password|passwd|token|secret|api[_-]?key)"?\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;]+)`)
 	diagnosticBearer       = regexp.MustCompile(`(?i)(bearer\s+)[A-Za-z0-9._~+/-]+=*`)
 	diagnosticURLSecret    = regexp.MustCompile(`(?i)([a-z][a-z0-9+.-]*://[^:/\s]+:)[^@\s]+@`)
@@ -64,6 +65,20 @@ type DiagnosisResult struct {
 	Checks        []DiagnosisCheck `json:"checks"`
 	StartedAt     time.Time        `json:"startedAt"`
 	FinishedAt    time.Time        `json:"finishedAt"`
+}
+
+type diagnosticEndpoint struct {
+	Kind    string
+	Scheme  string
+	Address string
+}
+
+type diagnosticEndpointObservation struct {
+	Kind      string `json:"kind"`
+	Target    string `json:"target"`
+	Protocol  string `json:"protocol"`
+	Reachable bool   `json:"reachable"`
+	Failure   string `json:"failure,omitempty"`
 }
 
 type diagnosisEnqueueError struct {
@@ -109,6 +124,9 @@ func (m *Manager) EnqueueDiagnosis(nodeID uint, batchID string, requestedBy int6
 	node, err := m.GetNode(nodeID)
 	if err != nil {
 		return models.ClusterTask{}, wrapDiagnosisEnqueueError("load node", err)
+	}
+	if node.Status == models.ClusterNodeStatusPending || node.LastRegisteredAt == nil {
+		return models.ClusterTask{}, ErrNodeNotRegistered
 	}
 	policy, err := m.GetPolicy()
 	if err != nil {
@@ -173,7 +191,7 @@ func offlineDiagnosisResult(node models.ClusterNode) DiagnosisResult {
 		{Key: "agent", Status: "failed", Value: "offline", Detail: "Agent 未在线或心跳已过期", ObservedAt: now},
 		{Key: "communication", Status: "failed", Value: node.Status, Detail: "控制端无法向节点下发诊断任务", ObservedAt: now},
 	}
-	for _, key := range []string{"cpu", "memory", "disk", "disk_inode", "dns", "network", "ports", "firewall", "security_group", "time_sync", "services", "recent_logs"} {
+	for _, key := range []string{"cpu", "memory", "disk", "disk_inode", "dns", "network", "service_reachability", "ports", "firewall", "security_group", "time_sync", "services", "recent_logs"} {
 		checks = append(checks, DiagnosisCheck{Key: key, Status: "skipped", Detail: "Agent 离线，节点侧检查已跳过", ObservedAt: now})
 	}
 	result := DiagnosisResult{OverallStatus: "critical", Checks: checks, StartedAt: now, FinishedAt: now}
@@ -218,13 +236,8 @@ func (a *Agent) executeDiagnosis(ctx context.Context, raw string) (json.RawMessa
 	controllerTargets, centerTargets := configuredDiagnosticTargets(a.cfg.ControllerURL)
 	dnsTargets := uniqueStrings(append(append([]string{}, payload.Policy.DNSTargets...), append(controllerTargets, centerTargets...)...))
 	add(checkDNS(ctx, dnsTargets))
-	networkTargets := append([]string{}, payload.Policy.NetworkTargets...)
-	networkTargets = append(networkTargets, controllerTargets...)
-	networkTargets = append(networkTargets, centerTargets...)
-	if gateway := defaultGateway(); gateway != "" {
-		networkTargets = append(networkTargets, gateway)
-	}
-	add(checkNetwork(ctx, uniqueStrings(networkTargets)))
+	add(checkNetwork(ctx, uniqueStrings(payload.Policy.NetworkTargets)))
+	add(checkDiagnosticEndpoints(ctx, configuredDiagnosticEndpoints(a.cfg.ControllerURL)))
 
 	ports := append([]int{22}, payload.Policy.CommonPorts...)
 	installedPorts, installedServices := installedDiagnosticAssets()
@@ -295,17 +308,79 @@ func metricDiagnosisCheck(key string, value, warning, critical float64) Diagnosi
 func configuredDiagnosticTargets(controllerURL string) ([]string, []string) {
 	controller := hostnameFromURL(controllerURL)
 	centers := []string{}
-	if value := hostnameFromURL(app.ONE_CONFIG.UpdateCenter.CenterURL); value != "" {
-		centers = append(centers, value)
+	if app.ONE_CONFIG.UpdateCenter.Enabled {
+		if value := hostnameFromURL(app.ONE_CONFIG.UpdateCenter.CenterURL); value != "" {
+			centers = append(centers, value)
+		}
 	}
-	if value := hostnameFromURL(app.ONE_CONFIG.ScriptCenter.URL); value != "" {
-		centers = append(centers, value)
+	if app.ONE_CONFIG.ScriptCenter.Enabled {
+		if value := hostnameFromURL(app.ONE_CONFIG.ScriptCenter.URL); value != "" {
+			centers = append(centers, value)
+		}
 	}
 	controllers := []string{}
 	if controller != "" {
 		controllers = append(controllers, controller)
 	}
 	return uniqueStrings(controllers), uniqueStrings(centers)
+}
+
+func configuredDiagnosticEndpoints(controllerURL string) []diagnosticEndpoint {
+	endpoints := make([]diagnosticEndpoint, 0, 3)
+	seen := map[string]struct{}{}
+	add := func(kind, rawURL string) {
+		parsed, err := url.Parse(strings.TrimSpace(rawURL))
+		if err != nil || parsed.Hostname() == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+			return
+		}
+		port := parsed.Port()
+		if port == "" {
+			if parsed.Scheme == "https" {
+				port = "443"
+			} else {
+				port = "80"
+			}
+		}
+		address := net.JoinHostPort(parsed.Hostname(), port)
+		if _, ok := seen[address]; ok {
+			return
+		}
+		seen[address] = struct{}{}
+		endpoints = append(endpoints, diagnosticEndpoint{Kind: kind, Scheme: parsed.Scheme, Address: address})
+	}
+	add("controller", controllerURL)
+	if app.ONE_CONFIG.UpdateCenter.Enabled {
+		add("center", app.ONE_CONFIG.UpdateCenter.CenterURL)
+	}
+	if app.ONE_CONFIG.ScriptCenter.Enabled {
+		add("center", app.ONE_CONFIG.ScriptCenter.URL)
+	}
+	return endpoints
+}
+
+func checkDiagnosticEndpoints(ctx context.Context, endpoints []diagnosticEndpoint) DiagnosisCheck {
+	if len(endpoints) == 0 {
+		return DiagnosisCheck{Key: "service_reachability", Status: "skipped", Detail: "未配置已启用的 Controller 或 Center 地址"}
+	}
+	observations := make([]diagnosticEndpointObservation, 0, len(endpoints))
+	failed := make([]string, 0)
+	for _, endpoint := range endpoints {
+		probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		connection, err := (&net.Dialer{Timeout: 5 * time.Second}).DialContext(probeCtx, "tcp", endpoint.Address)
+		cancel()
+		observation := diagnosticEndpointObservation{Kind: endpoint.Kind, Target: endpoint.Address, Protocol: endpoint.Scheme, Reachable: err == nil}
+		if err != nil {
+			observation.Failure = "TCP 端口不可达"
+			failed = append(failed, endpoint.Address)
+		} else {
+			_ = connection.Close()
+		}
+		observations = append(observations, observation)
+	}
+	if len(failed) > 0 {
+		return DiagnosisCheck{Key: "service_reachability", Status: "failed", Value: observations, Detail: "部分 Controller 或 Center TCP 端口不可达"}
+	}
+	return DiagnosisCheck{Key: "service_reachability", Status: "passed", Value: observations, Detail: "Controller 和 Center TCP 端口均可达"}
 }
 
 func hostnameFromURL(value string) string {

@@ -139,6 +139,9 @@ func (m *Manager) evaluateBatch(input BatchPreviewInput) (BatchPreviewResult, er
 func (m *Manager) batchNodeBlockReason(node models.ClusterNode, action string) (string, bool, string) {
 	switch action {
 	case BatchActionDiagnose:
+		if node.Status == models.ClusterNodeStatusPending || node.LastRegisteredAt == nil {
+			return "节点尚未注册，无法执行主机诊断", true, ""
+		}
 		if node.LifecycleStatus == models.ClusterNodeLifecycleDraining {
 			return "节点正在排空，暂不接受新的诊断任务", true, ""
 		}
