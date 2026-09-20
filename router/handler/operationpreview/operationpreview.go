@@ -1411,20 +1411,7 @@ func softwareUninstallPreviewState(component string) (string, string, string, ma
 	var stored map[string]string
 	if strings.TrimSpace(row.RuntimeParamsJSON) != "" && json.Unmarshal([]byte(row.RuntimeParamsJSON), &stored) == nil {
 		for key, value := range stored {
-			normalized := strings.ToLower(strings.TrimSpace(key))
-			normalized = strings.NewReplacer("_", "-", ".", "-", " ", "-").Replace(normalized)
-			switch strings.ReplaceAll(normalized, "-", "") {
-			case "installdir":
-				runtimeValues["install-dir"] = value
-			case "configfile":
-				runtimeValues["config-file"] = value
-			case "datadir":
-				runtimeValues["data-dir"] = value
-			case "logdir":
-				runtimeValues["log-dir"] = value
-			case "statedir":
-				runtimeValues["state-dir"] = value
-			}
+			setSoftwarePreviewRuntimeValue(runtimeValues, key, value)
 		}
 	}
 	displayName := strings.TrimSpace(row.Name)
@@ -1432,6 +1419,58 @@ func softwareUninstallPreviewState(component string) (string, string, string, ma
 		displayName = strings.TrimSpace(row.Component)
 	}
 	return displayName, strings.TrimSpace(row.ServiceName), strings.TrimSpace(row.InstalledPackageVersion), runtimeValues
+}
+
+func setSoftwarePreviewRuntimeValue(values map[string]string, key, value string) {
+	if values == nil {
+		return
+	}
+	normalized := strings.ToLower(strings.TrimSpace(key))
+	normalized = strings.NewReplacer("_", "-", ".", "-", " ", "-").Replace(normalized)
+	switch strings.ReplaceAll(normalized, "-", "") {
+	case "installdir":
+		values["install-dir"] = strings.TrimSpace(value)
+	case "configfile":
+		values["config-file"] = strings.TrimSpace(value)
+	case "datadir":
+		values["data-dir"] = strings.TrimSpace(value)
+	case "logdir":
+		values["log-dir"] = strings.TrimSpace(value)
+	case "statedir":
+		values["state-dir"] = strings.TrimSpace(value)
+	}
+}
+
+func softwarePreviewRuntimeFileChanges(runtimeValues map[string]string, uninstall bool, dataPolicy string) []previewservice.FileChange {
+	files := make([]previewservice.FileChange, 0, 5)
+	if !uninstall {
+		for _, key := range []string{"install-dir", "config-file", "data-dir", "log-dir", "state-dir"} {
+			path := strings.TrimSpace(runtimeValues[key])
+			if path == "" {
+				continue
+			}
+			files = append(files, previewservice.FileChange{
+				Path:          path,
+				Action:        "create_or_update",
+				ChangeSummary: "创建或更新受管程序文件",
+			})
+		}
+		return files
+	}
+	for _, key := range []string{"install-dir", "config-file", "data-dir", "log-dir", "state-dir"} {
+		path := strings.TrimSpace(runtimeValues[key])
+		if path == "" {
+			continue
+		}
+		action, summary := "preserve", "卸载后保留"
+		if key == "install-dir" {
+			action, summary = "remove", "移除受管程序文件"
+		} else if dataPolicy == "delete" && (key == "data-dir" || key == "log-dir") {
+			action, summary = "delete", "按删除策略移除"
+		}
+		files = append(files, previewservice.FileChange{Path: path, Action: action, ChangeSummary: summary})
+	}
+	return files
 }
 
 func uninstallPreviewFirstNonEmpty(values ...string) string {
@@ -1660,6 +1699,11 @@ func buildDocument(ctx context.Context, operation string, payload json.RawMessag
 			Status:  "passed",
 			Message: "版本、端口及组件清单参数校验通过",
 		})
+		installRuntimeValues := make(map[string]string)
+		for _, effectiveValue := range effectiveValues {
+			setSoftwarePreviewRuntimeValue(installRuntimeValues, effectiveValue.Key, effectiveValue.Value)
+		}
+		document.Files = append(document.Files, softwarePreviewRuntimeFileChanges(installRuntimeValues, false, "preserve")...)
 		document.Actions = []previewservice.Action{{Type: "component", Name: "执行受控软件安装动作", DisplayCommand: "由组件安装器按软件 key 和版本执行"}, {Type: "service", Name: "安装后验证服务状态", Service: "由组件探测器确定"}}
 		document.Impact = previewservice.Impact{WriteFiles: true, ModifyDatabase: true, RestartService: true}
 		document.Rollback = previewservice.Rollback{Supported: true, Summary: "任务失败时由软件任务执行器按组件策略回滚或保留失败现场"}
@@ -1708,19 +1752,7 @@ func buildDocument(ctx context.Context, operation string, payload json.RawMessag
 		if serviceName != "" {
 			document.EffectiveValues = append(document.EffectiveValues, previewservice.EffectiveValue{Key: "serviceName", Value: serviceName, Source: "installed_state"})
 		}
-		for _, key := range []string{"install-dir", "config-file", "data-dir", "log-dir", "state-dir"} {
-			path := strings.TrimSpace(runtimeValues[key])
-			if path == "" {
-				continue
-			}
-			action, summary := "preserve", "卸载后保留"
-			if key == "install-dir" {
-				action, summary = "remove", "移除受管程序文件"
-			} else if dataPolicy == "delete" && (key == "data-dir" || key == "log-dir") {
-				action, summary = "delete", "按删除策略移除"
-			}
-			document.Files = append(document.Files, previewservice.FileChange{Path: path, Action: action, ChangeSummary: summary})
-		}
+		document.Files = append(document.Files, softwarePreviewRuntimeFileChanges(runtimeValues, true, dataPolicy)...)
 		document.Actions = []previewservice.Action{
 			{Type: "service", Name: "停止 " + uninstallPreviewFirstNonEmpty(serviceName, component) + " 服务", DisplayCommand: "由组件卸载脚本安全停止服务", Service: uninstallPreviewFirstNonEmpty(serviceName, component)},
 			{Type: "component", Name: "卸载 " + displayName + " " + version, DisplayCommand: "使用已固定的受管组件包执行卸载"},
