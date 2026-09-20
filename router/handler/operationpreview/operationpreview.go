@@ -380,6 +380,9 @@ func Preview(c *gin.Context) {
 	}
 	document, resourceVersion, err := buildDocument(c.Request.Context(), operation, payload)
 	if err != nil {
+		if writeFirewallCollisionError(c, err) {
+			return
+		}
 		if operation == "software.install" && handleSoftwareInstallParameterError(c, err) {
 			return
 		}
@@ -1799,6 +1802,19 @@ func buildDocument(ctx context.Context, operation string, payload json.RawMessag
 			document.Rollback = previewservice.Rollback{Supported: true, Summary: "失败时恢复已应用的规则操作和持久化状态"}
 		}
 	case "firewall.port_forward":
+		var value struct {
+			Action  string                     `json:"action"`
+			Forward models.FirewallPortForward `json:"forward"`
+		}
+		if err := json.Unmarshal(payload, &value); err != nil {
+			return previewservice.Document{}, "", err
+		}
+		action := strings.ToLower(strings.TrimSpace(value.Action))
+		if action == "add" || action == "update" {
+			if err := safeservice.NewDefaultService().ValidatePortForward(&value.Forward); err != nil {
+				return previewservice.Document{}, "", err
+			}
+		}
 		document.Actions = []previewservice.Action{{Type: "firewall", Name: "修改端口转发", DisplayCommand: "由检测到的防火墙后端执行受控转发动作"}}
 		document.Impact = previewservice.Impact{ModifyDatabase: true, NetworkRisk: true}
 	case "firewall.toggle":
@@ -2450,7 +2466,22 @@ func writeConsumeError(c *gin.Context, err error) {
 	}
 }
 
+func writeFirewallCollisionError(c *gin.Context, err error) bool {
+	info, ok := safeservice.FirewallCollisionInfo(err, middleware.RequestLocale(c))
+	if !ok {
+		return false
+	}
+	appErr := core.NewErrorWithDetail(core.ErrConflict, info.Title, info.Detail)
+	appErr.StableCode = info.StableCode
+	appErr.Field = info.Field
+	core.HandleError(c, appErr)
+	return true
+}
+
 func writeExecutionError(c *gin.Context, err error) {
+	if writeFirewallCollisionError(c, err) {
+		return
+	}
 	if appErr, ok := software.RuntimeDependencyBusyAppError(err); ok {
 		core.HandleErrorWithStatus(c, http.StatusConflict, appErr)
 		return

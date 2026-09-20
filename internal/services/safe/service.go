@@ -189,51 +189,10 @@ func (s *Service) Add(ctx context.Context, rule *models.IptablesRule) error {
 	if err != nil {
 		return err
 	}
-	if err := s.rejectDuplicateRule(normalized, 0); err != nil {
+	if err := s.rejectRuleCollision(normalized, 0); err != nil {
 		return err
 	}
 	return s.addLocked(ctx, rule)
-}
-
-func (s *Service) rejectDuplicateRule(requested normalizedRule, excludeID int64) error {
-	tx := s.db.Where(
-		"direction = ? AND protocol = ? AND strategy = ?",
-		requested.Direction, requested.Protocol, requested.Strategy,
-	)
-	if requested.RuleType == "port" {
-		tx = tx.Where("(rule_type = ? OR rule_type IS NULL OR rule_type = '')", requested.RuleType)
-	} else {
-		tx = tx.Where("rule_type = ?", requested.RuleType)
-	}
-	if excludeID > 0 {
-		tx = tx.Where("id <> ?", excludeID)
-	}
-
-	var candidates []models.IptablesRule
-	if err := tx.Find(&candidates).Error; err != nil {
-		return err
-	}
-	for index := range candidates {
-		candidate, err := normalizeRule(&candidates[index], s.panelPort)
-		if err != nil || !sameRuleIdentity(candidate, requested) {
-			continue
-		}
-		if candidates[index].Protected {
-			return validationError("相同防火墙规则已存在，且为系统保护规则，请勿重复添加")
-		}
-		return validationError("相同防火墙规则已存在，请勿重复添加")
-	}
-	return nil
-}
-
-func sameRuleIdentity(left, right normalizedRule) bool {
-	// Metadata and lifecycle fields do not change the host-side rule itself.
-	return left.RuleType == right.RuleType &&
-		left.Direction == right.Direction &&
-		left.Protocol == right.Protocol &&
-		left.Strategy == right.Strategy &&
-		strings.Join(left.IPs, ",") == strings.Join(right.IPs, ",") &&
-		strings.Join(left.Ports, ",") == strings.Join(right.Ports, ",")
 }
 
 func (s *Service) addLocked(ctx context.Context, rule *models.IptablesRule) error {
@@ -324,6 +283,13 @@ func (s *Service) EnsureWebsitePort(
 		RuleType: "port", Direction: "in", Protocol: "tcp", Strategy: "allow",
 		IPs: "0.0.0.0/0", Ports: strconv.Itoa(port), State: 1, Remark: websiteName,
 	}
+	normalized, err := normalizeRule(rule, s.panelPort)
+	if err != nil {
+		return 0, false, err
+	}
+	if err := s.rejectRuleCollision(normalized, 0); err != nil {
+		return 0, false, err
+	}
 	if err := s.addLocked(ctx, rule); err != nil {
 		return 0, false, err
 	}
@@ -349,7 +315,7 @@ func (s *Service) Update(ctx context.Context, requested *models.IptablesRule) er
 		return err
 	}
 	applyNormalized(requested, normalized)
-	if err := s.rejectDuplicateRule(normalized, old.ID); err != nil {
+	if err := s.rejectRuleCollision(normalized, old.ID); err != nil {
 		return err
 	}
 	requested.Backend = old.Backend
@@ -481,6 +447,15 @@ func (s *Service) setRuleStateLocked(ctx context.Context, id int64, enabled bool
 	if enabled && rule.ExpiresAt != nil && !rule.ExpiresAt.After(time.Now()) {
 		return validationError("过期规则不能重新启用，请先修改过期时间")
 	}
+	if enabled {
+		normalized, err := normalizeRule(&rule, s.panelPort)
+		if err != nil {
+			return err
+		}
+		if err := s.rejectRuleCollision(normalized, rule.ID); err != nil {
+			return err
+		}
+	}
 	if rule.Backend == "" {
 		rule.Backend = s.detectBackend(ctx).Name
 	}
@@ -605,6 +580,9 @@ func (s *Service) ImportRules(ctx context.Context, rules []models.IptablesRule) 
 func (s *Service) ReplaceRules(ctx context.Context, rules []models.IptablesRule) error {
 	operationMu.Lock()
 	defer operationMu.Unlock()
+	if err := s.validateRuleSet(rules); err != nil {
+		return err
+	}
 	var current []models.IptablesRule
 	if err := s.db.Where("protected = ?", false).Order("id ASC").Find(&current).Error; err != nil {
 		return err
@@ -656,6 +634,12 @@ func (s *Service) SetEnabled(ctx context.Context, enabled bool, confirmation str
 		if !state.CanToggle {
 			return fmt.Errorf("%w: 当前环境没有可用的 systemd，无法启用主机 firewalld", ErrUnsupported)
 		}
+		if err := s.deduplicateProtectedPortRules(ctx, state, s.panelPort); err != nil {
+			return err
+		}
+		if err := s.validateActiveCollisions(); err != nil {
+			return err
+		}
 		created, operations, err := s.ensurePanelRule(ctx, state)
 		if err != nil {
 			return err
@@ -693,6 +677,12 @@ func (s *Service) SetEnabled(ctx context.Context, enabled bool, confirmation str
 func (s *Service) reconcileEnabledRules(ctx context.Context, state backendState) error {
 	if s.db == nil || !state.Enabled || state.Name == BackendNone {
 		return nil
+	}
+	if err := s.deduplicateProtectedPortRules(ctx, state, s.panelPort); err != nil {
+		return err
+	}
+	if err := s.validateActiveCollisions(); err != nil {
+		return err
 	}
 	var rules []models.IptablesRule
 	if err := s.db.Where("state = ? AND protected = ?", 1, false).
@@ -819,8 +809,15 @@ func (s *Service) ensureProtectedPort(ctx context.Context, state backendState, p
 		IPs: "0.0.0.0/0", Ports: fmt.Sprint(port), State: 1,
 		Remark: panelRuleRemark, Backend: state.Name, Token: uuid.NewString(), Protected: true,
 	}
+	normalized, err := normalizeRule(rule, s.panelPort)
+	if err != nil {
+		return nil, nil, err
+	}
+	if collisionErr := s.rejectRuleCollision(normalized, 0); collisionErr != nil &&
+		!isRuleDuplicateCollision(collisionErr) {
+		return nil, nil, collisionErr
+	}
 	var operations []commandOperation
-	var err error
 	if state.Name == BackendFirewalld && !state.Enabled {
 		if _, pathErr := s.runner.LookPath("firewall-offline-cmd"); pathErr != nil {
 			return nil, nil, fmt.Errorf("%w: firewalld 未运行且缺少 firewall-offline-cmd，无法安全预置面板端口", ErrUnsupported)

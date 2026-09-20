@@ -28,10 +28,29 @@ func (s *Service) ListPortForwards(param *input.FirewallPortForwardParam) (*serv
 	})
 }
 
+// ValidatePortForward performs the same normalization and collision checks as
+// add/update without changing the caller's value or the host firewall.
+func (s *Service) ValidatePortForward(forward *models.FirewallPortForward) error {
+	if forward == nil {
+		return validationError("端口转发不能为空")
+	}
+	copyOfForward := *forward
+	if err := s.normalizePortForward(&copyOfForward); err != nil {
+		return err
+	}
+	if s.db == nil {
+		return nil
+	}
+	return s.rejectPortForwardCollision(copyOfForward, forward.ID)
+}
+
 func (s *Service) AddPortForward(ctx context.Context, forward *models.FirewallPortForward) error {
 	operationMu.Lock()
 	defer operationMu.Unlock()
 	if err := s.normalizePortForward(forward); err != nil {
+		return err
+	}
+	if err := s.rejectPortForwardCollision(*forward, 0); err != nil {
 		return err
 	}
 	state := s.detectBackend(ctx)
@@ -68,6 +87,9 @@ func (s *Service) UpdatePortForward(ctx context.Context, requested *models.Firew
 		return err
 	}
 	if err := s.normalizePortForward(requested); err != nil {
+		return err
+	}
+	if err := s.rejectPortForwardCollision(*requested, old.ID); err != nil {
 		return err
 	}
 	state := s.detectBackend(ctx)
@@ -171,6 +193,64 @@ func (s *Service) normalizePortForward(forward *models.FirewallPortForward) erro
 	}
 	if forward.State != 0 {
 		forward.State = 1
+	}
+	return nil
+}
+
+func (s *Service) rejectPortForwardCollision(requested models.FirewallPortForward, excludeID int64) error {
+	var candidates []models.FirewallPortForward
+	tx := s.db.Order("state DESC, id ASC")
+	if excludeID > 0 {
+		tx = tx.Where("id <> ?", excludeID)
+	}
+	if err := tx.Find(&candidates).Error; err != nil {
+		return err
+	}
+	for index := range candidates {
+		candidate := candidates[index]
+		if err := s.normalizePortForward(&candidate); err != nil {
+			continue
+		}
+		if candidate.Protocol != requested.Protocol || candidate.SourcePort != requested.SourcePort {
+			continue
+		}
+		if candidate.DestinationIP == requested.DestinationIP &&
+			candidate.DestinationPort == requested.DestinationPort {
+			return newPortForwardDuplicateError(candidates[index])
+		}
+		if candidate.State == 1 && requested.State == 1 {
+			return newPortForwardTargetConflictError(candidate, requested)
+		}
+	}
+	return nil
+}
+
+func (s *Service) validateActivePortForwardCollisions() error {
+	if s.db == nil {
+		return nil
+	}
+	var forwards []models.FirewallPortForward
+	if err := s.db.Where("state = ?", 1).Order("id ASC").Find(&forwards).Error; err != nil {
+		return err
+	}
+	for index := range forwards {
+		current := forwards[index]
+		if err := s.normalizePortForward(&current); err != nil {
+			continue
+		}
+		for previous := 0; previous < index; previous++ {
+			candidate := forwards[previous]
+			if err := s.normalizePortForward(&candidate); err != nil ||
+				candidate.Protocol != current.Protocol ||
+				candidate.SourcePort != current.SourcePort {
+				continue
+			}
+			if candidate.DestinationIP == current.DestinationIP &&
+				candidate.DestinationPort == current.DestinationPort {
+				return newPortForwardDuplicateError(forwards[previous])
+			}
+			return newPortForwardTargetConflictError(candidate, current)
+		}
 	}
 	return nil
 }

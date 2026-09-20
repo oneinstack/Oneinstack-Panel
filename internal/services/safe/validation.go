@@ -188,8 +188,14 @@ func (s *Service) ValidateRule(rule *models.IptablesRule) error {
 		return validationError("规则不能为空")
 	}
 	copyOfRule := *rule
-	_, err := normalizeRule(&copyOfRule, s.panelPort)
-	return err
+	normalized, err := normalizeRule(&copyOfRule, s.panelPort)
+	if err != nil {
+		return err
+	}
+	if s.db == nil {
+		return nil
+	}
+	return s.rejectRuleCollision(normalized, rule.ID)
 }
 
 func splitValues(raw string) []string {

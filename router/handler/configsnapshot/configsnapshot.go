@@ -193,6 +193,13 @@ func Restore(c *gin.Context) {
 	if err := applyResource(document.Snapshot.ResourceType, document.Snapshot.ResourceID, document.Snapshot.Operation, document.Before, current); err != nil {
 		_ = configsnapshot.Default().Mark(restoreSnapshot.ID, "failed", err.Error())
 		RecordAudit(c, restoreSnapshot, "failed", err.Error())
+		if info, ok := safeservice.FirewallCollisionInfo(err, middleware.RequestLocale(c)); ok {
+			appErr := core.NewErrorWithDetail(core.ErrConflict, info.Title, info.Detail)
+			appErr.StableCode = info.StableCode
+			appErr.Field = info.Field
+			core.HandleError(c, appErr)
+			return
+		}
 		core.HandleError(c, restoreError(core.ErrConfigError, document, "应用目标配置", err))
 		return
 	}

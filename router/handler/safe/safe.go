@@ -22,10 +22,25 @@ import (
 )
 
 func GetFirewallInfo(c *gin.Context) {
-	info, err := safeservice.NewDefaultService().Status(c.Request.Context())
+	service := safeservice.NewDefaultService()
+	locale := middleware.RequestLocale(c)
+	info, err := service.Status(c.Request.Context())
 	if err != nil {
 		handleServiceError(c, err)
 		return
+	}
+	if collision, found, collisionErr := service.ActiveCollision(locale); collisionErr != nil {
+		handleServiceError(c, collisionErr)
+		return
+	} else if found {
+		separator := "；"
+		if strings.HasPrefix(strings.ToLower(locale), "en") {
+			separator = "; "
+		}
+		if strings.TrimSpace(info.Warning) == "" {
+			separator = ""
+		}
+		info.Warning += separator + collision.Detail
 	}
 	core.HandleSuccess(c, gin.H{"info": info})
 }
@@ -386,6 +401,13 @@ func InstallFirewall(c *gin.Context) {
 }
 
 func handleServiceError(c *gin.Context, err error) {
+	if info, ok := safeservice.FirewallCollisionInfo(err, middleware.RequestLocale(c)); ok {
+		appErr := core.NewErrorWithDetail(core.ErrConflict, info.Title, info.Detail)
+		appErr.StableCode = info.StableCode
+		appErr.Field = info.Field
+		core.HandleError(c, appErr)
+		return
+	}
 	switch {
 	case errors.Is(err, safeservice.ErrValidation):
 		message := safeservice.ValidationMessage(err)
