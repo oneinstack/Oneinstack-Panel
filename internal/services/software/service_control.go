@@ -267,6 +267,22 @@ func serviceUnitName(name string) string {
 	return name + ".service"
 }
 
+func systemdShowProperty(ctx context.Context, unit, property string) (string, error) {
+	output, err := exec.CommandContext(
+		ctx, "systemctl", "show", unit, "--property="+property,
+	).Output()
+	if err != nil {
+		return "", err
+	}
+	prefix := property + "="
+	for _, line := range strings.Split(string(output), "\n") {
+		if strings.HasPrefix(line, prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(line, prefix)), nil
+		}
+	}
+	return "", fmt.Errorf("systemctl show output missing property %s", property)
+}
+
 func serviceIdentityName(name string) string {
 	return strings.TrimSuffix(serviceUnitName(name), ".service")
 }
@@ -341,10 +357,8 @@ func verifyServiceActionReady(
 	if action == "stop" {
 		loadedUnit := false
 		for _, unit := range serviceUnitCandidates(definition) {
-			loadState, err := exec.CommandContext(
-				ctx, "systemctl", "show", "--property=LoadState", "--value", unit,
-			).Output()
-			if err != nil || strings.TrimSpace(string(loadState)) != "loaded" {
+			loadState, err := systemdShowProperty(ctx, unit, "LoadState")
+			if err != nil || loadState != "loaded" {
 				continue
 			}
 			loadedUnit = true
@@ -555,18 +569,11 @@ func RuntimeGroupOwnerComponent(ctx context.Context, owner RuntimeGroupOwner) st
 	if owner.Component != "legacy-web" {
 		return owner.Component
 	}
-	execStart, err := exec.CommandContext(
-		ctx,
-		"systemctl",
-		"show",
-		owner.ServiceName+".service",
-		"--property=ExecStart",
-		"--value",
-	).Output()
+	execStart, err := systemdShowProperty(ctx, owner.ServiceName+".service", "ExecStart")
 	if err != nil {
 		return owner.Component
 	}
-	command := strings.ToLower(string(execStart))
+	command := strings.ToLower(execStart)
 	switch {
 	case strings.Contains(command, "/apache/") || strings.Contains(command, "httpd"):
 		return "apache"
