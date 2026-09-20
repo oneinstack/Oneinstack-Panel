@@ -932,6 +932,7 @@ var englishErrorTexts = map[string]string{
 	"读取节点任务详情失败":                                  "Failed to read the cluster node task details",
 	"节点名称不能为空":                                    "Node name must not be empty",
 	"Panel 地址必须是有效的 HTTP 或 HTTPS URL":             "The Panel address must be a valid HTTP or HTTPS URL",
+	"Panel 地址已存在，请勿重复添加节点":                        "The Panel address is already registered. Do not add the same node again.",
 	"节点名称、分组或标签长度超过限制":                            "The node name, group, or tags exceed the allowed length",
 	"节点参数无效":                                      "The node parameters are invalid",
 	"无法停止 PHP-FPM：运行中的 Web 服务器仍依赖该服务":             "PHP-FPM cannot be stopped because an active Web server still depends on it",

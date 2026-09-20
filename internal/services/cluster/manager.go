@@ -23,6 +23,7 @@ var (
 	ErrNodeDeparted     = errors.New("node has left the cluster and must register again")
 	ErrNameRequired     = errors.New("node name is required")
 	ErrEndpointInvalid  = errors.New("node endpoint must be a valid http or https URL")
+	ErrEndpointExists   = errors.New("node endpoint is already registered")
 	ErrNodeFieldTooLong = errors.New("node field is too long")
 	ErrNodeLifecycle    = errors.New("node lifecycle transition is not allowed")
 	ErrNodeDeleteState  = errors.New("node must be pending deletion")
@@ -118,7 +119,7 @@ type CreateNodeResult struct {
 
 func (m *Manager) CreateNode(input CreateNodeInput) (CreateNodeResult, error) {
 	name := strings.TrimSpace(input.Name)
-	endpoint := strings.TrimRight(strings.TrimSpace(input.Endpoint), "/")
+	endpoint := normalizeEndpoint(input.Endpoint)
 	if name == "" {
 		return CreateNodeResult{}, ErrNameRequired
 	}
@@ -127,6 +128,11 @@ func (m *Manager) CreateNode(input CreateNodeInput) (CreateNodeResult, error) {
 	}
 	if !validEndpoint(endpoint) {
 		return CreateNodeResult{}, ErrEndpointInvalid
+	}
+	if exists, err := m.endpointExists(endpoint, 0); err != nil {
+		return CreateNodeResult{}, err
+	} else if exists {
+		return CreateNodeResult{}, ErrEndpointExists
 	}
 	token, err := generateToken()
 	if err != nil {
@@ -214,9 +220,14 @@ func (m *Manager) UpdateNode(id uint, input UpdateNodeInput) (models.ClusterNode
 	if len(name) > 120 || len(input.Group) > 120 || len(input.Tags) > 512 {
 		return node, ErrNodeFieldTooLong
 	}
-	endpoint := strings.TrimRight(strings.TrimSpace(input.Endpoint), "/")
+	endpoint := normalizeEndpoint(input.Endpoint)
 	if !validEndpoint(endpoint) {
 		return node, ErrEndpointInvalid
+	}
+	if exists, err := m.endpointExists(endpoint, id); err != nil {
+		return node, err
+	} else if exists {
+		return node, ErrEndpointExists
 	}
 	node.Name, node.Endpoint = name, endpoint
 	node.Group, node.Tags = strings.TrimSpace(input.Group), strings.TrimSpace(input.Tags)
@@ -439,6 +450,49 @@ func validEndpoint(raw string) bool {
 		}
 	}
 	return true
+}
+
+func normalizeEndpoint(raw string) string {
+	raw = strings.TrimSpace(raw)
+	u, err := url.Parse(raw)
+	if err != nil {
+		return strings.TrimRight(raw, "/")
+	}
+	if u.User != nil {
+		return strings.TrimRight(raw, "/")
+	}
+	u.Scheme = strings.ToLower(strings.TrimSpace(u.Scheme))
+	host := strings.ToLower(u.Hostname())
+	if host == "" {
+		return strings.TrimRight(raw, "/")
+	}
+	port := u.Port()
+	if (u.Scheme == "http" && port == "80") || (u.Scheme == "https" && port == "443") {
+		port = ""
+	}
+	if strings.Contains(host, ":") {
+		host = "[" + strings.Trim(host, "[]") + "]"
+	}
+	u.Host = host
+	if port != "" {
+		u.Host += ":" + port
+	}
+	u.Path = strings.TrimRight(u.Path, "/")
+	u.RawPath = ""
+	return strings.TrimRight(u.String(), "/")
+}
+
+func (m *Manager) endpointExists(endpoint string, excludeID uint) (bool, error) {
+	var nodes []models.ClusterNode
+	if err := m.db.Select("id", "endpoint").Find(&nodes).Error; err != nil {
+		return false, err
+	}
+	for _, node := range nodes {
+		if node.ID != excludeID && normalizeEndpoint(node.Endpoint) == endpoint {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func generateToken() (string, error) {

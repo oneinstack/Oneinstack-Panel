@@ -429,6 +429,9 @@ func handleNodeMutationError(c *gin.Context, err error) {
 		core.HandleValidationErrors(c, core.ValidationErrors{{Field: "name", Code: core.ErrRequiredField, Message: "节点名称不能为空"}})
 	case errors.Is(err, cluster.ErrEndpointInvalid):
 		core.HandleValidationErrors(c, core.ValidationErrors{{Field: "endpoint", Code: core.ErrInvalidParameter, Message: "Panel 地址必须是有效的 HTTP 或 HTTPS URL"}})
+	case errors.Is(err, cluster.ErrEndpointExists):
+		message := "Panel 地址已存在，请勿重复添加节点"
+		core.HandleErrorWithStatus(c, http.StatusConflict, core.NewErrorWithDetail(core.ErrConflict, message, message))
 	case errors.Is(err, cluster.ErrNodeFieldTooLong):
 		core.HandleValidationErrors(c, core.ValidationErrors{{Field: "node", Code: core.ErrInvalidParameter, Message: "节点名称、分组或标签长度超过限制"}})
 	case errors.Is(err, cluster.ErrNodeLifecycle):
