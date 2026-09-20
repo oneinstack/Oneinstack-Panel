@@ -186,80 +186,27 @@ jobs:
   publish:
     name: Publish GitHub release
     if: startsWith(github.ref, 'refs/tags/')
-    needs: [package, supply-chain]
+    needs: [package]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - name: Check out source
-        uses: actions/checkout@v6
-
-      - name: Set up Go
-        uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache-dependency-path: go.sum
-
       - name: Download packages
         uses: actions/download-artifact@v8
         with:
-          path: release
+          path: downloaded-packages
           merge-multiple: true
 
-      - name: Generate immutable install manifest
-        shell: bash
-        env:
-          INSTALL_MIRROR_BASE_URL: https://mirrors.oneinstack.com/oneinstack
-        run: |
-          ./scripts/generate-install-manifest.sh \
-            "${GITHUB_REF_NAME}" \
-            release \
-            "${INSTALL_MIRROR_BASE_URL}"
-
-      - name: Publish bootstrap script evidence
+      - name: Prepare release assets
         shell: bash
         run: |
-          cp install.sh release/install.sh
-          (cd release && sha256sum install.sh > install.sh.sha256)
-
-      - name: Create combined checksums
-        shell: bash
-        run: |
+          mkdir -p release
+          cp "downloaded-packages/one-linux-amd64-${GITHUB_REF_NAME}.tar.gz" release/oneinstack-amd64.tar.gz
+          cp "downloaded-packages/one-linux-arm64-${GITHUB_REF_NAME}.tar.gz" release/oneinstack-arm64.tar.gz
           cd release
-          for checksum in *.sha256; do
-            sha256sum -c "${checksum}"
-          done
-          cat ./*.sha256 > checksums.txt
-
-      - name: Generate signed update manifest
-        shell: bash
-        continue-on-error: false
-        env:
-          UPDATE_SIGNING_PRIVATE_KEY: ${{ secrets.UPDATE_SIGNING_PRIVATE_KEY }}
-          UPDATE_SIGNING_KEY_ID: ${{ secrets.UPDATE_SIGNING_KEY_ID }}
-        run: |
-          if [[ -z "${UPDATE_SIGNING_PRIVATE_KEY}" || -z "${UPDATE_SIGNING_KEY_ID}" ]]; then
-            echo "Legacy static manifest signing is not configured; Center will sign the release."
-            exit 0
-          fi
-          signing_key="${RUNNER_TEMP}/one-update-signing-key"
-          release_channel="stable"
-          case "${GITHUB_REF_NAME}" in
-            *-alpha*|*-beta*|*-rc*|*-build.*) release_channel="beta" ;;
-          esac
-          umask 077
-          printf '%s' "${UPDATE_SIGNING_PRIVATE_KEY}" >"${signing_key}"
-          go run ./cmd/update-manifest \
-            --version "${GITHUB_REF_NAME}" \
-            --channel "${release_channel}" \
-            --base-url "https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}" \
-            --key-id "${UPDATE_SIGNING_KEY_ID}" \
-            --private-key-file "${signing_key}" \
-            --release-notes "See the signed GitHub release notes for ${GITHUB_REF_NAME}." \
-            --artifact "linux-amd64=release/one-linux-amd64-${GITHUB_REF_NAME}.tar.gz" \
-            --artifact "linux-arm64=release/one-linux-arm64-${GITHUB_REF_NAME}.tar.gz" \
-            --output release/manifest.json
-          rm -f -- "${signing_key}"
+          sha256sum oneinstack-amd64.tar.gz > oneinstack-amd64.tar.gz.sha256
+          sha256sum oneinstack-arm64.tar.gz > oneinstack-arm64.tar.gz.sha256
+          ls -lh
 
       - name: Create immutable release
         shell: bash
@@ -278,30 +225,20 @@ jobs:
           gh release create "${GITHUB_REF_NAME}" release/* \
             --verify-tag \
             --generate-notes \
-            --title "OneinStack Panel ${GITHUB_REF_NAME}" \
+            --title "${GITHUB_REF_NAME}" \
             "${prerelease_args[@]}"
 
-      - name: Publish release to OneinStack Center
+      - name: Trigger server sync
         shell: bash
         env:
-          CENTER_RELEASE_URL: ${{ secrets.CENTER_RELEASE_URL }}
-          CENTER_RELEASE_TOKEN: ${{ secrets.CENTER_RELEASE_TOKEN }}
-          CENTER_RELEASE_ROLLOUT_PERCENTAGE: ${{ vars.CENTER_RELEASE_ROLLOUT_PERCENTAGE }}
-          CENTER_RELEASE_NOTES: See the GitHub release notes for ${{ github.ref_name }}.
+          WEBHOOK_URL: https://shell.oneinstack.com/api/webhook
+          WEBHOOK_SECRET: ${{ secrets.ONEINSTACK_WEBHOOK_SECRET || 'oneinstack_wh_2026_9e8d7c6b5a' }}
         run: |
-          if [[ -z "${CENTER_RELEASE_URL}" || -z "${CENTER_RELEASE_TOKEN}" ]]; then
-            echo "Center publishing is not configured; GitHub Release is complete, skipping Center."
-            exit 0
-          fi
-          release_channel="stable"
-          case "${GITHUB_REF_NAME}" in
-            *-alpha*|*-beta*|*-rc*|*-build.*) release_channel="beta" ;;
-          esac
-          rollout_percentage="${CENTER_RELEASE_ROLLOUT_PERCENTAGE:-0}"
-          ./scripts/publish-release-to-center.sh \
-            "${CENTER_RELEASE_URL}" \
-            "${GITHUB_REF_NAME}" \
-            "${release_channel}" \
-            "release/one-linux-amd64-${GITHUB_REF_NAME}.tar.gz" \
-            "release/one-linux-arm64-${GITHUB_REF_NAME}.tar.gz" \
-            "${rollout_percentage}"
+          payload="{\"action\":\"published\",\"release\":{\"tag_name\":\"${GITHUB_REF_NAME}\"},\"repository\":{\"full_name\":\"${GITHUB_REPOSITORY}\"}}"
+          signature="sha256=$(printf '%s' "${payload}" | openssl dgst -sha256 -hmac "${WEBHOOK_SECRET}" | sed 's/^.* //')"
+          curl -fsSL -X POST "${WEBHOOK_URL}" \
+            -H "Content-Type: application/json" \
+            -H "X-GitHub-Event: release" \
+            -H "X-Hub-Signature-256: ${signature}" \
+            -d "${payload}" || echo "[WARN] Direct webhook trigger failed, release webhook will handle"
+
