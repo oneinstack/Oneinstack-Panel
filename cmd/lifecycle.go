@@ -2,16 +2,26 @@ package main
 
 import (
 	"bufio"
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
+	"time"
 
 	"oneinstack/app"
 	"oneinstack/internal/i18n"
+	"oneinstack/internal/models"
+	"oneinstack/internal/services/componentstate"
+	softwareService "oneinstack/internal/services/software"
+	"oneinstack/internal/services/softwaretask"
 	systemservice "oneinstack/internal/services/system"
+	softwareHandler "oneinstack/router/handler/software"
+	"oneinstack/router/input"
 
 	"github.com/spf13/cobra"
 	"gorm.io/gorm"
@@ -34,7 +44,7 @@ var defaultCmd = &cobra.Command{
 
 var uninstallCmd = &cobra.Command{
 	Use:   "uninstall",
-	Short: "Uninstall the Panel while preserving data by default",
+	Short: "Uninstall the Panel; purge also removes managed components and owned data",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runCLIUninstall()
@@ -50,18 +60,18 @@ func printCLIMenu() error {
 		{"resetpwd", "Reset the administrator password"},
 		{"entrance", "Show the current panel access entry"},
 		{"server start|restart|stop", "Control the Panel server"},
-		{"uninstall [--purge --yes]", "Uninstall the Panel; preserve data by default"},
+		{"uninstall [--purge --yes]", "Uninstall the Panel; purge removes managed components and owned data"},
 		{"lang [en-US|zh-CN]", "Show or change CLI language"},
 		{"version", "Show version information"},
 	}
 	translations := map[string]string{
-		"Show access URL and bootstrap credentials":     "显示访问地址和初始化凭据",
-		"Reset the administrator password":              "修改管理员密码",
-		"Show the current panel access entry":           "显示当前面板访问入口",
-		"Control the Panel server":                      "控制面板服务",
-		"Uninstall the Panel; preserve data by default": "卸载面板，默认保留数据",
-		"Show or change CLI language":                   "查看或切换 CLI 语言",
-		"Show version information":                      "显示版本信息",
+		"Show access URL and bootstrap credentials":                            "显示访问地址和初始化凭据",
+		"Reset the administrator password":                                     "修改管理员密码",
+		"Show the current panel access entry":                                  "显示当前面板访问入口",
+		"Control the Panel server":                                             "控制面板服务",
+		"Uninstall the Panel; purge removes managed components and owned data": "卸载面板；purge 会同时删除受管组件及其所有权范围内的数据",
+		"Show or change CLI language":                                          "查看或切换 CLI 语言",
+		"Show version information":                                             "显示版本信息",
 	}
 	for _, item := range menuItems {
 		if activeCLILanguage == i18n.LocaleZhCN {
@@ -214,8 +224,8 @@ func cliLifecycleText(english, chinese string) string {
 func runCLIUninstall() error {
 	if uninstallPurge && !uninstallConfirmed {
 		return errors.New(cliLifecycleText(
-			"uninstall --purge permanently deletes Panel data; use --purge --yes",
-			"uninstall --purge 会永久删除面板数据，必须同时使用 --purge --yes",
+			"uninstall --purge permanently deletes Panel, managed components, and owned data; use --purge --yes",
+			"uninstall --purge 会永久删除 Panel、受管组件及其所有权范围内的数据，必须同时使用 --purge --yes",
 		))
 	}
 	if os.Geteuid() != 0 {
@@ -265,8 +275,48 @@ func runCLIUninstall() error {
 		return fmt.Errorf("inspect command link: %w", statErr)
 	}
 
+	var purgePlan []managedPurgeComponent
+	if uninstallPurge {
+		if err := app.Initialize(); err != nil {
+			return fmt.Errorf("%s: %w", cliLifecycleText(
+				"initialize Panel state before managed component purge",
+				"清理受管组件前初始化 Panel 状态失败",
+			), err)
+		}
+		var err error
+		purgePlan, err = prepareManagedComponentPurge(context.Background())
+		if err != nil {
+			return err
+		}
+		printManagedPurgePlan(purgePlan)
+	}
+
 	if err := stopManagedServices(serviceFiles); err != nil {
 		return err
+	}
+	if uninstallPurge {
+		// Close the small window between the first read-only preflight and
+		// stopping the Panel service. A just-finished install must be included in
+		// the purge plan instead of becoming a new orphan.
+		purgePlan, err = prepareManagedComponentPurge(context.Background())
+		if err != nil {
+			if restoreErr := restorePanelAfterFailedPurge(); restoreErr != nil {
+				return fmt.Errorf("%w; %s: %v", err, cliLifecycleText(
+					"restoring Panel service also failed",
+					"恢复 Panel 服务也失败",
+				), restoreErr)
+			}
+			return err
+		}
+		if err := executeManagedComponentPurge(context.Background(), purgePlan); err != nil {
+			if restoreErr := restorePanelAfterFailedPurge(); restoreErr != nil {
+				return fmt.Errorf("%w; %s: %v", err, cliLifecycleText(
+					"restoring Panel service also failed",
+					"恢复 Panel 服务也失败",
+				), restoreErr)
+			}
+			return err
+		}
 	}
 	for _, serviceFile := range serviceFiles {
 		if err := os.Remove(serviceFile); err != nil && !os.IsNotExist(err) {
@@ -278,12 +328,17 @@ func runCLIUninstall() error {
 	}
 
 	if uninstallPurge {
+		if database := app.DB(); database != nil {
+			if sqlDB, dbErr := database.DB(); dbErr == nil {
+				_ = sqlDB.Close()
+			}
+		}
 		if err := os.RemoveAll(basePath); err != nil {
 			return fmt.Errorf("purge Panel data: %w", err)
 		}
 		fmt.Println(cliLifecycleText(
-			"OneinStack Panel and its installation data were permanently removed.",
-			"OneinStack Panel 及安装目录内的数据已永久删除。",
+			"OneinStack Panel, managed components, and owned data were permanently removed.",
+			"OneinStack Panel、受管组件及其所有权范围内的数据已永久删除。",
 		))
 	} else {
 		if err := os.Remove(filepath.Join(basePath, "one")); err != nil && !os.IsNotExist(err) {
@@ -298,6 +353,874 @@ func runCLIUninstall() error {
 		_ = exec.Command("systemctl", "daemon-reload").Run()
 	}
 	return nil
+}
+
+type managedPurgeComponent struct {
+	Key          string
+	Component    string
+	Version      string
+	StateDir     string
+	CleanupPaths []string
+	Parameters   map[string]string
+	AdoptRowID   int
+	InstallTime  time.Time
+}
+
+func prepareManagedComponentPurge(ctx context.Context) ([]managedPurgeComponent, error) {
+	database := app.DB()
+	if database == nil {
+		return nil, errors.New(cliLifecycleText(
+			"Panel database is unavailable; refusing to purge managed components",
+			"Panel 数据库不可用，拒绝清理受管组件",
+		))
+	}
+	if err := ensureNoActiveManagedTasks(database); err != nil {
+		return nil, err
+	}
+
+	var rows []models.Software
+	if err := database.Where("installed = ?", true).
+		Order("install_time DESC, id DESC").
+		Find(&rows).Error; err != nil {
+		return nil, fmt.Errorf("list installed managed components: %w", err)
+	}
+	plans := make([]managedPurgeComponent, 0, len(rows))
+	seen := make(map[string]bool, len(rows))
+	for _, row := range rows {
+		key := strings.ToLower(strings.TrimSpace(row.Key))
+		component := strings.ToLower(strings.TrimSpace(row.Component))
+		if component == "" {
+			component = key
+		}
+		version := strings.TrimSpace(row.InstallVersion)
+		if version == "" {
+			version = strings.TrimSpace(row.Version)
+		}
+		if key == "" || component == "" || version == "" {
+			return nil, fmt.Errorf("%s", cliLifecycleText(
+				"installed component metadata is incomplete; refusing destructive purge",
+				"已安装组件元数据不完整，拒绝执行破坏性清理",
+			))
+		}
+		if seen[component] {
+			continue
+		}
+		seen[component] = true
+		stateRoot := "/var/lib/oneinstack/components"
+		runtimeValues := make(map[string]string)
+		if strings.TrimSpace(row.RuntimeParamsJSON) != "" {
+			if err := json.Unmarshal([]byte(row.RuntimeParamsJSON), &runtimeValues); err != nil {
+				return nil, fmt.Errorf("decode %s runtime ownership state: %w", component, err)
+			}
+			runtimeValues = canonicalizePurgeOwnership(runtimeValues)
+			if value := strings.TrimSpace(runtimeValues["component-state-dir"]); value != "" {
+				stateRoot = value
+			}
+		}
+		ownedPaths := []string(nil)
+		ownership, ownershipErr := componentstate.Read(filepath.Join(filepath.Clean(stateRoot), component))
+		if ownershipErr == nil {
+			if ownership.Component != component || ownership.SoftwareVersion != version {
+				return nil, fmt.Errorf("managed %s database and ownership state disagree", component)
+			}
+			for parameterKey, parameterValue := range ownership.Parameters {
+				if existing := strings.TrimSpace(runtimeValues[parameterKey]); existing != "" && existing != parameterValue {
+					return nil, fmt.Errorf("managed %s ownership state disagrees for %s", component, parameterKey)
+				}
+				runtimeValues[parameterKey] = parameterValue
+			}
+			ownedPaths = ownership.PurgePaths
+		} else if !os.IsNotExist(ownershipErr) {
+			return nil, fmt.Errorf("read %s Panel ownership state: %w", component, ownershipErr)
+		}
+		supplemental, recordedVersion, supplementalErr := readSupplementalManagedState(
+			filepath.Join(filepath.Clean(stateRoot), component),
+			component,
+		)
+		if supplementalErr != nil && !os.IsNotExist(supplementalErr) {
+			return nil, supplementalErr
+		}
+		if supplementalErr == nil {
+			if recordedVersion != "" && recordedVersion != version {
+				return nil, fmt.Errorf("managed %s database and component state versions disagree", component)
+			}
+			for parameterKey, parameterValue := range supplemental {
+				if existing := strings.TrimSpace(runtimeValues[parameterKey]); existing != "" && existing != parameterValue {
+					return nil, fmt.Errorf("managed %s ownership state disagrees for %s", component, parameterKey)
+				}
+				runtimeValues[parameterKey] = parameterValue
+			}
+		}
+		plan, err := buildManagedPurgePlan(key, component, version, stateRoot, runtimeValues, ownedPaths)
+		if err != nil {
+			return nil, err
+		}
+		plan.InstallTime = row.InstallTime
+		plans = append(plans, plan)
+	}
+	orphanPlans, err := discoverOrphanManagedComponentState(database, plans)
+	if err != nil {
+		return nil, err
+	}
+	plans = append(plans, orphanPlans...)
+	if err := validateUniqueManagedPurgeKeys(plans); err != nil {
+		return nil, err
+	}
+	sort.SliceStable(plans, func(i, j int) bool {
+		if !plans[i].InstallTime.Equal(plans[j].InstallTime) {
+			return plans[i].InstallTime.After(plans[j].InstallTime)
+		}
+		return plans[i].Component < plans[j].Component
+	})
+	installer := softwareService.NewInstaller()
+	for index := range plans {
+		plan := plans[index]
+		parameters := clonePurgeParameters(plan.Parameters)
+		parameters["data-policy"] = "delete"
+		parameters["delete-data-confirm"] = "true"
+		params := &input.RemoveParams{
+			Name: plan.Component, Version: plan.Version, DataPolicy: "delete", ConfirmDataDeletion: true,
+			Parameters: parameters,
+		}
+		resolvedValues, resolvedPaths, err := installer.ResolveUninstallOwnership(ctx, params)
+		if err != nil {
+			return nil, fmt.Errorf("preflight managed component %s uninstall: %w", plan.Component, err)
+		}
+		for key, value := range resolvedValues {
+			if strings.TrimSpace(plan.Parameters[key]) == "" {
+				plan.Parameters[key] = value
+			}
+		}
+		stateRoot := filepath.Dir(plan.StateDir)
+		if value := strings.TrimSpace(plan.Parameters["component-state-dir"]); value != "" {
+			stateRoot = value
+		}
+		ownedPaths := make([]string, 0, len(plan.CleanupPaths)+len(resolvedPaths))
+		for _, value := range plan.CleanupPaths {
+			if value != plan.StateDir {
+				ownedPaths = append(ownedPaths, value)
+			}
+		}
+		ownedPaths = append(ownedPaths, resolvedPaths...)
+		rebuilt, err := buildManagedPurgePlan(
+			plan.Key,
+			plan.Component,
+			plan.Version,
+			stateRoot,
+			plan.Parameters,
+			ownedPaths,
+		)
+		if err != nil {
+			return nil, err
+		}
+		rebuilt.AdoptRowID = plan.AdoptRowID
+		rebuilt.InstallTime = plan.InstallTime
+		plans[index] = rebuilt
+	}
+	return plans, nil
+}
+
+func executeManagedComponentPurge(ctx context.Context, plans []managedPurgeComponent) error {
+	database := app.DB()
+	if err := ensureNoActiveManagedTasks(database); err != nil {
+		return err
+	}
+	if len(plans) == 0 {
+		return nil
+	}
+	if err := adoptOrphanManagedComponents(database, plans); err != nil {
+		return err
+	}
+	requestedBy, err := purgeRequestedBy()
+	if err != nil {
+		return err
+	}
+	manager, err := softwareHandler.GetTaskManagerForLocalLifecycle()
+	if err != nil {
+		return fmt.Errorf("initialize managed component task runner: %w", err)
+	}
+	managerStopped := false
+	defer func() {
+		if managerStopped {
+			return
+		}
+		stopContext, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		_ = manager.Stop(stopContext)
+	}()
+	for _, plan := range plans {
+		fmt.Printf("%s\n", cliLifecycleText(
+			fmt.Sprintf("Purging managed component %s %s...", plan.Component, plan.Version),
+			fmt.Sprintf("正在彻底清理受管组件 %s %s……", plan.Component, plan.Version),
+		))
+		parameters := clonePurgeParameters(plan.Parameters)
+		parameters["data-policy"] = "delete"
+		parameters["delete-data-confirm"] = "true"
+		task, err := manager.SubmitUninstallWithParameters(
+			plan.Component,
+			plan.Version,
+			parameters,
+			requestedBy,
+		)
+		if err != nil {
+			return fmt.Errorf("submit %s purge task: %w", plan.Component, err)
+		}
+		completed, err := waitForPurgeTask(ctx, manager, task.ID)
+		if err != nil {
+			return err
+		}
+		if completed.Status != models.SoftwareTaskStatusSucceeded {
+			message := strings.TrimSpace(completed.ErrorMessage)
+			if message == "" {
+				message = strings.TrimSpace(completed.Message)
+			}
+			return fmt.Errorf("managed component %s purge failed [%s]: %s", plan.Component, completed.ErrorCode, message)
+		}
+		for _, ownedPath := range plan.CleanupPaths {
+			if err := os.RemoveAll(ownedPath); err != nil {
+				return fmt.Errorf("remove %s owned path %s: %w", plan.Component, ownedPath, err)
+			}
+		}
+	}
+	stopContext, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := manager.Stop(stopContext); err != nil {
+		return fmt.Errorf("stop managed component task runner: %w", err)
+	}
+	managerStopped = true
+	return nil
+}
+
+func ensureNoActiveManagedTasks(database *gorm.DB) error {
+	if database == nil {
+		return errors.New(cliLifecycleText(
+			"Panel database is unavailable; refusing to purge managed components",
+			"Panel 数据库不可用，拒绝清理受管组件",
+		))
+	}
+	var activeTasks int64
+	if err := database.Model(&models.SoftwareTask{}).
+		Where("status IN ?", models.ActiveSoftwareTaskStatuses()).
+		Count(&activeTasks).Error; err != nil {
+		return fmt.Errorf("check active component tasks: %w", err)
+	}
+	if activeTasks > 0 {
+		return fmt.Errorf("%s", cliLifecycleText(
+			"managed component tasks are still active; wait for them to finish before purge",
+			"仍有受管组件任务正在执行，请等待任务完成后再彻底卸载",
+		))
+	}
+	return nil
+}
+
+func clonePurgeParameters(values map[string]string) map[string]string {
+	result := make(map[string]string, len(values)+2)
+	for key, value := range values {
+		result[key] = value
+	}
+	return result
+}
+
+func canonicalizePurgeOwnership(values map[string]string) map[string]string {
+	result := make(map[string]string, len(values))
+	for key, value := range values {
+		canonical := componentstate.NormalizeParameterName(key)
+		if componentstate.IsStateRootParameter(canonical) {
+			canonical = "component-state-dir"
+		}
+		if canonical != "" && strings.TrimSpace(value) != "" {
+			result[canonical] = strings.TrimSpace(value)
+		}
+	}
+	return result
+}
+
+func validateUniqueManagedPurgeKeys(plans []managedPurgeComponent) error {
+	keyOwners := make(map[string]string)
+	for _, plan := range plans {
+		if owner := keyOwners[plan.Key]; owner != "" && owner != plan.Component {
+			return fmt.Errorf("multiple managed components share software key %s: %s, %s", plan.Key, owner, plan.Component)
+		}
+		keyOwners[plan.Key] = plan.Component
+	}
+	return nil
+}
+
+func waitForPurgeTask(ctx context.Context, manager *softwaretask.Manager, taskID string) (*models.SoftwareTask, error) {
+	updates, unsubscribe := manager.Subscribe(taskID)
+	defer unsubscribe()
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		task, err := manager.Get(taskID)
+		if err != nil {
+			return nil, fmt.Errorf("read managed purge task %s: %w", taskID, err)
+		}
+		if models.IsSoftwareTaskTerminal(task.Status) {
+			return task, nil
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-updates:
+		case <-ticker.C:
+		}
+	}
+}
+
+func purgeRequestedBy() (int64, error) {
+	var user models.User
+	database := app.DB()
+	result := database.Where("is_admin = ?", true).Order("id ASC").First(&user)
+	if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+		result = database.Order("id ASC").First(&user)
+	}
+	if result.Error != nil {
+		return 0, fmt.Errorf("resolve purge audit user: %w", result.Error)
+	}
+	return user.ID, nil
+}
+
+func validatePurgePath(value string) (string, error) {
+	if strings.ContainsAny(value, "\x00\r\n") {
+		return "", errors.New("owned path contains control characters")
+	}
+	cleaned := filepath.Clean(strings.TrimSpace(value))
+	if !filepath.IsAbs(cleaned) {
+		return "", errors.New("owned path must be absolute")
+	}
+	switch cleaned {
+	case "/", "/usr", "/usr/local", "/etc", "/var", "/var/lib", "/data", "/home", "/root", "/tmp":
+		return "", errors.New("owned path is too broad")
+	}
+	panelBase := filepath.Clean(app.GetBasePath())
+	if relative, err := filepath.Rel(cleaned, panelBase); err == nil &&
+		(relative == "." || (relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)))) {
+		return "", errors.New("owned path contains the Panel base directory")
+	}
+	return cleaned, nil
+}
+
+func uniquePaths(values []string) []string {
+	result := make([]string, 0, len(values))
+	seen := make(map[string]bool, len(values))
+	for _, value := range values {
+		if seen[value] {
+			continue
+		}
+		seen[value] = true
+		result = append(result, value)
+	}
+	return result
+}
+
+func buildManagedPurgePlan(
+	key string,
+	component string,
+	version string,
+	stateRoot string,
+	runtimeValues map[string]string,
+	ownedPaths []string,
+) (managedPurgeComponent, error) {
+	stateDir, err := validatePurgePath(filepath.Join(stateRoot, component))
+	if err != nil {
+		return managedPurgeComponent{}, fmt.Errorf("validate %s state directory: %w", component, err)
+	}
+	parameters := clonePurgeParameters(runtimeValues)
+	if strings.TrimSpace(parameters["component-state-dir"]) == "" {
+		parameters["component-state-dir"] = filepath.Clean(stateRoot)
+	}
+	cleanupPaths := make([]string, 0, len(ownedPaths)+6)
+	for _, value := range ownedPaths {
+		if value == "" {
+			continue
+		}
+		validated, err := validatePurgePath(value)
+		if err != nil {
+			return managedPurgeComponent{}, fmt.Errorf("validate %s declared owned path: %w", component, err)
+		}
+		cleanupPaths = append(cleanupPaths, validated)
+	}
+	for name, value := range parameters {
+		if !componentstate.IsLegacyPurgeParameter(name) || strings.TrimSpace(value) == "" {
+			continue
+		}
+		validated, err := validatePurgePath(value)
+		if err != nil {
+			return managedPurgeComponent{}, fmt.Errorf("validate %s legacy owned path %s: %w", component, name, err)
+		}
+		cleanupPaths = append(cleanupPaths, validated)
+	}
+	// Remove runtime data before the state marker. If a filesystem error occurs,
+	// the marker remains available for an explicit retry instead of orphaning
+	// the remaining path again.
+	cleanupPaths = append(cleanupPaths, stateDir)
+	return managedPurgeComponent{
+		Key:          key,
+		Component:    component,
+		Version:      version,
+		StateDir:     stateDir,
+		CleanupPaths: uniquePaths(cleanupPaths),
+		Parameters:   parameters,
+	}, nil
+}
+
+func discoverOrphanManagedComponentState(
+	database *gorm.DB,
+	plans []managedPurgeComponent,
+) ([]managedPurgeComponent, error) {
+	tracked := make(map[string]bool, len(plans))
+	stateRoots := map[string]bool{"/var/lib/oneinstack/components": true}
+	for _, plan := range plans {
+		tracked[plan.Component] = true
+		stateRoots[filepath.Dir(plan.StateDir)] = true
+	}
+	markers := []string{
+		componentstate.OwnershipFileName, "version", "installed.json", "installed", "ownership",
+		"installed-by-oneinstack", "package-installed-by-oneinstack", "managed",
+	}
+	orphans := make([]managedPurgeComponent, 0)
+	for stateRoot := range stateRoots {
+		entries, err := os.ReadDir(stateRoot)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("inspect managed component state %s: %w", stateRoot, err)
+		}
+		for _, entry := range entries {
+			component := strings.ToLower(strings.TrimSpace(entry.Name()))
+			if !entry.IsDir() || tracked[component] {
+				continue
+			}
+			stateDir := filepath.Join(stateRoot, entry.Name())
+			active := false
+			for _, marker := range markers {
+				if info, statErr := os.Lstat(filepath.Join(stateDir, marker)); statErr == nil && info.Mode().IsRegular() {
+					active = true
+					break
+				}
+			}
+			if !active {
+				continue
+			}
+			if entry.Name() != component || !validManagedComponentName(component) {
+				return nil, fmt.Errorf("invalid managed component state directory: %s", entry.Name())
+			}
+			version, runtimeValues, ownedPaths, err := readOrphanManagedState(stateDir, component)
+			if err != nil {
+				return nil, err
+			}
+			var catalogRow models.Software
+			result := database.Where("component = ? AND catalog_managed = ?", component, true).
+				Order("catalog_managed DESC, catalog_visible DESC, id DESC").
+				First(&catalogRow)
+			if result.Error != nil {
+				if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+					return nil, fmt.Errorf("%s", cliLifecycleText(
+						"managed state has no matching component catalog entry: "+component,
+						"受管状态在组件目录中没有对应条目："+component,
+					))
+				}
+				return nil, fmt.Errorf("look up orphan component %s: %w", component, result.Error)
+			}
+			plan, err := buildManagedPurgePlan(
+				strings.ToLower(strings.TrimSpace(catalogRow.Key)),
+				component,
+				version,
+				stateRoot,
+				runtimeValues,
+				ownedPaths,
+			)
+			if err != nil {
+				return nil, err
+			}
+			plan.AdoptRowID = catalogRow.Id
+			if info, statErr := os.Stat(stateDir); statErr == nil {
+				plan.InstallTime = info.ModTime()
+			}
+			orphans = append(orphans, plan)
+			tracked[component] = true
+		}
+	}
+	return orphans, nil
+}
+
+func validManagedComponentName(value string) bool {
+	if value == "" || len(value) > 64 {
+		return false
+	}
+	for _, character := range value {
+		if (character < 'a' || character > 'z') &&
+			(character < '0' || character > '9') &&
+			character != '-' && character != '_' && character != '.' {
+			return false
+		}
+	}
+	return value[0] != '-' && value[0] != '_' && value[0] != '.'
+}
+
+func readOrphanManagedState(stateDir, expectedComponent string) (string, map[string]string, []string, error) {
+	version := ""
+	parameters := make(map[string]string)
+	ownedPaths := []string(nil)
+	if ownership, err := componentstate.Read(stateDir); err == nil {
+		if ownership.Component != expectedComponent {
+			return "", nil, nil, fmt.Errorf("managed state component mismatch: directory=%s state=%s", expectedComponent, ownership.Component)
+		}
+		version = ownership.SoftwareVersion
+		parameters = canonicalizePurgeOwnership(ownership.Parameters)
+		ownedPaths = ownership.PurgePaths
+	} else if !os.IsNotExist(err) {
+		return "", nil, nil, fmt.Errorf("read %s Panel ownership state: %w", expectedComponent, err)
+	}
+
+	for _, marker := range []string{"version", "software-version", "requested-version", "runtime-version"} {
+		content, err := readRegularManagedStateFile(filepath.Join(stateDir, marker), 4096)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return "", nil, nil, fmt.Errorf("read %s managed %s: %w", expectedComponent, marker, err)
+		}
+		candidate := strings.TrimSpace(string(content))
+		if candidate == "" {
+			continue
+		}
+		if !validManagedVersion(candidate) {
+			return "", nil, nil, fmt.Errorf("managed %s %s is invalid", expectedComponent, marker)
+		}
+		if version != "" && (marker == "version" || marker == "software-version") && version != candidate {
+			return "", nil, nil, fmt.Errorf("managed %s version markers disagree", expectedComponent)
+		}
+		if version == "" {
+			version = candidate
+		}
+	}
+
+	supplemental, recordedVersion, err := readSupplementalManagedState(stateDir, expectedComponent)
+	if err != nil {
+		return "", nil, nil, err
+	}
+	if recordedVersion != "" && version != "" && recordedVersion != version {
+		return "", nil, nil, fmt.Errorf("managed %s version and install parameters disagree", expectedComponent)
+	}
+	if version == "" {
+		version = recordedVersion
+	}
+	for key, value := range supplemental {
+		if err := mergeManagedOwnershipParameter(parameters, key, value, expectedComponent); err != nil {
+			return "", nil, nil, err
+		}
+	}
+
+	// This is the sole component-specific compatibility bridge: very old
+	// firewalld state predates every version marker and the generic ownership
+	// file. New components must use panel-ownership.json instead.
+	if version == "" && expectedComponent == "firewalld" && managedFirewalldMarkerExists(stateDir) {
+		version = detectLegacyFirewalldRuntimeVersion()
+	}
+	if !validManagedVersion(version) {
+		return "", nil, nil, fmt.Errorf("%s", cliLifecycleText(
+			"managed "+expectedComponent+" state has no trustworthy software version; refusing purge",
+			"受管组件 "+expectedComponent+" 的状态中缺少可信软件版本，拒绝清理",
+		))
+	}
+	parameters["component-state-dir"] = filepath.Dir(stateDir)
+	return version, parameters, ownedPaths, nil
+}
+
+func mergeManagedOwnershipParameter(parameters map[string]string, key, value, component string) error {
+	normalized := componentstate.NormalizeParameterName(key)
+	value = strings.TrimSpace(value)
+	if normalized == "" || value == "" || componentstate.IsSensitiveParameter(normalized) {
+		return nil
+	}
+	if componentstate.IsStateRootParameter(normalized) {
+		normalized = "component-state-dir"
+	}
+	if existing := strings.TrimSpace(parameters[normalized]); existing != "" && existing != value {
+		return fmt.Errorf("managed %s ownership state disagrees for %s", component, normalized)
+	}
+	parameters[normalized] = value
+	return nil
+}
+
+func readSupplementalManagedState(stateDir, expectedComponent string) (map[string]string, string, error) {
+	parameters, err := readManagedScalarStateParameters(stateDir)
+	if err != nil {
+		return nil, "", fmt.Errorf("read %s scalar ownership state: %w", expectedComponent, err)
+	}
+	recordedVersion := ""
+	if content, err := readRegularManagedStateFile(filepath.Join(stateDir, "installed.json"), 64*1024); err == nil {
+		var state map[string]any
+		if err := json.Unmarshal(content, &state); err != nil {
+			return nil, "", fmt.Errorf("decode %s managed state: %w", expectedComponent, err)
+		}
+		for key, rawValue := range state {
+			value, ok := rawValue.(string)
+			if !ok || strings.TrimSpace(value) == "" {
+				continue
+			}
+			normalized := componentstate.NormalizeParameterName(key)
+			switch normalized {
+			case "component":
+				recorded := strings.ToLower(strings.TrimSpace(value))
+				if recorded != expectedComponent {
+					return nil, "", fmt.Errorf("managed state component mismatch: directory=%s state=%s", expectedComponent, recorded)
+				}
+			case "software-version":
+				recordedVersion = strings.TrimSpace(value)
+			default:
+				if err := mergeManagedOwnershipParameter(parameters, normalized, value, expectedComponent); err != nil {
+					return nil, "", err
+				}
+			}
+		}
+	} else if !os.IsNotExist(err) {
+		return nil, "", fmt.Errorf("read %s installed state: %w", expectedComponent, err)
+	}
+	installParameters, err := readManagedInstallParameters(filepath.Join(stateDir, "install-parameters"))
+	if err != nil {
+		return nil, "", fmt.Errorf("read %s managed install parameters: %w", expectedComponent, err)
+	}
+	if value := strings.TrimSpace(installParameters["software-version"]); value != "" {
+		if recordedVersion != "" && recordedVersion != value {
+			return nil, "", fmt.Errorf("managed %s software version states disagree", expectedComponent)
+		}
+		recordedVersion = value
+	}
+	delete(installParameters, "software-version")
+	for key, value := range installParameters {
+		if err := mergeManagedOwnershipParameter(parameters, key, value, expectedComponent); err != nil {
+			return nil, "", err
+		}
+	}
+	return parameters, recordedVersion, nil
+}
+
+func readManagedScalarStateParameters(stateDir string) (map[string]string, error) {
+	entries, err := os.ReadDir(stateDir)
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[string]string)
+	ignored := map[string]bool{
+		componentstate.OwnershipFileName: true,
+		"installed.json":                 true, "install-parameters": true,
+		"version": true, "software-version": true, "requested-version": true, "runtime-version": true,
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || ignored[entry.Name()] {
+			continue
+		}
+		name := componentstate.NormalizeParameterName(entry.Name())
+		if name == "" || componentstate.IsSensitiveParameter(name) {
+			continue
+		}
+		content, err := readRegularManagedStateFile(filepath.Join(stateDir, entry.Name()), 4096)
+		if err != nil {
+			if strings.Contains(err.Error(), "bounded regular file") {
+				continue
+			}
+			return nil, err
+		}
+		value := strings.TrimSpace(string(content))
+		if value == "" || strings.ContainsAny(value, "\x00\r\n") {
+			continue
+		}
+		result[name] = value
+	}
+	return result, nil
+}
+
+func managedFirewalldMarkerExists(stateDir string) bool {
+	info, err := os.Lstat(filepath.Join(stateDir, "installed-by-oneinstack"))
+	return err == nil && info.Mode().IsRegular()
+}
+
+func detectLegacyFirewalldRuntimeVersion() string {
+	type versionCommand struct {
+		name string
+		args []string
+	}
+	commands := []versionCommand{
+		{name: "rpm", args: []string{"-q", "--qf", "%{VERSION}", "firewalld"}},
+		{name: "dpkg-query", args: []string{"-W", "-f=${Version}", "firewalld"}},
+		{name: "firewall-cmd", args: []string{"--version"}},
+	}
+	for _, candidate := range commands {
+		if _, err := exec.LookPath(candidate.name); err != nil {
+			continue
+		}
+		probeContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		output, err := exec.CommandContext(probeContext, candidate.name, candidate.args...).Output()
+		cancel()
+		if err != nil {
+			continue
+		}
+		version := strings.TrimSpace(strings.SplitN(string(output), "\n", 2)[0])
+		if candidate.name == "dpkg-query" {
+			if separator := strings.IndexByte(version, ':'); separator >= 0 {
+				version = version[separator+1:]
+			}
+			if separator := strings.IndexByte(version, '-'); separator >= 0 {
+				version = version[:separator]
+			}
+		}
+		if validManagedVersion(version) {
+			return version
+		}
+	}
+	return ""
+}
+
+func readRegularManagedStateFile(path string, maximumSize int64) ([]byte, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() || info.Size() > maximumSize {
+		return nil, errors.New("state file must be a bounded regular file")
+	}
+	return os.ReadFile(path)
+}
+
+func validManagedVersion(value string) bool {
+	if value == "" || len(value) > 128 {
+		return false
+	}
+	for _, character := range value {
+		if (character < 'a' || character > 'z') &&
+			(character < 'A' || character > 'Z') &&
+			(character < '0' || character > '9') &&
+			character != '.' && character != '-' && character != '_' && character != '+' {
+			return false
+		}
+	}
+	return true
+}
+
+func readManagedInstallParameters(path string) (map[string]string, error) {
+	result := make(map[string]string)
+	content, err := readRegularManagedStateFile(path, 64*1024)
+	if os.IsNotExist(err) {
+		return result, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	scanner := bufio.NewScanner(strings.NewReader(string(content)))
+	for scanner.Scan() {
+		line := scanner.Text()
+		key, value, found := strings.Cut(line, "=")
+		if !found || !validManagedParameterKey(key) || strings.ContainsAny(value, "\x00\r\n") {
+			return nil, errors.New("install-parameters contains an invalid assignment")
+		}
+		compactKey := strings.ToUpper(strings.TrimSpace(key))
+		if strings.Contains(compactKey, "PASSWORD") || strings.Contains(compactKey, "SECRET") ||
+			strings.Contains(compactKey, "TOKEN") || strings.Contains(compactKey, "CREDENTIAL") ||
+			strings.HasSuffix(compactKey, "_KEY") || compactKey == "KEY" {
+			continue
+		}
+		canonical := strings.ToLower(strings.ReplaceAll(compactKey, "_", "-"))
+		result[canonical] = strings.TrimSpace(value)
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func validManagedParameterKey(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) > 128 {
+		return false
+	}
+	for index, character := range value {
+		if index == 0 && character >= '0' && character <= '9' {
+			return false
+		}
+		if (character < 'A' || character > 'Z') &&
+			(character < '0' || character > '9') && character != '_' {
+			return false
+		}
+	}
+	return true
+}
+
+func adoptOrphanManagedComponents(database *gorm.DB, plans []managedPurgeComponent) error {
+	if err := validateUniqueManagedPurgeKeys(plans); err != nil {
+		return err
+	}
+	return database.Transaction(func(tx *gorm.DB) error {
+		for _, plan := range plans {
+			if plan.AdoptRowID == 0 {
+				continue
+			}
+			runtimeJSON, err := json.Marshal(plan.Parameters)
+			if err != nil {
+				return fmt.Errorf("encode %s orphan ownership state: %w", plan.Component, err)
+			}
+			if err := tx.Model(&models.Software{}).
+				Where("`key` = ? AND id <> ?", plan.Key, plan.AdoptRowID).
+				Updates(map[string]any{
+					"installed":       false,
+					"install_version": "",
+					"runtime_params":  "",
+					"is_update":       false,
+				}).Error; err != nil {
+				return err
+			}
+			result := tx.Model(&models.Software{}).
+				Where("id = ? AND component = ?", plan.AdoptRowID, plan.Component).
+				Updates(map[string]any{
+					"installed":       true,
+					"install_version": plan.Version,
+					"runtime_params":  string(runtimeJSON),
+					"status":          models.Soft_Status_Suc,
+					"is_update":       false,
+					"install_time":    time.Now(),
+				})
+			if result.Error != nil {
+				return result.Error
+			}
+			if result.RowsAffected != 1 {
+				return fmt.Errorf("adopt managed orphan %s: catalog row changed", plan.Component)
+			}
+		}
+		return nil
+	})
+}
+
+func printManagedPurgePlan(plans []managedPurgeComponent) {
+	if len(plans) == 0 {
+		fmt.Println(cliLifecycleText(
+			"No installed managed components were recorded; purging Panel data only.",
+			"未记录已安装的受管组件，将仅清理 Panel 数据。",
+		))
+		return
+	}
+	fmt.Println(cliLifecycleText(
+		"The following managed components and their owned data will be permanently removed:",
+		"以下受管组件及其所有权范围内的数据将被永久删除：",
+	))
+	for _, plan := range plans {
+		fmt.Printf("  - %s %s\n", plan.Component, plan.Version)
+		for _, ownedPath := range plan.CleanupPaths {
+			fmt.Printf("      %s\n", ownedPath)
+		}
+	}
+}
+
+func restorePanelAfterFailedPurge() error {
+	if _, err := exec.LookPath("systemctl"); err != nil {
+		return nil
+	}
+	if _, err := os.Stat("/etc/systemd/system/one.service"); os.IsNotExist(err) {
+		return nil
+	}
+	return exec.Command("systemctl", "enable", "--now", "one.service").Run()
 }
 
 func safeUninstallBasePath(path string) (string, error) {

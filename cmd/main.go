@@ -98,7 +98,7 @@ func main() {
 	rootCmd.AddCommand(uninstallCmd)
 	defaultCmd.Flags().BoolVar(&defaultPeek, "peek", false, "Internal installer preview; do not consume bootstrap credentials")
 	defaultCmd.Flags().MarkHidden("peek")
-	uninstallCmd.Flags().BoolVar(&uninstallPurge, "purge", false, "Permanently remove Panel data")
+	uninstallCmd.Flags().BoolVar(&uninstallPurge, "purge", false, "Permanently remove Panel and managed component data")
 	uninstallCmd.Flags().BoolVar(&uninstallConfirmed, "yes", false, "Confirm permanent removal")
 
 	if err := rootCmd.Execute(); err != nil {

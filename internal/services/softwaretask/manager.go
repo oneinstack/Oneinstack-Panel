@@ -1193,7 +1193,7 @@ func (m *Manager) componentForKey(key string) (string, error) {
 	var catalogRow models.Software
 	if err := m.db.
 		Where("`key` = ? AND component <> ''", normalized).
-		Order("catalog_managed DESC, catalog_visible DESC, id DESC").
+		Order("installed DESC, catalog_managed DESC, catalog_visible DESC, id DESC").
 		First(&catalogRow).Error; err == nil {
 		return strings.ToLower(strings.TrimSpace(catalogRow.Component)), nil
 	} else if !errors.Is(err, gorm.ErrRecordNotFound) {

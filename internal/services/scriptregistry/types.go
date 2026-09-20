@@ -114,6 +114,7 @@ type Parameter struct {
 	Type        string `json:"type" yaml:"type"`
 	Required    bool   `json:"required,omitempty" yaml:"required,omitempty"`
 	Secret      bool   `json:"secret,omitempty" yaml:"secret,omitempty"`
+	Purge       bool   `json:"purge,omitempty" yaml:"purge,omitempty"`
 	Default     string `json:"default,omitempty" yaml:"default,omitempty"`
 	Description string `json:"description,omitempty" yaml:"description,omitempty"`
 }
@@ -355,6 +356,12 @@ func (m Manifest) validate() error {
 		}
 		if parameter.Secret && parameter.Default != "" {
 			return fmt.Errorf("secret parameter %s cannot have a default", parameter.Name)
+		}
+		if parameter.Purge && parameter.Type != "path" {
+			return fmt.Errorf("purge parameter %s must use path type", parameter.Name)
+		}
+		if parameter.Purge && IsServerOwnedInstallParameterName(parameter.Name) {
+			return fmt.Errorf("server-owned parameter %s cannot be a purge path", parameter.Name)
 		}
 	}
 	if len(m.Configuration.Fields) > 0 {

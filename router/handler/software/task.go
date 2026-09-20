@@ -218,6 +218,13 @@ func getTaskManager() (*softwaretask.Manager, error) {
 	return taskManager, nil
 }
 
+// GetTaskManagerForLocalLifecycle exposes the same durable component executor
+// to the trusted local CLI. Keeping purge on this manager prevents the CLI from
+// growing a second, unaudited component-uninstall path.
+func GetTaskManagerForLocalLifecycle() (*softwaretask.Manager, error) {
+	return getTaskManager()
+}
+
 func restoreManagedWebsiteConfigs(ctx context.Context) error {
 	webServerKeys := []string{"webserver", "nginx", "openresty", "tengine", "apache", "caddy"}
 	var installed models.Software

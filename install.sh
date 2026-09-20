@@ -71,7 +71,7 @@ OneinStack Panel 安装与卸载工具
   --allow-unsupported        允许在未验证的 Linux 发行版安装
 
 卸载选项:
-  --purge                    同时删除配置、数据库、日志和备份
+  --purge                    同时删除受管组件、组件数据、配置、数据库、日志和备份
   --yes                      与 --purge 一起使用，确认不可恢复删除
 
 测试选项:
@@ -110,7 +110,7 @@ Install options:
   --allow-unsupported        Allow installation on an unverified Linux distribution
 
 Uninstall options:
-  --purge                    Permanently delete configuration, database, logs, and backups
+  --purge                    Permanently delete managed components, owned data, configuration, database, logs, and backups
   --yes                      Confirm the irreversible deletion with --purge
 
 Test options:
@@ -1337,7 +1337,31 @@ stop_existing_panel_services() {
 
 run_uninstall() {
   if [[ "$purge" == true && "$assume_yes" == false ]]; then
-    die "--purge 会永久删除配置和数据库，必须同时使用 --yes"
+    die "--purge 会永久删除受管组件、组件数据、配置和数据库，必须同时使用 --yes"
+  fi
+
+  # Use the release binary when available so install.sh and `one uninstall`
+  # share the same component-aware lifecycle. Keep the isolated --root path
+  # below for packaging tests where systemd and a runnable Linux binary are not
+  # available.
+  if [[ -z "$root_prefix" ]]; then
+    local lifecycle_binary=""
+    if [[ -x "$binary_source" ]]; then
+      lifecycle_binary="$binary_source"
+    elif [[ -x "${install_dir}/one" ]]; then
+      lifecycle_binary="${install_dir}/one"
+    fi
+    if [[ -z "$lifecycle_binary" ]]; then
+      die "未找到可执行的 one 生命周期程序，拒绝绕过受管组件卸载流程"
+    fi
+    local -a lifecycle_args=(--lang "$cli_language" uninstall)
+    if [[ "$purge" == true ]]; then
+      lifecycle_args+=(--purge --yes)
+    fi
+    ONEINSTACK_BASE_PATH="$install_dir_runtime" \
+      ONEINSTACK_CONFIG_PATH="${install_dir_runtime}/config.yaml" \
+      "$lifecycle_binary" "${lifecycle_args[@]}"
+    return
   fi
 
   stop_existing_panel_services

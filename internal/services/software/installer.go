@@ -13,6 +13,7 @@ import (
 
 	"oneinstack/app"
 	"oneinstack/internal/models"
+	"oneinstack/internal/services/componentstate"
 	safeservice "oneinstack/internal/services/safe"
 	"oneinstack/internal/services/script"
 	"oneinstack/internal/services/scriptregistry"
@@ -343,6 +344,65 @@ func (installer *Installer) UninstallTask(
 		return logName, fmt.Errorf("清理卸载后的防火墙保护记录失败: %w", err)
 	}
 	return logName, nil
+}
+
+// ValidateUninstall resolves and validates the fixed uninstall package without
+// changing host state. Destructive multi-component workflows use this to fail
+// before removing the first component when any target cannot be safely
+// uninstalled.
+func (installer *Installer) ValidateUninstall(
+	ctx context.Context,
+	params *input.RemoveParams,
+) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	_, _, err := installer.getUninstallScript(ctx, params)
+	return err
+}
+
+// ResolveUninstallOwnership returns the effective, non-secret parameters and
+// purge-owned paths from the same signed package that will execute uninstall.
+// The caller can therefore support new components through manifest metadata
+// without adding component names or default directories to Panel code.
+func (installer *Installer) ResolveUninstallOwnership(
+	ctx context.Context,
+	params *input.RemoveParams,
+) (map[string]string, []string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	scriptInfo, _, err := installer.getUninstallScript(ctx, params)
+	if err != nil {
+		return nil, nil, err
+	}
+	values := make(map[string]string)
+	paths := make([]string, 0)
+	for _, spec := range scriptInfo.ParameterSpecs {
+		if spec.Secret || strings.EqualFold(strings.TrimSpace(spec.Type), "password") {
+			continue
+		}
+		envName := strings.TrimSpace(spec.Env)
+		if envName == "" {
+			envName = strings.ToUpper(strings.NewReplacer("-", "_", ".", "_").Replace(strings.TrimSpace(spec.Name)))
+		}
+		value := strings.TrimSpace(scriptInfo.Params[envName])
+		name := componentstate.NormalizeParameterName(spec.Name)
+		if name == "" || value == "" || componentstate.IsSensitiveParameter(name) {
+			continue
+		}
+		if scriptregistry.IsServerOwnedInstallParameterName(spec.Name) && !componentstate.IsStateRootParameter(spec.Name) {
+			continue
+		}
+		if componentstate.IsStateRootParameter(name) {
+			name = "component-state-dir"
+		}
+		values[name] = value
+		if spec.Purge || componentstate.IsLegacyPurgeParameter(name) {
+			paths = append(paths, value)
+		}
+	}
+	return values, paths, nil
 }
 
 func cleanupUninstalledBackend(softwareKey string) error {
@@ -932,6 +992,7 @@ func scriptInfoFromPackage(componentPackage scriptregistry.Package, actionName s
 			Type:     parameter.Type,
 			Required: parameter.Required,
 			Secret:   parameter.Secret,
+			Purge:    parameter.Purge,
 			Default:  parameter.Default,
 		})
 		if parameter.Default != "" {
@@ -1255,7 +1316,17 @@ func (installer *Installer) setScriptParams(scriptInfo *script.ScriptInfo, param
 		// Installation mode and offline root are server-owned values. They are
 		// injected only after the signed package has been fixed by Panel.
 		scriptInfo.Params["ONEINSTACK_INSTALL_MODE"] = installMode
-		componentState := strings.TrimSpace(os.Getenv("ONEINSTACK_COMPONENT_STATE"))
+		componentState := ""
+		if scriptInfo.ActionName == "uninstall" {
+			componentState = installParameterValue(
+				params.Parameters,
+				"component-state-dir",
+				"ONEINSTACK_COMPONENT_STATE",
+			)
+		}
+		if componentState == "" {
+			componentState = strings.TrimSpace(os.Getenv("ONEINSTACK_COMPONENT_STATE"))
+		}
 		if componentState == "" {
 			componentState = "/var/lib/oneinstack/components"
 		}

@@ -21,6 +21,7 @@ import (
 
 	"oneinstack/app"
 	"oneinstack/internal/models"
+	"oneinstack/internal/services/componentstate"
 	"oneinstack/internal/services/scriptregistry"
 	"oneinstack/router/input"
 
@@ -81,6 +82,7 @@ type ParameterSpec struct {
 	Type     string
 	Required bool
 	Secret   bool
+	Purge    bool
 	Default  string
 }
 
@@ -240,6 +242,13 @@ func (sm *ScriptManager) executeScriptSync(scriptInfo *ScriptInfo, scriptPath st
 	if err := sm.runInstallActions(scriptInfo, scriptPath, logFile); err != nil {
 		return filepath.Base(logPath), err
 	}
+	if strings.EqualFold(scriptInfo.ActionName, "uninstall") || scriptInfo.Type == ScriptTypeUninstall {
+		if err := removeManagedOwnership(scriptInfo); err != nil {
+			return filepath.Base(logPath), fmt.Errorf("STATE_REPAIR_REQUIRED: remove component ownership state: %w", err)
+		}
+	} else if err := persistManagedOwnership(scriptInfo, params, runtimeParametersFromScriptInfo(scriptInfo)); err != nil {
+		return filepath.Base(logPath), fmt.Errorf("STATE_REPAIR_REQUIRED: persist component ownership state: %w", err)
+	}
 
 	return filepath.Base(logPath), nil
 }
@@ -322,21 +331,28 @@ func (sm *ScriptManager) ExecuteScriptTask(
 	if strings.EqualFold(scriptInfo.ActionName, "uninstall") ||
 		scriptInfo.Type == ScriptTypeUninstall {
 		sm.updateSoftwareStatus(params, models.Soft_Status_Default, logName)
+		if err := removeManagedOwnership(scriptInfo); err != nil {
+			return logName, fmt.Errorf("STATE_REPAIR_REQUIRED: remove component ownership state: %w", err)
+		}
 		if err := sm.updateSoftwareInstallInfo(params, false, "", "", ""); err != nil {
 			return logName, fmt.Errorf("STATE_REPAIR_REQUIRED: persist software uninstall state: %w", err)
 		}
 		return logName, nil
 	}
 	sm.updateSoftwareStatus(params, models.Soft_Status_Suc, logName)
+	runtimeParameters := runtimeParametersFromScriptInfo(scriptInfo)
 	if err := sm.updateSoftwareInstallInfoWithRuntimeParameters(
 		params,
 		true,
 		params.Version,
-		runtimeParametersFromScriptInfo(scriptInfo),
+		runtimeParameters,
 		scriptInfo.PackageVersion,
 		effectiveSoftwarePort(params, scriptInfo),
 	); err != nil {
 		return logName, fmt.Errorf("STATE_REPAIR_REQUIRED: persist software install state: %w", err)
+	}
+	if err := persistManagedOwnership(scriptInfo, params, runtimeParameters); err != nil {
+		return logName, fmt.Errorf("STATE_REPAIR_REQUIRED: persist component ownership state: %w", err)
 	}
 	return logName, nil
 }
@@ -434,6 +450,13 @@ func (sm *ScriptManager) executeScriptAsync(scriptInfo *ScriptInfo, scriptPath s
 		status = models.Soft_Status_Default
 		installed = false
 		installVersion = ""
+	} else if strings.EqualFold(scriptInfo.ActionName, "uninstall") || scriptInfo.Type == ScriptTypeUninstall {
+		status = models.Soft_Status_Default
+		installed = false
+		installVersion = ""
+		if err := removeManagedOwnership(scriptInfo); err != nil {
+			fmt.Printf("Remove component ownership state failed: %v\n", err)
+		}
 	} else {
 		fmt.Println("Script execution successful")
 		status = models.Soft_Status_Suc
@@ -443,15 +466,20 @@ func (sm *ScriptManager) executeScriptAsync(scriptInfo *ScriptInfo, scriptPath s
 
 	// 更新最终状态
 	sm.updateSoftwareStatus(params, status, filepath.Base(logPath))
+	runtimeParameters := runtimeParametersFromScriptInfo(scriptInfo)
 	if err := sm.updateSoftwareInstallInfoWithRuntimeParameters(
 		params,
 		installed,
 		installVersion,
-		runtimeParametersFromScriptInfo(scriptInfo),
+		runtimeParameters,
 		scriptInfo.PackageVersion,
 		effectiveSoftwarePort(params, scriptInfo),
 	); err != nil {
 		fmt.Printf("Update software install state failed: %v\n", err)
+	} else if installed {
+		if err := persistManagedOwnership(scriptInfo, params, runtimeParameters); err != nil {
+			fmt.Printf("Persist component ownership state failed: %v\n", err)
+		}
 	}
 }
 
@@ -1415,69 +1443,22 @@ func persistedRuntimeParameters(params *input.InstallParams, port string, effect
 		return ""
 	}
 	values := make(map[string]string)
-	if strings.EqualFold(strings.TrimSpace(params.Key), "db") ||
-		strings.EqualFold(strings.TrimSpace(params.Key), "mysql") {
-		values["mysql-port"] = strings.TrimSpace(port)
-		values["mysql-bind-address"] = "127.0.0.1"
-		values["mysql-username"] = "root"
-		values["install-dir"] = "/usr/local/mysql"
-		values["data-dir"] = "/data/mysql"
-		values["log-dir"] = "/data/mysql"
-		values["run-user"] = "mysql"
-		values["run-group"] = "mysql"
-		values["component-state-dir"] = "/var/lib/oneinstack/components"
-	}
-	if strings.EqualFold(strings.TrimSpace(params.Key), "redis") {
-		values["redis-port"] = strings.TrimSpace(port)
-		values["redis-username"] = "default"
-		values["install-dir"] = "/usr/local/redis"
-		values["data-dir"] = "/data/redis"
-		values["component-state-dir"] = "/var/lib/oneinstack/components"
-	}
-	if strings.EqualFold(strings.TrimSpace(params.Key), "mongodb") {
-		values["mongodb-port"] = strings.TrimSpace(port)
-		values["mongodb-bind-ip"] = "127.0.0.1"
-		values["mongodb-admin-username"] = "root"
-		values["install-dir"] = "/usr/local/mongodb"
-		values["data-dir"] = "/data/mongodb"
-		values["log-dir"] = "/data/mongodb"
-		values["run-user"] = "mongod"
-		values["run-group"] = "mongod"
-		values["component-state-dir"] = "/var/lib/oneinstack/components"
-	}
 	for key, value := range params.Parameters {
-		if isSecretInstallParameter(key) || strings.TrimSpace(value) == "" {
+		if !persistableRuntimeParameter(key, value) {
 			continue
 		}
-		canonical, ok := canonicalRuntimeParameterName(key)
-		if !ok {
-			continue
-		}
-		values[canonical] = strings.TrimSpace(value)
+		values[componentstate.NormalizeParameterName(key)] = strings.TrimSpace(value)
 	}
 	for _, parameters := range effective {
 		for key, value := range parameters {
-			if isSecretInstallParameter(key) || strings.TrimSpace(value) == "" {
+			if !persistableRuntimeParameter(key, value) {
 				continue
 			}
-			canonical, ok := canonicalRuntimeParameterName(key)
-			if !ok {
-				continue
-			}
-			values[canonical] = strings.TrimSpace(value)
+			values[componentstate.NormalizeParameterName(key)] = strings.TrimSpace(value)
 		}
 	}
 	if strings.TrimSpace(port) != "" {
-		if strings.EqualFold(strings.TrimSpace(params.Key), "db") ||
-			strings.EqualFold(strings.TrimSpace(params.Key), "mysql") {
-			values["mysql-port"] = strings.TrimSpace(port)
-		} else if strings.EqualFold(strings.TrimSpace(params.Key), "mariadb") {
-			values["mariadb-port"] = strings.TrimSpace(port)
-		} else if strings.EqualFold(strings.TrimSpace(params.Key), "mongodb") {
-			values["mongodb-port"] = strings.TrimSpace(port)
-		} else {
-			values["port"] = strings.TrimSpace(port)
-		}
+		values["port"] = strings.TrimSpace(port)
 	}
 	if len(values) == 0 {
 		return ""
@@ -1487,6 +1468,80 @@ func persistedRuntimeParameters(params *input.InstallParams, port string, effect
 		return ""
 	}
 	return string(encoded)
+}
+
+func persistableRuntimeParameter(key, value string) bool {
+	normalized := componentstate.NormalizeParameterName(key)
+	if normalized == "" || strings.TrimSpace(value) == "" || componentstate.IsSensitiveParameter(normalized) {
+		return false
+	}
+	return !scriptregistry.IsServerOwnedInstallParameterName(key) || componentstate.IsStateRootParameter(key)
+}
+
+func persistManagedOwnership(info *ScriptInfo, params *input.InstallParams, runtimeParameters map[string]string) error {
+	if info == nil || params == nil || strings.EqualFold(info.ActionName, "uninstall") || isServiceControlAction(info.ActionName) {
+		return nil
+	}
+	parameters := make(map[string]string, len(runtimeParameters))
+	for key, value := range runtimeParameters {
+		if !persistableRuntimeParameter(key, value) {
+			continue
+		}
+		parameters[componentstate.NormalizeParameterName(key)] = strings.TrimSpace(value)
+	}
+	stateRoot := "/var/lib/oneinstack/components"
+	for key, value := range parameters {
+		if componentstate.IsStateRootParameter(key) && strings.TrimSpace(value) != "" {
+			stateRoot = strings.TrimSpace(value)
+			break
+		}
+	}
+	purgePaths := make([]string, 0)
+	for _, spec := range info.ParameterSpecs {
+		if spec.Secret || strings.EqualFold(strings.TrimSpace(spec.Type), "password") ||
+			(!spec.Purge && !componentstate.IsLegacyPurgeParameter(spec.Name)) {
+			continue
+		}
+		name := componentstate.NormalizeParameterName(spec.Name)
+		value := strings.TrimSpace(parameters[name])
+		if value != "" {
+			purgePaths = append(purgePaths, value)
+		}
+	}
+	state := &componentstate.Ownership{
+		SchemaVersion:   componentstate.OwnershipSchemaVersion,
+		Component:       strings.ToLower(strings.TrimSpace(info.Name)),
+		SoftwareVersion: strings.TrimSpace(params.Version),
+		PackageVersion:  strings.TrimSpace(info.PackageVersion),
+		Parameters:      parameters,
+		PurgePaths:      purgePaths,
+	}
+	return componentstate.Write(filepath.Join(filepath.Clean(stateRoot), state.Component), state)
+}
+
+func removeManagedOwnership(info *ScriptInfo) error {
+	if info == nil {
+		return nil
+	}
+	stateRoot := "/var/lib/oneinstack/components"
+	for _, spec := range info.ParameterSpecs {
+		if !componentstate.IsStateRootParameter(spec.Name) {
+			continue
+		}
+		envName := strings.TrimSpace(spec.Env)
+		if envName == "" {
+			envName = strings.ToUpper(strings.NewReplacer("-", "_", ".", "_").Replace(strings.TrimSpace(spec.Name)))
+		}
+		if value := strings.TrimSpace(info.Params[envName]); value != "" {
+			stateRoot = value
+		}
+		break
+	}
+	component := strings.ToLower(strings.TrimSpace(info.Name))
+	if component == "" {
+		return errors.New("component name is unavailable")
+	}
+	return componentstate.Remove(filepath.Join(filepath.Clean(stateRoot), component))
 }
 
 // runtimeParametersFromScriptInfo captures the values after manifest defaults
