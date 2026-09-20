@@ -715,6 +715,7 @@ func startServer() error {
 	defer stop()
 	clusterService.RunAgentSupervisor(ctx)
 	clusterService.RunNodeStatusSupervisor(ctx)
+	clusterService.RunPanelUpdateCheckSupervisor(ctx)
 	clusterService.RunRetentionSupervisor(ctx)
 	fail2banservice.DefaultManager().Start(ctx)
 	go safeservice.RunMaintenance(ctx)

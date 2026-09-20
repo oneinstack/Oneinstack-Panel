@@ -204,7 +204,10 @@ func (m *Manager) GetPanelUpdateStates(ids []uint) ([]PanelUpdateState, error) {
 		}
 		var check PanelUpdateCheckResult
 		if json.Unmarshal([]byte(checkTasks[i].Result), &check) == nil {
-			check.UpdateAvailable = panelVersionUpdateAvailable(state.CurrentVersion, check.LatestVersion)
+			if strings.TrimSpace(check.CurrentVersion) != "" {
+				state.CurrentVersion = check.CurrentVersion
+			}
+			check.UpdateAvailable = panelVersionUpdateAvailable(check.CurrentVersion, check.LatestVersion)
 			state.LastCheck = &check
 		}
 	}
@@ -318,9 +321,8 @@ func canonicalPanelVersion(value string) string {
 	if value == "" {
 		return ""
 	}
-	if !strings.HasPrefix(value, "v") {
-		value = "v" + value
-	}
+	value = strings.TrimPrefix(strings.ToLower(value), "v")
+	value = "v" + value
 	if !semver.IsValid(value) {
 		return ""
 	}
@@ -328,6 +330,11 @@ func canonicalPanelVersion(value string) string {
 }
 
 func exactPanelVersion(left, right string) bool {
+	leftCanonical := canonicalPanelVersion(left)
+	rightCanonical := canonicalPanelVersion(right)
+	if leftCanonical != "" && rightCanonical != "" {
+		return leftCanonical == rightCanonical
+	}
 	left = strings.TrimSpace(left)
 	right = strings.TrimSpace(right)
 	return left != "" && left == right
