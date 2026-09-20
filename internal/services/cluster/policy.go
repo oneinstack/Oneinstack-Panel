@@ -251,8 +251,23 @@ func (m *Manager) enrichNode(node *models.ClusterNode) error {
 		node.LifecycleStatus = models.ClusterNodeLifecycleDisabled
 	}
 	node.EffectiveStatus = effectiveNodeStatus(*node)
+	node.EndpointAddressMismatch = endpointAddressMismatch(*node)
 	node.MetricHealth = metricHealth(*node, policy)
 	return nil
+}
+
+func endpointAddressMismatch(node models.ClusterNode) bool {
+	configured := net.ParseIP(strings.TrimSpace(hostFromEndpoint(node.Endpoint)))
+	reported := net.ParseIP(strings.TrimSpace(node.IPAddress))
+	return configured != nil && reported != nil && !configured.Equal(reported)
+}
+
+func hostFromEndpoint(endpoint string) string {
+	parsed, err := url.Parse(strings.TrimSpace(endpoint))
+	if err != nil {
+		return ""
+	}
+	return parsed.Hostname()
 }
 
 func effectiveNodeStatus(node models.ClusterNode) string {

@@ -21,29 +21,30 @@ var (
 )
 
 type ClusterTaskSummary struct {
-	ID              uint64     `json:"id"`
-	NodeID          uint       `json:"nodeId"`
-	BatchID         string     `json:"batchId,omitempty"`
-	Type            string     `json:"type"`
-	WebsiteID       int64      `json:"websiteId,omitempty"`
-	WebsiteName     string     `json:"websiteName,omitempty"`
-	WebsiteDomain   string     `json:"websiteDomain,omitempty"`
-	WebsiteType     string     `json:"websiteType,omitempty"`
-	Status          string     `json:"status"`
-	Stage           string     `json:"stage,omitempty"`
-	Progress        int        `json:"progress"`
-	Attempts        int        `json:"attempts"`
-	MaxAttempts     int        `json:"maxAttempts"`
-	RequestedBy     int64      `json:"requestedBy,omitempty"`
-	CancelRequested bool       `json:"cancelRequested"`
-	Cancelable      bool       `json:"cancelable"`
-	Error           string     `json:"error,omitempty"`
-	ErrorCode       string     `json:"errorCode,omitempty"`
-	QueuedAt        time.Time  `json:"queuedAt"`
-	StartedAt       *time.Time `json:"startedAt,omitempty"`
-	FinishedAt      *time.Time `json:"finishedAt,omitempty"`
-	CreatedAt       time.Time  `json:"createdAt"`
-	UpdatedAt       time.Time  `json:"updatedAt"`
+	ID                     uint64     `json:"id"`
+	NodeID                 uint       `json:"nodeId"`
+	BatchID                string     `json:"batchId,omitempty"`
+	Type                   string     `json:"type"`
+	WebsiteID              int64      `json:"websiteId,omitempty"`
+	WebsiteName            string     `json:"websiteName,omitempty"`
+	WebsiteDomain          string     `json:"websiteDomain,omitempty"`
+	WebsiteType            string     `json:"websiteType,omitempty"`
+	Status                 string     `json:"status"`
+	Stage                  string     `json:"stage,omitempty"`
+	Progress               int        `json:"progress"`
+	Attempts               int        `json:"attempts"`
+	MaxAttempts            int        `json:"maxAttempts"`
+	RequestedBy            int64      `json:"requestedBy,omitempty"`
+	CancelRequested        bool       `json:"cancelRequested"`
+	Cancelable             bool       `json:"cancelable"`
+	Error                  string     `json:"error,omitempty"`
+	ErrorCode              string     `json:"errorCode,omitempty"`
+	DiagnosisOverallStatus string     `json:"diagnosisOverallStatus,omitempty"`
+	QueuedAt               time.Time  `json:"queuedAt"`
+	StartedAt              *time.Time `json:"startedAt,omitempty"`
+	FinishedAt             *time.Time `json:"finishedAt,omitempty"`
+	CreatedAt              time.Time  `json:"createdAt"`
+	UpdatedAt              time.Time  `json:"updatedAt"`
 }
 
 // ClusterTaskEvent is a safe, payload-free task timeline entry for the
@@ -266,6 +267,12 @@ func SummarizeTask(task models.ClusterTask) ClusterTaskSummary {
 	summary := ClusterTaskSummary{ID: task.ID, NodeID: task.NodeID, BatchID: task.BatchID, Type: task.Type, Status: task.Status, Stage: task.Stage, Progress: progress, Attempts: task.Attempts, MaxAttempts: task.MaxAttempts, RequestedBy: task.RequestedBy, CancelRequested: task.CancelRequested, Cancelable: task.Cancelable, Error: errorSummary, QueuedAt: task.QueuedAt, StartedAt: task.StartedAt, FinishedAt: task.FinishedAt, CreatedAt: task.CreatedAt, UpdatedAt: task.UpdatedAt}
 	if isPanelUpdateTask(task.Type) {
 		summary.ErrorCode = safePanelUpdateErrorCode(task.Error)
+	}
+	if task.Type == TaskNodeDiagnose && strings.TrimSpace(task.Result) != "" {
+		var result DiagnosisResult
+		if err := json.Unmarshal([]byte(task.Result), &result); err == nil {
+			summary.DiagnosisOverallStatus = result.OverallStatus
+		}
 	}
 	if task.Type == "website.sync" || task.Type == "website.content_sync" {
 		var payload struct {

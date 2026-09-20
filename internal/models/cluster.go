@@ -48,6 +48,7 @@ type ClusterNode struct {
 	LifecycleStatus          string              `gorm:"size:24;index;not null;default:active" json:"lifecycleStatus"`
 	ConnectionStatus         string              `gorm:"-" json:"connectionStatus"`
 	EffectiveStatus          string              `gorm:"-" json:"effectiveStatus"`
+	EndpointAddressMismatch  bool                `gorm:"-" json:"endpointAddressMismatch"`
 	MetricHealth             ClusterMetricHealth `gorm:"-" json:"metricHealth"`
 	LastRegisteredAt         *time.Time          `gorm:"index" json:"lastRegisteredAt,omitempty"`
 	LastSeenAt               *time.Time          `gorm:"index" json:"lastSeenAt,omitempty"`
