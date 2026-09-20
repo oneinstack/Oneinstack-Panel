@@ -6,6 +6,7 @@ import (
 	"oneinstack/core"
 	auditservice "oneinstack/internal/services/audit"
 	configsnapshot "oneinstack/internal/services/configsnapshot"
+	safeservice "oneinstack/internal/services/safe"
 	"oneinstack/internal/services/system"
 	configsnapshotHandler "oneinstack/router/handler/configsnapshot"
 	"oneinstack/router/input"
@@ -245,6 +246,13 @@ func UpdatePanelNetwork(c *gin.Context) {
 	if err != nil {
 		_ = configsnapshot.Default().Mark(snapshot.ID, "failed", err.Error())
 		configsnapshotHandler.RecordAudit(c, snapshot, "failed", err.Error())
+		if info, ok := safeservice.FirewallCollisionInfo(err, middleware.RequestLocale(c)); ok {
+			appErr := core.NewErrorWithDetail(core.ErrConflict, info.Title, info.Detail)
+			appErr.StableCode = info.StableCode
+			appErr.Field = info.Field
+			core.HandleError(c, appErr)
+			return
+		}
 		if errors.Is(err, system.ErrNetworkConfigInvalid) {
 			core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "面板访问配置无效"))
 			return

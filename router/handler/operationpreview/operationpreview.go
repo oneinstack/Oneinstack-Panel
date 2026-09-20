@@ -1771,6 +1771,13 @@ func buildDocument(ctx context.Context, operation string, payload json.RawMessag
 			return previewservice.Document{}, "", err
 		}
 		if fields["blocked"] != nil {
+			var value input.FirewallPingParam
+			if err := json.Unmarshal(payload, &value); err != nil {
+				return previewservice.Document{}, "", err
+			}
+			if err := safeservice.NewDefaultService().ValidatePingSetting(value.Blocked); err != nil {
+				return previewservice.Document{}, "", err
+			}
 			document.Actions = []previewservice.Action{{Type: "firewall", Name: "修改防火墙 Ping 响应", DisplayCommand: "由检测到的防火墙后端执行受控 ICMP 规则动作"}}
 			document.Impact = previewservice.Impact{NetworkRisk: true}
 			document.Rollback = previewservice.Rollback{Supported: true, Summary: "可通过反向设置 Ping 响应状态恢复"}
@@ -1818,10 +1825,26 @@ func buildDocument(ctx context.Context, operation string, payload json.RawMessag
 		document.Actions = []previewservice.Action{{Type: "firewall", Name: "修改端口转发", DisplayCommand: "由检测到的防火墙后端执行受控转发动作"}}
 		document.Impact = previewservice.Impact{ModifyDatabase: true, NetworkRisk: true}
 	case "firewall.toggle":
+		var value input.FirewallToggleParam
+		if err := json.Unmarshal(payload, &value); err != nil {
+			return previewservice.Document{}, "", err
+		}
+		if value.Enabled {
+			if err := safeservice.NewDefaultService().ValidateActiveConfiguration(ctx); err != nil {
+				return previewservice.Document{}, "", err
+			}
+		}
 		document.Actions = []previewservice.Action{{Type: "firewall", Name: "切换防火墙状态", DisplayCommand: "由检测到的防火墙后端执行启停动作"}}
 		document.Impact = previewservice.Impact{ModifyDatabase: true, NetworkRisk: true}
 		document.Rollback = previewservice.Rollback{Supported: false, Summary: "防火墙启停可能导致当前连接中断，请确认后执行", Unrecoverable: []string{"已断开的外部连接"}}
 	case "firewall.ping":
+		var value input.FirewallPingParam
+		if err := json.Unmarshal(payload, &value); err != nil {
+			return previewservice.Document{}, "", err
+		}
+		if err := safeservice.NewDefaultService().ValidatePingSetting(value.Blocked); err != nil {
+			return previewservice.Document{}, "", err
+		}
 		document.Actions = []previewservice.Action{{Type: "firewall", Name: "修改防火墙 Ping 响应", DisplayCommand: "由检测到的防火墙后端执行受控 ICMP 规则动作"}}
 		document.Impact = previewservice.Impact{NetworkRisk: true}
 		document.Rollback = previewservice.Rollback{Supported: true, Summary: "可通过反向设置 Ping 响应状态恢复"}

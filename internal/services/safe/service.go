@@ -189,7 +189,7 @@ func (s *Service) Add(ctx context.Context, rule *models.IptablesRule) error {
 	if err != nil {
 		return err
 	}
-	if err := s.rejectRuleCollision(normalized, 0); err != nil {
+	if err := s.rejectRuleCollision(ctx, normalized, 0); err != nil {
 		return err
 	}
 	return s.addLocked(ctx, rule)
@@ -287,7 +287,7 @@ func (s *Service) EnsureWebsitePort(
 	if err != nil {
 		return 0, false, err
 	}
-	if err := s.rejectRuleCollision(normalized, 0); err != nil {
+	if err := s.rejectRuleCollision(ctx, normalized, 0); err != nil {
 		return 0, false, err
 	}
 	if err := s.addLocked(ctx, rule); err != nil {
@@ -315,7 +315,7 @@ func (s *Service) Update(ctx context.Context, requested *models.IptablesRule) er
 		return err
 	}
 	applyNormalized(requested, normalized)
-	if err := s.rejectRuleCollision(normalized, old.ID); err != nil {
+	if err := s.rejectRuleCollision(ctx, normalized, old.ID); err != nil {
 		return err
 	}
 	requested.Backend = old.Backend
@@ -452,7 +452,7 @@ func (s *Service) setRuleStateLocked(ctx context.Context, id int64, enabled bool
 		if err != nil {
 			return err
 		}
-		if err := s.rejectRuleCollision(normalized, rule.ID); err != nil {
+		if err := s.rejectRuleCollision(ctx, normalized, rule.ID); err != nil {
 			return err
 		}
 	}
@@ -580,7 +580,7 @@ func (s *Service) ImportRules(ctx context.Context, rules []models.IptablesRule) 
 func (s *Service) ReplaceRules(ctx context.Context, rules []models.IptablesRule) error {
 	operationMu.Lock()
 	defer operationMu.Unlock()
-	if err := s.validateRuleSet(rules); err != nil {
+	if err := s.validateRuleSet(ctx, rules); err != nil {
 		return err
 	}
 	var current []models.IptablesRule
@@ -637,7 +637,7 @@ func (s *Service) SetEnabled(ctx context.Context, enabled bool, confirmation str
 		if err := s.deduplicateProtectedPortRules(ctx, state, s.panelPort); err != nil {
 			return err
 		}
-		if err := s.validateActiveCollisions(); err != nil {
+		if err := s.validateActiveCollisions(ctx); err != nil {
 			return err
 		}
 		created, operations, err := s.ensurePanelRule(ctx, state)
@@ -681,7 +681,7 @@ func (s *Service) reconcileEnabledRules(ctx context.Context, state backendState)
 	if err := s.deduplicateProtectedPortRules(ctx, state, s.panelPort); err != nil {
 		return err
 	}
-	if err := s.validateActiveCollisions(); err != nil {
+	if err := s.validateActiveCollisions(ctx); err != nil {
 		return err
 	}
 	var rules []models.IptablesRule
@@ -777,6 +777,9 @@ func (s *Service) ensureProtectedPort(ctx context.Context, state backendState, p
 	if err := s.deduplicateProtectedPortRules(ctx, state, port); err != nil {
 		return nil, nil, err
 	}
+	if err := s.rejectProtectedPortForwardCollision(port); err != nil {
+		return nil, nil, err
+	}
 	var existing models.IptablesRule
 	result := s.db.Where(
 		"protected = ? AND direction = ? AND protocol = ? AND strategy = ? AND ports = ? AND backend = ?",
@@ -813,7 +816,7 @@ func (s *Service) ensureProtectedPort(ctx context.Context, state backendState, p
 	if err != nil {
 		return nil, nil, err
 	}
-	if collisionErr := s.rejectRuleCollision(normalized, 0); collisionErr != nil &&
+	if collisionErr := s.rejectRuleCollision(ctx, normalized, 0); collisionErr != nil &&
 		!isRuleDuplicateCollision(collisionErr) {
 		return nil, nil, collisionErr
 	}
@@ -971,6 +974,9 @@ func (s *Service) SetPingBlocked(ctx context.Context, blocked bool) error {
 	state := s.detectBackend(ctx)
 	if !state.Installed {
 		return fmt.Errorf("%w: 未检测到受支持的防火墙", ErrUnsupported)
+	}
+	if err := s.rejectPingRuleCollision(blocked); err != nil {
+		return err
 	}
 	current, statusErr := s.pingBlocked(ctx, state)
 	if statusErr == nil && current == blocked {

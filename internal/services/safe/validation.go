@@ -1,6 +1,7 @@
 package safe
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"sort"
@@ -195,7 +196,7 @@ func (s *Service) ValidateRule(rule *models.IptablesRule) error {
 	if s.db == nil {
 		return nil
 	}
-	return s.rejectRuleCollision(normalized, rule.ID)
+	return s.rejectRuleCollision(context.Background(), normalized, rule.ID)
 }
 
 func splitValues(raw string) []string {

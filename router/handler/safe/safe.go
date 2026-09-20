@@ -29,7 +29,7 @@ func GetFirewallInfo(c *gin.Context) {
 		handleServiceError(c, err)
 		return
 	}
-	if collision, found, collisionErr := service.ActiveCollision(locale); collisionErr != nil {
+	if collision, found, collisionErr := service.ActiveCollision(c.Request.Context(), locale); collisionErr != nil {
 		handleServiceError(c, collisionErr)
 		return
 	} else if found {

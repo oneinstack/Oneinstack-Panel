@@ -178,9 +178,6 @@ func (s *Service) normalizePortForward(forward *models.FirewallPortForward) erro
 		forward.DestinationPort < 1 || forward.DestinationPort > 65535 {
 		return validationError("转发端口必须在 1-65535 之间")
 	}
-	if forward.SourcePort == s.panelPort {
-		return validationError("不能转发当前面板管理端口")
-	}
 	forward.DestinationIP = strings.TrimSpace(forward.DestinationIP)
 	ip := net.ParseIP(forward.DestinationIP)
 	if ip == nil || ip.To4() == nil || ip.IsUnspecified() {
@@ -222,7 +219,10 @@ func (s *Service) rejectPortForwardCollision(requested models.FirewallPortForwar
 			return newPortForwardTargetConflictError(candidate, requested)
 		}
 	}
-	return nil
+	if err := s.rejectPortForwardProtectedCollision(requested); err != nil {
+		return err
+	}
+	return s.rejectPortForwardRuleCollision(requested)
 }
 
 func (s *Service) validateActivePortForwardCollisions() error {
@@ -237,6 +237,12 @@ func (s *Service) validateActivePortForwardCollisions() error {
 		current := forwards[index]
 		if err := s.normalizePortForward(&current); err != nil {
 			continue
+		}
+		if err := s.rejectPortForwardProtectedCollision(current); err != nil {
+			return err
+		}
+		if err := s.rejectPortForwardRuleCollision(current); err != nil {
+			return err
 		}
 		for previous := 0; previous < index; previous++ {
 			candidate := forwards[previous]
