@@ -659,7 +659,10 @@ func componentServiceStatusesFor(
 			defer probes.Done()
 			probeCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 			defer cancel()
-			probe, probeErr := softwareService.NewInstaller().InspectService(
+			// A UI status read must describe the current host, not depend on a
+			// Center request completing successfully. The local probe also keeps
+			// Debian/offline hosts from changing state after a refresh.
+			probe, probeErr := softwareService.NewInstaller().InspectServiceLocal(
 				probeCtx,
 				definition.Component,
 				status.RecordedVersion,
