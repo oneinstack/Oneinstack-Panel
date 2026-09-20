@@ -2,11 +2,13 @@ package software
 
 import (
 	"encoding/json"
+	"fmt"
 	"net"
 	"oneinstack/app"
 	"oneinstack/internal/i18n"
 	"oneinstack/internal/models"
 	"oneinstack/internal/services"
+	"oneinstack/internal/services/componentstate"
 	"oneinstack/internal/services/scriptregistry"
 	"oneinstack/router/input"
 	"oneinstack/router/output"
@@ -17,6 +19,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"gorm.io/gorm"
 )
 
 var softwareCategoryOrder = []string{
@@ -33,6 +37,126 @@ var softwareCategoryOrder = []string{
 }
 
 const managedMySQLPublishedVersion = "8.0.45"
+
+const defaultComponentStateRoot = "/var/lib/oneinstack/components"
+
+func reconcileStalePhpMyAdminState(database *gorm.DB) error {
+	if database == nil {
+		return nil
+	}
+	var rows []models.Software
+	if err := database.
+		Where("installed = ? AND (`key` = ? OR component = ?)", true, "phpmyadmin", "phpmyadmin").
+		Find(&rows).Error; err != nil {
+		return fmt.Errorf("find installed phpMyAdmin state: %w", err)
+	}
+	for _, row := range rows {
+		stateExists, stateKnown := phpMyAdminManagedStateExists(row.RuntimeParamsJSON)
+		installDir, installDirKnown := phpMyAdminInstallDir(row.RuntimeParamsJSON)
+		if !stateKnown || !installDirKnown || stateExists {
+			continue
+		}
+		if _, err := os.Lstat(installDir); err == nil {
+			continue
+		} else if !os.IsNotExist(err) {
+			continue
+		}
+		if err := database.Model(&models.Software{}).
+			Where("id = ? AND installed = ?", row.Id, true).
+			Updates(map[string]interface{}{
+				"installed":                 false,
+				"install_version":           "",
+				"installed_package_version": "",
+				"http_port":                 "",
+				"runtime_params":            "",
+				"is_update":                 false,
+				"status":                    models.Soft_Status_Default,
+			}).Error; err != nil {
+			return fmt.Errorf("reconcile stale phpMyAdmin state: %w", err)
+		}
+	}
+	return nil
+}
+
+func reconcileStalePhpMyAdminStateForInstall(params *input.InstallParams) error {
+	if params == nil || !strings.EqualFold(strings.TrimSpace(params.Key), "phpmyadmin") {
+		return nil
+	}
+	return reconcileStalePhpMyAdminState(app.DB())
+}
+
+func phpMyAdminManagedStateExists(runtimeParameters string) (bool, bool) {
+	stateRoots, known := phpMyAdminStateRoots(runtimeParameters)
+	if !known {
+		return false, false
+	}
+	for _, root := range stateRoots {
+		state, err := componentstate.Read(filepath.Join(root, "phpmyadmin"))
+		if err == nil && state != nil {
+			return true, true
+		}
+		if err != nil && !os.IsNotExist(err) {
+			return false, false
+		}
+	}
+	return false, true
+}
+
+func phpMyAdminStateRoots(runtimeParameters string) ([]string, bool) {
+	stateRoots := []string{defaultComponentStateRoot}
+	if configured := strings.TrimSpace(os.Getenv("ONEINSTACK_COMPONENT_STATE")); configured != "" {
+		stateRoots = append(stateRoots, configured)
+	}
+	var persisted map[string]string
+	if strings.TrimSpace(runtimeParameters) != "" {
+		if err := json.Unmarshal([]byte(runtimeParameters), &persisted); err != nil {
+			return nil, false
+		}
+		for key, value := range persisted {
+			if !componentstate.IsStateRootParameter(key) {
+				continue
+			}
+			if strings.TrimSpace(value) != "" {
+				stateRoots = append(stateRoots, strings.TrimSpace(value))
+			}
+		}
+	}
+	seen := make(map[string]struct{}, len(stateRoots))
+	roots := make([]string, 0, len(stateRoots))
+	for _, root := range stateRoots {
+		root = filepath.Clean(strings.TrimSpace(root))
+		if root == "" || root == "." || !filepath.IsAbs(root) || root == "/" {
+			return nil, false
+		}
+		if _, exists := seen[root]; exists {
+			continue
+		}
+		seen[root] = struct{}{}
+		roots = append(roots, root)
+	}
+	return roots, true
+}
+
+func phpMyAdminInstallDir(runtimeParameters string) (string, bool) {
+	if strings.TrimSpace(runtimeParameters) == "" {
+		return "", false
+	}
+	var persisted map[string]string
+	if err := json.Unmarshal([]byte(runtimeParameters), &persisted); err != nil {
+		return "", false
+	}
+	for key, value := range persisted {
+		if componentstate.NormalizeParameterName(key) != "install-dir" {
+			continue
+		}
+		path := filepath.Clean(strings.TrimSpace(value))
+		if path == "." || path == "/" || !filepath.IsAbs(path) {
+			return "", false
+		}
+		return path, true
+	}
+	return "", false
+}
 
 type Category struct {
 	Name  string `json:"name"`
@@ -132,6 +256,9 @@ func boolToInt(value bool) int {
 }
 
 func RunInstall(p *input.InstallParams) (string, error) {
+	if err := reconcileStalePhpMyAdminStateForInstall(p); err != nil {
+		return "", err
+	}
 	op, err := NewInstallOP(p)
 	if err != nil {
 		return "", err

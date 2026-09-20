@@ -71,6 +71,9 @@ func (installer *Installer) Install(params *input.InstallParams, async bool) (st
 }
 
 func (installer *Installer) install(ctx context.Context, params *input.InstallParams, async bool) (string, error) {
+	if err := reconcileStalePhpMyAdminStateForInstall(params); err != nil {
+		return "", err
+	}
 	NormalizeInstallParams(params)
 	if err := resolveFirewalldInstallParams(ctx, params); err != nil {
 		return "", err
@@ -109,6 +112,9 @@ func (installer *Installer) InstallTask(
 	logPath string,
 	observer script.ExecutionObserver,
 ) (string, error) {
+	if err := reconcileStalePhpMyAdminStateForInstall(params); err != nil {
+		return "", err
+	}
 	NormalizeInstallParams(params)
 	if err := resolveFirewalldInstallParams(ctx, params); err != nil {
 		return "", err
