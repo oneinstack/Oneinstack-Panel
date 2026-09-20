@@ -182,6 +182,9 @@ func configureCLILanguage(cmd *cobra.Command) error {
 }
 
 func isLinuxNonRoot() bool {
+	if os.Getenv("ONEINSTACK_ALLOW_NON_ROOT") == "1" {
+		return false
+	}
 	return runtime.GOOS == "linux" && os.Geteuid() != 0
 }
 
