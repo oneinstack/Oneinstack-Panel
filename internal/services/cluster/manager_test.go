@@ -2,6 +2,8 @@ package cluster
 
 import (
 	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,7 +15,8 @@ import (
 
 func testManager(t *testing.T) *Manager {
 	t.Helper()
-	db, err := gorm.Open(sqlite.Open("file:cluster-service-test?mode=memory&cache=shared"), &gorm.Config{})
+	dbName := strings.NewReplacer("/", "_", " ", "_", ":", "_").Replace(t.Name())
+	db, err := gorm.Open(sqlite.Open(fmt.Sprintf("file:cluster-service-test-%s?mode=memory&cache=shared", dbName)), &gorm.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
