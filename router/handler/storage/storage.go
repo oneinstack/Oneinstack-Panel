@@ -318,8 +318,17 @@ func GetRedisKeys(c *gin.Context) {
 }
 
 func Info(c *gin.Context) {
-	mysqlInstall, redisInstall := storage.CheckStorage()
-	core.HandleSuccess(c, map[string]interface{}{"mysql": mysqlInstall, "redis": redisInstall})
+	info, err := storage.GetStorageEnvironmentInfo()
+	if err != nil {
+		core.HandleError(c, core.WrapError(err, core.ErrInternalError, "查询数据库环境状态失败"))
+		return
+	}
+	core.HandleSuccess(c, map[string]interface{}{
+		"mysql":       info.MySQL.Installed,
+		"redis":       info.Redis.Installed,
+		"mysqlStatus": info.MySQL,
+		"redisStatus": info.Redis,
+	})
 }
 
 func RevealLibraryCredential(c *gin.Context) {

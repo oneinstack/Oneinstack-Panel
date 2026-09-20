@@ -358,18 +358,112 @@ func RedisKeyList(param *input.QueryParam) (*PaginatedKeysInfo, error) {
 	return op.GetPaginatedKeyInfo(context.Background(), param.RDB, "", param.Page.Page, param.PageSize)
 }
 
+type StorageEnvironmentStatus struct {
+	Installed              bool   `json:"installed"`
+	State                  string `json:"state"`
+	ReasonCode             string `json:"reasonCode,omitempty"`
+	Reason                 string `json:"reason,omitempty"`
+	ConnectionCount        int    `json:"connectionCount"`
+	LocalConnectionCount   int    `json:"localConnectionCount"`
+	ManagedConnectionCount int    `json:"managedConnectionCount"`
+	LibraryCount           int64  `json:"libraryCount"`
+}
+
+type StorageEnvironmentInfo struct {
+	MySQL StorageEnvironmentStatus `json:"mysql"`
+	Redis StorageEnvironmentStatus `json:"redis"`
+}
+
+// GetStorageEnvironmentInfo is the single database-page capability source.
+// Installed means installed and recorded by the Panel software catalog;
+// connection/library records are reported separately so an externally
+// managed or stale database is not silently presented as a Panel-managed one.
+func GetStorageEnvironmentInfo() (StorageEnvironmentInfo, error) {
+	database := app.DB()
+	if database == nil {
+		return StorageEnvironmentInfo{}, errors.New("storage database is not initialized")
+	}
+	mysqlInstalled, err := installedStorageSoftware(database, models.DatabaseSoftwareKeys)
+	if err != nil {
+		return StorageEnvironmentInfo{}, err
+	}
+	redisInstalled, err := installedStorageSoftware(database, []string{"redis"})
+	if err != nil {
+		return StorageEnvironmentInfo{}, err
+	}
+	mysql, err := storageEnvironmentStatus(database, "mysql", mysqlInstalled)
+	if err != nil {
+		return StorageEnvironmentInfo{}, err
+	}
+	redis, err := storageEnvironmentStatus(database, "redis", redisInstalled)
+	if err != nil {
+		return StorageEnvironmentInfo{}, err
+	}
+	return StorageEnvironmentInfo{MySQL: mysql, Redis: redis}, nil
+}
+
 func CheckStorage() (bool, bool) {
-	// 检查是否安装了Mysql
-	mysql := &models.Software{}
-	mysqlTx := app.DB().Model(&models.Software{}).Where("`key` IN ? AND installed = ?", models.DatabaseSoftwareKeys, 1).First(mysql)
-	mysqlInstalled := mysqlTx.Error == nil && mysqlTx.RowsAffected > 0
+	info, err := GetStorageEnvironmentInfo()
+	if err != nil {
+		return false, false
+	}
+	return info.MySQL.Installed, info.Redis.Installed
+}
 
-	// 检查是否安装了Redis
-	redis := &models.Software{}
-	redisTx := app.DB().Model(&models.Software{}).Where("`key` = ? AND installed = ?", "redis", 1).First(redis)
-	redisInstalled := redisTx.Error == nil && redisTx.RowsAffected > 0
+func installedStorageSoftware(database *gorm.DB, keys []string) (bool, error) {
+	var installed int64
+	err := database.Model(&models.Software{}).
+		Where("installed = ?", true).
+		Where("LOWER(`key`) IN ? OR LOWER(`component`) IN ?", keys, keys).
+		Count(&installed).Error
+	return installed > 0, err
+}
 
-	return mysqlInstalled, redisInstalled
+func storageEnvironmentStatus(
+	database *gorm.DB,
+	typeName string,
+	installed bool,
+) (StorageEnvironmentStatus, error) {
+	status := StorageEnvironmentStatus{
+		Installed: installed,
+		State:     "unavailable",
+	}
+	var connections []models.Storage
+	if err := database.Where("type = ?", typeName).Find(&connections).Error; err != nil {
+		return StorageEnvironmentStatus{}, err
+	}
+	status.ConnectionCount = len(connections)
+	for _, connection := range connections {
+		addr := strings.ToLower(strings.TrimSpace(connection.Addr))
+		if addr == "127.0.0.1" || addr == "localhost" || addr == "::1" {
+			status.LocalConnectionCount++
+		}
+		if strings.Contains(connection.Remark, "面板自动管理") {
+			status.ManagedConnectionCount++
+		}
+	}
+	if err := database.Model(&models.Library{}).
+		Where("type = ?", typeName).
+		Count(&status.LibraryCount).Error; err != nil {
+		return StorageEnvironmentStatus{}, err
+	}
+
+	switch {
+	case installed && status.ConnectionCount > 0:
+		status.State = "managed"
+	case installed:
+		status.State = "managed_unconnected"
+		status.ReasonCode = typeName + "_connection_missing"
+		status.Reason = "组件已纳入面板管理，但尚未记录可用数据库连接"
+	case status.ConnectionCount > 0 || status.LibraryCount > 0:
+		status.State = "unmanaged"
+		status.ReasonCode = "database_exists_unmanaged"
+		status.Reason = "检测到已有数据库或连接记录，但该数据库服务未纳入面板软件管理"
+	default:
+		status.ReasonCode = typeName + "_not_installed"
+		status.Reason = "未检测到受面板管理的数据库服务或可用连接"
+	}
+	return status, nil
 }
 
 func DeleteLibrary(param *input.DeleteLibraryParam) error {
