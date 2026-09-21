@@ -19,6 +19,103 @@ command -v curl >/dev/null 2>&1 || {
   exit 1
 }
 
+write_smoke_runtime_config() {
+  local source_config="$1"
+  local destination_config="$2"
+  local smoke_port="$3"
+  local smoke_default_path="$4"
+  local smoke_web_path="$5"
+  local smoke_log_path="$6"
+  local smoke_data_path="$7"
+  local smoke_certificate_path="$8"
+  local smoke_acme_path="$9"
+
+  # Viper accepts configuration keys case-insensitively, but this smoke test
+  # must also tolerate template formatting changes such as quoted values.
+  # Rewrite only the system fields that must stay inside the isolated runtime.
+  awk \
+    -v port="$smoke_port" \
+    -v default_path="$smoke_default_path" \
+    -v web_path="$smoke_web_path" \
+    -v log_path="$smoke_log_path" \
+    -v data_path="$smoke_data_path" \
+    -v certificate_path="$smoke_certificate_path" \
+    -v acme_path="$smoke_acme_path" '
+      /^[[:space:]]*system:[[:space:]]*(#.*)?$/ {
+        in_system = 1
+        print
+        next
+      }
+      in_system && /^[^[:space:]]/ { in_system = 0 }
+      in_system && tolower($0) ~ /^[[:space:]]*port:[[:space:]]*/ {
+        sub(/:.*/, ": \"" port "\"")
+      }
+      in_system && tolower($0) ~ /^[[:space:]]*defaultpath:[[:space:]]*/ {
+        sub(/:.*/, ": \"" default_path "\"")
+      }
+      in_system && tolower($0) ~ /^[[:space:]]*webpath:[[:space:]]*/ {
+        sub(/:.*/, ": \"" web_path "\"")
+      }
+      in_system && tolower($0) ~ /^[[:space:]]*logpath:[[:space:]]*/ {
+        sub(/:.*/, ": \"" log_path "\"")
+      }
+      in_system && tolower($0) ~ /^[[:space:]]*datapath:[[:space:]]*/ {
+        sub(/:.*/, ": \"" data_path "\"")
+      }
+      in_system && tolower($0) ~ /^[[:space:]]*certificatepath:[[:space:]]*/ {
+        sub(/:.*/, ": \"" certificate_path "\"")
+      }
+      in_system && tolower($0) ~ /^[[:space:]]*acmechallengepath:[[:space:]]*/ {
+        sub(/:.*/, ": \"" acme_path "\"")
+      }
+      { print }
+    ' "$source_config" >"$destination_config"
+}
+
+system_config_value() {
+  local config_file="$1"
+  local expected_key
+  expected_key="$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')"
+
+  awk -v expected_key="$expected_key" '
+    /^[[:space:]]*system:[[:space:]]*(#.*)?$/ { in_system = 1; next }
+    in_system && /^[^[:space:]]/ { exit }
+    !in_system { next }
+    {
+      line = $0
+      sub(/^[[:space:]]*/, "", line)
+      separator = index(line, ":")
+      if (separator < 2 || tolower(substr(line, 1, separator - 1)) != expected_key) {
+        next
+      }
+      value = substr(line, separator + 1)
+      sub(/^[[:space:]]*/, "", value)
+      sub(/[[:space:]]*#.*/, "", value)
+      if (value ~ /^\"/) {
+        sub(/^\"/, "", value)
+        sub(/\"$/, "", value)
+      } else if (value ~ /^\047/) {
+        sub(/^\047/, "", value)
+        sub(/\047$/, "", value)
+      }
+      print value
+      exit
+    }
+  ' "$config_file"
+}
+
+assert_system_config_value() {
+  local config_file="$1"
+  local key="$2"
+  local expected_value="$3"
+  local actual_value
+  actual_value="$(system_config_value "$config_file" "$key")"
+  if [[ "$actual_value" != "$expected_value" ]]; then
+    echo "Smoke runtime config did not set system.${key} to its isolated value" >&2
+    exit 1
+  fi
+}
+
 temporary_base="${TMPDIR:-/tmp}"
 temporary_base="${temporary_base%/}"
 work_dir="$(mktemp -d "${temporary_base}/one-install-smoke.XXXXXX")"
@@ -66,15 +163,24 @@ installed_binary="${stage_root}/usr/local/one/one"
 
 port="${ONEINSTACK_SMOKE_PORT:-18089}"
 runtime_config="${runtime_dir}/config.yaml"
-sed \
-  -e "s|port: 8089|port: ${port}|" \
-  -e "s|defaultPath: '/'|defaultPath: '${runtime_dir}/data/'|" \
-  -e "s|webPath: '/data/wwwroot/'|webPath: '${runtime_dir}/data/wwwroot/'|" \
-  -e "s|logPath: '/data/wwwlogs/'|logPath: '${runtime_dir}/data/wwwlogs/'|" \
-  -e "s|dataPath: '/data/db/'|dataPath: '${runtime_dir}/data/db/'|" \
-  -e "s|certificatePath: '/usr/local/one/certificates'|certificatePath: '${runtime_dir}/certificates'|" \
-  -e "s|acmeChallengePath: '/usr/local/one/acme-webroot'|acmeChallengePath: '${runtime_dir}/acme-webroot'|" \
-  "${package_root}/config.yaml" >"$runtime_config"
+write_smoke_runtime_config \
+  "${package_root}/config.yaml" \
+  "$runtime_config" \
+  "$port" \
+  "${runtime_dir}/data/" \
+  "${runtime_dir}/data/wwwroot/" \
+  "${runtime_dir}/data/wwwlogs/" \
+  "${runtime_dir}/data/db/" \
+  "${runtime_dir}/certificates" \
+  "${runtime_dir}/acme-webroot"
+
+assert_system_config_value "$runtime_config" port "$port"
+assert_system_config_value "$runtime_config" defaultPath "${runtime_dir}/data/"
+assert_system_config_value "$runtime_config" webPath "${runtime_dir}/data/wwwroot/"
+assert_system_config_value "$runtime_config" logPath "${runtime_dir}/data/wwwlogs/"
+assert_system_config_value "$runtime_config" dataPath "${runtime_dir}/data/db/"
+assert_system_config_value "$runtime_config" certificatePath "${runtime_dir}/certificates"
+assert_system_config_value "$runtime_config" acmeChallengePath "${runtime_dir}/acme-webroot"
 
 password_file="${runtime_dir}/admin-password"
 (umask 077 && printf '%s\n' 'P0laris!2026' >"$password_file")
