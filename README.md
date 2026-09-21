@@ -26,8 +26,9 @@ OneinStack Panel is an open-source Linux server operations panel for websites, s
 Deploy independent Panel instances and configure the role from **Multi-node Management**:
 
 - **Controller** manages nodes, metrics, task dispatch, and website rollout.
-- **Node** enables the node-mode switch and stores the controller URL and token in the backend configuration.
+- **Node** enables the node-mode switch and stores the controller URL (without `/v1` suffix) and token in the backend configuration.
 - Changes are applied by a runtime supervisor without manually editing YAML or restarting the service.
+- For cloud VMs with NAT, use the public IP or domain as the endpoint; the system handles public/private IP differences gracefully.
 
 Supported task types are `software.install`, `software.uninstall`, `service.start`, `service.stop`, `service.restart`, `service.reload`, `system.command`, `file.upload`, `database.sync`, `website.sync`, and `website.content_sync`.
 

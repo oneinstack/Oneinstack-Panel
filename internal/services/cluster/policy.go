@@ -251,15 +251,82 @@ func (m *Manager) enrichNode(node *models.ClusterNode) error {
 		node.LifecycleStatus = models.ClusterNodeLifecycleDisabled
 	}
 	node.EffectiveStatus = effectiveNodeStatus(*node)
-	node.EndpointAddressMismatch = endpointAddressMismatch(*node)
+	node.EndpointAddressMismatch, node.EndpointAddressNote = analyzeEndpointAddress(*node)
 	node.MetricHealth = metricHealth(*node, policy)
 	return nil
 }
 
-func endpointAddressMismatch(node models.ClusterNode) bool {
+// analyzeEndpointAddress checks if the endpoint IP differs from the node's
+// reported IP address. For cloud VMs this is common: the endpoint may use a
+// public IP while the node reports its private interface IP. Returns whether
+// there's a mismatch and an explanatory note.
+func analyzeEndpointAddress(node models.ClusterNode) (bool, string) {
 	configured := net.ParseIP(strings.TrimSpace(hostFromEndpoint(node.Endpoint)))
 	reported := net.ParseIP(strings.TrimSpace(node.IPAddress))
-	return configured != nil && reported != nil && !configured.Equal(reported)
+
+	// No mismatch if endpoint is a hostname (not an IP) or node hasn't reported yet
+	if configured == nil || reported == nil {
+		return false, ""
+	}
+
+	// IPs match - no issue
+	if configured.Equal(reported) {
+		return false, ""
+	}
+
+	// Check if this looks like a public/private IP NAT scenario
+	configuredPrivate := isPrivateIP(configured)
+	reportedPrivate := isPrivateIP(reported)
+
+	if !configuredPrivate && reportedPrivate {
+		// Endpoint uses public IP, node reports private IP - typical cloud NAT
+		if node.Status == models.ClusterNodeStatusOnline {
+			return false, "节点报告私有 IP 而端点使用公网 IP，但心跳正常，NAT 配置有效。"
+		}
+		return true, "节点报告私有 IP 而端点使用公网 IP，且节点离线。请检查 NAT、安全组和防火墙配置。"
+	}
+
+	if configuredPrivate && !reportedPrivate {
+		// Endpoint uses private IP, node reports public IP - unusual but possible
+		if node.Status == models.ClusterNodeStatusOnline {
+			return false, "端点配置为私有 IP 而节点报告公网 IP，但心跳正常。"
+		}
+		return true, "端点配置为私有 IP 而节点报告公网 IP，且节点离线。请确认网络可达性。"
+	}
+
+	// Both are private or both are public but different
+	if node.Status == models.ClusterNodeStatusOnline {
+		return false, "端点 IP 与节点报告 IP 不同，但心跳正常。可能有多网卡或代理配置。"
+	}
+	return true, "端点 IP 与节点报告 IP 不同，且节点离线。请检查端点地址配置。"
+}
+
+// isPrivateIP checks if an IP address is in a private range (RFC 1918, RFC 4193)
+func isPrivateIP(ip net.IP) bool {
+	if ip4 := ip.To4(); ip4 != nil {
+		// 10.0.0.0/8
+		if ip4[0] == 10 {
+			return true
+		}
+		// 172.16.0.0/12
+		if ip4[0] == 172 && ip4[1] >= 16 && ip4[1] <= 31 {
+			return true
+		}
+		// 192.168.0.0/16
+		if ip4[0] == 192 && ip4[1] == 168 {
+			return true
+		}
+		// 100.64.0.0/10 (Carrier-grade NAT)
+		if ip4[0] == 100 && ip4[1] >= 64 && ip4[1] <= 127 {
+			return true
+		}
+		return false
+	}
+	// IPv6 unique local (fc00::/7)
+	if len(ip) == net.IPv6len && (ip[0]&0xfe) == 0xfc {
+		return true
+	}
+	return false
 }
 
 func hostFromEndpoint(endpoint string) string {
