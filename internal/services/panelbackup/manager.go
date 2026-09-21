@@ -157,6 +157,17 @@ func (m *Manager) Create(ctx context.Context, options CreateOptions) (BackupInfo
 		IncludesCertificates: options.IncludeCertificates,
 		Files:                make([]ManifestFile, 0, len(sources)),
 	}
+	// Website records keep the Web Server that owns each site's configuration,
+	// so they may legitimately differ from the runtime that is active while the
+	// backup is created. Persist the detected runtime in the archive instead of
+	// inferring it from historical website ownership during restore preflight.
+	if m.config.WebServerDetector != nil {
+		detectedComponent := ""
+		if detected, detectErr := m.config.WebServerDetector(); detectErr == nil {
+			detectedComponent = normalizeWebServerComponent(detected)
+		}
+		manifest.WebServerComponent = &detectedComponent
+	}
 	for _, source := range sources {
 		manifest.Files = append(manifest.Files, ManifestFile{
 			Path: source.Path, Kind: source.Kind, Size: source.Size,
@@ -740,12 +751,19 @@ func (m *Manager) prepare(ctx context.Context, info BackupInfo, passphrase strin
 		cleanup()
 		return preparedBackup{}, withValidationStage(ValidationStageDatabase, err)
 	}
-	webServerComponent, err := readBackupWebServerComponent(
-		filepath.Join(extractedRoot, "database", "myadmin.db"),
-	)
-	if err != nil {
-		cleanup()
-		return preparedBackup{}, withValidationStage(ValidationStageDatabase, err)
+	webServerComponent := ""
+	if manifest.WebServerComponent != nil {
+		webServerComponent = normalizeWebServerComponent(*manifest.WebServerComponent)
+	} else {
+		// Backups created before the runtime was recorded in the manifest still
+		// use the database-derived compatibility check.
+		webServerComponent, err = readBackupWebServerComponent(
+			filepath.Join(extractedRoot, "database", "myadmin.db"),
+		)
+		if err != nil {
+			cleanup()
+			return preparedBackup{}, withValidationStage(ValidationStageDatabase, err)
+		}
 	}
 	return preparedBackup{
 		Manifest: manifest, Root: extractedRoot, Cleanup: cleanup,
@@ -994,6 +1012,12 @@ func validateManifest(manifest Manifest, maxFiles int, maxBytes int64) error {
 		strings.TrimSpace(manifest.PanelVersion) == "" ||
 		len(manifest.Files) < 2 || len(manifest.Files) > maxFiles {
 		return ErrInvalidBackup
+	}
+	if manifest.WebServerComponent != nil {
+		if component := strings.TrimSpace(*manifest.WebServerComponent); component != "" &&
+			normalizeWebServerComponent(component) == "" {
+			return ErrInvalidBackup
+		}
 	}
 	seen := make(map[string]struct{}, len(manifest.Files))
 	var total int64

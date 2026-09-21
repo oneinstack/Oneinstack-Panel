@@ -73,20 +73,6 @@ func (a *Agent) executePanelUpdateApply(ctx context.Context, task *models.Cluste
 	} else if needed {
 		return nil, errors.New(panelUpdateErrorRecoveryRequired)
 	}
-	result, err := manager.Check(ctx)
-	if err != nil {
-		return nil, errors.New(panelUpdateErrorCode(err))
-	}
-	if !result.UpdateAvailable {
-		return nil, errors.New(panelUpdateErrorNoUpdate)
-	}
-	if !result.Compatible {
-		return nil, errors.New(panelUpdateErrorIncompatible)
-	}
-	if !exactPanelVersion(payload.ExpectedVersion, result.LatestVersion) {
-		return nil, errors.New(panelUpdateErrorTargetChanged)
-	}
-
 	receipt := deferredPanelUpdateReceipt{
 		TaskID: task.ID, ExpectedVersion: strings.TrimSpace(payload.ExpectedVersion), CreatedAt: time.Now().UTC(),
 	}
@@ -102,7 +88,7 @@ func (a *Agent) executePanelUpdateApply(ctx context.Context, task *models.Cluste
 			_ = clearDeferredPanelUpdateReceipt()
 		}
 	}()
-	if err := a.reportPanelUpdateProgress(ctx, task.ID, "starting_update", 45); err != nil {
+	if err := a.reportPanelUpdateProgress(ctx, task.ID, "checking", 45); err != nil {
 		return nil, errors.New(panelUpdateErrorStartFailed)
 	}
 	if _, err := manager.QueueApplicationUpdate(ctx, payload.ExpectedVersion); err != nil {
@@ -300,8 +286,20 @@ func panelUpdateErrorCode(err error) string {
 		return panelUpdateErrorIncompatible
 	case errors.Is(err, panelupdate.ErrTargetChanged):
 		return panelUpdateErrorTargetChanged
-	case errors.Is(err, panelupdate.ErrInvalidManifest):
-		return panelUpdateErrorFailed
+	case errors.Is(err, panelupdate.ErrCenterTimeout):
+		return panelUpdateErrorCenterTimeout
+	case errors.Is(err, panelupdate.ErrCenterUnavailable):
+		return panelUpdateErrorCenterUnavailable
+	case errors.Is(err, panelupdate.ErrDownloadFailed):
+		return panelUpdateErrorDownloadFailed
+	case errors.Is(err, panelupdate.ErrVerificationFailed), errors.Is(err, panelupdate.ErrInvalidManifest):
+		return panelUpdateErrorVerificationFailed
+	case errors.Is(err, panelupdate.ErrPreflightFailed):
+		return panelUpdateErrorPreflightFailed
+	case errors.Is(err, panelupdate.ErrServiceFailed):
+		return panelUpdateErrorServiceFailed
+	case errors.Is(err, panelupdate.ErrHealthCheckFailed):
+		return panelUpdateErrorHealthCheckFailed
 	default:
 		return panelUpdateErrorFailed
 	}
@@ -310,23 +308,47 @@ func panelUpdateErrorCode(err error) string {
 func panelUpdateTerminalErrorCode(status panelupdate.Status) string {
 	switch status.State {
 	case panelupdate.StateRolledBack:
+		if code := panelUpdateStatusErrorCode(status.ErrorCode); code != "" {
+			return code
+		}
 		return panelUpdateErrorRolledBack
 	case panelupdate.StateRollbackFailed:
 		return panelUpdateErrorRollbackFailed
 	case panelupdate.StateRecoveryNeeded:
 		return panelUpdateErrorRecoveryRequired
 	case panelupdate.StateFailed:
-		switch status.ErrorCode {
-		case panelupdate.StatusErrorNoUpdate:
-			return panelUpdateErrorNoUpdate
-		case panelupdate.StatusErrorIncompatible:
-			return panelUpdateErrorIncompatible
-		case panelupdate.StatusErrorTargetChanged:
-			return panelUpdateErrorTargetChanged
-		default:
-			return panelUpdateErrorFailed
+		if code := panelUpdateStatusErrorCode(status.ErrorCode); code != "" {
+			return code
 		}
+		return panelUpdateErrorFailed
 	default:
 		return panelUpdateErrorResultUnknown
+	}
+}
+
+func panelUpdateStatusErrorCode(code string) string {
+	switch code {
+	case panelupdate.StatusErrorNoUpdate:
+		return panelUpdateErrorNoUpdate
+	case panelupdate.StatusErrorIncompatible:
+		return panelUpdateErrorIncompatible
+	case panelupdate.StatusErrorTargetChanged:
+		return panelUpdateErrorTargetChanged
+	case panelupdate.StatusErrorCenterTimeout:
+		return panelUpdateErrorCenterTimeout
+	case panelupdate.StatusErrorCenterUnavailable:
+		return panelUpdateErrorCenterUnavailable
+	case panelupdate.StatusErrorDownloadFailed:
+		return panelUpdateErrorDownloadFailed
+	case panelupdate.StatusErrorVerificationFailed:
+		return panelUpdateErrorVerificationFailed
+	case panelupdate.StatusErrorPreflightFailed:
+		return panelUpdateErrorPreflightFailed
+	case panelupdate.StatusErrorServiceFailed:
+		return panelUpdateErrorServiceFailed
+	case panelupdate.StatusErrorHealthCheckFailed:
+		return panelUpdateErrorHealthCheckFailed
+	default:
+		return ""
 	}
 }

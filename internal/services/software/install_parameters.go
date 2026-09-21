@@ -12,6 +12,32 @@ import (
 	"oneinstack/router/output"
 )
 
+func hydratePersistedInstallParameters(runtimeJSON string, params []*output.SoftParam) {
+	if strings.TrimSpace(runtimeJSON) == "" {
+		return
+	}
+	values := make(map[string]string)
+	if json.Unmarshal([]byte(runtimeJSON), &values) != nil {
+		return
+	}
+	for _, parameter := range params {
+		if parameter == nil || strings.EqualFold(strings.TrimSpace(parameter.Types), "password") {
+			continue
+		}
+		target := compactInstallParameterName(parameter.Key)
+		for key, value := range values {
+			candidate := compactInstallParameterName(key)
+			if candidate == target || (target == "port" && strings.HasSuffix(candidate, "port")) ||
+				(candidate == "port" && strings.HasSuffix(target, "port")) {
+				if strings.TrimSpace(value) != "" {
+					parameter.Default = value
+				}
+				break
+			}
+		}
+	}
+}
+
 const (
 	defaultNginxInstallDir     = "/usr/local/nginx"
 	defaultNginxStateDir       = "/var/lib/oneinstack/components/nginx"

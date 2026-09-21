@@ -70,11 +70,12 @@ type Software struct {
 	Version                 string    `json:"version"`
 	Params                  string    `json:"params"`
 	RuntimeParamsJSON       string    `json:"-" gorm:"column:runtime_params;type:text"`
+	CredentialCiphertext    string    `json:"-" gorm:"column:credential_params_ciphertext;type:text"`
 	Log                     string    `json:"log"`
 	Script                  string    `json:"script"`
 	HttpPort                string    `json:"http_prot"`
 	HttpsPort               string    `json:"https_prot"`
-	RootPwd                 string    `json:"root_pwd"`
+	RootPwd                 string    `json:"-"`
 	UrlPath                 string    `json:"url_path"`
 	InstallVersion          string    `json:"install_version"`
 	InstalledPackageVersion string    `json:"installedPackageVersion" gorm:"size:64"`

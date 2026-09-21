@@ -24,17 +24,24 @@ const (
 
 	panelUpdateConfirmation = "UPDATE PANEL"
 
-	panelUpdateErrorDisabled         = "PANEL_UPDATE_DISABLED"
-	panelUpdateErrorNoUpdate         = "PANEL_UPDATE_NO_UPDATE"
-	panelUpdateErrorIncompatible     = "PANEL_UPDATE_INCOMPATIBLE"
-	panelUpdateErrorTargetChanged    = "PANEL_UPDATE_TARGET_CHANGED"
-	panelUpdateErrorBusy             = "PANEL_UPDATE_BUSY"
-	panelUpdateErrorRecoveryRequired = "PANEL_UPDATE_RECOVERY_REQUIRED"
-	panelUpdateErrorStartFailed      = "PANEL_UPDATE_START_FAILED"
-	panelUpdateErrorRolledBack       = "PANEL_UPDATE_ROLLED_BACK"
-	panelUpdateErrorRollbackFailed   = "PANEL_UPDATE_ROLLBACK_FAILED"
-	panelUpdateErrorFailed           = "PANEL_UPDATE_FAILED"
-	panelUpdateErrorResultUnknown    = "PANEL_UPDATE_RESULT_UNKNOWN"
+	panelUpdateErrorDisabled           = "PANEL_UPDATE_DISABLED"
+	panelUpdateErrorNoUpdate           = "PANEL_UPDATE_NO_UPDATE"
+	panelUpdateErrorIncompatible       = "PANEL_UPDATE_INCOMPATIBLE"
+	panelUpdateErrorTargetChanged      = "PANEL_UPDATE_TARGET_CHANGED"
+	panelUpdateErrorBusy               = "PANEL_UPDATE_BUSY"
+	panelUpdateErrorRecoveryRequired   = "PANEL_UPDATE_RECOVERY_REQUIRED"
+	panelUpdateErrorStartFailed        = "PANEL_UPDATE_START_FAILED"
+	panelUpdateErrorCenterTimeout      = "PANEL_UPDATE_CENTER_TIMEOUT"
+	panelUpdateErrorCenterUnavailable  = "PANEL_UPDATE_CENTER_UNAVAILABLE"
+	panelUpdateErrorDownloadFailed     = "PANEL_UPDATE_DOWNLOAD_FAILED"
+	panelUpdateErrorVerificationFailed = "PANEL_UPDATE_VERIFICATION_FAILED"
+	panelUpdateErrorPreflightFailed    = "PANEL_UPDATE_PREFLIGHT_FAILED"
+	panelUpdateErrorServiceFailed      = "PANEL_UPDATE_SERVICE_FAILED"
+	panelUpdateErrorHealthCheckFailed  = "PANEL_UPDATE_HEALTH_CHECK_FAILED"
+	panelUpdateErrorRolledBack         = "PANEL_UPDATE_ROLLED_BACK"
+	panelUpdateErrorRollbackFailed     = "PANEL_UPDATE_ROLLBACK_FAILED"
+	panelUpdateErrorFailed             = "PANEL_UPDATE_FAILED"
+	panelUpdateErrorResultUnknown      = "PANEL_UPDATE_RESULT_UNKNOWN"
 )
 
 var (
@@ -106,6 +113,13 @@ func safePanelUpdateErrorCode(value string) string {
 		panelUpdateErrorBusy,
 		panelUpdateErrorRecoveryRequired,
 		panelUpdateErrorStartFailed,
+		panelUpdateErrorCenterTimeout,
+		panelUpdateErrorCenterUnavailable,
+		panelUpdateErrorDownloadFailed,
+		panelUpdateErrorVerificationFailed,
+		panelUpdateErrorPreflightFailed,
+		panelUpdateErrorServiceFailed,
+		panelUpdateErrorHealthCheckFailed,
 		panelUpdateErrorRolledBack,
 		panelUpdateErrorRollbackFailed,
 		panelUpdateErrorFailed,

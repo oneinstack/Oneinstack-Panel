@@ -102,6 +102,28 @@ func (e *InstallParameterError) InstallationMessage() string {
 	case "OpenSearch 版本必须选择 Center 发布的精确版本 3.7.0",
 		"OpenSearch 管理员密码必须为 12-128 个字符，并同时包含大写字母、小写字母、数字和符号":
 		return message
+	case "Adminer 版本必须选择 Center 发布的精确版本 6.1.0":
+		return message
+	case "Adminer publicPath must be one safe URL segment such as /adminer/":
+		return "Adminer 公开路径必须是单层安全 URL 路径，例如 /adminer/"
+	case "Adminer accessPolicy must be public, local, or allowlist":
+		return "Adminer 访问策略必须是 public、local 或 allowlist"
+	case "Adminer allowedCidrs is required when accessPolicy is allowlist":
+		return "Adminer 访问策略为 allowlist 时必须填写允许访问的 CIDR"
+	case "Adminer allowedCidrs must contain at most 64 IPv4/IPv6 CIDRs":
+		return "Adminer 最多允许配置 64 个 IPv4/IPv6 CIDR"
+	case "Adminer allowedCidrs contains an empty item or surrounding whitespace",
+		"Adminer allowedCidrs contains an invalid IPv4/IPv6 CIDR":
+		return "Adminer 允许访问的 CIDR 格式无效，请使用逗号分隔的 IPv4/IPv6 CIDR"
+	case "Adminer defaultDriver must be mysql or pgsql":
+		return "Adminer 默认数据库驱动必须是 mysql 或 pgsql"
+	case "Adminer defaultServer must be a host or IP with an optional port; credentials and URLs are forbidden",
+		"Adminer defaultServer contains an invalid IPv6 address or port",
+		"Adminer defaultServer contains an invalid host or port",
+		"Adminer defaultServer contains an invalid IPv6 address",
+		"Adminer defaultServer contains an invalid IP address",
+		"Adminer defaultServer contains an invalid hostname":
+		return "Adminer 默认数据库服务器必须是主机名或 IP，可带端口，且不能包含凭据或 URL"
 	case "MySQL 运行账户必须以小写字母或下划线开头，仅允许小写字母、数字、下划线和连字符，长度为 1-32 个字符",
 		"数据库运行账户必须以小写字母或下划线开头，仅允许小写字母、数字、下划线和连字符，长度为 1-32 个字符",
 		"MySQL 登录用户必须以小写字母或下划线开头，仅允许小写字母、数字、下划线和连字符，长度为 1-32 个字符",
@@ -218,6 +240,8 @@ var (
 	phpExactVersionPattern              = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+$`)
 	openRestyExactVersionPattern        = regexp.MustCompile(`^[0-9]+(?:\.[0-9]+){3}$`)
 	phpVersionLinePattern               = regexp.MustCompile(`^[0-9]+\.[0-9]+\.x$`)
+	adminerPublicPathPattern            = regexp.MustCompile(`^/[A-Za-z0-9][A-Za-z0-9._-]{0,63}/$`)
+	adminerHostnamePattern              = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$`)
 )
 
 // resolveInstallParams resolves the same package and parameter set used by
@@ -300,6 +324,9 @@ func (installer *Installer) resolveInstallParams(ctx context.Context, params *in
 		return nil, err
 	}
 	if err := validateOpenSearchInstallParams(params); err != nil {
+		return nil, err
+	}
+	if err := validateAdminerInstallParams(params); err != nil {
 		return nil, err
 	}
 	if err := validateClosedLoopCatalogVersion(params); err != nil {
@@ -390,6 +417,153 @@ func validateOpenSearchInstallParams(params *input.InstallParams) error {
 		return &InstallParameterError{Field: "opensearch-initial-admin-password", Message: "OpenSearch 管理员密码必须为 12-128 个字符，并同时包含大写字母、小写字母、数字和符号"}
 	}
 	return nil
+}
+
+func validateAdminerInstallParams(params *input.InstallParams) error {
+	if params == nil || !strings.EqualFold(strings.TrimSpace(params.Key), "adminer") {
+		return nil
+	}
+	if strings.TrimSpace(params.Version) != "6.1.0" {
+		return &InstallParameterError{Field: "software-version", Message: "Adminer 版本必须选择 Center 发布的精确版本 6.1.0"}
+	}
+	values := map[string]string{
+		"publicPath":   installParameterValue(params.Parameters, "adminer-public-path", "adminerPublicPath"),
+		"accessPolicy": installParameterValue(params.Parameters, "adminer-access-policy", "adminerAccessPolicy"),
+		"allowedCidrs": installParameterValue(params.Parameters, "adminer-allowed-cidrs", "adminerAllowedCidrs"),
+		"defaultDriver": installParameterValue(
+			params.Parameters, "adminer-default-driver", "adminerDefaultDriver",
+		),
+		"defaultServer": installParameterValue(params.Parameters, "adminer-default-server", "adminerDefaultServer"),
+	}
+	if values["publicPath"] == "" {
+		values["publicPath"] = "/adminer/"
+	}
+	if values["accessPolicy"] == "" {
+		values["accessPolicy"] = "public"
+	}
+	if values["defaultDriver"] == "" {
+		values["defaultDriver"] = "mysql"
+	}
+	if values["defaultServer"] == "" {
+		values["defaultServer"] = "127.0.0.1"
+	}
+	if err := validateAdminerConfigurationValues(values); err != nil {
+		field := "parameters"
+		switch {
+		case strings.Contains(err.Error(), "publicPath"):
+			field = "adminer-public-path"
+		case strings.Contains(err.Error(), "accessPolicy"):
+			field = "adminer-access-policy"
+		case strings.Contains(err.Error(), "allowedCidrs"):
+			field = "adminer-allowed-cidrs"
+		case strings.Contains(err.Error(), "defaultDriver"):
+			field = "adminer-default-driver"
+		case strings.Contains(err.Error(), "defaultServer"):
+			field = "adminer-default-server"
+		}
+		return &InstallParameterError{Field: field, Message: err.Error()}
+	}
+	return nil
+}
+
+func validateAdminerConfigurationValues(values map[string]string) error {
+	if err := validateAdminerPublicPath(strings.TrimSpace(values["publicPath"])); err != nil {
+		return err
+	}
+	policy := strings.TrimSpace(values["accessPolicy"])
+	if policy != "public" && policy != "local" && policy != "allowlist" {
+		return errors.New("Adminer accessPolicy must be public, local, or allowlist")
+	}
+	cidrs := strings.TrimSpace(values["allowedCidrs"])
+	if policy == "allowlist" && cidrs == "" {
+		return errors.New("Adminer allowedCidrs is required when accessPolicy is allowlist")
+	}
+	if err := validateAdminerCIDRs(cidrs); err != nil {
+		return err
+	}
+	driver := strings.TrimSpace(values["defaultDriver"])
+	if driver != "mysql" && driver != "pgsql" {
+		return errors.New("Adminer defaultDriver must be mysql or pgsql")
+	}
+	if err := validateAdminerDefaultServer(strings.TrimSpace(values["defaultServer"])); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateAdminerPublicPath(value string) error {
+	if !adminerPublicPathPattern.MatchString(value) {
+		return errors.New("Adminer publicPath must be one safe URL segment such as /adminer/")
+	}
+	return nil
+}
+
+func validateAdminerCIDRs(value string) error {
+	if value == "" {
+		return nil
+	}
+	parts := strings.Split(value, ",")
+	if len(parts) > 64 {
+		return errors.New("Adminer allowedCidrs must contain at most 64 IPv4/IPv6 CIDRs")
+	}
+	for _, raw := range parts {
+		item := strings.TrimSpace(raw)
+		if item == "" || item != raw {
+			return errors.New("Adminer allowedCidrs contains an empty item or surrounding whitespace")
+		}
+		if _, _, err := net.ParseCIDR(item); err != nil {
+			return errors.New("Adminer allowedCidrs contains an invalid IPv4/IPv6 CIDR")
+		}
+	}
+	return nil
+}
+
+func validateAdminerDefaultServer(value string) error {
+	if value == "" || len(value) > 255 || strings.ContainsAny(value, "\x00\r\n\t @/?#") ||
+		strings.Contains(value, "://") {
+		return errors.New("Adminer defaultServer must be a host or IP with an optional port; credentials and URLs are forbidden")
+	}
+	if strings.HasPrefix(value, "[") {
+		if strings.HasSuffix(value, "]") && net.ParseIP(strings.TrimSuffix(strings.TrimPrefix(value, "["), "]")) != nil {
+			return nil
+		}
+		parsedHost, port, err := net.SplitHostPort(value)
+		if err != nil || net.ParseIP(parsedHost) == nil || !validAdminerPort(port) {
+			return errors.New("Adminer defaultServer contains an invalid IPv6 address or port")
+		}
+		return nil
+	}
+	if net.ParseIP(value) != nil {
+		return nil
+	}
+	if strings.Count(value, ":") == 1 {
+		parsedHost, port, err := net.SplitHostPort(value)
+		if err != nil || !validAdminerHost(parsedHost) || !validAdminerPort(port) {
+			return errors.New("Adminer defaultServer contains an invalid host or port")
+		}
+		return nil
+	}
+	if strings.Contains(value, ":") {
+		return errors.New("Adminer defaultServer contains an invalid IPv6 address")
+	}
+	host := strings.TrimSuffix(value, ".")
+	if strings.Trim(host, "0123456789.") == "" {
+		return errors.New("Adminer defaultServer contains an invalid IP address")
+	}
+	if !validAdminerHost(host) {
+		return errors.New("Adminer defaultServer contains an invalid hostname")
+	}
+	return nil
+}
+
+func validAdminerHost(value string) bool {
+	return adminerHostnamePattern.MatchString(value) && !strings.Contains(value, "..") &&
+		!strings.HasPrefix(value, ".") && !strings.HasSuffix(value, ".")
+}
+
+func validAdminerPort(value string) bool {
+	port, err := strconv.Atoi(value)
+	return err == nil && port >= 1 && port <= 65535
 }
 
 // ValidateManagedMySQLVersion keeps the MySQL installation contract aligned
@@ -713,12 +887,16 @@ func PreviewInstallationPackage(ctx context.Context, params *input.InstallParams
 	}
 	appendValue("version", params.Version, versionSource, false)
 	portSource := "request"
-	if !installParameterWasProvided(provided, "port") {
+	if installParameterWasRestored(params, "port") {
+		portSource = "previous_install"
+	} else if !installParameterWasProvided(provided, "port") {
 		portSource = "server_default"
 	}
 	appendValue("port", params.Port, portSource, false)
 	usernameSource := "request"
-	if !installParameterWasProvided(provided, "username") {
+	if installParameterWasRestored(params, "username") {
+		usernameSource = "previous_install"
+	} else if !installParameterWasProvided(provided, "username") {
 		usernameSource = "server_default"
 	}
 	appendValue("username", params.Username, usernameSource, false)
@@ -737,7 +915,9 @@ func PreviewInstallationPackage(ctx context.Context, params *input.InstallParams
 			continue
 		}
 		source := "derived"
-		if installParameterWasProvided(provided, spec.Name) {
+		if installParameterWasRestored(params, spec.Name) {
+			source = "previous_install"
+		} else if installParameterWasProvided(provided, spec.Name) {
 			source = "request"
 		} else if strings.TrimSpace(spec.Default) != "" {
 			source = "manifest_default"
@@ -758,6 +938,24 @@ func PreviewInstallationPackage(ctx context.Context, params *input.InstallParams
 		return nil, scriptregistry.PackagePin{}, fmt.Errorf("PACKAGE_RESOLVE_FAILED: %s requires a Center-verified fixed package pin", params.Key)
 	}
 	return values, pin, nil
+}
+
+func installParameterWasRestored(params *input.InstallParams, name string) bool {
+	if params == nil {
+		return false
+	}
+	target := compactInstallParameterName(name)
+	for key, restored := range params.RestoredParameters {
+		if !restored {
+			continue
+		}
+		candidate := compactInstallParameterName(key)
+		if candidate == target || (target == "port" && strings.HasSuffix(candidate, "port")) ||
+			(target == "username" && strings.HasSuffix(candidate, "username")) {
+			return true
+		}
+	}
+	return false
 }
 
 func closedLoopPackageComponent(key string) (string, bool) {

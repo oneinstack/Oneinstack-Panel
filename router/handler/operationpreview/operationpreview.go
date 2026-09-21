@@ -478,6 +478,12 @@ func handleSoftwareInstallPreviewError(c *gin.Context, err error, payload json.R
 }
 
 func handleSoftwareInstallParameterError(c *gin.Context, err error) bool {
+	if errors.Is(err, softwareService.ErrInstallCredentialsCorrupt) {
+		appErr := core.NewErrorWithDetail(core.ErrInvalidParameter, "无法恢复上次安装凭据", "托管凭据已损坏或实例密钥不匹配，请重新输入密码后再升级。")
+		appErr.StableCode = "SOFTWARE_CREDENTIAL_DECRYPT_FAILED"
+		core.HandleError(c, appErr)
+		return true
+	}
 	var parameterErr *softwareService.InstallParameterError
 	if !errors.As(err, &parameterErr) {
 		return false
@@ -801,7 +807,15 @@ func normalizeSoftwareInstallPreviewPayload(ctx context.Context, payload json.Ra
 	if err := json.Unmarshal(payload, &request); err != nil {
 		return nil, err
 	}
-	_, pin, err := softwareService.PreviewInstallationPackage(ctx, &request)
+	explicit := softwareInstallExplicitParameters(request)
+	validationRequest := request
+	validationRequest.Parameters = cloneStringMap(request.Parameters)
+	validationRequest.ExplicitParameters = explicit
+	if err := softwareService.RestoreInstalledParameters(&validationRequest, explicit); err != nil {
+		return nil, err
+	}
+	softwareService.NormalizeInstallParams(&validationRequest)
+	_, pin, err := softwareService.PreviewInstallationPackage(ctx, &validationRequest)
 	if err != nil {
 		return nil, err
 	}
@@ -811,6 +825,34 @@ func normalizeSoftwareInstallPreviewPayload(ctx context.Context, payload json.Ra
 		return nil, fmt.Errorf("固定软件安装包: %w", err)
 	}
 	return encoded, nil
+}
+
+func softwareInstallExplicitParameters(request input.InstallParams) map[string]bool {
+	result := make(map[string]bool)
+	if strings.TrimSpace(request.Port) != "" {
+		result["port"] = true
+	}
+	if strings.TrimSpace(request.Username) != "" {
+		result["username"] = true
+	}
+	if request.Pwd != "" {
+		result["password"] = true
+	}
+	for key := range request.Parameters {
+		result[key] = true
+	}
+	return result
+}
+
+func cloneStringMap(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return nil
+	}
+	result := make(map[string]string, len(values))
+	for key, value := range values {
+		result[key] = value
+	}
+	return result
 }
 
 func handleWebsitePreviewError(c *gin.Context, operation string, err error) bool {
@@ -1655,6 +1697,12 @@ func buildDocument(ctx context.Context, operation string, payload json.RawMessag
 		if err := json.Unmarshal(payload, &value); err != nil {
 			return previewservice.Document{}, "", err
 		}
+		explicit := softwareInstallExplicitParameters(value)
+		value.ExplicitParameters = explicit
+		if err := softwareService.RestoreInstalledParameters(&value, explicit); err != nil {
+			return previewservice.Document{}, "", err
+		}
+		softwareService.NormalizeInstallParams(&value)
 		effectiveValues, packagePin, err := softwareService.PreviewInstallationPackage(ctx, &value)
 		if err != nil {
 			return previewservice.Document{}, "", err

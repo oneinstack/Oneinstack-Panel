@@ -51,17 +51,18 @@ type ConfigurationField struct {
 }
 
 type ComponentConfiguration struct {
-	Component         string                      `json:"component"`
-	SoftwareKey       string                      `json:"softwareKey"`
-	DisplayName       string                      `json:"displayName"`
-	Revision          string                      `json:"revision"`
-	ApplyMode         string                      `json:"applyMode"`
-	Fields            []ConfigurationField        `json:"fields"`
-	Values            map[string]string           `json:"values"`
-	PackageSource     string                      `json:"packageSource"`
-	InstallParameters []ComponentInstallParameter `json:"installParameters,omitempty"`
-	Connection        *ComponentConnection        `json:"connection,omitempty"`
-	Runtime           *ComponentRuntime           `json:"runtime,omitempty"`
+	Component            string                      `json:"component"`
+	SoftwareKey          string                      `json:"softwareKey"`
+	DisplayName          string                      `json:"displayName"`
+	Revision             string                      `json:"revision"`
+	ApplyMode            string                      `json:"applyMode"`
+	Fields               []ConfigurationField        `json:"fields"`
+	Values               map[string]string           `json:"values"`
+	PackageSource        string                      `json:"packageSource"`
+	InstallParameters    []ComponentInstallParameter `json:"installParameters,omitempty"`
+	CredentialConfigured bool                        `json:"credentialConfigured,omitempty"`
+	Connection           *ComponentConnection        `json:"connection,omitempty"`
+	Runtime              *ComponentRuntime           `json:"runtime,omitempty"`
 }
 
 // ComponentInstallParameter exposes the non-secret effective installation
@@ -69,14 +70,15 @@ type ComponentConfiguration struct {
 // parameters are read-only here; configuration apply continues to accept only
 // the fields declared by the component configuration schema.
 type ComponentInstallParameter struct {
-	Key         string `json:"key"`
-	Label       string `json:"label"`
-	Type        string `json:"type"`
-	Required    bool   `json:"required,omitempty"`
-	Secret      bool   `json:"secret,omitempty"`
-	Default     string `json:"default,omitempty"`
-	Value       string `json:"value,omitempty"`
-	Description string `json:"description,omitempty"`
+	Key                  string `json:"key"`
+	Label                string `json:"label"`
+	Type                 string `json:"type"`
+	Required             bool   `json:"required,omitempty"`
+	Secret               bool   `json:"secret,omitempty"`
+	CredentialConfigured bool   `json:"credentialConfigured,omitempty"`
+	Default              string `json:"default,omitempty"`
+	Value                string `json:"value,omitempty"`
+	Description          string `json:"description,omitempty"`
 }
 
 // ComponentConnection contains the current non-secret Redis connection
@@ -108,6 +110,14 @@ type ComponentRuntime struct {
 	RuntimeVersion string `json:"runtimeVersion,omitempty"`
 	HTTPSState     string `json:"httpsState,omitempty"`
 	SystemdState   string `json:"systemdState,omitempty"`
+	PackageVersion string `json:"packageVersion,omitempty"`
+	ArtifactSHA256 string `json:"artifactSha256,omitempty"`
+	PublicPath     string `json:"publicPath,omitempty"`
+	AccessURL      string `json:"accessUrl,omitempty"`
+	WebServer      string `json:"webServer,omitempty"`
+	DocumentRoot   string `json:"documentRoot,omitempty"`
+	PHPVersion     string `json:"phpVersion,omitempty"`
+	PHPService     string `json:"phpService,omitempty"`
 }
 
 type ConfigurationChange struct {
@@ -174,6 +184,15 @@ func intPointer(value int) *int {
 }
 
 func componentConfigurationDefinition(component string) (configurationDefinition, error) {
+	if strings.EqualFold(strings.TrimSpace(component), "adminer") {
+		return configurationDefinition{
+			Component:   "adminer",
+			SoftwareKey: "adminer",
+			DisplayName: "Adminer",
+			ApplyMode:   "reload",
+			Environment: make(map[string]string),
+		}, nil
+	}
 	definition, err := NormalizeServiceComponent(component)
 	if err != nil {
 		return configurationDefinition{}, err
@@ -505,6 +524,10 @@ func normalizeConfigurationValues(definition configurationDefinition, values map
 			}
 		}
 		value := strings.TrimSpace(values[field.Key])
+		if definition.Component == "adminer" && field.Key == "allowedCidrs" && value == "" {
+			result[field.Key] = ""
+			continue
+		}
 		if value == "" && strings.TrimSpace(field.Default) != "" {
 			value = strings.TrimSpace(field.Default)
 		}
@@ -637,6 +660,11 @@ func normalizeConfigurationValues(definition configurationDefinition, values map
 			return nil, err
 		}
 	}
+	if definition.Component == "adminer" {
+		if err := validateAdminerConfigurationValues(result); err != nil {
+			return nil, err
+		}
+	}
 	return result, nil
 }
 
@@ -751,6 +779,7 @@ func (installer *Installer) inspectServiceConfiguration(
 	if configuration.Connection == nil && definition.Component == "redis" {
 		configuration.Connection = redisConnectionFromParameters(scriptInfo.Params)
 	}
+	markConfigurationCredentialStatus(&configuration)
 	return configuration, nil
 }
 
@@ -851,7 +880,8 @@ func serverOwnedInstallParameterForComponent(component, name string) bool {
 }
 
 func componentInstallParameterLabel(name string) string {
-	switch strings.ToUpper(strings.TrimSpace(name)) {
+	normalized := strings.ToUpper(strings.NewReplacer("-", "_", ".", "_").Replace(strings.TrimSpace(name)))
+	switch normalized {
 	case "SOFTWARE_VERSION":
 		return "Software version"
 	case "INSTALL_DIR":
@@ -886,6 +916,16 @@ func componentInstallParameterLabel(name string) string {
 		return "OpenSearch node name"
 	case "OPENSEARCH_HEAP_SIZE_MB":
 		return "OpenSearch JVM heap size"
+	case "ADMINER_PUBLIC_PATH":
+		return "Adminer public path"
+	case "ADMINER_ACCESS_POLICY":
+		return "Adminer access policy"
+	case "ADMINER_ALLOWED_CIDRS":
+		return "Adminer allowed CIDRs"
+	case "ADMINER_DEFAULT_DRIVER":
+		return "Adminer default database driver"
+	case "ADMINER_DEFAULT_SERVER":
+		return "Adminer default database server"
 	case "PORT":
 		return "HTTP listener port"
 	case "TENGINE_PORT":
@@ -1081,7 +1121,43 @@ func persistManagedConfiguration(params *input.InstallParams, values map[string]
 	if strings.EqualFold(strings.TrimSpace(params.Key), "mariadb") {
 		return persistManagedMariaDBConfiguration(params, values)
 	}
+	if strings.EqualFold(strings.TrimSpace(params.Key), "adminer") {
+		return persistManagedAdminerConfiguration(values)
+	}
 	return persistManagedMySQLConfiguration(params, values)
+}
+
+func persistManagedAdminerConfiguration(values map[string]string) error {
+	if app.DB() == nil {
+		return nil
+	}
+	var row models.Software
+	if err := app.DB().Where("installed = ?", true).
+		Where("(`key` = ? OR component = ?)", "adminer", "adminer").
+		Order("install_time DESC, id DESC").First(&row).Error; err != nil {
+		return err
+	}
+	runtime := make(map[string]string)
+	if strings.TrimSpace(row.RuntimeParamsJSON) != "" {
+		if err := json.Unmarshal([]byte(row.RuntimeParamsJSON), &runtime); err != nil {
+			return fmt.Errorf("decode Adminer runtime parameters: %w", err)
+		}
+	}
+	for valueKey, runtimeKey := range map[string]string{
+		"publicPath": "adminer-public-path", "accessPolicy": "adminer-access-policy",
+		"allowedCidrs": "adminer-allowed-cidrs", "defaultDriver": "adminer-default-driver",
+		"defaultServer": "adminer-default-server",
+	} {
+		runtime[runtimeKey] = values[valueKey]
+	}
+	encoded, err := json.Marshal(runtime)
+	if err != nil {
+		return fmt.Errorf("encode Adminer runtime parameters: %w", err)
+	}
+	return app.DB().Model(&row).Updates(map[string]any{
+		"runtime_params": string(encoded),
+		"url_path":       values["publicPath"],
+	}).Error
 }
 
 func persistManagedOpenSearchConfiguration(params *input.InstallParams, values map[string]string) error {
@@ -1570,7 +1646,7 @@ func parseComponentConfiguration(
 	}
 	optional := make(map[string]struct{})
 	var runtime *ComponentRuntime
-	if definition.Component == "mysql" || definition.Component == "mariadb" || definition.Component == "mongodb" || definition.Component == "opensearch" || definition.Component == "php" || definition.Component == "firewalld" || definition.Component == "apache" || definition.Component == "openresty" || definition.Component == "caddy" {
+	if definition.Component == "mysql" || definition.Component == "mariadb" || definition.Component == "mongodb" || definition.Component == "opensearch" || definition.Component == "php" || definition.Component == "firewalld" || definition.Component == "apache" || definition.Component == "openresty" || definition.Component == "caddy" || definition.Component == "adminer" {
 		runtime = &ComponentRuntime{}
 		runtimeKeys := []string{"runtime.port", "runtime.bindAddress", "runtime.installDir", "runtime.dataDir", "runtime.logDir", "runtime.runUser", "runtime.runGroup"}
 		if definition.Component == "mariadb" {
@@ -1585,6 +1661,8 @@ func parseComponentConfiguration(
 			runtimeKeys = []string{"runtime.port", "runtime.bindAddress", "runtime.installDir", "runtime.dataDir", "runtime.logDir", "runtime.runUser", "runtime.runGroup", "runtime.configFile", "runtime.serviceName", "runtime.version"}
 		} else if definition.Component == "opensearch" {
 			runtimeKeys = []string{"runtime.port", "runtime.bindAddress", "runtime.installDir", "runtime.dataDir", "runtime.logDir", "runtime.runUser", "runtime.runGroup", "runtime.configFile", "runtime.serviceName", "runtime.version", "runtime.httpsState", "runtime.systemdState"}
+		} else if definition.Component == "adminer" {
+			runtimeKeys = []string{"runtime.port", "runtime.bindAddress", "runtime.socketPath", "runtime.installDir", "runtime.configFile", "runtime.serviceName", "runtime.version", "runtime.packageVersion", "runtime.artifactSha256", "runtime.publicPath", "runtime.accessUrl", "runtime.webServer", "runtime.documentRoot", "runtime.phpVersion", "runtime.phpService"}
 		}
 		for _, key := range runtimeKeys {
 			allowed[key] = struct{}{}
@@ -1667,6 +1745,14 @@ func parseComponentConfiguration(
 		runtime.Version = fields["runtime.version"]
 		runtime.HTTPSState = fields["runtime.httpsState"]
 		runtime.SystemdState = fields["runtime.systemdState"]
+		runtime.PackageVersion = fields["runtime.packageVersion"]
+		runtime.ArtifactSHA256 = fields["runtime.artifactSha256"]
+		runtime.PublicPath = fields["runtime.publicPath"]
+		runtime.AccessURL = fields["runtime.accessUrl"]
+		runtime.WebServer = fields["runtime.webServer"]
+		runtime.DocumentRoot = fields["runtime.documentRoot"]
+		runtime.PHPVersion = fields["runtime.phpVersion"]
+		runtime.PHPService = fields["runtime.phpService"]
 		if definition.Component == "mariadb" {
 			runtime.RuntimeVersion = runtime.Version
 		}
@@ -1709,6 +1795,18 @@ func parseComponentConfiguration(
 				(runtime.HTTPSState != "ready" && runtime.HTTPSState != "unavailable") ||
 				(runtime.SystemdState != "active" && runtime.SystemdState != "inactive") {
 				return ComponentConfiguration{}, errors.New("OpenSearch component runtime identity is invalid")
+			}
+		} else if definition.Component == "adminer" {
+			port, parseErr := strconv.Atoi(runtime.Port)
+			if parseErr != nil || port < 1 || port > 65535 || runtime.BindAddress == "" ||
+				runtime.SocketPath == "" || !strings.HasPrefix(runtime.SocketPath, "/") || filepath.Clean(runtime.SocketPath) != runtime.SocketPath ||
+				runtime.InstallDir != "/usr/local/adminer" || runtime.ConfigFile == "" || !strings.HasPrefix(runtime.ConfigFile, "/") || filepath.Clean(runtime.ConfigFile) != runtime.ConfigFile ||
+				runtime.ServiceName == "" || runtime.Version != "6.1.0" || (runtime.PackageVersion != "1.0.1" && runtime.PackageVersion != "1.0.2" && runtime.PackageVersion != "1.0.3" && runtime.PackageVersion != "1.0.4" && runtime.PackageVersion != "1.0.5" && runtime.PackageVersion != "1.0.6" && runtime.PackageVersion != "1.0.7") ||
+				!configurationHashPattern.MatchString(runtime.ArtifactSHA256) || validateAdminerPublicPath(runtime.PublicPath) != nil ||
+				runtime.AccessURL == "" || (runtime.WebServer != "nginx" && runtime.WebServer != "openresty" && runtime.WebServer != "tengine" && runtime.WebServer != "apache" && runtime.WebServer != "caddy") ||
+				runtime.DocumentRoot == "" || !strings.HasPrefix(runtime.DocumentRoot, "/") || filepath.Clean(runtime.DocumentRoot) != runtime.DocumentRoot ||
+				!phpExactVersionPattern.MatchString(runtime.PHPVersion) || runtime.PHPService == "" {
+				return ComponentConfiguration{}, errors.New("Adminer component runtime identity is invalid")
 			}
 		} else if definition.Component == "php" {
 			if runtime.Port != "" || runtime.BindAddress != "unix" || runtime.SocketPath == "" ||

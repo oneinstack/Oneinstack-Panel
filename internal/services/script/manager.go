@@ -24,6 +24,7 @@ import (
 	"oneinstack/internal/services/componentstate"
 	"oneinstack/internal/services/scriptregistry"
 	"oneinstack/router/input"
+	"oneinstack/utils"
 
 	"gorm.io/gorm"
 )
@@ -339,6 +340,11 @@ func (sm *ScriptManager) ExecuteScriptTask(
 		}
 		return logName, nil
 	}
+	credentialCiphertext, err := installCredentialCiphertext(scriptInfo)
+	if err != nil {
+		sm.updateSoftwareStatus(params, models.Soft_Status_Err, logName)
+		return logName, fmt.Errorf("STATE_REPAIR_REQUIRED: protect software install credentials: %w", err)
+	}
 	sm.updateSoftwareStatus(params, models.Soft_Status_Suc, logName)
 	runtimeParameters := runtimeParametersFromScriptInfo(scriptInfo)
 	if err := sm.updateSoftwareInstallInfoWithRuntimeParameters(
@@ -346,6 +352,7 @@ func (sm *ScriptManager) ExecuteScriptTask(
 		true,
 		params.Version,
 		runtimeParameters,
+		credentialCiphertext,
 		scriptInfo.PackageVersion,
 		effectiveSoftwarePort(params, scriptInfo),
 	); err != nil {
@@ -467,11 +474,21 @@ func (sm *ScriptManager) executeScriptAsync(scriptInfo *ScriptInfo, scriptPath s
 	// 更新最终状态
 	sm.updateSoftwareStatus(params, status, filepath.Base(logPath))
 	runtimeParameters := runtimeParametersFromScriptInfo(scriptInfo)
+	credentialCiphertext := ""
+	if installed {
+		var credentialErr error
+		credentialCiphertext, credentialErr = installCredentialCiphertext(scriptInfo)
+		if credentialErr != nil {
+			fmt.Printf("Protect software install credentials failed: %v\n", credentialErr)
+			return
+		}
+	}
 	if err := sm.updateSoftwareInstallInfoWithRuntimeParameters(
 		params,
 		installed,
 		installVersion,
 		runtimeParameters,
+		credentialCiphertext,
 		scriptInfo.PackageVersion,
 		effectiveSoftwarePort(params, scriptInfo),
 	); err != nil {
@@ -1368,7 +1385,7 @@ func (sm *ScriptManager) updateSoftwareInstallInfo(
 	version string,
 	packageVersions ...string,
 ) error {
-	return sm.updateSoftwareInstallInfoWithRuntimeParameters(params, installed, version, nil, packageVersions...)
+	return sm.updateSoftwareInstallInfoWithRuntimeParameters(params, installed, version, nil, "", packageVersions...)
 }
 
 func (sm *ScriptManager) updateSoftwareInstallInfoWithRuntimeParameters(
@@ -1376,6 +1393,7 @@ func (sm *ScriptManager) updateSoftwareInstallInfoWithRuntimeParameters(
 	installed bool,
 	version string,
 	runtimeParameters map[string]string,
+	credentialCiphertext string,
 	packageVersions ...string,
 ) error {
 	if params == nil || app.DB() == nil {
@@ -1398,23 +1416,25 @@ func (sm *ScriptManager) updateSoftwareInstallInfoWithRuntimeParameters(
 			if err := tx.Model(&models.Software{}).
 				Where("`key` = ? AND id <> ?", params.Key, stateRow.Id).
 				Updates(map[string]interface{}{
-					"installed":                 false,
-					"install_version":           "",
-					"installed_package_version": "",
-					"is_update":                 false,
+					"installed":                    false,
+					"install_version":              "",
+					"installed_package_version":    "",
+					"credential_params_ciphertext": "",
+					"is_update":                    false,
 				}).Error; err != nil {
 				return err
 			}
 			result := tx.Model(&models.Software{}).
 				Where("id = ?", stateRow.Id).
 				Updates(map[string]interface{}{
-					"installed":                 true,
-					"install_version":           version,
-					"installed_package_version": packageVersion,
-					"http_port":                 strings.TrimSpace(port),
-					"runtime_params":            persistedRuntimeParameters(params, port, runtimeParameters),
-					"is_update":                 false,
-					"install_time":              time.Now(),
+					"installed":                    true,
+					"install_version":              version,
+					"installed_package_version":    packageVersion,
+					"http_port":                    strings.TrimSpace(port),
+					"runtime_params":               persistedRuntimeParameters(params, port, runtimeParameters),
+					"credential_params_ciphertext": credentialCiphertext,
+					"is_update":                    false,
+					"install_time":                 time.Now(),
 				})
 			if result.Error != nil {
 				return result.Error
@@ -1428,14 +1448,48 @@ func (sm *ScriptManager) updateSoftwareInstallInfoWithRuntimeParameters(
 	return app.DB().Model(&models.Software{}).
 		Where("`key` = ? AND installed = ?", params.Key, true).
 		Updates(map[string]interface{}{
-			"installed":                 false,
-			"install_version":           "",
-			"installed_package_version": "",
-			"http_port":                 "",
-			"runtime_params":            "",
-			"is_update":                 false,
-			"status":                    models.Soft_Status_Default,
+			"installed":                    false,
+			"install_version":              "",
+			"installed_package_version":    "",
+			"http_port":                    "",
+			"runtime_params":               "",
+			"credential_params_ciphertext": "",
+			"is_update":                    false,
+			"status":                       models.Soft_Status_Default,
 		}).Error
+}
+
+func installCredentialCiphertext(info *ScriptInfo) (string, error) {
+	if info == nil {
+		return "", nil
+	}
+	credentials := make(map[string]string)
+	for _, spec := range info.ParameterSpecs {
+		if !spec.Secret && !strings.EqualFold(strings.TrimSpace(spec.Type), "password") {
+			continue
+		}
+		envName := strings.TrimSpace(spec.Env)
+		if envName == "" {
+			envName = strings.ToUpper(strings.NewReplacer("-", "_", ".", "_").Replace(strings.TrimSpace(spec.Name)))
+		}
+		value := info.Params[envName]
+		name := componentstate.NormalizeParameterName(spec.Name)
+		if name != "" && value != "" {
+			credentials[name] = value
+		}
+	}
+	if len(credentials) == 0 {
+		return "", nil
+	}
+	encoded, err := json.Marshal(credentials)
+	if err != nil {
+		return "", fmt.Errorf("encode software install credentials: %w", err)
+	}
+	ciphertext, err := utils.EncryptCredential(string(encoded), utils.CredentialPurposeSoftwareInstall)
+	if err != nil {
+		return "", fmt.Errorf("encrypt software install credentials: %w", err)
+	}
+	return ciphertext, nil
 }
 
 func persistedRuntimeParameters(params *input.InstallParams, port string, effective ...map[string]string) string {

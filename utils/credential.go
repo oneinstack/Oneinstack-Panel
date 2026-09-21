@@ -27,6 +27,7 @@ const (
 	CredentialPurposeRegistryPassword   = "container.registry.password"
 	CredentialPurposeCertificateDNS     = "certificate.dns"
 	CredentialPurposeSoftwareTaskSecret = "software.task.secret"
+	CredentialPurposeSoftwareInstall    = "software.install-credentials"
 )
 
 var (

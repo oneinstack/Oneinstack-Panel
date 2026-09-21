@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"time"
 )
 
 const (
@@ -12,6 +13,10 @@ const (
 	BackendUFW       = "ufw"
 	BackendFirewalld = "firewalld"
 	BackendIPTables  = "iptables"
+
+	backendFirewalldOffline = "firewalld-offline"
+	firewalldCommandTimeout = 10 * time.Second
+	defaultCommandTimeout   = 30 * time.Second
 
 	DisableConfirmation = "DISABLE FIREWALL"
 	panelRuleRemark     = "Panel 管理端口（系统保护）"
@@ -22,6 +27,7 @@ var (
 	ErrProtected         = errors.New("protected firewall rule")
 	ErrUnsupported       = errors.New("unsupported firewall operation")
 	ErrAutoBlockDisabled = errors.New("firewall auto block is disabled")
+	ErrOperationBusy     = errors.New("firewall operation is busy")
 )
 
 type CommandRunner interface {
@@ -36,7 +42,13 @@ func (OSCommandRunner) LookPath(name string) (string, error) {
 }
 
 func (OSCommandRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, name, args...)
+	timeout := defaultCommandTimeout
+	if name == "firewall-cmd" || name == "firewall-offline-cmd" {
+		timeout = firewalldCommandTimeout
+	}
+	commandCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	cmd := exec.CommandContext(commandCtx, name, args...)
 	cmd.Env = []string{
 		"LC_ALL=C",
 		"LANG=C",
@@ -44,19 +56,23 @@ func (OSCommandRunner) Run(ctx context.Context, name string, args ...string) ([]
 	}
 	output, err := cmd.CombinedOutput()
 	if err != nil {
+		if commandCtx.Err() != nil {
+			return output, fmt.Errorf("%s failed: %w", name, commandCtx.Err())
+		}
 		return output, fmt.Errorf("%s failed: %w: %s", name, err, string(output))
 	}
 	return output, nil
 }
 
 type backendState struct {
-	Name           string
-	Installed      bool
-	Enabled        bool
-	Persistent     bool
-	CanToggle      bool
-	RepairRequired bool
-	Warning        string
+	Name             string
+	Installed        bool
+	Enabled          bool
+	Persistent       bool
+	CanToggle        bool
+	CanManageOffline bool
+	RepairRequired   bool
+	Warning          string
 }
 
 func backendPersistentDefault(name string) bool {
