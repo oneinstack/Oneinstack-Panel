@@ -481,6 +481,7 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 				"MAX(CASE WHEN catalog_visible = 1 AND recommended = 1 THEN version ELSE '' END) as recommended_version," +
 				"MAX(CASE WHEN installed = 1 THEN http_port ELSE '' END) as http_port," +
 				"MAX(CASE WHEN installed = 1 THEN runtime_params ELSE '' END) as runtime_params," +
+				"COALESCE(MAX(CASE WHEN installed = 1 THEN credential_params_ciphertext END), '') as credential_params_ciphertext," +
 				"MAX(CASE WHEN catalog_managed = 1 THEN 1 ELSE 0 END) as catalog_managed," +
 				"MAX(manage_scopes) as manage_scopes," +
 				"MAX(service_name) as service_name," +
@@ -688,6 +689,7 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 		params = slices.DeleteFunc(params, func(parameter *output.SoftParam) bool {
 			return parameter != nil && scriptregistry.IsServerOwnedInstallParameterName(parameter.Key)
 		})
+		hydratePersistedInstallParameters(item.RuntimeParamsJSON, params)
 		installParameterValues := hydrateNginxInstallParameters(item.Component, item.Key, params)
 		if apacheValues := hydrateApacheInstallParameters(item.Component, item.Key, item.RuntimeParamsJSON, params); apacheValues != nil {
 			installParameterValues = apacheValues
@@ -702,6 +704,7 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 			installParameterValues = caddyValues
 		}
 		hydrateRedisInstallParameters(item.Component, item.Key, item.RuntimeParamsJSON, params)
+		groupedResults[i].CredentialConfigured = markSoftwareParamCredentialStatus(item.CredentialCiphertext, params)
 		if strings.EqualFold(strings.TrimSpace(item.Key), "firewalld") {
 			for _, parameter := range params {
 				if parameter != nil && strings.EqualFold(strings.TrimSpace(parameter.Key), "panel-port") {

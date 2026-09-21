@@ -35,6 +35,7 @@ type Software struct {
 	Params                  []*SoftParam      `json:"params"`
 	FailureMessage          string            `json:"failureMessage,omitempty"`
 	Runtime                 *SoftwareRuntime  `json:"runtime,omitempty"`
+	CredentialConfigured    bool              `json:"credentialConfigured,omitempty"`
 }
 
 // HostInstallation describes the local package repository, independently of
@@ -75,12 +76,13 @@ type VersionOption struct {
 }
 
 type SoftParam struct {
-	Key      string `json:"key"`
-	Value    string `json:"name"`
-	Rule     string `json:"rule"`
-	Required string `json:"required"`
-	Types    string `json:"type"`
-	Default  string `json:"default,omitempty"`
+	Key                  string `json:"key"`
+	Value                string `json:"name"`
+	Rule                 string `json:"rule"`
+	Required             string `json:"required"`
+	Types                string `json:"type"`
+	Default              string `json:"default,omitempty"`
+	CredentialConfigured bool   `json:"credentialConfigured,omitempty"`
 }
 
 // UnmarshalJSON accepts both the historical string form and the signed

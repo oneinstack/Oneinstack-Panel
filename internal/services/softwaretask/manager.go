@@ -715,25 +715,34 @@ func normalizeTaskInstallParameters(parameters map[string]string) map[string]str
 		return parameters
 	}
 	result := make(map[string]string, len(parameters))
-	for key, value := range parameters {
-		canonical := canonicalTaskInstallParameterName(key)
-		if canonical == "" {
-			canonical = strings.TrimSpace(key)
-		}
-		if canonical == "" {
-			continue
-		}
-		value = strings.TrimSpace(value)
-		if canonical == "data-policy" && compactTaskParameterName(key) == "preservedata" {
-			switch strings.ToLower(value) {
-			case "true":
-				value = "preserve"
-			case "false":
-				value = "delete"
+	normalize := func(canonicalKeys bool) {
+		for key, value := range parameters {
+			trimmedKey := strings.TrimSpace(key)
+			canonical := canonicalTaskInstallParameterName(trimmedKey)
+			if canonical == "" {
+				canonical = trimmedKey
 			}
+			if canonical == "" || strings.EqualFold(trimmedKey, canonical) != canonicalKeys {
+				continue
+			}
+			value = strings.TrimSpace(value)
+			if canonical == "data-policy" && compactTaskParameterName(trimmedKey) == "preservedata" {
+				switch strings.ToLower(value) {
+				case "true":
+					value = "preserve"
+				case "false":
+					value = "delete"
+				}
+			}
+			result[canonical] = value
 		}
-		result[canonical] = value
 	}
+	// Persisted component state may contain a legacy manifest alias while the
+	// current request supplies the canonical key. Apply aliases first so the
+	// explicit canonical request deterministically wins instead of depending on
+	// Go's randomized map iteration order.
+	normalize(false)
+	normalize(true)
 	return result
 }
 

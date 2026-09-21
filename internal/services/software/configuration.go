@@ -51,17 +51,18 @@ type ConfigurationField struct {
 }
 
 type ComponentConfiguration struct {
-	Component         string                      `json:"component"`
-	SoftwareKey       string                      `json:"softwareKey"`
-	DisplayName       string                      `json:"displayName"`
-	Revision          string                      `json:"revision"`
-	ApplyMode         string                      `json:"applyMode"`
-	Fields            []ConfigurationField        `json:"fields"`
-	Values            map[string]string           `json:"values"`
-	PackageSource     string                      `json:"packageSource"`
-	InstallParameters []ComponentInstallParameter `json:"installParameters,omitempty"`
-	Connection        *ComponentConnection        `json:"connection,omitempty"`
-	Runtime           *ComponentRuntime           `json:"runtime,omitempty"`
+	Component            string                      `json:"component"`
+	SoftwareKey          string                      `json:"softwareKey"`
+	DisplayName          string                      `json:"displayName"`
+	Revision             string                      `json:"revision"`
+	ApplyMode            string                      `json:"applyMode"`
+	Fields               []ConfigurationField        `json:"fields"`
+	Values               map[string]string           `json:"values"`
+	PackageSource        string                      `json:"packageSource"`
+	InstallParameters    []ComponentInstallParameter `json:"installParameters,omitempty"`
+	CredentialConfigured bool                        `json:"credentialConfigured,omitempty"`
+	Connection           *ComponentConnection        `json:"connection,omitempty"`
+	Runtime              *ComponentRuntime           `json:"runtime,omitempty"`
 }
 
 // ComponentInstallParameter exposes the non-secret effective installation
@@ -69,14 +70,15 @@ type ComponentConfiguration struct {
 // parameters are read-only here; configuration apply continues to accept only
 // the fields declared by the component configuration schema.
 type ComponentInstallParameter struct {
-	Key         string `json:"key"`
-	Label       string `json:"label"`
-	Type        string `json:"type"`
-	Required    bool   `json:"required,omitempty"`
-	Secret      bool   `json:"secret,omitempty"`
-	Default     string `json:"default,omitempty"`
-	Value       string `json:"value,omitempty"`
-	Description string `json:"description,omitempty"`
+	Key                  string `json:"key"`
+	Label                string `json:"label"`
+	Type                 string `json:"type"`
+	Required             bool   `json:"required,omitempty"`
+	Secret               bool   `json:"secret,omitempty"`
+	CredentialConfigured bool   `json:"credentialConfigured,omitempty"`
+	Default              string `json:"default,omitempty"`
+	Value                string `json:"value,omitempty"`
+	Description          string `json:"description,omitempty"`
 }
 
 // ComponentConnection contains the current non-secret Redis connection
@@ -777,6 +779,7 @@ func (installer *Installer) inspectServiceConfiguration(
 	if configuration.Connection == nil && definition.Component == "redis" {
 		configuration.Connection = redisConnectionFromParameters(scriptInfo.Params)
 	}
+	markConfigurationCredentialStatus(&configuration)
 	return configuration, nil
 }
 

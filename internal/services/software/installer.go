@@ -233,23 +233,31 @@ func normalizeInstallParameterAliases(parameters map[string]string) map[string]s
 		return parameters
 	}
 	result := make(map[string]string, len(parameters))
-	for key, value := range parameters {
-		canonical := canonicalInstallParameterName(key)
-		if canonical == "" {
-			canonical = strings.TrimSpace(key)
-		}
-		if canonical == "" {
-			continue
-		}
-		if canonical == "data-policy" && compactInstallParameterName(key) == "preservedata" {
-			if strings.EqualFold(strings.TrimSpace(value), "true") {
-				value = "preserve"
-			} else if strings.EqualFold(strings.TrimSpace(value), "false") {
-				value = "delete"
+	normalize := func(canonicalKeys bool) {
+		for key, value := range parameters {
+			trimmedKey := strings.TrimSpace(key)
+			canonical := canonicalInstallParameterName(trimmedKey)
+			if canonical == "" {
+				canonical = trimmedKey
 			}
+			if canonical == "" || strings.EqualFold(trimmedKey, canonical) != canonicalKeys {
+				continue
+			}
+			if canonical == "data-policy" && compactInstallParameterName(trimmedKey) == "preservedata" {
+				if strings.EqualFold(strings.TrimSpace(value), "true") {
+					value = "preserve"
+				} else if strings.EqualFold(strings.TrimSpace(value), "false") {
+					value = "delete"
+				}
+			}
+			result[canonical] = strings.TrimSpace(value)
 		}
-		result[canonical] = strings.TrimSpace(value)
 	}
+	// A canonical request value must override any persisted legacy alias. This
+	// keeps uninstall policy and deletion confirmation stable across components
+	// whose older manifests used environment-style parameter names.
+	normalize(false)
+	normalize(true)
 	return result
 }
 

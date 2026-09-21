@@ -14,8 +14,11 @@ import (
 	"oneinstack/core"
 	"oneinstack/internal/i18n"
 	"oneinstack/internal/models"
+	auditservice "oneinstack/internal/services/audit"
+	securityservice "oneinstack/internal/services/security"
 	softwareService "oneinstack/internal/services/software"
 	"oneinstack/internal/services/softwaretask"
+	userservice "oneinstack/internal/services/user"
 	"oneinstack/router/input"
 	"oneinstack/router/middleware"
 
@@ -199,6 +202,89 @@ func GetComponentServiceConfiguration(c *gin.Context) {
 	}
 	localizeComponentConfiguration(c.GetString("locale"), &configuration)
 	core.HandleSuccess(c, configuration)
+}
+
+type revealComponentCredentialsRequest struct {
+	PanelPassword string `json:"panelPassword" binding:"required"`
+}
+
+func RevealComponentServiceCredentials(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
+	c.Header("Pragma", "no-cache")
+	definition, version, ok := installedConfigurationTarget(c)
+	if !ok {
+		return
+	}
+	userID, ok := middleware.AuthenticatedUserID(c)
+	if !ok {
+		core.HandleError(c, core.NewError(core.ErrUnauthorized, "登录状态无效"))
+		return
+	}
+	usernameValue, _ := c.Get(middleware.ContextUsername)
+	username, _ := usernameValue.(string)
+	component := definition.Component
+	remoteIP := auditservice.RemoteIP(c.Request)
+	if allowed, remaining := securityservice.PasswordVerificationAllowed(userID, remoteIP); !allowed {
+		seconds := int64(remaining.Seconds())
+		if seconds < 1 {
+			seconds = 1
+		}
+		c.Header("Retry-After", strconv.FormatInt(seconds, 10))
+		auditservice.RecordAuthEvent(c, "software.credential_reveal", username, userID,
+			http.StatusTooManyRequests, "failure", "", "component="+component)
+		core.HandleError(c, core.NewError(core.ErrRateLimitExceeded, "密码校验失败次数过多，请稍后再试"))
+		return
+	}
+	var request revealComponentCredentialsRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		auditservice.RecordAuthEvent(c, "software.credential_reveal", username, userID,
+			http.StatusBadRequest, "failure", "", "component="+component)
+		core.HandleError(c, core.NewError(core.ErrBadRequest, "请输入当前面板密码"))
+		return
+	}
+	account, verified := userservice.CheckUserPassword(username, request.PanelPassword)
+	if !verified || account.ID != userID {
+		locked, cooldown := securityservice.RecordPasswordVerificationFailure(userID, remoteIP)
+		if locked {
+			c.Header("Retry-After", strconv.FormatInt(int64(cooldown.Seconds()), 10))
+		}
+		auditservice.RecordAuthEvent(c, "software.credential_reveal", username, userID,
+			http.StatusUnauthorized, "failure", "", "component="+component)
+		core.HandleError(c, core.NewError(core.ErrInvalidPassword, "当前面板密码错误"))
+		return
+	}
+	securityservice.ResetPasswordVerificationFailures(userID, remoteIP)
+	configuration, err := softwareService.NewInstaller().InspectServiceConfiguration(
+		c.Request.Context(), component, version,
+	)
+	if err != nil {
+		auditservice.RecordAuthEvent(c, "software.credential_reveal", username, userID,
+			http.StatusInternalServerError, "failure", "", "component="+component)
+		core.HandleError(c, core.WrapError(err, core.ErrInternalError, "读取组件凭据失败"))
+		return
+	}
+	localizeComponentConfiguration(c.GetString("locale"), &configuration)
+	credentials, err := softwareService.RevealInstalledCredentials(configuration)
+	if err != nil {
+		auditservice.RecordAuthEvent(c, "software.credential_reveal", username, userID,
+			http.StatusBadRequest, "failure", "", "component="+component)
+		switch {
+		case errors.Is(err, softwareService.ErrInstallCredentialsUnavailable):
+			appErr := core.NewErrorWithDetail(core.ErrBadRequest, "该组件没有可查看的托管凭据", "历史安装未保存凭据，请在下次升级时重新输入。")
+			appErr.StableCode = "SOFTWARE_CREDENTIAL_UNAVAILABLE"
+			core.HandleError(c, appErr)
+		case errors.Is(err, softwareService.ErrInstallCredentialsCorrupt):
+			appErr := core.NewErrorWithDetail(core.ErrOperationFailed, "组件凭据无法解密", "托管凭据已损坏或实例密钥不匹配，请在下次升级时重新输入。")
+			appErr.StableCode = "SOFTWARE_CREDENTIAL_DECRYPT_FAILED"
+			core.HandleError(c, appErr)
+		default:
+			core.HandleError(c, core.WrapError(err, core.ErrInternalError, "读取组件凭据失败"))
+		}
+		return
+	}
+	auditservice.RecordAuthEvent(c, "software.credential_reveal", username, userID,
+		http.StatusOK, "success", "", "component="+component)
+	core.HandleSuccess(c, credentials)
 }
 
 func PreviewComponentServiceConfiguration(c *gin.Context) {

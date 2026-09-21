@@ -21,6 +21,9 @@ type InstallParams struct {
 	// supplied values from manifest defaults. It is never accepted from or
 	// serialized into the HTTP contract.
 	ExplicitParameters map[string]bool `json:"-"`
+	// RestoredParameters tracks values loaded from the last successful install
+	// so previews can report their source without exposing sensitive values.
+	RestoredParameters map[string]bool `json:"-"`
 	// ResolvedPackage is populated only by the encrypted operation-preview
 	// payload. It pins execution to the package already resolved and verified.
 	ResolvedPackage *scriptregistry.PackagePin `json:"resolvedPackage,omitempty"`

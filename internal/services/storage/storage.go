@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"oneinstack/app"
@@ -1001,6 +1002,9 @@ func ensureRecordedLocalMySQLConnection() (*models.Storage, error) {
 	}
 	password := strings.TrimSpace(installed.RootPwd)
 	if password == "" {
+		password = installedSoftwareCredential(installed.CredentialCiphertext, "mysql-password")
+	}
+	if password == "" {
 		return nil, nil
 	}
 	if err := EnsureManagedLocalMySQLConnection("3306", "root", password); err != nil {
@@ -1033,7 +1037,7 @@ func ensureRecordedLocalRedisConnection() (*models.Storage, error) {
 	if err := EnsureManagedLocalRedisConnection(
 		port,
 		"default",
-		strings.TrimSpace(installed.RootPwd),
+		firstNonEmpty(strings.TrimSpace(installed.RootPwd), installedSoftwareCredential(installed.CredentialCiphertext, "redis-password")),
 	); err != nil {
 		// A manually changed password or ACL must not make remote connections
 		// disappear from the list. Administrators can add the local instance as
@@ -1047,6 +1051,37 @@ func ensureRecordedLocalRedisConnection() (*models.Storage, error) {
 		return nil, err
 	}
 	return &restored, nil
+}
+
+func installedSoftwareCredential(ciphertext, key string) string {
+	if strings.TrimSpace(ciphertext) == "" {
+		return ""
+	}
+	plaintext, err := utils.DecryptCredential(ciphertext, utils.CredentialPurposeSoftwareInstall)
+	if err != nil {
+		return ""
+	}
+	var values map[string]string
+	if json.Unmarshal([]byte(plaintext), &values) != nil {
+		return ""
+	}
+	target := strings.NewReplacer("-", "", "_", "", ".", "").Replace(strings.ToLower(strings.TrimSpace(key)))
+	for name, value := range values {
+		candidate := strings.NewReplacer("-", "", "_", "", ".", "").Replace(strings.ToLower(strings.TrimSpace(name)))
+		if candidate == target {
+			return value
+		}
+	}
+	return ""
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func libraryOutput(item *models.Library) output.DatabaseLibrary {

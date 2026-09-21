@@ -359,6 +359,10 @@ func submitInstallationTask(
 	requestedBy int64,
 ) (*models.SoftwareTask, error) {
 	explicitParameters := explicitInstallParameters(req)
+	req.ExplicitParameters = explicitParameters
+	if err := softwareService.RestoreInstalledParameters(&req, explicitParameters); err != nil {
+		return nil, err
+	}
 	softwareService.NormalizeInstallParams(&req)
 	if req.InstallMode == "" {
 		req.InstallMode = "center"

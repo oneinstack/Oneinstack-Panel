@@ -168,6 +168,9 @@ func createTables() error {
 	if err != nil {
 		return err
 	}
+	if err := migrateSoftwareInstallCredentials(); err != nil {
+		return err
+	}
 	err = db.AutoMigrate(
 		&models.SoftwareTask{},
 		&models.SoftwareTaskEvent{},
@@ -474,6 +477,99 @@ func migrateStoredCredentials() error {
 		}
 		return nil
 	})
+}
+
+func migrateSoftwareInstallCredentials() error {
+	var rows []models.Software
+	if err := db.
+		Where("installed = ? AND COALESCE(credential_params_ciphertext, '') = ''", true).
+		Find(&rows).Error; err != nil {
+		return fmt.Errorf("list software install credentials: %w", err)
+	}
+	for _, row := range rows {
+		component := strings.ToLower(strings.TrimSpace(row.Component))
+		if component == "" {
+			component = strings.ToLower(strings.TrimSpace(row.Key))
+		}
+		secretKey := ""
+		storageType := ""
+		defaultPort := ""
+		switch component {
+		case "db", "mysql", "mariadb", "percona":
+			secretKey, storageType, defaultPort = "mysql-password", "mysql", "3306"
+		case "redis":
+			secretKey, storageType, defaultPort = "redis-password", "redis", "6379"
+		case "mongodb":
+			secretKey = "mongodb-admin-password"
+		}
+		if secretKey == "" {
+			continue
+		}
+		password := ""
+		if storageType != "" {
+			port := strings.TrimSpace(row.HttpPort)
+			if port == "" {
+				port = softwareRuntimeParameter(row.RuntimeParamsJSON, "port", storageType+"-port")
+			}
+			if port == "" {
+				port = defaultPort
+			}
+			var storage models.Storage
+			result := db.
+				Where("type = ? AND port = ? AND addr IN ? AND remark LIKE ?", storageType, port, []string{"127.0.0.1", "localhost"}, "%面板自动管理%").
+				Order("id ASC").First(&storage)
+			if result.Error == nil && strings.TrimSpace(storage.Password) != "" {
+				decrypted, err := utils.DecryptCredential(storage.Password, utils.CredentialPurposeStoragePassword)
+				if err != nil {
+					return fmt.Errorf("decrypt managed %s credential for software %d: %w", storageType, row.Id, err)
+				}
+				password = decrypted
+			} else if result.Error != nil && !errors.Is(result.Error, gorm.ErrRecordNotFound) {
+				return fmt.Errorf("read managed %s credential for software %d: %w", storageType, row.Id, result.Error)
+			}
+		}
+		if password == "" {
+			password = row.RootPwd
+		}
+		if password == "" {
+			continue
+		}
+		encoded, err := json.Marshal(map[string]string{secretKey: password})
+		if err != nil {
+			return fmt.Errorf("encode software credential migration for %d: %w", row.Id, err)
+		}
+		ciphertext, err := utils.EncryptCredential(string(encoded), utils.CredentialPurposeSoftwareInstall)
+		if err != nil {
+			return fmt.Errorf("encrypt software credential migration for %d: %w", row.Id, err)
+		}
+		if err := db.Model(&models.Software{}).Where("id = ?", row.Id).Updates(map[string]interface{}{
+			"credential_params_ciphertext": ciphertext,
+			"root_pwd":                     "",
+		}).Error; err != nil {
+			return fmt.Errorf("save software credential migration for %d: %w", row.Id, err)
+		}
+	}
+	return nil
+}
+
+func softwareRuntimeParameter(raw string, names ...string) string {
+	if strings.TrimSpace(raw) == "" {
+		return ""
+	}
+	var values map[string]string
+	if json.Unmarshal([]byte(raw), &values) != nil {
+		return ""
+	}
+	for _, name := range names {
+		target := strings.NewReplacer("-", "", "_", "", ".", "").Replace(strings.ToLower(strings.TrimSpace(name)))
+		for key, value := range values {
+			candidate := strings.NewReplacer("-", "", "_", "", ".", "").Replace(strings.ToLower(strings.TrimSpace(key)))
+			if candidate == target && strings.TrimSpace(value) != "" {
+				return strings.TrimSpace(value)
+			}
+		}
+	}
+	return ""
 }
 
 func initSoftware() error {
