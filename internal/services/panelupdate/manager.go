@@ -8,15 +8,22 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"golang.org/x/sys/unix"
+)
+
+const (
+	updateRemoteAttempts = 2
+	updateRetryDelay     = 500 * time.Millisecond
 )
 
 type Manager struct {
@@ -92,8 +99,30 @@ func validateConfig(config Config) error {
 }
 
 func (m *Manager) Check(ctx context.Context) (CheckResult, error) {
-	result, _, _, err := CheckUpdate(ctx, m.client, m.config)
+	result, _, _, err := m.checkUpdate(ctx)
 	return result, err
+}
+
+func (m *Manager) checkUpdate(ctx context.Context) (CheckResult, Manifest, Artifact, error) {
+	var (
+		result   CheckResult
+		manifest Manifest
+		artifact Artifact
+		err      error
+	)
+	for attempt := 1; attempt <= updateRemoteAttempts; attempt++ {
+		result, manifest, artifact, err = CheckUpdate(ctx, m.client, m.config)
+		if err == nil || !retryableRemoteUpdateError(ctx, err) || attempt == updateRemoteAttempts {
+			break
+		}
+		if waitErr := waitForUpdateRetry(ctx); waitErr != nil {
+			return result, Manifest{}, Artifact{}, waitErr
+		}
+	}
+	if err != nil {
+		err = classifyRemoteUpdateError(err)
+	}
+	return result, manifest, artifact, err
 }
 
 func (m *Manager) Apply(ctx context.Context) (finalStatus Status, finalErr error) {
@@ -127,7 +156,7 @@ func (m *Manager) Apply(ctx context.Context) (finalStatus Status, finalErr error
 		finalStatus = status
 	}()
 
-	result, manifest, artifact, err := CheckUpdate(ctx, m.client, m.config)
+	result, manifest, artifact, err := m.checkUpdate(ctx)
 	if err != nil {
 		return m.fail(&status, err)
 	}
@@ -154,7 +183,7 @@ func (m *Manager) Apply(ctx context.Context) (finalStatus Status, finalErr error
 	}
 	defer os.RemoveAll(stagingRoot)
 	archivePath := filepath.Join(stagingRoot, artifact.FileName)
-	if err := m.downloadArtifact(ctx, artifact, archivePath); err != nil {
+	if err := m.downloadArtifactWithRetry(ctx, artifact, archivePath); err != nil {
 		return m.fail(&status, err)
 	}
 	payloadPath := filepath.Join(stagingRoot, "payload")
@@ -162,11 +191,11 @@ func (m *Manager) Apply(ctx context.Context) (finalStatus Status, finalErr error
 		return m.fail(&status, err)
 	}
 	if _, err := extractRelease(archivePath, payloadPath, m.config.MaxExpandedBytes); err != nil {
-		return m.fail(&status, err)
+		return m.fail(&status, fmt.Errorf("%w: %v", ErrVerificationFailed, err))
 	}
 	candidateBinary := filepath.Join(payloadPath, "one")
 	if err := m.verifyCandidate(ctx, candidateBinary, manifest.Version); err != nil {
-		return m.fail(&status, err)
+		return m.fail(&status, fmt.Errorf("%w: %v", ErrVerificationFailed, err))
 	}
 
 	wasActive := m.service.IsActive(ctx)
@@ -178,6 +207,7 @@ func (m *Manager) Apply(ctx context.Context) (finalStatus Status, finalErr error
 
 	rollbackOnFailure := func(cause error) (Status, error) {
 		status.RollbackAttempted = true
+		status.ErrorCode = statusErrorCode(cause)
 		rollbackErr := m.rollback(ctx, snapshot)
 		finished := m.now().UTC()
 		status.FinishedAt = &finished
@@ -197,7 +227,7 @@ func (m *Manager) Apply(ctx context.Context) (finalStatus Status, finalErr error
 
 	if wasActive {
 		if err := m.service.Stop(ctx); err != nil {
-			return rollbackOnFailure(fmt.Errorf("stop panel service: %w", err))
+			return rollbackOnFailure(fmt.Errorf("%w: stop panel service: %v", ErrServiceFailed, err))
 		}
 	}
 	populatedSnapshot, err := m.populateSnapshot(snapshot)
@@ -210,7 +240,7 @@ func (m *Manager) Apply(ctx context.Context) (finalStatus Status, finalErr error
 		return rollbackOnFailure(err)
 	}
 	if err := m.preflight(ctx, candidateBinary, snapshot); err != nil {
-		return rollbackOnFailure(fmt.Errorf("database migration preflight: %w", err))
+		return rollbackOnFailure(fmt.Errorf("%w: database migration preflight: %v", ErrPreflightFailed, err))
 	}
 	if err := m.transition(&status, StateSwitching, "正在原子切换面板版本"); err != nil {
 		return rollbackOnFailure(err)
@@ -260,13 +290,13 @@ func (m *Manager) Apply(ctx context.Context) (finalStatus Status, finalErr error
 
 	if wasActive {
 		if err := m.service.Start(ctx); err != nil {
-			return rollbackOnFailure(fmt.Errorf("start updated panel service: %w", err))
+			return rollbackOnFailure(fmt.Errorf("%w: start updated panel service: %v", ErrServiceFailed, err))
 		}
 		if err := m.transition(&status, StateHealthChecking, "正在等待新版本健康检查"); err != nil {
 			return rollbackOnFailure(err)
 		}
 		if err := m.health.WaitReady(ctx, m.config.HealthURL, m.config.HealthTimeout); err != nil {
-			return rollbackOnFailure(err)
+			return rollbackOnFailure(fmt.Errorf("%w: %v", ErrHealthCheckFailed, err))
 		}
 	}
 
@@ -433,9 +463,93 @@ func statusErrorCode(err error) string {
 		return StatusErrorTargetChanged
 	case errors.Is(err, ErrRecoveryNeeded):
 		return StatusErrorRecoveryNeeded
+	case errors.Is(err, ErrCenterTimeout):
+		return StatusErrorCenterTimeout
+	case errors.Is(err, ErrCenterUnavailable):
+		return StatusErrorCenterUnavailable
+	case errors.Is(err, ErrDownloadFailed):
+		return StatusErrorDownloadFailed
+	case errors.Is(err, ErrVerificationFailed), errors.Is(err, ErrInvalidManifest):
+		return StatusErrorVerificationFailed
+	case errors.Is(err, ErrPreflightFailed):
+		return StatusErrorPreflightFailed
+	case errors.Is(err, ErrServiceFailed):
+		return StatusErrorServiceFailed
+	case errors.Is(err, ErrHealthCheckFailed):
+		return StatusErrorHealthCheckFailed
 	default:
 		return ""
 	}
+}
+
+func retryableRemoteUpdateError(ctx context.Context, err error) bool {
+	if err == nil || ctx.Err() != nil || errors.Is(err, context.Canceled) {
+		return false
+	}
+	var statusErr *remoteHTTPStatusError
+	if errors.As(err, &statusErr) {
+		return statusErr.statusCode == http.StatusRequestTimeout ||
+			statusErr.statusCode == http.StatusTooManyRequests ||
+			(statusErr.statusCode >= http.StatusInternalServerError && statusErr.statusCode < 600)
+	}
+	if errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && (netErr.Timeout() || netErr.Temporary()) {
+		return true
+	}
+	return errors.Is(err, syscall.ECONNREFUSED) ||
+		errors.Is(err, syscall.ECONNRESET) ||
+		errors.Is(err, syscall.EPIPE) ||
+		errors.Is(err, syscall.ENETUNREACH) ||
+		errors.Is(err, syscall.EHOSTUNREACH)
+}
+
+func classifyRemoteUpdateError(err error) error {
+	if err == nil || errors.Is(err, context.Canceled) {
+		return err
+	}
+	var netErr net.Error
+	if errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &netErr) && netErr.Timeout()) {
+		return fmt.Errorf("%w: %v", ErrCenterTimeout, err)
+	}
+	if retryableRemoteUpdateError(context.Background(), err) {
+		return fmt.Errorf("%w: %v", ErrCenterUnavailable, err)
+	}
+	return err
+}
+
+func waitForUpdateRetry(ctx context.Context) error {
+	timer := time.NewTimer(updateRetryDelay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func (m *Manager) downloadArtifactWithRetry(ctx context.Context, artifact Artifact, destination string) error {
+	var err error
+	for attempt := 1; attempt <= updateRemoteAttempts; attempt++ {
+		err = m.downloadArtifact(ctx, artifact, destination)
+		if err == nil {
+			return nil
+		}
+		_ = os.Remove(destination)
+		if errors.Is(err, ErrVerificationFailed) || !retryableRemoteUpdateError(ctx, err) || attempt == updateRemoteAttempts {
+			break
+		}
+		if waitErr := waitForUpdateRetry(ctx); waitErr != nil {
+			return waitErr
+		}
+	}
+	if errors.Is(err, ErrVerificationFailed) {
+		return err
+	}
+	return fmt.Errorf("%w: %v", ErrDownloadFailed, err)
 }
 
 func (m *Manager) downloadArtifact(ctx context.Context, artifact Artifact, destination string) error {
@@ -449,10 +563,12 @@ func (m *Manager) downloadArtifact(ctx context.Context, artifact Artifact, desti
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("download release artifact: HTTP status %d", response.StatusCode)
+		return &remoteHTTPStatusError{
+			message: "download release artifact: HTTP status", statusCode: response.StatusCode,
+		}
 	}
 	if response.ContentLength > artifact.Size || response.ContentLength > m.config.MaxPackageBytes {
-		return fmt.Errorf("release artifact Content-Length exceeds signed size")
+		return fmt.Errorf("%w: release artifact Content-Length exceeds signed size", ErrVerificationFailed)
 	}
 	file, err := os.OpenFile(destination, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if err != nil {
@@ -472,10 +588,10 @@ func (m *Manager) downloadArtifact(ctx context.Context, artifact Artifact, desti
 		return closeErr
 	}
 	if written != artifact.Size {
-		return fmt.Errorf("release artifact size mismatch: got %d, want %d", written, artifact.Size)
+		return fmt.Errorf("%w: release artifact size mismatch: got %d, want %d", ErrVerificationFailed, written, artifact.Size)
 	}
 	if hex.EncodeToString(hash.Sum(nil)) != artifact.SHA256 {
-		return fmt.Errorf("release artifact SHA-256 mismatch")
+		return fmt.Errorf("%w: release artifact SHA-256 mismatch", ErrVerificationFailed)
 	}
 	return nil
 }

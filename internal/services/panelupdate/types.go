@@ -24,21 +24,35 @@ const (
 )
 
 var (
-	ErrDisabled        = errors.New("panel updates are disabled")
-	ErrInvalidManifest = errors.New("invalid update manifest")
-	ErrIncompatible    = errors.New("panel update is incompatible with this installation")
-	ErrTargetChanged   = errors.New("Center-assigned panel update target changed")
-	ErrNoUpdate        = errors.New("no newer update is available")
-	ErrUpdateBusy      = errors.New("another panel update is running")
-	ErrUpdateStart     = errors.New("independent panel update service could not be started")
-	ErrRecoveryNeeded  = errors.New("an interrupted panel update must be rolled back before retrying")
+	ErrDisabled           = errors.New("panel updates are disabled")
+	ErrInvalidManifest    = errors.New("invalid update manifest")
+	ErrIncompatible       = errors.New("panel update is incompatible with this installation")
+	ErrTargetChanged      = errors.New("Center-assigned panel update target changed")
+	ErrNoUpdate           = errors.New("no newer update is available")
+	ErrUpdateBusy         = errors.New("another panel update is running")
+	ErrUpdateStart        = errors.New("independent panel update service could not be started")
+	ErrRecoveryNeeded     = errors.New("an interrupted panel update must be rolled back before retrying")
+	ErrCenterTimeout      = errors.New("panel update Center request timed out")
+	ErrCenterUnavailable  = errors.New("panel update Center is temporarily unavailable")
+	ErrDownloadFailed     = errors.New("panel update package download failed")
+	ErrVerificationFailed = errors.New("panel update package verification failed")
+	ErrPreflightFailed    = errors.New("panel update preflight failed")
+	ErrServiceFailed      = errors.New("panel service control failed during update")
+	ErrHealthCheckFailed  = errors.New("updated panel health check failed")
 )
 
 const (
-	StatusErrorNoUpdate       = "no_update"
-	StatusErrorIncompatible   = "incompatible"
-	StatusErrorTargetChanged  = "target_changed"
-	StatusErrorRecoveryNeeded = "recovery_required"
+	StatusErrorNoUpdate           = "no_update"
+	StatusErrorIncompatible       = "incompatible"
+	StatusErrorTargetChanged      = "target_changed"
+	StatusErrorRecoveryNeeded     = "recovery_required"
+	StatusErrorCenterTimeout      = "center_timeout"
+	StatusErrorCenterUnavailable  = "center_unavailable"
+	StatusErrorDownloadFailed     = "download_failed"
+	StatusErrorVerificationFailed = "verification_failed"
+	StatusErrorPreflightFailed    = "preflight_failed"
+	StatusErrorServiceFailed      = "service_failed"
+	StatusErrorHealthCheckFailed  = "health_check_failed"
 )
 
 type Config struct {

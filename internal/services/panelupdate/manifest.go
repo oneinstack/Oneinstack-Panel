@@ -31,6 +31,15 @@ type manifestPayload struct {
 	Artifacts      []Artifact `json:"artifacts"`
 }
 
+type remoteHTTPStatusError struct {
+	message    string
+	statusCode int
+}
+
+func (e *remoteHTTPStatusError) Error() string {
+	return fmt.Sprintf("%s %d", e.message, e.statusCode)
+}
+
 func ManifestPayload(manifest Manifest) ([]byte, error) {
 	return json.Marshal(manifestPayload{
 		SchemaVersion:  manifest.SchemaVersion,
@@ -177,7 +186,9 @@ func FetchManifest(ctx context.Context, client *http.Client, manifestURL string)
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return Manifest{}, fmt.Errorf("download update manifest: unexpected HTTP status %d", response.StatusCode)
+		return Manifest{}, &remoteHTTPStatusError{
+			message: "download update manifest: unexpected HTTP status", statusCode: response.StatusCode,
+		}
 	}
 	content, err := io.ReadAll(io.LimitReader(response.Body, MaxManifestBytes+1))
 	if err != nil {
@@ -237,10 +248,9 @@ func ResolveManifest(
 		return Manifest{}, false, nil
 	}
 	if response.StatusCode != http.StatusOK {
-		return Manifest{}, false, fmt.Errorf(
-			"resolve panel update from Center: unexpected HTTP status %d",
-			response.StatusCode,
-		)
+		return Manifest{}, false, &remoteHTTPStatusError{
+			message: "resolve panel update from Center: unexpected HTTP status", statusCode: response.StatusCode,
+		}
 	}
 	content, err := io.ReadAll(io.LimitReader(response.Body, MaxManifestBytes+1))
 	if err != nil {

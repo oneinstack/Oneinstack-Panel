@@ -176,10 +176,9 @@ func fetchKeyset(ctx context.Context, client *http.Client, keyStatusURL string) 
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return KeysetDocument{}, fmt.Errorf(
-			"download Center signing keyset: unexpected HTTP status %d",
-			response.StatusCode,
-		)
+		return KeysetDocument{}, &remoteHTTPStatusError{
+			message: "download Center signing keyset: unexpected HTTP status", statusCode: response.StatusCode,
+		}
 	}
 	content, err := io.ReadAll(io.LimitReader(response.Body, MaxKeysetBytes+1))
 	if err != nil {
