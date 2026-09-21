@@ -10,6 +10,7 @@ import (
 
 	"oneinstack/app"
 	"oneinstack/core"
+	"oneinstack/internal/i18n"
 	"oneinstack/internal/services/cluster"
 	"oneinstack/router/middleware"
 
@@ -394,6 +395,22 @@ func CreateNode(c *gin.Context) {
 		handleNodeMutationError(c, err)
 		return
 	}
+	core.HandleSuccess(c, result)
+}
+
+func CheckEndpoint(c *gin.Context) {
+	if _, ok := manager(c); !ok {
+		return
+	}
+	var input struct {
+		Endpoint string `json:"endpoint"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		core.HandleError(c, core.NewError(core.ErrInvalidParameter, "Panel 地址检测参数无效"))
+		return
+	}
+	result := cluster.CheckEndpoint(c.Request.Context(), input.Endpoint)
+	result.Detail = i18n.LocalizeText(c.GetString("locale"), result.Detail)
 	core.HandleSuccess(c, result)
 }
 

@@ -443,6 +443,12 @@ func validEndpoint(raw string) bool {
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Opaque != "" {
 		return false
 	}
+	// Reject malformed nested URLs such as http://http//example.com:80.
+	// url.Parse treats the second protocol name as the host and the real
+	// address as a path, so the generic host checks above are not sufficient.
+	if strings.HasPrefix(u.Path, "//") {
+		return false
+	}
 	if port := u.Port(); port != "" {
 		parsedPort, err := strconv.Atoi(port)
 		if err != nil || parsedPort < 1 || parsedPort > 65535 {

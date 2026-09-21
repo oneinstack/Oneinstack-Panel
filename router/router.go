@@ -143,6 +143,7 @@ func SetupRouter() *gin.Engine {
 		clusterg.PUT("/policy", middleware.RequirePermission(accessservice.PermissionClusterWrite), clusterHandler.UpdatePolicy)
 		clusterg.GET("/nodes/:id", middleware.RequirePermission(accessservice.PermissionClusterRead), clusterHandler.GetNode)
 		clusterg.GET("/nodes/:id/metrics", middleware.RequirePermission(accessservice.PermissionClusterRead), clusterHandler.ListMetrics)
+		clusterg.POST("/nodes/endpoint-check", middleware.RequirePermission(accessservice.PermissionClusterWrite), clusterHandler.CheckEndpoint)
 		clusterg.POST("/nodes", middleware.RequirePermission(accessservice.PermissionClusterWrite), clusterHandler.CreateNode)
 		clusterg.PUT("/nodes/:id", middleware.RequirePermission(accessservice.PermissionClusterWrite), clusterHandler.UpdateNode)
 		clusterg.POST("/nodes/:id/restart", middleware.RequirePermission(accessservice.PermissionClusterWrite), clusterHandler.RestartNode)
