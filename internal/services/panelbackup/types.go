@@ -187,6 +187,7 @@ type Manifest struct {
 	SchemaVersion        int            `json:"schemaVersion"`
 	CreatedAt            time.Time      `json:"createdAt"`
 	PanelVersion         string         `json:"panelVersion"`
+	WebServerComponent   *string        `json:"webServerComponent,omitempty"`
 	IncludesCertificates bool           `json:"includesCertificates"`
 	Files                []ManifestFile `json:"files"`
 }
