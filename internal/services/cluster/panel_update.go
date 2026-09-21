@@ -177,11 +177,13 @@ func (m *Manager) GetPanelUpdateStates(ids []uint) ([]PanelUpdateState, error) {
 	if err := m.db.Where("id IN (?)", applySubquery).Find(&executionTasks).Error; err != nil {
 		return nil, err
 	}
+	lastExecutionUpdatedAt := make(map[uint]time.Time, len(executionTasks))
 	for i := range executionTasks {
 		state := statesByNode[executionTasks[i].NodeID]
 		if state == nil || strings.TrimSpace(executionTasks[i].Result) == "" {
 			continue
 		}
+		lastExecutionUpdatedAt[executionTasks[i].NodeID] = executionTasks[i].UpdatedAt
 		var execution PanelUpdateExecutionResult
 		if json.Unmarshal([]byte(executionTasks[i].Result), &execution) == nil {
 			execution.ErrorCode = safePanelUpdateErrorCode(execution.ErrorCode)
@@ -204,11 +206,25 @@ func (m *Manager) GetPanelUpdateStates(ids []uint) ([]PanelUpdateState, error) {
 		}
 		var check PanelUpdateCheckResult
 		if json.Unmarshal([]byte(checkTasks[i].Result), &check) == nil {
-			if strings.TrimSpace(check.CurrentVersion) != "" {
-				state.CurrentVersion = check.CurrentVersion
+			// The node heartbeat is the live source of truth. The version in a
+			// check result is only a snapshot and becomes stale after a
+			// successful update.
+			currentVersion := strings.TrimSpace(state.CurrentVersion)
+			if currentVersion == "" {
+				currentVersion = strings.TrimSpace(check.CurrentVersion)
+				state.CurrentVersion = currentVersion
 			}
-			check.UpdateAvailable = panelVersionUpdateAvailable(check.CurrentVersion, check.LatestVersion)
+			check.UpdateAvailable = panelVersionUpdateAvailable(currentVersion, check.LatestVersion)
 			state.LastCheck = &check
+
+			// A successful check supersedes an older failed apply result. Keep a
+			// current success result visible, but do not retain a stale error in
+			// the panel update state.
+			if executionUpdatedAt, ok := lastExecutionUpdatedAt[checkTasks[i].NodeID]; ok &&
+				!checkTasks[i].UpdatedAt.Before(executionUpdatedAt) &&
+				state.LastExecution != nil && state.LastExecution.ErrorCode != "" {
+				state.LastExecution = nil
+			}
 		}
 	}
 
@@ -267,7 +283,10 @@ func (m *Manager) EnqueuePanelUpdateApply(id uint, input PanelUpdateApplyInput) 
 		return ClusterTaskSummary{}, err
 	}
 	target := strings.TrimSpace(input.ExpectedVersion)
-	if state.LastCheck == nil || !state.LastCheck.UpdateAvailable || !state.LastCheck.Compatible || !exactPanelVersion(target, state.LastCheck.LatestVersion) {
+	now := time.Now().UTC()
+	checkFresh := state.LastCheck != nil && !state.LastCheck.CheckedAt.IsZero() &&
+		!now.After(state.LastCheck.CheckedAt.Add(panelUpdateCheckInterval))
+	if !checkFresh || !state.LastCheck.UpdateAvailable || !state.LastCheck.Compatible || !exactPanelVersion(target, state.LastCheck.LatestVersion) {
 		return ClusterTaskSummary{}, ErrPanelUpdateTarget
 	}
 	payload, _ := json.Marshal(panelUpdateApplyPayload{ExpectedVersion: target, CurrentVersion: node.PanelVersion})
