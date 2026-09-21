@@ -1,101 +1,100 @@
 # 当前配置为生产配置
 system:
-  acmechallengepath: /usr/local/one/acme-webroot
-  acmedirectoryurl: https://acme-v02.api.letsencrypt.org/directory
-  acmeissuetimeoutminutes: 15
-  acmerenewbeforedays: 30
-  acmerenewschedule: 15 3 * * *
-  allowinlinestyle: true
-  allowinsecurewebsocketindev: false
-  auditcleanupschedule: 45 4 * * *
-  auditexportmaxrows: 10000
-  auditretentiondays: 365
+  acmeChallengePath: /usr/local/one/acme-webroot
+  acmeDirectoryUrl: https://acme-v02.api.letsencrypt.org/directory
+  acmeIssueTimeoutMinutes: 15
+  acmeRenewBeforeDays: 30
+  acmeRenewSchedule: 15 3 * * *
+  allowInlineStyle: true
+  allowInsecureWebSocketInDev: false
+  auditCleanupSchedule: 45 4 * * *
+  auditExportMaxRows: 10000
+  auditRetentionDays: 365
   bindAddress: 0.0.0.0
-  certificateexpirywarningdays: 30
-  certificatepath: /usr/local/one/certificates
-  clilanguage: en-US
-  containerterminalenabled: true
-  containerterminalidleminutes: 5
-  containerterminalmaxconcurrent: 5
-  containerterminalmaxperuser: 1
-  containerterminalsessionminutes: 30
-  credentialkey: ''
-  cronexecutioncleanupschedule: 25 5 * * *
-  cronexecutionretentiondays: 30
-  databasebackupcleanupschedule: 0 4 * * *
-  databasebackupretentiondays: 30
-  datapath: /data/db/
-  defaultpath: /
-  fileeditmaxbytes: 10485760
-  fileminfreebytes: 1073741824
-  filerootquotabytes: 0
-  fileuploadmaxbytes: 104857600
+  certificateExpiryWarningDays: 30
+  certificatePath: /usr/local/one/certificates
+  cliLanguage: en-US
+  containerTerminalEnabled: true
+  containerTerminalIdleMinutes: 5
+  containerTerminalMaxConcurrent: 5
+  containerTerminalMaxPerUser: 1
+  containerTerminalSessionMinutes: 30
+  credentialKey: ''
+  cronExecutionCleanupSchedule: 25 5 * * *
+  cronExecutionRetentionDays: 30
+  databaseBackupCleanupSchedule: 0 4 * * *
+  databaseBackupRetentionDays: 30
+  dataPath: /data/db/
+  defaultPath: /
+  fileEditMaxBytes: 10485760
+  fileMinFreeBytes: 1073741824
+  fileRootQuotaBytes: 0
+  fileUploadMaxBytes: 104857600
   httpsCertificateFile: ""
   httpsEnabled: false
   httpsPort: "8443"
   httpsPrivateKeyFile: ""
-  jwtsecret: ''
-  logpath: /data/wwwlogs/
-  monitoralertretentiondays: 365
-  monitorcleanupschedule: 20 4 * * *
-  monitorretentiondays: 30
-  monitorsampleschedule: '*/1 * * * *'
+  jwtSecret: ''
+  logPath: /data/wwwlogs/
+  monitorAlertRetentionDays: 365
+  monitorCleanupSchedule: 20 4 * * *
+  monitorRetentionDays: 30
+  monitorSampleSchedule: '*/1 * * * *'
   panelEntryEnabled: false
   panelEntryPath: ""
   port: "8089"
   remote: ""
-  runtimelogcleanupschedule: 10 5 * * *
-  runtimelogretentiondays: 30
-  softwaretaskcleanupschedule: 30 3 * * *
-  softwaretasklogretentiondays: 30
-  softwaretaskretentiondays: 90
-  terminalenabled: true
-  terminalidleminutes: 5
-  terminalmaxconcurrent: 2
-  terminalmaxperuser: 1
-  terminalsessionminutes: 15
-  trashcleanupschedule: 0 3 * * *
-  trashretentiondays: 30
+  runtimeLogCleanupSchedule: 10 5 * * *
+  runtimeLogRetentionDays: 30
+  softwareTaskCleanupSchedule: 30 3 * * *
+  softwareTaskLogRetentionDays: 30
+  softwareTaskRetentionDays: 90
+  terminalEnabled: true
+  terminalIdleMinutes: 5
+  terminalMaxConcurrent: 2
+  terminalMaxPerUser: 1
+  terminalSessionMinutes: 15
+  trashCleanupSchedule: 0 3 * * *
+  trashRetentionDays: 30
   trustedProxies: []
-  webpath: /data/wwwroot/
-  websitebackupcleanupschedule: 15 4 * * *
-  websitebackupmaxbytes: 21474836480
-  websitebackupmaxfiles: 200000
-  websitebackupretentiondays: 30
-  webvhostroot: /usr/local/one/vhost
-  cliLanguage: en-US
+  webPath: /data/wwwroot/
+  websiteBackupCleanupSchedule: 15 4 * * *
+  websiteBackupMaxBytes: 21474836480
+  websiteBackupMaxFiles: 200000
+  websiteBackupRetentionDays: 30
+  webVhostRoot: /usr/local/one/vhost
 bastion:
-  cleanupschedule: 30 4 * * *
-  collectschedule: '*/1 * * * *'
-  collecttimeoutseconds: 15
+  cleanupSchedule: 30 4 * * *
+  collectSchedule: '*/1 * * * *'
+  collectTimeoutSeconds: 15
   enabled: true
-  maxconcurrentcollects: 5
-  retentiondays: 30
-scriptcenter:
-  allowinsecurehttp: false
-  bundledpath: /usr/local/one/script-registry/bundled
-  cachepath: /usr/local/one/script-registry/cache
-  catalogstaleafterhours: 24
-  catalogsyncintervalminutes: 15
+  maxConcurrentCollects: 5
+  retentionDays: 30
+scriptCenter:
+  allowInsecureHTTP: false
+  bundledPath: /usr/local/one/script-registry/bundled
+  cachePath: /usr/local/one/script-registry/cache
+  catalogStaleAfterHours: 24
+  catalogSyncIntervalMinutes: 15
   channel: stable
   enabled: true
-  maxexpandedbytes: 268435456
-  maxpackagebytes: 67108864
-  requesttimeoutseconds: 120
-  trustedkeys:
+  maxExpandedBytes: 268435456
+  maxPackageBytes: 67108864
+  requestTimeoutSeconds: 120
+  trustedKeys:
     bc45fa5195e00419: Gqd34lRBmSIIweF5OVUIXwM1FyMOgcuIS2n+Kn5mbV8=
   url: https://center.oneinstack.com
-updatecenter:
-  backupretention: 5
-  centerurl: https://center.oneinstack.com
+updateCenter:
+  backupRetention: 5
+  centerUrl: https://center.oneinstack.com
   channel: stable
   enabled: true
-  healthtimeoutseconds: 60
-  manifesturl: ""
-  maxexpandedbytes: 536870912
-  maxpackagebytes: 268435456
-  requesttimeoutseconds: 300
-  trustedkeys:
+  healthTimeoutSeconds: 60
+  manifestUrl: ""
+  maxExpandedBytes: 536870912
+  maxPackageBytes: 268435456
+  requestTimeoutSeconds: 300
+  trustedKeys:
     bc45fa5195e00419: Gqd34lRBmSIIweF5OVUIXwM1FyMOgcuIS2n+Kn5mbV8=
 translation:
   enabled: true
