@@ -2,6 +2,7 @@ package safe
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -34,6 +35,8 @@ func (s *Service) detectBackend(ctx context.Context) backendState {
 						state.Warning,
 						"firewalld 配置校验失败，请先运行修复任务",
 					)
+				} else {
+					state.CanManageOffline = true
 				}
 			}
 		}
@@ -96,6 +99,40 @@ func (s *Service) ruleOperations(rule *models.IptablesRule) ([]commandOperation,
 	default:
 		return nil, fmt.Errorf("%w: 未知防火墙后端 %q", ErrUnsupported, rule.Backend)
 	}
+}
+
+// ruleOperationsForMutation selects the online or offline firewalld command
+// path for an existing managed rule. This keeps conflict recovery available
+// while firewalld is stopped without starting the service or editing only the
+// database marker.
+func (s *Service) ruleOperationsForMutation(
+	ctx context.Context,
+	rule *models.IptablesRule,
+) ([]commandOperation, string, error) {
+	if rule.Backend != BackendFirewalld {
+		operations, err := s.ruleOperations(rule)
+		return operations, rule.Backend, err
+	}
+	if _, err := s.runner.Run(ctx, "firewall-cmd", "--state"); err == nil {
+		operations, operationErr := s.ruleOperations(rule)
+		return operations, BackendFirewalld, operationErr
+	} else if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return nil, "", fmt.Errorf("读取 firewalld 运行状态超时: %w", err)
+	}
+	if _, err := s.runner.LookPath("firewall-offline-cmd"); err != nil {
+		return nil, "", fmt.Errorf(
+			"%w: firewalld 未运行且缺少 firewall-offline-cmd，无法安全修改规则",
+			ErrUnsupported,
+		)
+	}
+	if _, err := s.runner.Run(ctx, "firewall-offline-cmd", "--check-config"); err != nil {
+		return nil, "", fmt.Errorf(
+			"%w: firewalld 离线配置校验失败，请先运行修复任务: %v",
+			ErrUnsupported,
+			err,
+		)
+	}
+	return firewalldRuleOperations(rule, "firewall-offline-cmd", false), backendFirewalldOffline, nil
 }
 
 func ufwRuleOperations(rule *models.IptablesRule) []commandOperation {
@@ -314,6 +351,9 @@ func (s *Service) persist(ctx context.Context, backend string) error {
 	switch backend {
 	case BackendFirewalld:
 		_, err := s.runner.Run(ctx, "firewall-cmd", "--reload")
+		return err
+	case backendFirewalldOffline:
+		_, err := s.runner.Run(ctx, "firewall-offline-cmd", "--check-config")
 		return err
 	case BackendIPTables:
 		_, err := s.runner.Run(ctx, "netfilter-persistent", "save")

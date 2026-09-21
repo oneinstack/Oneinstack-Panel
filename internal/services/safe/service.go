@@ -74,8 +74,9 @@ func (s *Service) Status(ctx context.Context) (*output.IptablesStatus, error) {
 		Install: state.Installed, Enabled: state.Enabled, Backend: state.Name,
 		RuntimeBackend: runtimeBackend,
 		Persistent:     state.Persistent, CanToggle: state.CanToggle,
-		RepairRequired: state.RepairRequired,
-		Warning:        state.Warning, PanelPort: s.panelPort,
+		CanManageOffline: state.CanManageOffline,
+		RepairRequired:   state.RepairRequired,
+		Warning:          state.Warning, PanelPort: s.panelPort,
 	}
 	if s.db != nil {
 		if err := s.CleanupUninstalledBackend(BackendFirewalld); err != nil {
@@ -333,26 +334,27 @@ func (s *Service) Update(ctx context.Context, requested *models.IptablesRule) er
 
 	old.Backend = requested.Backend
 	var oldOperations, newOperations []commandOperation
+	var oldPersistBackend, newPersistBackend string
 	if old.State == 1 {
-		oldOperations, err = s.ruleOperations(&old)
+		oldOperations, oldPersistBackend, err = s.ruleOperationsForMutation(ctx, &old)
 		if err != nil {
 			return err
 		}
-		if err := s.runOperations(ctx, old.Backend, reverseOperations(oldOperations)); err != nil {
+		if err := s.runOperations(ctx, oldPersistBackend, reverseOperations(oldOperations)); err != nil {
 			return fmt.Errorf("删除旧系统规则失败，原规则已恢复: %w", err)
 		}
 	}
 	if requested.State == 1 {
-		newOperations, err = s.ruleOperations(requested)
+		newOperations, newPersistBackend, err = s.ruleOperationsForMutation(ctx, requested)
 		if err != nil {
 			if old.State == 1 {
-				_ = s.runOperations(ctx, old.Backend, oldOperations)
+				_ = s.runOperations(ctx, oldPersistBackend, oldOperations)
 			}
 			return err
 		}
-		if err := s.runOperations(ctx, requested.Backend, newOperations); err != nil {
+		if err := s.runOperations(ctx, newPersistBackend, newOperations); err != nil {
 			if old.State == 1 {
-				_ = s.runOperations(ctx, old.Backend, oldOperations)
+				_ = s.runOperations(ctx, oldPersistBackend, oldOperations)
 			}
 			return fmt.Errorf("应用新规则失败，原规则已恢复: %w", err)
 		}
@@ -367,10 +369,10 @@ func (s *Service) Update(ctx context.Context, requested *models.IptablesRule) er
 	}
 	if err := s.db.Model(&models.IptablesRule{}).Where("id = ?", old.ID).Updates(updates).Error; err != nil {
 		if requested.State == 1 {
-			_ = s.runOperations(ctx, requested.Backend, reverseOperations(newOperations))
+			_ = s.runOperations(ctx, newPersistBackend, reverseOperations(newOperations))
 		}
 		if old.State == 1 {
-			_ = s.runOperations(ctx, old.Backend, oldOperations)
+			_ = s.runOperations(ctx, oldPersistBackend, oldOperations)
 		}
 		return fmt.Errorf("保存规则失败，原规则已恢复: %w", err)
 	}
@@ -401,19 +403,20 @@ func (s *Service) deleteLocked(ctx context.Context, id int64) error {
 		rule.Backend = s.detectBackend(ctx).Name
 	}
 	var operations []commandOperation
+	var persistBackend string
 	var err error
 	if rule.State == 1 {
-		operations, err = s.ruleOperations(&rule)
+		operations, persistBackend, err = s.ruleOperationsForMutation(ctx, &rule)
 		if err != nil {
 			return err
 		}
-		if err := s.runOperations(ctx, rule.Backend, reverseOperations(operations)); err != nil {
+		if err := s.runOperations(ctx, persistBackend, reverseOperations(operations)); err != nil {
 			return fmt.Errorf("删除系统规则失败，原规则已恢复: %w", err)
 		}
 	}
 	if err := s.db.Delete(&models.IptablesRule{}, rule.ID).Error; err != nil {
 		if rule.State == 1 {
-			_ = s.runOperations(ctx, rule.Backend, operations)
+			_ = s.runOperations(ctx, persistBackend, operations)
 		}
 		return fmt.Errorf("删除规则记录失败，系统规则已恢复: %w", err)
 	}
@@ -459,7 +462,7 @@ func (s *Service) setRuleStateLocked(ctx context.Context, id int64, enabled bool
 	if rule.Backend == "" {
 		rule.Backend = s.detectBackend(ctx).Name
 	}
-	operations, err := s.ruleOperations(&rule)
+	operations, persistBackend, err := s.ruleOperationsForMutation(ctx, &rule)
 	if err != nil {
 		return err
 	}
@@ -467,12 +470,12 @@ func (s *Service) setRuleStateLocked(ctx context.Context, id int64, enabled bool
 	if !enabled {
 		run = reverseOperations(operations)
 	}
-	if err := s.runOperations(ctx, rule.Backend, run); err != nil {
+	if err := s.runOperations(ctx, persistBackend, run); err != nil {
 		return fmt.Errorf("更新系统规则状态失败: %w", err)
 	}
 	if err := s.db.Model(&models.IptablesRule{}).Where("id = ?", id).Update("state", target).Error; err != nil {
 		s.rollbackOperations(ctx, run)
-		_ = s.persist(ctx, rule.Backend)
+		_ = s.persist(ctx, persistBackend)
 		return fmt.Errorf("保存规则状态失败，系统规则已回滚: %w", err)
 	}
 	return nil
@@ -510,7 +513,9 @@ func (s *Service) Batch(ctx context.Context, ids []int64, action string) (int, e
 }
 
 func (s *Service) CleanupExpired(ctx context.Context) (int, error) {
-	operationMu.Lock()
+	if !operationMu.TryLock() {
+		return 0, fmt.Errorf("%w: 另一项防火墙操作正在执行，请稍后重试", ErrOperationBusy)
+	}
 	defer operationMu.Unlock()
 	var rules []models.IptablesRule
 	if err := s.db.Where("expires_at IS NOT NULL AND expires_at <= ?", time.Now()).
@@ -925,15 +930,15 @@ func (s *Service) RollbackPreparedPanelPort(ctx context.Context, id int64) error
 	if !rule.Protected {
 		return fmt.Errorf("%w: 只能回滚系统创建的端口保护规则", ErrProtected)
 	}
-	operations, err := s.ruleOperations(&rule)
+	operations, persistBackend, err := s.ruleOperationsForMutation(ctx, &rule)
 	if err != nil {
 		return err
 	}
-	if err := s.runOperations(ctx, rule.Backend, reverseOperations(operations)); err != nil {
+	if err := s.runOperations(ctx, persistBackend, reverseOperations(operations)); err != nil {
 		return err
 	}
 	if err := s.db.Delete(&models.IptablesRule{}, rule.ID).Error; err != nil {
-		_ = s.runOperations(ctx, rule.Backend, operations)
+		_ = s.runOperations(ctx, persistBackend, operations)
 		return err
 	}
 	return nil
@@ -941,7 +946,7 @@ func (s *Service) RollbackPreparedPanelPort(ctx context.Context, id int64) error
 
 func offlinePersistBackend(state backendState) string {
 	if state.Name == BackendFirewalld && !state.Enabled {
-		return BackendNone
+		return backendFirewalldOffline
 	}
 	return state.Name
 }

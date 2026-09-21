@@ -417,6 +417,8 @@ func handleServiceError(c *gin.Context, err error) {
 		core.HandleError(c, core.NewError(core.ErrBadRequest, message))
 	case errors.Is(err, safeservice.ErrAutoBlockDisabled):
 		core.HandleErrorWithStatus(c, http.StatusConflict, core.NewError(core.ErrResourceStateInvalid, "自动封禁未启用，不能立即检测"))
+	case errors.Is(err, safeservice.ErrOperationBusy):
+		core.HandleError(c, core.WrapError(err, core.ErrConflict, "另一项防火墙操作正在执行，请稍后重试"))
 	case errors.Is(err, safeservice.ErrProtected):
 		core.HandleError(c, core.WrapError(err, core.ErrForbidden, "系统保护规则不可修改"))
 	case errors.Is(err, safeservice.ErrUnsupported):

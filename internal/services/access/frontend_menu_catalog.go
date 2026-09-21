@@ -252,7 +252,7 @@ func builtinFrontendButtonDefinitions() []builtinButtonDefinition {
 	add(PermissionSecurityWrite,
 		item("security.firewall.toggle", "系统防火墙-启用或关闭"),
 		item("security.firewall.ping.update", "系统防火墙-修改Ping响应策略"),
-		item("security.firewall.cache.clear", "系统防火墙-清理缓存"),
+		item("security.firewall.cache.clear", "系统防火墙-清理过期规则"),
 		item("security.firewall.port-rule.create", "端口规则-添加"),
 		item("security.firewall.port-rule.update", "端口规则-编辑"),
 		item("security.firewall.port-rule.delete", "端口规则-删除"),

@@ -10,6 +10,7 @@ type IptablesStatus struct {
 	ManagedBackend     string             `json:"managedBackend,omitempty"`
 	Persistent         bool               `json:"persistent"`
 	CanToggle          bool               `json:"canToggle"`
+	CanManageOffline   bool               `json:"canManageOffline"`
 	RepairRequired     bool               `json:"repairRequired"`
 	Warning            string             `json:"warning,omitempty"`
 	PanelPort          int                `json:"panelPort"`
