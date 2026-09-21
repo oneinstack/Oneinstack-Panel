@@ -35,7 +35,7 @@ type Agent struct {
 }
 
 func NewAgent(cfg AgentConfig) (*Agent, error) {
-	cfg.ControllerURL = strings.TrimRight(strings.TrimSpace(cfg.ControllerURL), "/")
+	cfg.ControllerURL, _ = NormalizeControllerURL(cfg.ControllerURL)
 	cfg.Token = strings.TrimSpace(cfg.Token)
 	if cfg.ControllerURL == "" || cfg.Token == "" {
 		return nil, errors.New("cluster agent controller URL and token are required")
