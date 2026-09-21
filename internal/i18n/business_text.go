@@ -85,6 +85,14 @@ func LocalizeComponentConfigurationText(locale, component, key, value string) st
 			return translated
 		}
 	}
+	if strings.EqualFold(strings.TrimSpace(component), "adminer") {
+		if translated, ok := adminerConfigurationChineseText[strings.TrimSpace(value)]; ok {
+			return translated
+		}
+		if translated, ok := adminerConfigurationChineseText[strings.TrimSpace(key)]; ok {
+			return translated
+		}
+	}
 	return value
 }
 
@@ -97,7 +105,46 @@ func LocalizeComponentInstallParameterLabel(locale, component, key, fallback str
 			return translated
 		}
 	}
+	if strings.EqualFold(strings.TrimSpace(component), "adminer") {
+		if translated, ok := adminerInstallParameterChineseLabels[strings.ToUpper(strings.TrimSpace(key))]; ok &&
+			Canonical(locale) != LocaleEnUS {
+			return translated
+		}
+	}
 	return LocalizeComponentConfigurationText(locale, component, key, fallback)
+}
+
+var adminerConfigurationChineseText = map[string]string{
+	"publicPath":              "公开访问路径",
+	"accessPolicy":            "访问策略",
+	"allowedCidrs":            "允许访问的 CIDR",
+	"defaultDriver":           "默认数据库驱动",
+	"defaultServer":           "默认数据库服务器",
+	"Public path":             "公开访问路径",
+	"Access policy":           "访问策略",
+	"Allowed CIDRs":           "允许访问的 CIDR",
+	"Default database driver": "默认数据库驱动",
+	"Default database server": "默认数据库服务器",
+	"Single-segment URL path. The old route is removed only after the new route passes HTTP verification.": "单层 URL 路径；新路径通过 HTTP 验证后才会移除旧路径。",
+	"Public allows remote access; local and allowlist are recommended for production.":                     "public 允许远程访问；生产环境推荐使用 local 或 allowlist。",
+	"Comma-separated IPv4/IPv6 CIDRs; required when the access policy is allowlist.":                       "逗号分隔的 IPv4/IPv6 CIDR；访问策略为 allowlist 时必填。",
+	"MariaDB uses the mysql driver.":                                                           "MariaDB 使用 mysql 驱动。",
+	"Host or IP with an optional port; credentials and URLs are forbidden.":                    "主机名或 IP，可带端口；禁止填写凭据或 URL。",
+	"Exact Adminer version published by Center; only 6.1.0 is supported.":                      "Center 发布的 Adminer 精确版本；仅支持 6.1.0。",
+	"Single-segment public URL path; must not conflict with another web route.":                "单层公开 URL 路径；不能与现有 Web 路由冲突。",
+	"Access policy: public, local, or allowlist. Public exposes Adminer to remote clients.":    "访问策略可选 public、local 或 allowlist；public 会向远程客户端公开 Adminer。",
+	"Comma-separated IPv4/IPv6 CIDRs; required when access policy is allowlist.":               "逗号分隔的 IPv4/IPv6 CIDR；访问策略为 allowlist 时必填。",
+	"Default login driver: mysql or pgsql. MariaDB uses mysql.":                                "默认登录驱动可选 mysql 或 pgsql；MariaDB 使用 mysql。",
+	"Default database host or IP, optionally with a port; credentials and URLs are forbidden.": "默认数据库主机名或 IP，可带端口；禁止填写凭据或 URL。",
+}
+
+var adminerInstallParameterChineseLabels = map[string]string{
+	"SOFTWARE-VERSION":       "Adminer 版本",
+	"ADMINER-PUBLIC-PATH":    "公开访问路径",
+	"ADMINER-ACCESS-POLICY":  "访问策略",
+	"ADMINER-ALLOWED-CIDRS":  "允许访问的 CIDR",
+	"ADMINER-DEFAULT-DRIVER": "默认数据库驱动",
+	"ADMINER-DEFAULT-SERVER": "默认数据库服务器",
 }
 
 var redisConfigurationChineseText = map[string]string{
@@ -455,6 +502,14 @@ var softwareOperationNames = map[string]string{
 }
 
 var englishBusinessTexts = map[string]string{
+	"Adminer 版本必须选择 Center 发布的精确版本 6.1.0":             "Select the exact Adminer 6.1.0 version published by Center.",
+	"Adminer 公开路径必须是单层安全 URL 路径，例如 /adminer/":         "Adminer public path must be one safe URL segment, such as /adminer/.",
+	"Adminer 访问策略必须是 public、local 或 allowlist":        "Adminer access policy must be public, local, or allowlist.",
+	"Adminer 访问策略为 allowlist 时必须填写允许访问的 CIDR":         "Allowed CIDRs are required when the Adminer access policy is allowlist.",
+	"Adminer 最多允许配置 64 个 IPv4/IPv6 CIDR":              "Adminer allows at most 64 IPv4/IPv6 CIDRs.",
+	"Adminer 允许访问的 CIDR 格式无效，请使用逗号分隔的 IPv4/IPv6 CIDR": "Adminer allowed CIDRs are invalid; use comma-separated IPv4/IPv6 CIDRs.",
+	"Adminer 默认数据库驱动必须是 mysql 或 pgsql":                "Adminer default database driver must be mysql or pgsql.",
+	"Adminer 默认数据库服务器必须是主机名或 IP，可带端口，且不能包含凭据或 URL":    "Adminer default database server must be a host or IP with an optional port and must not contain credentials or a URL.",
 	"SSH 登录防护":         "SSH login protection",
 	"检测 SSH 密码和认证失败事件": "Detects failed SSH password and authentication attempts",
 	"Panel 登录防护":       "Panel login protection",
