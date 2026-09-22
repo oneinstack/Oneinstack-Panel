@@ -25,6 +25,7 @@ import (
 	fail2banservice "oneinstack/internal/services/fail2ban"
 	previewservice "oneinstack/internal/services/operationpreview"
 	safeservice "oneinstack/internal/services/safe"
+	"oneinstack/internal/services/scriptregistry"
 	softwareService "oneinstack/internal/services/software"
 	systemservice "oneinstack/internal/services/system"
 	"oneinstack/internal/services/website"
@@ -65,6 +66,14 @@ type softwareConfigurationPayload struct {
 	Confirmation       string            `json:"confirmation,omitempty"`
 	RestoreFromID      string            `json:"restoreFromId,omitempty"`
 	RestoreFromHistory string            `json:"restoreFromHistoryId,omitempty"`
+}
+
+type softwareServiceActionPayload struct {
+	Component       string                     `json:"component"`
+	Action          string                     `json:"action"`
+	Switch          bool                       `json:"switch,omitempty"`
+	Confirmation    string                     `json:"confirmation,omitempty"`
+	ResolvedPackage *scriptregistry.PackagePin `json:"resolvedPackage,omitempty"`
 }
 
 var (
@@ -334,6 +343,14 @@ func Preview(c *gin.Context) {
 				return
 			}
 			core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "组件安装包解析失败"))
+			return
+		}
+	}
+	if operation == "software.uninstall" || operation == "software.service_action" {
+		var err error
+		payload, err = normalizeSoftwareLifecyclePreviewPayload(c.Request.Context(), operation, payload)
+		if err != nil {
+			core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "组件操作预览生成失败"))
 			return
 		}
 	}
@@ -825,6 +842,43 @@ func normalizeSoftwareInstallPreviewPayload(ctx context.Context, payload json.Ra
 		return nil, fmt.Errorf("固定软件安装包: %w", err)
 	}
 	return encoded, nil
+}
+
+func normalizeSoftwareLifecyclePreviewPayload(ctx context.Context, operation string, payload json.RawMessage) (json.RawMessage, error) {
+	switch operation {
+	case "software.uninstall":
+		var request input.RemoveParams
+		if err := json.Unmarshal(payload, &request); err != nil {
+			return nil, err
+		}
+		preview, err := softwareService.PreviewUninstallLifecycle(ctx, &request)
+		if err != nil {
+			return nil, err
+		}
+		request.ResolvedPackage = preview.PackagePin
+		encoded, err := json.Marshal(request)
+		if err != nil {
+			return nil, fmt.Errorf("固定软件卸载包: %w", err)
+		}
+		return encoded, nil
+	case "software.service_action":
+		var request softwareServiceActionPayload
+		if err := json.Unmarshal(payload, &request); err != nil {
+			return nil, err
+		}
+		preview, err := softwareService.PreviewServiceLifecycle(ctx, request.Component, request.Action, nil)
+		if err != nil {
+			return nil, err
+		}
+		request.ResolvedPackage = preview.PackagePin
+		encoded, err := json.Marshal(request)
+		if err != nil {
+			return nil, fmt.Errorf("固定服务动作组件包: %w", err)
+		}
+		return encoded, nil
+	default:
+		return payload, nil
+	}
 }
 
 func softwareInstallExplicitParameters(request input.InstallParams) map[string]bool {
@@ -1515,13 +1569,137 @@ func softwarePreviewRuntimeFileChanges(runtimeValues map[string]string, uninstal
 	return files
 }
 
-func uninstallPreviewFirstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if value = strings.TrimSpace(value); value != "" {
-			return value
-		}
+func previewSystemdUnit(service string) string {
+	service = strings.TrimSpace(service)
+	if service == "" || strings.Contains(service, ".") {
+		return service
 	}
-	return ""
+	return service + ".service"
+}
+
+func lifecycleTargetVersion(preview softwareService.LifecyclePreview) string {
+	if preview.PackagePin == nil {
+		return ""
+	}
+	return strings.Join([]string{
+		preview.Component,
+		preview.SoftwareVersion,
+		preview.PackagePin.ResolvedVersion,
+		preview.PackagePin.PackageSHA256,
+		preview.PackagePin.TargetOS,
+		preview.PackagePin.TargetOSVersion,
+		preview.PackagePin.TargetArch,
+	}, "|")
+}
+
+func applyLifecyclePreviewDocument(
+	document *previewservice.Document,
+	preview softwareService.LifecyclePreview,
+	action string,
+	dataPolicy string,
+) error {
+	if document == nil || !preview.Contract || preview.PackagePin == nil {
+		return errors.New("signed lifecycle preview contract is unavailable")
+	}
+	pin := preview.PackagePin
+	system := strings.TrimSpace(pin.TargetOS)
+	if strings.TrimSpace(pin.TargetOSVersion) != "" {
+		system = strings.TrimSpace(system + " " + pin.TargetOSVersion)
+	}
+	document.Target = &previewservice.Target{
+		Component:               preview.Component,
+		DisplayName:             preview.DisplayName,
+		SoftwareVersion:         preview.SoftwareVersion,
+		ComponentPackageVersion: pin.ResolvedVersion,
+		PackageSHA256:           pin.PackageSHA256,
+		System:                  system,
+		Architecture:            pin.TargetArch,
+		Action:                  action,
+	}
+	document.EffectiveValues = []previewservice.EffectiveValue{
+		{Key: "component", Value: preview.Component, Source: "component_manifest"},
+		{Key: "action", Value: action, Source: "component_manifest"},
+		{Key: "softwareVersion", Value: preview.SoftwareVersion, Source: "installed_state"},
+		{Key: "packageVersion", Value: pin.ResolvedVersion, Source: "center_resolve"},
+		{Key: "packageSHA256", Value: pin.PackageSHA256, Source: "center_resolve"},
+	}
+	if system != "" {
+		document.EffectiveValues = append(document.EffectiveValues, previewservice.EffectiveValue{Key: "targetSystem", Value: system, Source: "center_resolve"})
+	}
+	if pin.TargetArch != "" {
+		document.EffectiveValues = append(document.EffectiveValues, previewservice.EffectiveValue{Key: "targetArchitecture", Value: pin.TargetArch, Source: "center_resolve"})
+	}
+	document.Actions = make([]previewservice.Action, 0, len(preview.Services)+2)
+	for _, service := range preview.Services {
+		verb := action
+		command := fmt.Sprintf("systemctl %s %s", action, service)
+		name := fmt.Sprintf("对 %s 执行 %s", service, action)
+		if action == "uninstall" {
+			verb = "disable_now"
+			command = fmt.Sprintf("systemctl disable --now %s", service)
+			name = "停止并禁用 " + service
+		}
+		document.Actions = append(document.Actions, previewservice.Action{
+			Type: "service", Name: name, DisplayCommand: command, Service: service, Verb: verb,
+		})
+	}
+	if action == "uninstall" && len(preview.Packages) > 0 {
+		packageAction := "remove"
+		command := ""
+		switch preview.PackageManager {
+		case "apt":
+			packageAction = "purge"
+			command = "apt-get purge -y " + strings.Join(preview.Packages, " ")
+		case "dnf", "yum":
+			command = preview.PackageManager + " remove -y " + strings.Join(preview.Packages, " ")
+		case "zypper":
+			command = "zypper --non-interactive remove " + strings.Join(preview.Packages, " ")
+		default:
+			return fmt.Errorf("unsupported lifecycle preview package manager %q", preview.PackageManager)
+		}
+		for _, name := range preview.Packages {
+			document.PackageChanges = append(document.PackageChanges, previewservice.PackageChange{
+				Manager: preview.PackageManager, Name: name, Action: packageAction,
+			})
+		}
+		document.Actions = append(document.Actions, previewservice.Action{
+			Type: "package", Name: "移除系统软件包", DisplayCommand: command, Verb: packageAction,
+		})
+	}
+	for _, target := range preview.Paths {
+		summary := map[string]string{
+			"preserve":        "卸载后保留目录",
+			"remove":          "移除受管目录",
+			"delete":          "按删除策略移除目录",
+			"remove_contents": "移除组件状态内容",
+			"remove_managed":  "仅移除组件管理的目录内容",
+		}[target.Action]
+		document.Files = append(document.Files, previewservice.FileChange{
+			Path: target.Path, Action: target.Action, Role: target.Role, ChangeSummary: summary,
+		})
+	}
+	document.Rollback = previewservice.Rollback{
+		Supported:     preview.Rollback.Supported,
+		Strategy:      preview.Rollback.Strategy,
+		Summary:       preview.Rollback.Summary,
+		Unrecoverable: append([]string(nil), preview.Rollback.Unrecoverable...),
+	}
+	document.Prechecks = []previewservice.Precheck{
+		{Code: "lifecycle_contract", Name: "组件预览契约", Status: "passed", Message: "服务、软件包和目录来自已签名组件 Manifest"},
+		{Code: "fixed_package", Name: "固定组件包", Status: "passed", Message: fmt.Sprintf("组件包 %s 与 SHA-256 已固定，执行阶段使用 ResolveFixed", pin.ResolvedVersion)},
+		{Code: "actual_state", Name: "实际系统状态", Status: "deferred", Message: "执行阶段将重新检查服务和受管资源状态"},
+	}
+	if action == "uninstall" {
+		document.Review.Reason = fmt.Sprintf("卸载 %s %s 将按目标主机执行已列出的服务、软件包和目录变更", preview.DisplayName, preview.SoftwareVersion)
+		document.Impact = previewservice.Impact{WriteFiles: len(preview.Paths) > 0, ModifyDatabase: true}
+		if dataPolicy != "" {
+			document.EffectiveValues = append(document.EffectiveValues, previewservice.EffectiveValue{Key: "dataPolicy", Value: dataPolicy, Source: "request"})
+		}
+	} else {
+		document.Review.Reason = fmt.Sprintf("将对 %s 执行 %s，目标服务和组件包已固定", preview.DisplayName, action)
+		document.Impact = previewservice.Impact{RestartService: action == "restart", ReloadService: action == "reload"}
+	}
+	return nil
 }
 
 func buildDocument(ctx context.Context, operation string, payload json.RawMessage) (previewservice.Document, string, error) {
@@ -1784,11 +1962,22 @@ func buildDocument(ctx context.Context, operation string, payload json.RawMessag
 		if dataPolicy == "delete" && !value.ConfirmDataDeletion {
 			return previewservice.Document{}, "", errors.New("confirmDataDeletion is required when dataPolicy is delete")
 		}
+		value.DataPolicy = dataPolicy
+		lifecycle, err := softwareService.PreviewUninstallLifecycle(ctx, &value)
+		if err != nil {
+			return previewservice.Document{}, "", err
+		}
+		if lifecycle.Contract {
+			if err := applyLifecyclePreviewDocument(&document, lifecycle, "uninstall", dataPolicy); err != nil {
+				return previewservice.Document{}, "", err
+			}
+			return document, lifecycleTargetVersion(lifecycle), nil
+		}
 		displayName, serviceName, packageVersion, runtimeValues := softwareUninstallPreviewState(component)
 		if displayName == "" {
 			displayName = component
 		}
-		document.Review.Reason = fmt.Sprintf("卸载 %s %s 会停止 %s 服务并移除受管程序文件，执行前需要确认", displayName, version, uninstallPreviewFirstNonEmpty(serviceName, component))
+		document.Review.Reason = fmt.Sprintf("卸载 %s %s 会执行旧版组件包声明的卸载动作并移除受管程序文件，执行前需要确认", displayName, version)
 		document.EffectiveValues = []previewservice.EffectiveValue{
 			{Key: "component", Value: component, Source: "request"},
 			{Key: "softwareVersion", Value: version, Source: "request"},
@@ -1802,8 +1991,7 @@ func buildDocument(ctx context.Context, operation string, payload json.RawMessag
 		}
 		document.Files = append(document.Files, softwarePreviewRuntimeFileChanges(runtimeValues, true, dataPolicy)...)
 		document.Actions = []previewservice.Action{
-			{Type: "service", Name: "停止 " + uninstallPreviewFirstNonEmpty(serviceName, component) + " 服务", DisplayCommand: "由组件卸载脚本安全停止服务", Service: uninstallPreviewFirstNonEmpty(serviceName, component)},
-			{Type: "component", Name: "卸载 " + displayName + " " + version, DisplayCommand: "使用已固定的受管组件包执行卸载"},
+			{Type: "component", Name: "卸载 " + displayName + " " + version, DisplayCommand: "由已验证的受管组件包执行卸载"},
 		}
 		if dataPolicy == "delete" {
 			document.Actions = append(document.Actions, previewservice.Action{Type: "component", Name: "删除组件数据", DisplayCommand: "仅在删除策略和确认字段同时有效时执行"})
@@ -1818,19 +2006,45 @@ func buildDocument(ctx context.Context, operation string, payload json.RawMessag
 		}
 		document.Impact = previewservice.Impact{WriteFiles: true, ModifyDatabase: true}
 	case "software.service_action":
-		var value struct {
-			Action string `json:"action"`
-		}
+		var value softwareServiceActionPayload
 		if err := json.Unmarshal(payload, &value); err != nil {
 			return previewservice.Document{}, "", err
 		}
-		document.Actions = []previewservice.Action{{Type: "service", Name: "执行组件服务动作", DisplayCommand: "systemctl <action> <component>", Service: "由组件参数确定"}}
-		switch strings.ToLower(strings.TrimSpace(value.Action)) {
+		action := strings.ToLower(strings.TrimSpace(value.Action))
+		lifecycle, err := softwareService.PreviewServiceLifecycle(ctx, value.Component, action, value.ResolvedPackage)
+		if err != nil {
+			return previewservice.Document{}, "", err
+		}
+		if lifecycle.Contract {
+			if err := applyLifecyclePreviewDocument(&document, lifecycle, action, ""); err != nil {
+				return previewservice.Document{}, "", err
+			}
+			return document, lifecycleTargetVersion(lifecycle), nil
+		}
+		definition, err := softwareService.ResolveServiceComponent(app.DB(), value.Component)
+		if err != nil {
+			return previewservice.Document{}, "", err
+		}
+		unit := previewSystemdUnit(definition.ServiceName)
+		if unit == "" {
+			return previewservice.Document{}, "", errors.New("service unit is unavailable for this component")
+		}
+		document.Actions = []previewservice.Action{{
+			Type: "service", Name: fmt.Sprintf("对 %s 执行 %s", unit, action),
+			DisplayCommand: fmt.Sprintf("systemctl %s %s", action, unit), Service: unit, Verb: action,
+		}}
+		document.EffectiveValues = []previewservice.EffectiveValue{
+			{Key: "component", Value: definition.Component, Source: "installed_state"},
+			{Key: "action", Value: action, Source: "request"},
+			{Key: "serviceName", Value: unit, Source: "installed_state"},
+		}
+		switch action {
 		case "restart":
 			document.Impact.RestartService = true
 		case "reload":
 			document.Impact.ReloadService = true
 		}
+		return document, lifecycleTargetVersion(lifecycle), nil
 	case "software.configure":
 		var value softwareConfigurationPayload
 		if err := json.Unmarshal(payload, &value); err != nil {
@@ -2205,18 +2419,13 @@ func executeOperation(ctx context.Context, operation string, payload json.RawMes
 		if value.ConfirmDataDeletion {
 			parameters["delete-data-confirm"] = "true"
 		}
-		task, err := manager.SubmitUninstallWithParameters(value.Name, value.Version, parameters, userID)
+		task, err := manager.SubmitUninstallWithResolvedPackage(value.Name, value.Version, parameters, value.ResolvedPackage, userID)
 		if err != nil {
 			return nil, err
 		}
 		return softwareTaskResult(task), nil
 	case "software.service_action":
-		var value struct {
-			Component    string `json:"component"`
-			Action       string `json:"action"`
-			Switch       bool   `json:"switch,omitempty"`
-			Confirmation string `json:"confirmation,omitempty"`
-		}
+		var value softwareServiceActionPayload
 		if err := json.Unmarshal(payload, &value); err != nil {
 			return nil, err
 		}
@@ -2224,7 +2433,7 @@ func executeOperation(ctx context.Context, operation string, payload json.RawMes
 		if err != nil {
 			return nil, err
 		}
-		task, err := manager.SubmitServiceActionWithConfirmation(value.Component, value.Action, value.Switch, value.Confirmation, userID)
+		task, err := manager.SubmitServiceActionWithResolvedPackage(value.Component, value.Action, value.Switch, value.Confirmation, value.ResolvedPackage, userID)
 		if err != nil {
 			return nil, err
 		}

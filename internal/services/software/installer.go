@@ -436,6 +436,20 @@ func (installer *Installer) ServiceActionTask(
 	logPath string,
 	observer script.ExecutionObserver,
 ) (string, error) {
+	return installer.ServiceActionTaskWithPackage(ctx, component, version, action, nil, logPath, observer)
+}
+
+// ServiceActionTaskWithPackage executes a service action using the immutable
+// package selected during operation preview when pin is non-nil.
+func (installer *Installer) ServiceActionTaskWithPackage(
+	ctx context.Context,
+	component string,
+	version string,
+	action string,
+	pin *scriptregistry.PackagePin,
+	logPath string,
+	observer script.ExecutionObserver,
+) (string, error) {
 	definition, err := ResolveServiceComponent(app.DB(), component)
 	if err != nil {
 		return "", err
@@ -448,16 +462,13 @@ func (installer *Installer) ServiceActionTask(
 	if err != nil {
 		return "", err
 	}
-	componentPackage, err := registry.ResolveInstalled(
-		ctx,
-		definition.Component,
-		strings.TrimSpace(version),
-		action,
+	componentPackage, err := resolveLifecyclePackage(
+		ctx, registry, definition.Component, strings.TrimSpace(version), action, pin,
 	)
 	if err != nil {
 		return "", fmt.Errorf("resolve %s %s package: %w", definition.Component, action, err)
 	}
-	scriptInfo, err := scriptInfoFromPackage(componentPackage, action)
+	scriptInfo, err := scriptInfoFromPackage(componentPackage, action, strings.TrimSpace(version))
 	if err != nil {
 		return "", err
 	}
@@ -543,6 +554,20 @@ func (installer *Installer) SwitchServiceActionTask(
 	logPath string,
 	observer script.ExecutionObserver,
 ) (string, error) {
+	return installer.SwitchServiceActionTaskWithPackage(ctx, component, version, action, nil, logPath, observer)
+}
+
+// SwitchServiceActionTaskWithPackage pins the target component action while
+// previous runtime owners continue to use their own installed packages.
+func (installer *Installer) SwitchServiceActionTaskWithPackage(
+	ctx context.Context,
+	component string,
+	version string,
+	action string,
+	pin *scriptregistry.PackagePin,
+	logPath string,
+	observer script.ExecutionObserver,
+) (string, error) {
 	definition, err := ResolveServiceComponent(app.DB(), component)
 	if err != nil {
 		return "", err
@@ -554,11 +579,11 @@ func (installer *Installer) SwitchServiceActionTask(
 		}
 	}
 	if definition.RuntimeGroup == "" || (action != "start" && action != "restart") {
-		return installer.ServiceActionTask(ctx, component, version, action, logPath, observer)
+		return installer.ServiceActionTaskWithPackage(ctx, component, version, action, pin, logPath, observer)
 	}
 	owners := ActiveRuntimeGroupOwners(ctx, definition.RuntimeGroup, definition.Component)
 	if len(owners) == 0 {
-		return installer.ServiceActionTask(ctx, component, version, action, logPath, observer)
+		return installer.ServiceActionTaskWithPackage(ctx, component, version, action, pin, logPath, observer)
 	}
 
 	type stoppedOwner struct {
@@ -598,7 +623,7 @@ func (installer *Installer) SwitchServiceActionTask(
 		}
 		stopped = append(stopped, stoppedOwner{component: owner.Component, version: ownerVersion})
 	}
-	if _, err := installer.ServiceActionTask(ctx, component, version, action, logPath, observer); err != nil {
+	if _, err := installer.ServiceActionTaskWithPackage(ctx, component, version, action, pin, logPath, observer); err != nil {
 		restoreErr := restore()
 		if restoreErr != nil {
 			return "", fmt.Errorf("start %s failed: %w; restore previous runtime owner failed: %v", component, err, restoreErr)
@@ -620,15 +645,19 @@ func (installer *Installer) getUninstallScript(
 	if err != nil {
 		return nil, nil, err
 	}
-	componentPackage, err := registry.ResolveInstalledUninstall(
-		ctx,
-		componentName,
-		params.Version,
-	)
+	var componentPackage scriptregistry.Package
+	if params.ResolvedPackage != nil {
+		componentPackage, err = registry.ResolveFixed(componentName, params.Version, *params.ResolvedPackage)
+		if err == nil {
+			_, err = componentPackage.Action("uninstall")
+		}
+	} else {
+		componentPackage, err = registry.ResolveInstalledUninstall(ctx, componentName, params.Version)
+	}
 	if err != nil {
 		return nil, nil, fmt.Errorf("resolve %s uninstall package: %w", componentName, err)
 	}
-	scriptInfo, err := scriptInfoFromPackage(componentPackage, "uninstall")
+	scriptInfo, err := scriptInfoFromPackage(componentPackage, "uninstall", params.Version)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -951,20 +980,21 @@ func scriptInfoFromPackage(componentPackage scriptregistry.Package, actionName s
 		Params:         make(map[string]string),
 		ActionName:     actionName,
 		Timeouts: map[string]time.Duration{
-			"precheck":    time.Duration(manifest.Timeouts.Precheck) * time.Second,
-			"install":     time.Duration(manifest.Timeouts.Install) * time.Second,
-			"configure":   time.Duration(manifest.Timeouts.Configure) * time.Second,
-			"verify":      time.Duration(manifest.Timeouts.Verify) * time.Second,
-			"upgrade":     time.Duration(manifest.Timeouts.Upgrade) * time.Second,
-			"rollback":    time.Duration(manifest.Timeouts.Rollback) * time.Second,
-			"uninstall":   time.Duration(manifest.Timeouts.Uninstall) * time.Second,
-			"status":      time.Duration(manifest.Timeouts.Status) * time.Second,
-			"start":       time.Duration(manifest.Timeouts.Start) * time.Second,
-			"stop":        time.Duration(manifest.Timeouts.Stop) * time.Second,
-			"restart":     time.Duration(manifest.Timeouts.Restart) * time.Second,
-			"reload":      time.Duration(manifest.Timeouts.Reload) * time.Second,
-			"configGet":   time.Duration(manifest.Timeouts.ConfigGet) * time.Second,
-			"configApply": time.Duration(manifest.Timeouts.ConfigApply) * time.Second,
+			"precheck":      time.Duration(manifest.Timeouts.Precheck) * time.Second,
+			"install":       time.Duration(manifest.Timeouts.Install) * time.Second,
+			"configure":     time.Duration(manifest.Timeouts.Configure) * time.Second,
+			"verify":        time.Duration(manifest.Timeouts.Verify) * time.Second,
+			"upgrade":       time.Duration(manifest.Timeouts.Upgrade) * time.Second,
+			"rollback":      time.Duration(manifest.Timeouts.Rollback) * time.Second,
+			"uninstall":     time.Duration(manifest.Timeouts.Uninstall) * time.Second,
+			"status":        time.Duration(manifest.Timeouts.Status) * time.Second,
+			"start":         time.Duration(manifest.Timeouts.Start) * time.Second,
+			"stop":          time.Duration(manifest.Timeouts.Stop) * time.Second,
+			"restart":       time.Duration(manifest.Timeouts.Restart) * time.Second,
+			"reload":        time.Duration(manifest.Timeouts.Reload) * time.Second,
+			"configGet":     time.Duration(manifest.Timeouts.ConfigGet) * time.Second,
+			"configApply":   time.Duration(manifest.Timeouts.ConfigApply) * time.Second,
+			"credentialGet": time.Duration(manifest.Timeouts.CredentialGet) * time.Second,
 		},
 	}
 	softwareVersion := ""
@@ -1326,6 +1356,7 @@ func (installer *Installer) setScriptParams(scriptInfo *script.ScriptInfo, param
 		}
 	}
 	if _, closedLoop := closedLoopPackageComponent(componentKey); closedLoop ||
+		declaresManagedPackageTransport(scriptInfo.ParameterSpecs) ||
 		componentKey == "docker" || componentKey == "docker-compose" || componentKey == "phpmyadmin" || componentKey == "redis" {
 		// Installation mode and offline root are server-owned values. They are
 		// injected only after the signed package has been fixed by Panel.

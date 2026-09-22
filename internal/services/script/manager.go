@@ -376,8 +376,9 @@ func (sm *ScriptManager) ExecuteProbe(
 	}
 	actionName := strings.TrimSpace(scriptInfo.ActionName)
 	if !strings.EqualFold(actionName, "status") &&
-		!strings.EqualFold(actionName, "configGet") {
-		return nil, errors.New("only component status and configuration read actions may run as probes")
+		!strings.EqualFold(actionName, "configGet") &&
+		!strings.EqualFold(actionName, "credentialGet") {
+		return nil, errors.New("only component status, configuration read, and credential read actions may run as probes")
 	}
 	if err := validateParameters(scriptInfo); err != nil {
 		return nil, err
@@ -1272,6 +1273,7 @@ func validateParameters(scriptInfo *ScriptInfo) error {
 		readOnlyStatus := strings.EqualFold(scriptInfo.ActionName, "status")
 		nonInstallingAction := readOnlyStatus || strings.EqualFold(scriptInfo.ActionName, "uninstall") ||
 			strings.EqualFold(scriptInfo.ActionName, "configGet") || strings.EqualFold(scriptInfo.ActionName, "configApply") ||
+			strings.EqualFold(scriptInfo.ActionName, "credentialGet") ||
 			isServiceControlAction(scriptInfo.ActionName)
 		value := scriptInfo.Params[envName]
 		if value == "" && spec.Default != "" &&
