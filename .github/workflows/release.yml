@@ -212,6 +212,7 @@ jobs:
           ls -lh
 
       - name: Create immutable release
+        id: github_release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -222,16 +223,19 @@ jobs:
           esac
 
           if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
-            echo "Release ${GITHUB_REF_NAME} already exists; immutable release assets cannot be replaced" >&2
-            exit 1
+            echo "Release ${GITHUB_REF_NAME} already exists; skipping duplicate publication."
+            echo "created=false" >> "${GITHUB_OUTPUT}"
+            exit 0
           fi
           gh release create "${GITHUB_REF_NAME}" release/* \
             --verify-tag \
             --generate-notes \
             --title "${GITHUB_REF_NAME}" \
             "${prerelease_args[@]}"
+          echo "created=true" >> "${GITHUB_OUTPUT}"
 
       - name: Trigger server sync
+        if: steps.github_release.outputs.created == 'true'
         shell: bash
         env:
           WEBHOOK_URL: https://shell.oneinstack.com/api/webhook
@@ -244,4 +248,3 @@ jobs:
             -H "X-GitHub-Event: release" \
             -H "X-Hub-Signature-256: ${signature}" \
             -d "${payload}" || echo "[WARN] Direct webhook trigger failed, release webhook will handle"
-
