@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   tag-and-dispatch:
-    name: Create build tag and dispatch Release
+    name: Create release tag and dispatch Release
     runs-on: ubuntu-latest
     steps:
       - name: Check out source
@@ -25,15 +25,79 @@ jobs:
       - name: Resolve automatic release tag
         id: release
         shell: bash
-        env:
-          CONFIGURED_BASE_VERSION: ${{ vars.AUTO_RELEASE_BASE_VERSION }}
         run: |
-          base_version="${CONFIGURED_BASE_VERSION:-0.1.0}"
-          if [[ ! "${base_version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "AUTO_RELEASE_BASE_VERSION must use MAJOR.MINOR.PATCH" >&2
+          readonly start_major=1
+          readonly start_minor=1
+          readonly start_patch=75
+          readonly start_value=$((start_major * 10000 + start_minor * 100 + start_patch))
+
+          parse_release_tag() {
+            local tag="$1"
+            if [[ "${tag}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]?)\.(0|[1-9][0-9]?)$ ]]; then
+              parsed_major=$((10#${BASH_REMATCH[1]}))
+              parsed_minor=$((10#${BASH_REMATCH[2]}))
+              parsed_patch=$((10#${BASH_REMATCH[3]}))
+              parsed_value=$((parsed_major * 10000 + parsed_minor * 100 + parsed_patch))
+              return 0
+            fi
+            return 1
+          }
+
+          git fetch --force --tags origin
+
+          matching_tags=()
+          while IFS= read -r tag; do
+            if parse_release_tag "${tag}" && (( parsed_value >= start_value )); then
+              tag_commit="$(git rev-list --max-count=1 "${tag}")"
+              if [[ "${tag_commit}" == "${GITHUB_SHA}" ]]; then
+                matching_tags+=("${tag}")
+              fi
+            fi
+          done < <(git tag --points-at "${GITHUB_SHA}")
+
+          if (( ${#matching_tags[@]} > 1 )); then
+            echo "Multiple automatic release tags already point to ${GITHUB_SHA}: ${matching_tags[*]}" >&2
             exit 1
           fi
-          release_tag="v${base_version}-build.${GITHUB_RUN_NUMBER}"
+
+          if (( ${#matching_tags[@]} == 1 )); then
+            release_tag="${matching_tags[0]}"
+            echo "Reusing automatic release tag ${release_tag} for ${GITHUB_SHA}."
+          else
+            latest_value=-1
+            latest_major=0
+            latest_minor=0
+            latest_patch=0
+
+            while IFS= read -r tag; do
+              if parse_release_tag "${tag}" && (( parsed_value >= start_value && parsed_value > latest_value )); then
+                latest_value="${parsed_value}"
+                latest_major="${parsed_major}"
+                latest_minor="${parsed_minor}"
+                latest_patch="${parsed_patch}"
+              fi
+            done < <(git tag --list)
+
+            if (( latest_value < start_value )); then
+              release_tag="v${start_major}.${start_minor}.${start_patch}"
+            else
+              next_major="${latest_major}"
+              next_minor="${latest_minor}"
+              next_patch=$((latest_patch + 1))
+
+              if (( next_patch > 99 )); then
+                next_patch=0
+                next_minor=$((next_minor + 1))
+              fi
+              if (( next_minor > 99 )); then
+                next_minor=0
+                next_major=$((next_major + 1))
+              fi
+
+              release_tag="v${next_major}.${next_minor}.${next_patch}"
+            fi
+          fi
+
           echo "tag=${release_tag}" >> "${GITHUB_OUTPUT}"
 
       - name: Create immutable tag
@@ -53,7 +117,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag --annotate "${RELEASE_TAG}" "${GITHUB_SHA}" \
-            --message "Automated Panel build ${GITHUB_RUN_NUMBER}"
+            --message "Automated Panel release ${RELEASE_TAG}"
           git push origin "refs/tags/${RELEASE_TAG}"
 
       - name: Dispatch release workflow for tag

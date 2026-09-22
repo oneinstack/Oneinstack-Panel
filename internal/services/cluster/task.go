@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"oneinstack/internal/models"
+	softwareService "oneinstack/internal/services/software"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -24,7 +25,10 @@ type ClusterTaskSummary struct {
 	ID                     uint64     `json:"id"`
 	NodeID                 uint       `json:"nodeId"`
 	BatchID                string     `json:"batchId,omitempty"`
+	WorkflowID             string     `json:"workflowId,omitempty"`
 	Type                   string     `json:"type"`
+	Component              string     `json:"component,omitempty"`
+	Action                 string     `json:"action,omitempty"`
 	WebsiteID              int64      `json:"websiteId,omitempty"`
 	WebsiteName            string     `json:"websiteName,omitempty"`
 	WebsiteDomain          string     `json:"websiteDomain,omitempty"`
@@ -79,6 +83,7 @@ type TaskList struct {
 type EnqueueTaskInput struct {
 	NodeID         uint            `json:"nodeId"`
 	BatchID        string          `json:"batchId,omitempty"`
+	WorkflowID     string          `json:"-"`
 	Type           string          `json:"type"`
 	Payload        json.RawMessage `json:"payload"`
 	IdempotencyKey string          `json:"idempotencyKey,omitempty"`
@@ -130,7 +135,7 @@ func (m *Manager) EnqueueTask(input EnqueueTaskInput) (models.ClusterTask, error
 		return models.ClusterTask{}, ErrTaskType
 	}
 	taskType := strings.TrimSpace(input.Type)
-	if (isPanelUpdateTask(taskType) || taskType == "panel.restart" || taskType == TaskNodeDiagnose) && !input.internal {
+	if (isPanelUpdateTask(taskType) || taskType == "panel.restart" || taskType == TaskNodeDiagnose || isServiceActionTask(taskType)) && !input.internal {
 		return models.ClusterTask{}, ErrTaskType
 	}
 	if len(input.Payload) == 0 || !json.Valid(input.Payload) {
@@ -158,7 +163,7 @@ func (m *Manager) EnqueueTask(input EnqueueTaskInput) (models.ClusterTask, error
 	if !providedIdempotencyKey {
 		idempotencyKey = "auto:" + uuid.NewString()
 	}
-	task := models.ClusterTask{NodeID: input.NodeID, BatchID: strings.TrimSpace(input.BatchID), Type: taskType, IdempotencyKey: idempotencyKey, Payload: string(input.Payload), Status: models.ClusterTaskStatusQueued, Stage: "queued", Progress: 10, MaxAttempts: maxAttempts, RequestedBy: input.RequestedBy, Cancelable: cancelable, QueuedAt: time.Now()}
+	task := models.ClusterTask{NodeID: input.NodeID, BatchID: strings.TrimSpace(input.BatchID), WorkflowID: strings.TrimSpace(input.WorkflowID), Type: taskType, IdempotencyKey: idempotencyKey, Payload: string(input.Payload), Status: models.ClusterTaskStatusQueued, Stage: "queued", Progress: 10, MaxAttempts: maxAttempts, RequestedBy: input.RequestedBy, Cancelable: cancelable, QueuedAt: time.Now()}
 	if providedIdempotencyKey {
 		var existing models.ClusterTask
 		if err := m.db.Where("idempotency_key = ?", task.IdempotencyKey).First(&existing).Error; err == nil {
@@ -181,7 +186,7 @@ func (m *Manager) ListAllTasks(filter TaskFilter) (*TaskList, error) {
 		query = query.Where("node_id = ?", filter.NodeID)
 	}
 	if value := strings.TrimSpace(filter.BatchID); value != "" {
-		query = query.Where("batch_id = ?", value)
+		query = query.Where("batch_id = ? OR workflow_id = ?", value, value)
 	}
 	if value := strings.TrimSpace(filter.Type); value != "" {
 		query = query.Where("type = ?", value)
@@ -264,9 +269,18 @@ func SummarizeTask(task models.ClusterTask) ClusterTaskSummary {
 	if progress <= 0 {
 		progress = taskProgress(task.Status)
 	}
-	summary := ClusterTaskSummary{ID: task.ID, NodeID: task.NodeID, BatchID: task.BatchID, Type: task.Type, Status: task.Status, Stage: task.Stage, Progress: progress, Attempts: task.Attempts, MaxAttempts: task.MaxAttempts, RequestedBy: task.RequestedBy, CancelRequested: task.CancelRequested, Cancelable: task.Cancelable, Error: errorSummary, QueuedAt: task.QueuedAt, StartedAt: task.StartedAt, FinishedAt: task.FinishedAt, CreatedAt: task.CreatedAt, UpdatedAt: task.UpdatedAt}
+	summary := ClusterTaskSummary{ID: task.ID, NodeID: task.NodeID, BatchID: task.BatchID, WorkflowID: task.WorkflowID, Type: task.Type, Status: task.Status, Stage: task.Stage, Progress: progress, Attempts: task.Attempts, MaxAttempts: task.MaxAttempts, RequestedBy: task.RequestedBy, CancelRequested: task.CancelRequested, Cancelable: task.Cancelable, Error: errorSummary, QueuedAt: task.QueuedAt, StartedAt: task.StartedAt, FinishedAt: task.FinishedAt, CreatedAt: task.CreatedAt, UpdatedAt: task.UpdatedAt}
 	if isPanelUpdateTask(task.Type) {
 		summary.ErrorCode = safePanelUpdateErrorCode(task.Error)
+	} else if isServiceActionTask(task.Type) {
+		summary.ErrorCode = safeServiceActionErrorCode(task.Error)
+		var payload serviceActionTaskPayload
+		if json.Unmarshal([]byte(task.Payload), &payload) == nil {
+			summary.Component = normalizeServiceActionComponent(payload.Component)
+			if softwareService.IsServiceAction(payload.Action) {
+				summary.Action = strings.ToLower(strings.TrimSpace(payload.Action))
+			}
+		}
 	}
 	if task.Type == TaskNodeDiagnose && strings.TrimSpace(task.Result) != "" {
 		var result DiagnosisResult
@@ -302,6 +316,8 @@ func (m *Manager) GetTaskDetail(nodeID uint, taskID uint64) (ClusterTaskDetail, 
 	detail := ClusterTaskDetail{ClusterTaskSummary: summary, Progress: summary.Progress, Events: events}
 	if task.Type == TaskNodeDiagnose && json.Valid([]byte(task.Result)) && strings.TrimSpace(task.Result) != "" {
 		detail.Result = json.RawMessage(task.Result)
+	} else if isServiceActionTask(task.Type) && strings.TrimSpace(task.Result) != "" {
+		detail.Result = publicServiceActionResult(task.Result)
 	}
 	return detail, nil
 }
@@ -408,13 +424,17 @@ func (m *Manager) ClaimTask(token string) (*models.ClusterTask, error) {
 		if err := query.Order("id asc").First(&task).Error; err != nil {
 			return err
 		}
-		if task.BatchID != "" {
+		batchID := task.BatchID
+		if batchID == "" {
+			batchID = task.WorkflowID
+		}
+		if batchID != "" {
 			var batch models.ClusterBatchOperation
-			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&batch, "id = ?", task.BatchID).Error; err != nil {
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&batch, "id = ?", batchID).Error; err != nil {
 				return err
 			}
 			var running int64
-			if err := tx.Model(&models.ClusterTask{}).Where("batch_id = ? AND status = ?", task.BatchID, models.ClusterTaskStatusRunning).Count(&running).Error; err != nil {
+			if err := tx.Model(&models.ClusterTask{}).Where("(batch_id = ? OR workflow_id = ?) AND status = ?", batchID, batchID, models.ClusterTaskStatusRunning).Count(&running).Error; err != nil {
 				return err
 			}
 			if running >= int64(batch.MaxConcurrency) {
@@ -459,7 +479,7 @@ func (m *Manager) ClaimTask(token string) (*models.ClusterTask, error) {
 }
 
 func maintenanceTaskTypes() []string {
-	return []string{"node.diagnose.v1", "panel.restart", TaskPanelUpdateCheck, TaskPanelUpdateApply}
+	return []string{"node.diagnose.v1", "panel.restart", TaskPanelUpdateCheck, TaskPanelUpdateApply, TaskServiceActionPreflight, TaskServiceActionExecute}
 }
 
 func allowedClusterTaskType(taskType string) bool {
@@ -467,7 +487,8 @@ func allowedClusterTaskType(taskType string) bool {
 	case "software.install", "software.uninstall",
 		"service.start", "service.stop", "service.restart", "service.reload",
 		"file.upload", "database.sync", "website.sync", "website.content_sync",
-		"panel.restart", TaskNodeDiagnose, TaskPanelUpdateCheck, TaskPanelUpdateApply:
+		"panel.restart", TaskNodeDiagnose, TaskPanelUpdateCheck, TaskPanelUpdateApply,
+		TaskServiceActionPreflight, TaskServiceActionExecute:
 		return true
 	default:
 		return false
@@ -506,6 +527,10 @@ func (m *Manager) RecoverStaleTasks(timeout time.Duration) error {
 			task.Progress = 100
 			if isPanelUpdateTask(task.Type) {
 				task.Error = panelUpdateErrorResultUnknown
+			} else if task.Type == TaskServiceActionPreflight {
+				task.Error = "SERVICE_ACTION_PREFLIGHT_FAILED"
+			} else if task.Type == TaskServiceActionExecute {
+				task.Error = "SERVICE_ACTION_FAILED"
 			} else {
 				task.Error = "task timed out after maximum attempts"
 			}
@@ -523,6 +548,14 @@ func (m *Manager) RecoverStaleTasks(timeout time.Duration) error {
 		}
 		if task.Type == TaskPanelUpdateApply && task.Status == models.ClusterTaskStatusFailed {
 			recordPanelUpdateAudit(*task, "failure")
+		}
+		if task.Type == TaskServiceActionPreflight && task.Status == models.ClusterTaskStatusFailed {
+			recordServiceActionAudit(*task, "preflight_failed")
+			if err := m.advanceServiceActionPreflight(*task); err != nil {
+				return err
+			}
+		} else if task.Type == TaskServiceActionExecute && task.Status == models.ClusterTaskStatusFailed {
+			recordServiceActionAudit(*task, "execution_failed")
 		}
 	}
 	return nil
@@ -558,6 +591,11 @@ func (m *Manager) CompleteTask(input TaskCompletion) (models.ClusterTask, error)
 	}
 	if task.Status != models.ClusterTaskStatusRunning {
 		if task.Status == input.Status {
+			if task.Type == TaskServiceActionPreflight {
+				if advanceErr := m.advanceServiceActionPreflight(task); advanceErr != nil {
+					return task, advanceErr
+				}
+			}
 			return task, nil
 		}
 		return task, ErrTaskState
@@ -589,6 +627,14 @@ func (m *Manager) CompleteTask(input TaskCompletion) (models.ClusterTask, error)
 		level, code, message = "warning", "task_retry", "任务执行失败，已重新排队"
 	}
 	_ = m.appendTaskEvent(task.ID, task.Stage, task.Status, level, code, task.Progress, message)
+	if task.Type == TaskServiceActionPreflight && isTerminalTaskStatus(task.Status) {
+		recordServiceActionAudit(task, "preflight_"+task.Status)
+		if advanceErr := m.advanceServiceActionPreflight(task); advanceErr != nil {
+			return task, advanceErr
+		}
+	} else if task.Type == TaskServiceActionExecute && isTerminalTaskStatus(task.Status) {
+		recordServiceActionAudit(task, "execution_"+task.Status)
+	}
 	_ = m.updateBatchStatus(task.BatchID)
 	_ = m.finishDrainIfIdle(task.NodeID)
 	if task.Type == TaskPanelUpdateApply {
@@ -670,6 +716,11 @@ func (m *Manager) CancelTask(nodeID uint, taskID uint64) (ClusterTaskSummary, er
 		return ClusterTaskSummary{}, err
 	}
 	if task.Status == models.ClusterTaskStatusSucceeded || task.Status == models.ClusterTaskStatusFailed || task.Status == models.ClusterTaskStatusCanceled {
+		if task.Type == TaskServiceActionPreflight {
+			if advanceErr := m.advanceServiceActionPreflight(task); advanceErr != nil {
+				return ClusterTaskSummary{}, advanceErr
+			}
+		}
 		return SummarizeTask(task), nil
 	}
 	if !task.Cancelable {
@@ -688,6 +739,19 @@ func (m *Manager) CancelTask(nodeID uint, taskID uint64) (ClusterTaskSummary, er
 		}
 		task.Status, task.Stage, task.Progress, task.CancelRequested, task.FinishedAt = models.ClusterTaskStatusCanceled, models.ClusterTaskStatusCanceled, 100, true, &now
 		_ = m.appendTaskEvent(task.ID, task.Stage, task.Status, "warning", "task_canceled", 100, "等待中的任务已取消")
+		if isServiceActionTask(task.Type) {
+			recordServiceActionAudit(task, "cancel_requested")
+			phase := "execution"
+			if task.Type == TaskServiceActionPreflight {
+				phase = "preflight"
+			}
+			recordServiceActionAudit(task, phase+"_canceled")
+		}
+		if task.Type == TaskServiceActionPreflight {
+			if advanceErr := m.advanceServiceActionPreflight(task); advanceErr != nil {
+				return ClusterTaskSummary{}, advanceErr
+			}
+		}
 	} else {
 		node, nodeErr := m.GetNode(nodeID)
 		if nodeErr != nil {
@@ -705,6 +769,9 @@ func (m *Manager) CancelTask(nodeID uint, taskID uint64) (ClusterTaskSummary, er
 		}
 		task.CancelRequested = true
 		_ = m.appendTaskEvent(task.ID, task.Stage, task.Status, "warning", "cancel_requested", task.Progress, "已请求节点在安全检查点取消任务")
+		if isServiceActionTask(task.Type) {
+			recordServiceActionAudit(task, "cancel_requested")
+		}
 	}
 	_ = m.updateBatchStatus(task.BatchID)
 	return SummarizeTask(task), nil

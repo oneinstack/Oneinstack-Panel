@@ -124,6 +124,9 @@ type RemoveParams struct {
 	// Parameters contains only values declared by the signed component
 	// manifest, for example PRESERVE_DATA during uninstall.
 	Parameters map[string]string `json:"parameters,omitempty"`
+	// ResolvedPackage is server-owned preview state. Execution must use the
+	// exact signed package reviewed by the user.
+	ResolvedPackage *scriptregistry.PackagePin `json:"resolvedPackage,omitempty"`
 }
 
 //

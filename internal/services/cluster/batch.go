@@ -367,6 +367,12 @@ func (m *Manager) RecoverMissingBatchTasks(grace time.Duration) (int, error) {
 	}
 	repaired := 0
 	for _, batch := range batches {
+		if batch.Action == serviceActionBatchAction {
+			// Service-action preflights are workflow-linked rather than batch
+			// children. Their terminal transition materializes the one counted
+			// execution task for each node.
+			continue
+		}
 		var tasks []models.ClusterTask
 		if err := m.db.Where("batch_id = ?", batch.ID).Find(&tasks).Error; err != nil {
 			return repaired, err
@@ -405,17 +411,47 @@ func (m *Manager) updateBatchStatus(batchID string) error {
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&batch, "id = ?", batchID).Error; err != nil {
 			return err
 		}
-		type countRow struct {
-			Status string
-			Count  int
-		}
-		var counts []countRow
-		if err := tx.Model(&models.ClusterTask{}).Select("status, count(*) as count").Where("batch_id = ?", batchID).Group("status").Scan(&counts).Error; err != nil {
-			return err
-		}
 		values := map[string]int{}
-		for _, row := range counts {
-			values[row.Status] = row.Count
+		if batch.Action == serviceActionBatchAction {
+			// A service action has two task phases per node. The execution phase
+			// is authoritative when present; otherwise the preflight is the
+			// node's current batch state. This keeps the batch total truthful
+			// without counting the same node twice.
+			var tasks []models.ClusterTask
+			if err := tx.Where("batch_id = ? OR workflow_id = ?", batchID, batchID).Find(&tasks).Error; err != nil {
+				return err
+			}
+			states := make(map[uint]string, len(batch.NodeIDs))
+			for _, task := range tasks {
+				if task.Type == TaskServiceActionPreflight {
+					if _, hasExecution := states[task.NodeID]; !hasExecution {
+						states[task.NodeID] = task.Status
+					}
+					continue
+				}
+				if task.Type == TaskServiceActionExecute {
+					states[task.NodeID] = task.Status
+				}
+			}
+			for _, nodeID := range batch.NodeIDs {
+				status := states[nodeID]
+				if status == "" {
+					status = models.ClusterTaskStatusQueued
+				}
+				values[status]++
+			}
+		} else {
+			type countRow struct {
+				Status string
+				Count  int
+			}
+			var counts []countRow
+			if err := tx.Model(&models.ClusterTask{}).Select("status, count(*) as count").Where("batch_id = ?", batchID).Group("status").Scan(&counts).Error; err != nil {
+				return err
+			}
+			for _, row := range counts {
+				values[row.Status] = row.Count
+			}
 		}
 		batch.Queued = values[models.ClusterTaskStatusQueued]
 		batch.Running = values[models.ClusterTaskStatusRunning]
@@ -480,7 +516,7 @@ func (m *Manager) GetBatch(id string) (BatchDetail, error) {
 		return BatchDetail{}, err
 	}
 	var tasks []models.ClusterTask
-	if err := m.db.Where("batch_id = ?", batch.ID).Order("id asc").Find(&tasks).Error; err != nil {
+	if err := m.db.Where("batch_id = ? OR workflow_id = ?", batch.ID, batch.ID).Order("id asc").Find(&tasks).Error; err != nil {
 		return BatchDetail{}, err
 	}
 	summaries := make([]ClusterTaskSummary, 0, len(tasks))

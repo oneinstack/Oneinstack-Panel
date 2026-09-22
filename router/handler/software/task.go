@@ -66,9 +66,10 @@ func getTaskManager() (*softwaretask.Manager, error) {
 					_, err := installer.UninstallTask(
 						ctx,
 						&input.RemoveParams{
-							Name:       request.Key,
-							Version:    request.Version,
-							Parameters: request.Parameters,
+							Name:            request.Key,
+							Version:         request.Version,
+							Parameters:      request.Parameters,
+							ResolvedPackage: request.ResolvedPackage,
 						},
 						logPath,
 						reporter,
@@ -77,21 +78,23 @@ func getTaskManager() (*softwaretask.Manager, error) {
 				}
 				if softwareService.IsServiceAction(request.Operation) {
 					if request.SwitchRequested {
-						_, err := installer.SwitchServiceActionTask(
+						_, err := installer.SwitchServiceActionTaskWithPackage(
 							ctx,
 							request.Key,
 							request.Version,
 							request.Operation,
+							request.ResolvedPackage,
 							logPath,
 							reporter,
 						)
 						return err
 					}
-					_, err := installer.ServiceActionTask(
+					_, err := installer.ServiceActionTaskWithPackage(
 						ctx,
 						request.Key,
 						request.Version,
 						request.Operation,
+						request.ResolvedPackage,
 						logPath,
 						reporter,
 					)
@@ -338,7 +341,7 @@ func SubmitOfflineInstallationTask(
 	}
 	componentKey := strings.ToLower(strings.TrimSpace(req.Key))
 	switch componentKey {
-	case "fail2ban", "docker", "docker-compose", "phpmyadmin", "redis", "mongodb", "opensearch", "firewalld", "db", "mysql", "mariadb", "webserver", "nginx", "openresty", "tengine", "caddy", "apache", "php", "nodejs":
+	case "fail2ban", "docker", "docker-compose", "phpmyadmin", "redis", "mongodb", "opensearch", "firewalld", "db", "mysql", "mariadb", "webserver", "nginx", "openresty", "tengine", "caddy", "apache", "php", "nodejs", "tomcat":
 	default:
 		return nil, fmt.Errorf("offline installation is not supported for component %s", componentKey)
 	}
@@ -466,7 +469,7 @@ func submitInstallationTask(
 
 func requiresClosedLoopPackage(key string) bool {
 	switch strings.ToLower(strings.TrimSpace(key)) {
-	case "firewalld", "db", "mysql", "mariadb", "mongodb", "opensearch", "webserver", "nginx", "openresty", "tengine", "caddy", "apache", "php", "nodejs":
+	case "firewalld", "db", "mysql", "mariadb", "mongodb", "opensearch", "webserver", "nginx", "openresty", "tengine", "caddy", "apache", "php", "nodejs", "tomcat":
 		return true
 	default:
 		return false
@@ -485,6 +488,8 @@ func offlineBundleComponent(key string) string {
 		return "openresty"
 	case "caddy":
 		return "caddy"
+	case "tomcat":
+		return "tomcat"
 	default:
 		return strings.ToLower(strings.TrimSpace(key))
 	}

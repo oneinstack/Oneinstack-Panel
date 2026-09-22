@@ -276,15 +276,26 @@ func (m *Manager) SubmitUninstall(name, version string, requestedBy int64) (*mod
 }
 
 func (m *Manager) SubmitUninstallWithParameters(name, version string, parameters map[string]string, requestedBy int64) (*models.SoftwareTask, error) {
+	return m.SubmitUninstallWithResolvedPackage(name, version, parameters, nil, requestedBy)
+}
+
+func (m *Manager) SubmitUninstallWithResolvedPackage(
+	name string,
+	version string,
+	parameters map[string]string,
+	pin *scriptregistry.PackagePin,
+	requestedBy int64,
+) (*models.SoftwareTask, error) {
 	key, err := m.softwareKeyForUninstall(name)
 	if err != nil {
 		return nil, err
 	}
 	return m.submit(InstallRequest{
-		Operation:  "uninstall",
-		Key:        key,
-		Version:    version,
-		Parameters: parameters,
+		Operation:       "uninstall",
+		Key:             key,
+		Version:         version,
+		Parameters:      parameters,
+		ResolvedPackage: pin,
 	}, requestedBy)
 }
 
@@ -312,6 +323,17 @@ func (m *Manager) SubmitServiceActionWithConfirmation(
 	confirmation string,
 	requestedBy int64,
 ) (*models.SoftwareTask, error) {
+	return m.SubmitServiceActionWithResolvedPackage(component, action, switchRequested, confirmation, nil, requestedBy)
+}
+
+func (m *Manager) SubmitServiceActionWithResolvedPackage(
+	component string,
+	action string,
+	switchRequested bool,
+	confirmation string,
+	pin *scriptregistry.PackagePin,
+	requestedBy int64,
+) (*models.SoftwareTask, error) {
 	key, err := m.softwareKeyForService(component)
 	if err != nil {
 		return nil, err
@@ -335,6 +357,7 @@ func (m *Manager) SubmitServiceActionWithConfirmation(
 		Key:             key,
 		SwitchRequested: switchRequested,
 		Confirmation:    strings.TrimSpace(confirmation),
+		ResolvedPackage: pin,
 	}, requestedBy)
 }
 

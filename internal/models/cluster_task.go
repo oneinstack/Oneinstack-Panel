@@ -14,6 +14,7 @@ type ClusterTask struct {
 	ID              uint64     `gorm:"primaryKey" json:"id"`
 	NodeID          uint       `gorm:"index;not null" json:"nodeId"`
 	BatchID         string     `gorm:"size:64;index" json:"batchId,omitempty"`
+	WorkflowID      string     `gorm:"size:64;index" json:"workflowId,omitempty"`
 	Type            string     `gorm:"size:120;index;not null" json:"type"`
 	IdempotencyKey  string     `gorm:"size:160;uniqueIndex" json:"idempotencyKey,omitempty"`
 	Payload         string     `gorm:"type:text;not null" json:"payload"`
@@ -51,6 +52,7 @@ type ClusterTaskEvent struct {
 type ClusterBatchOperation struct {
 	ID             string     `gorm:"primaryKey;size:64" json:"id"`
 	Action         string     `gorm:"size:64;index;not null" json:"action"`
+	Payload        string     `gorm:"type:text" json:"-"`
 	Status         string     `gorm:"size:16;index;not null" json:"status"`
 	NodeIDs        []uint     `gorm:"serializer:json;type:text" json:"nodeIds"`
 	Total          int        `gorm:"not null" json:"total"`

@@ -254,7 +254,8 @@ func RevealComponentServiceCredentials(c *gin.Context) {
 		return
 	}
 	securityservice.ResetPasswordVerificationFailures(userID, remoteIP)
-	configuration, err := softwareService.NewInstaller().InspectServiceConfiguration(
+	installer := softwareService.NewInstaller()
+	configuration, err := installer.InspectServiceConfiguration(
 		c.Request.Context(), component, version,
 	)
 	if err != nil {
@@ -265,6 +266,11 @@ func RevealComponentServiceCredentials(c *gin.Context) {
 	}
 	localizeComponentConfiguration(c.GetString("locale"), &configuration)
 	credentials, err := softwareService.RevealInstalledCredentials(configuration)
+	if errors.Is(err, softwareService.ErrInstallCredentialsUnavailable) {
+		credentials, err = installer.RevealManagedServiceCredentials(
+			c.Request.Context(), configuration, version,
+		)
+	}
 	if err != nil {
 		auditservice.RecordAuthEvent(c, "software.credential_reveal", username, userID,
 			http.StatusBadRequest, "failure", "", "component="+component)

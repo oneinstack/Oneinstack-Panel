@@ -96,7 +96,7 @@ type panelUpdateApplyPayload struct {
 }
 
 func PanelUpdateCapabilities() []string {
-	return []string{CapabilityPanelUpdateCheck, CapabilityPanelUpdateApply, CapabilityNodeDiagnose, CapabilityTaskCancel}
+	return []string{CapabilityPanelUpdateCheck, CapabilityPanelUpdateApply, CapabilityNodeDiagnose, CapabilityTaskCancel, CapabilityServiceAction}
 }
 
 func isPanelUpdateTask(taskType string) bool {

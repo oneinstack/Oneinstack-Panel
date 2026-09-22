@@ -931,13 +931,36 @@ func PreviewInstallationPackage(ctx context.Context, params *input.InstallParams
 	if scriptInfo.PackagePin != nil {
 		pin = *scriptInfo.PackagePin
 	}
-	if expectedComponent, required := closedLoopPackageComponent(params.Key); required &&
+	expectedComponent, required := closedLoopPackageComponent(params.Key)
+	if !required && declaresManagedPackageTransport(scriptInfo.ParameterSpecs) {
+		expectedComponent = strings.TrimSpace(scriptInfo.Name)
+		required = expectedComponent != ""
+	}
+	if required &&
 		(pin.Component != expectedComponent ||
 			(pin.PackageSource != "remote" && pin.PackageSource != "cache" && pin.PackageSource != "offline") ||
 			pin.SoftwareVersion != strings.TrimSpace(params.Version) || pin.PackageSHA256 == "") {
 		return nil, scriptregistry.PackagePin{}, fmt.Errorf("PACKAGE_RESOLVE_FAILED: %s requires a Center-verified fixed package pin", params.Key)
 	}
 	return values, pin, nil
+}
+
+func declaresManagedPackageTransport(parameters []script.ParameterSpec) bool {
+	hasInstallMode := false
+	hasOfflinePath := false
+	for _, parameter := range parameters {
+		envName := strings.ToUpper(strings.TrimSpace(parameter.Env))
+		if envName == "" {
+			envName = strings.ToUpper(strings.NewReplacer("-", "_", ".", "_").Replace(strings.TrimSpace(parameter.Name)))
+		}
+		switch envName {
+		case "ONEINSTACK_INSTALL_MODE":
+			hasInstallMode = true
+		case "ONEINSTACK_OFFLINE_PACKAGE_PATH":
+			hasOfflinePath = true
+		}
+	}
+	return hasInstallMode && hasOfflinePath
 }
 
 func installParameterWasRestored(params *input.InstallParams, name string) bool {
@@ -984,6 +1007,8 @@ func closedLoopPackageComponent(key string) (string, bool) {
 		return "php", true
 	case "nodejs":
 		return "nodejs", true
+	case "tomcat":
+		return "tomcat", true
 	default:
 		return "", false
 	}
