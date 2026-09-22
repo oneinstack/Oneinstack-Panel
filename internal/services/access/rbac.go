@@ -1077,6 +1077,7 @@ var builtinActionLabels = map[string]builtinActionLabel{
 	"cluster.role.reset":              {Name: "重置集群角色", NameEn: "Reset cluster role"},
 	"cluster.role.select":             {Name: "选择集群角色", NameEn: "Select cluster role"},
 	"cluster.website.dispatch":        {Name: "下发网站配置", NameEn: "Dispatch website configuration"},
+	"cluster.service.dispatch":        {Name: "下发节点服务操作", NameEn: "Dispatch node service action"},
 	"container.compose.change":        {Name: "变更编排项目", NameEn: "Change Compose project"},
 	"container.compose.create":        {Name: "创建编排项目", NameEn: "Create Compose project"},
 	"container.compose.delete":        {Name: "删除编排项目", NameEn: "Delete Compose project"},

@@ -38,14 +38,18 @@ func migrateClusterSchema() error {
 	}{
 		{&models.ClusterNode{}, "lifecycle_status"},
 		{&models.ClusterNode{}, "capabilities"},
+		{&models.ClusterNode{}, "service_actions"},
+		{&models.ClusterNode{}, "service_actions_reported_at"},
 		{&models.ClusterNode{}, "deleted_at"},
 		{&models.ClusterTask{}, "batch_id"},
+		{&models.ClusterTask{}, "workflow_id"},
 		{&models.ClusterTask{}, "requested_by"},
 		{&models.ClusterTask{}, "cancel_requested"},
 		{&models.ClusterTask{}, "cancelable"},
 		{&models.ClusterTask{}, "stage"},
 		{&models.ClusterTask{}, "progress"},
 		{&models.ClusterTask{}, "lease_expires_at"},
+		{&models.ClusterBatchOperation{}, "payload"},
 	}
 	for _, required := range requiredColumns {
 		if !db.Migrator().HasColumn(required.model, required.column) {

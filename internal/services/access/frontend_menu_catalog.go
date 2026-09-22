@@ -242,6 +242,7 @@ func builtinFrontendButtonDefinitions() []builtinButtonDefinition {
 		item("cluster.task.cancel", "取消集群任务"),
 		item("cluster.node.delete.confirm", "确认删除集群节点"),
 		item("cluster.website.dispatch", "下发网站配置"),
+		item("cluster.service.dispatch", "下发节点服务操作"),
 	)
 
 	add(PermissionSecurityRead,
