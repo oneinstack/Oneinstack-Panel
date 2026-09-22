@@ -48,6 +48,7 @@ type ConfigurationField struct {
 	Min         *int     `json:"min,omitempty"`
 	Max         *int     `json:"max,omitempty"`
 	Options     []string `json:"options,omitempty"`
+	AllowEmpty  bool     `json:"allowEmpty,omitempty"`
 }
 
 type ComponentConfiguration struct {
@@ -88,6 +89,7 @@ type ComponentConnection struct {
 	Port               string `json:"port,omitempty"`
 	BindAddress        string `json:"bindAddress,omitempty"`
 	Username           string `json:"username,omitempty"`
+	DatabaseType       string `json:"databaseType,omitempty"`
 	PasswordConfigured *bool  `json:"passwordConfigured,omitempty"`
 }
 
@@ -104,6 +106,8 @@ type ComponentRuntime struct {
 	VhostDir    string `json:"vhostDir,omitempty"`
 	ServiceName string `json:"serviceName,omitempty"`
 	Version     string `json:"version,omitempty"`
+	JavaHome    string `json:"javaHome,omitempty"`
+	JDKVersion  string `json:"jdkVersion,omitempty"`
 	// RuntimeVersion is the explicit read-only runtime identity used by
 	// production database components. Version remains for compatibility with
 	// existing managed-configuration consumers.
@@ -162,8 +166,32 @@ var firewalldConfigurationCalls = struct {
 // SupportsManagedConfiguration reports whether the component has a complete
 // managed-configuration definition and can be exposed to the service UI.
 func SupportsManagedConfiguration(component string) bool {
-	_, err := componentConfigurationDefinition(component)
-	return err == nil
+	definition, err := componentConfigurationDefinition(component)
+	if err != nil {
+		return false
+	}
+	if len(definition.Fields) > 0 {
+		return true
+	}
+	database := app.DB()
+	if database == nil {
+		return false
+	}
+	var installed models.Software
+	if err := database.Where("installed = ?", true).
+		Where("(`key` = ? OR component = ?)", definition.SoftwareKey, definition.Component).
+		Order("install_time DESC, id DESC").First(&installed).Error; err != nil {
+		return false
+	}
+	version := strings.TrimSpace(installed.InstallVersion)
+	if version == "" {
+		version = strings.TrimSpace(installed.Version)
+	}
+	if version == "" {
+		return false
+	}
+	componentPackage, err := (&Installer{}).resolveConfigurationPackage(definition, version)
+	return err == nil && len(componentPackage.Manifest.Configuration.Fields) > 0
 }
 
 func integerField(key, label, unit, description string, min, max int) ConfigurationField {
@@ -193,7 +221,7 @@ func componentConfigurationDefinition(component string) (configurationDefinition
 			Environment: make(map[string]string),
 		}, nil
 	}
-	definition, err := NormalizeServiceComponent(component)
+	definition, err := ResolveServiceComponent(app.DB(), component)
 	if err != nil {
 		return configurationDefinition{}, err
 	}
@@ -459,7 +487,9 @@ func componentConfigurationDefinition(component string) (configurationDefinition
 			"rules":        "ONEINSTACK_CONFIG_RULES",
 		}
 	default:
-		return configurationDefinition{}, fmt.Errorf("component %s does not support managed configuration", component)
+		// Catalog-managed services can declare their complete configuration
+		// contract in the immutable component Manifest. The package is resolved
+		// locally before the empty base definition is exposed to callers.
 	}
 	return result, nil
 }
@@ -489,6 +519,7 @@ func manifestConfigurationDefinition(
 			Min:         field.Min,
 			Max:         field.Max,
 			Options:     append([]string(nil), field.Options...),
+			AllowEmpty:  field.AllowEmpty,
 		})
 		result.Environment[field.Key] = field.Env
 	}
@@ -524,6 +555,10 @@ func normalizeConfigurationValues(definition configurationDefinition, values map
 			}
 		}
 		value := strings.TrimSpace(values[field.Key])
+		if value == "" && field.AllowEmpty {
+			result[field.Key] = ""
+			continue
+		}
 		if definition.Component == "adminer" && field.Key == "allowedCidrs" && value == "" {
 			result[field.Key] = ""
 			continue
@@ -780,6 +815,10 @@ func (installer *Installer) inspectServiceConfiguration(
 		configuration.Connection = redisConnectionFromParameters(scriptInfo.Params)
 	}
 	markConfigurationCredentialStatus(&configuration)
+	if configuration.Connection != nil && configuration.Connection.PasswordConfigured != nil &&
+		*configuration.Connection.PasswordConfigured {
+		configuration.CredentialConfigured = true
+	}
 	return configuration, nil
 }
 
@@ -826,7 +865,7 @@ func componentInstallParameters(
 ) []ComponentInstallParameter {
 	result := make([]ComponentInstallParameter, 0, len(parameters))
 	for _, parameter := range parameters {
-		if serverOwnedInstallParameterForComponent(component, parameter.Name) {
+		if parameter.HideAfterInstall || serverOwnedInstallParameterForComponent(component, parameter.Name) {
 			continue
 		}
 		envName := strings.TrimSpace(parameter.Env)
@@ -856,6 +895,7 @@ func serverOwnedInstallParameterName(name string) bool {
 	normalized := strings.ToUpper(strings.NewReplacer("-", "_", ".", "_").Replace(strings.TrimSpace(name)))
 	switch normalized {
 	case "ONEINSTACK_INSTALL_MODE", "ONEINSTACK_OFFLINE_PACKAGE_PATH", "ONEINSTACK_COMPONENT_STATE",
+		"ONEINSTACK_OFFLINE_BUNDLE_ID", "ONEINSTACK_OFFLINE_BUNDLE_DIGEST",
 		"INSTALL_MODE", "OFFLINE_PACKAGE_ID", "OFFLINE_PACKAGE_PATH", "COMPONENT_STATE_DIR",
 		"UNINSTALL_DATA_POLICY", "UNINSTALL_CONFIRM_DATA_DELETION", "DATA_POLICY", "DELETE_DATA_CONFIRM", "WEB_VHOST_ROOT":
 		return true
@@ -904,6 +944,10 @@ func componentInstallParameterLabel(name string) string {
 		return "MongoDB administrator username"
 	case "MONGODB_ADMIN_PASSWORD":
 		return "MongoDB administrator password"
+	case "DATABASE_USERNAME":
+		return "Database username"
+	case "DATABASE_PASSWORD":
+		return "Database password"
 	case "OPENSEARCH_INITIAL_ADMIN_PASSWORD":
 		return "OpenSearch administrator password"
 	case "OPENSEARCH_PORT":
@@ -1646,7 +1690,7 @@ func parseComponentConfiguration(
 	}
 	optional := make(map[string]struct{})
 	var runtime *ComponentRuntime
-	if definition.Component == "mysql" || definition.Component == "mariadb" || definition.Component == "mongodb" || definition.Component == "opensearch" || definition.Component == "php" || definition.Component == "firewalld" || definition.Component == "apache" || definition.Component == "openresty" || definition.Component == "caddy" || definition.Component == "adminer" {
+	if definition.Component == "mysql" || definition.Component == "mariadb" || definition.Component == "mongodb" || definition.Component == "opensearch" || definition.Component == "php" || definition.Component == "firewalld" || definition.Component == "apache" || definition.Component == "openresty" || definition.Component == "caddy" || definition.Component == "adminer" || definition.Component == "tomcat" {
 		runtime = &ComponentRuntime{}
 		runtimeKeys := []string{"runtime.port", "runtime.bindAddress", "runtime.installDir", "runtime.dataDir", "runtime.logDir", "runtime.runUser", "runtime.runGroup"}
 		if definition.Component == "mariadb" {
@@ -1661,6 +1705,8 @@ func parseComponentConfiguration(
 			runtimeKeys = []string{"runtime.port", "runtime.bindAddress", "runtime.installDir", "runtime.dataDir", "runtime.logDir", "runtime.runUser", "runtime.runGroup", "runtime.configFile", "runtime.serviceName", "runtime.version"}
 		} else if definition.Component == "opensearch" {
 			runtimeKeys = []string{"runtime.port", "runtime.bindAddress", "runtime.installDir", "runtime.dataDir", "runtime.logDir", "runtime.runUser", "runtime.runGroup", "runtime.configFile", "runtime.serviceName", "runtime.version", "runtime.httpsState", "runtime.systemdState"}
+		} else if definition.Component == "tomcat" {
+			runtimeKeys = []string{"runtime.port", "runtime.bindAddress", "runtime.installDir", "runtime.dataDir", "runtime.logDir", "runtime.runUser", "runtime.runGroup", "runtime.configFile", "runtime.serviceName", "runtime.version", "runtime.javaHome", "runtime.jdkVersion"}
 		} else if definition.Component == "adminer" {
 			runtimeKeys = []string{"runtime.port", "runtime.bindAddress", "runtime.socketPath", "runtime.installDir", "runtime.configFile", "runtime.serviceName", "runtime.version", "runtime.packageVersion", "runtime.artifactSha256", "runtime.publicPath", "runtime.accessUrl", "runtime.webServer", "runtime.documentRoot", "runtime.phpVersion", "runtime.phpService"}
 		}
@@ -1675,6 +1721,11 @@ func parseComponentConfiguration(
 			"connection.username",
 			"connection.passwordConfigured",
 		} {
+			allowed[key] = struct{}{}
+			optional[key] = struct{}{}
+		}
+	} else {
+		for _, key := range []string{"connection.databaseType", "connection.passwordConfigured"} {
 			allowed[key] = struct{}{}
 			optional[key] = struct{}{}
 		}
@@ -1743,6 +1794,8 @@ func parseComponentConfiguration(
 		runtime.VhostDir = fields["runtime.vhostDir"]
 		runtime.ServiceName = fields["runtime.serviceName"]
 		runtime.Version = fields["runtime.version"]
+		runtime.JavaHome = fields["runtime.javaHome"]
+		runtime.JDKVersion = fields["runtime.jdkVersion"]
 		runtime.HTTPSState = fields["runtime.httpsState"]
 		runtime.SystemdState = fields["runtime.systemdState"]
 		runtime.PackageVersion = fields["runtime.packageVersion"]
@@ -1796,6 +1849,19 @@ func parseComponentConfiguration(
 				(runtime.SystemdState != "active" && runtime.SystemdState != "inactive") {
 				return ComponentConfiguration{}, errors.New("OpenSearch component runtime identity is invalid")
 			}
+		} else if definition.Component == "tomcat" {
+			port, parseErr := strconv.Atoi(runtime.Port)
+			jdkForVersion := "17"
+			if strings.HasPrefix(runtime.Version, "7.") || strings.HasPrefix(runtime.Version, "8.5.") {
+				jdkForVersion = "8"
+			}
+			if parseErr != nil || port < 1 || port > 65535 || runtime.BindAddress == "" || strings.ContainsAny(runtime.BindAddress, "\x00\r\n<>&\"") ||
+				runtime.InstallDir != "/usr/local/tomcat" || runtime.DataDir != "/data/tomcat" || runtime.LogDir != "/data/tomcat/logs" ||
+				runtime.RunUser != "tomcat" || runtime.RunGroup != "tomcat" || runtime.ConfigFile != "/data/tomcat/conf/server.xml" ||
+				runtime.ServiceName != "tomcat" || !runtimeVersionPattern.MatchString(runtime.Version) || runtime.JavaHome != "/usr/lib/jvm/oneinstack-tomcat-jdk-"+jdkForVersion || runtime.JDKVersion != jdkForVersion {
+				return ComponentConfiguration{}, errors.New("Tomcat component runtime identity is invalid")
+			}
+			runtime.RuntimeVersion = runtime.Version
 		} else if definition.Component == "adminer" {
 			port, parseErr := strconv.Atoi(runtime.Port)
 			if parseErr != nil || port < 1 || port > 65535 || runtime.BindAddress == "" ||
@@ -1889,6 +1955,33 @@ func parseComponentConfiguration(
 				Port:               strings.TrimSpace(fields["connection.port"]),
 				BindAddress:        strings.TrimSpace(fields["connection.bindAddress"]),
 				Username:           strings.TrimSpace(fields["connection.username"]),
+				PasswordConfigured: &passwordConfigured,
+			}
+		}
+	} else {
+		connectionKeys := []string{"connection.databaseType", "connection.passwordConfigured"}
+		connectionFields := 0
+		for _, key := range connectionKeys {
+			if _, exists := fields[key]; exists {
+				connectionFields++
+			}
+		}
+		if connectionFields > 0 && connectionFields != len(connectionKeys) {
+			return ComponentConfiguration{}, fmt.Errorf("component %s connection output is incomplete", definition.DisplayName)
+		}
+		if connectionFields == len(connectionKeys) {
+			databaseType := strings.TrimSpace(fields["connection.databaseType"])
+			switch databaseType {
+			case "h2", "postgresql", "mysql", "mariadb":
+			default:
+				return ComponentConfiguration{}, fmt.Errorf("component %s database type output is invalid", definition.DisplayName)
+			}
+			passwordConfigured, parseErr := strconv.ParseBool(fields["connection.passwordConfigured"])
+			if parseErr != nil {
+				return ComponentConfiguration{}, fmt.Errorf("component %s password status output is invalid", definition.DisplayName)
+			}
+			connection = &ComponentConnection{
+				DatabaseType:       databaseType,
 				PasswordConfigured: &passwordConfigured,
 			}
 		}
