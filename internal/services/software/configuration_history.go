@@ -35,6 +35,30 @@ type ConfigurationHistoryPage struct {
 	PageSize int                         `json:"pageSize"`
 }
 
+const configurationHistoryReadAttempts = 4
+
+type configurationHistoryReadError struct {
+	code       string
+	safeDetail string
+	err        error
+}
+
+func (e *configurationHistoryReadError) Error() string {
+	return e.err.Error()
+}
+
+func (e *configurationHistoryReadError) Unwrap() error {
+	return e.err
+}
+
+func (e *configurationHistoryReadError) ErrorCode() string {
+	return e.code
+}
+
+func (e *configurationHistoryReadError) SafeErrorDetail(error) string {
+	return e.safeDetail
+}
+
 func ListConfigurationHistory(
 	database *gorm.DB,
 	component string,
@@ -44,7 +68,7 @@ func ListConfigurationHistory(
 	if database == nil {
 		return ConfigurationHistoryPage{}, errors.New("database is not initialized")
 	}
-	definition, err := NormalizeServiceComponent(component)
+	definition, err := normalizeConfigurationHistoryComponent(database, component)
 	if err != nil {
 		return ConfigurationHistoryPage{}, err
 	}
@@ -60,16 +84,33 @@ func ListConfigurationHistory(
 	query := database.Model(&models.SoftwareConfigurationHistory{}).
 		Where("component = ?", definition.Component)
 	var total int64
-	if err := query.Count(&total).Error; err != nil {
-		return ConfigurationHistoryPage{}, fmt.Errorf("count configuration history: %w", err)
+	if err := retryConfigurationHistoryRead(func() error {
+		total = 0
+		return query.Count(&total).Error
+	}); err != nil {
+		// Configuration history was added after managed component installs
+		// already existed. A legacy database without the table therefore has no
+		// history to return; keep this read endpoint usable until the next Panel
+		// restart runs the normal startup migration.
+		if isConfigurationHistoryTableMissing(err) {
+			return emptyConfigurationHistoryPage(page, pageSize), nil
+		}
+		return ConfigurationHistoryPage{}, configurationHistoryDatabaseError(
+			fmt.Errorf("count configuration history: %w", err),
+		)
 	}
 	var rows []models.SoftwareConfigurationHistory
-	if err := query.
-		Order("created_at DESC").
-		Limit(pageSize).
-		Offset((page - 1) * pageSize).
-		Find(&rows).Error; err != nil {
-		return ConfigurationHistoryPage{}, fmt.Errorf("list configuration history: %w", err)
+	if err := retryConfigurationHistoryRead(func() error {
+		rows = nil
+		return query.
+			Order("created_at DESC").
+			Limit(pageSize).
+			Offset((page - 1) * pageSize).
+			Find(&rows).Error
+	}); err != nil {
+		return ConfigurationHistoryPage{}, configurationHistoryDatabaseError(
+			fmt.Errorf("list configuration history: %w", err),
+		)
 	}
 	items := make([]ConfigurationHistoryEntry, 0, len(rows))
 	for i := range rows {
@@ -95,7 +136,7 @@ func GetConfigurationHistory(
 	if database == nil {
 		return ConfigurationHistoryEntry{}, errors.New("database is not initialized")
 	}
-	definition, err := NormalizeServiceComponent(component)
+	definition, err := normalizeConfigurationHistoryComponent(database, component)
 	if err != nil {
 		return ConfigurationHistoryEntry{}, err
 	}
@@ -104,31 +145,86 @@ func GetConfigurationHistory(
 		return ConfigurationHistoryEntry{}, gorm.ErrRecordNotFound
 	}
 	var row models.SoftwareConfigurationHistory
-	if err := database.
-		Where("id = ? AND component = ?", id, definition.Component).
-		First(&row).Error; err != nil {
+	if err := retryConfigurationHistoryRead(func() error {
+		row = models.SoftwareConfigurationHistory{}
+		return database.
+			Where("id = ? AND component = ?", id, definition.Component).
+			First(&row).Error
+	}); err != nil {
+		if isConfigurationHistoryTableMissing(err) {
+			return ConfigurationHistoryEntry{}, gorm.ErrRecordNotFound
+		}
 		return ConfigurationHistoryEntry{}, err
 	}
 	return configurationHistoryEntry(row)
 }
 
+func emptyConfigurationHistoryPage(page int, pageSize int) ConfigurationHistoryPage {
+	return ConfigurationHistoryPage{
+		Items:    make([]ConfigurationHistoryEntry, 0),
+		Total:    0,
+		Page:     page,
+		PageSize: pageSize,
+	}
+}
+
+func normalizeConfigurationHistoryComponent(
+	database *gorm.DB,
+	component string,
+) (ComponentServiceDefinition, error) {
+	definition, err := NormalizeServiceComponent(component)
+	if err == nil {
+		return definition, nil
+	}
+	return ResolveServiceComponent(database, component)
+}
+
+func retryConfigurationHistoryRead(read func() error) error {
+	var err error
+	for attempt := 0; attempt < configurationHistoryReadAttempts; attempt++ {
+		err = read()
+		if err == nil || !isConfigurationHistoryDatabaseBusy(err) {
+			return err
+		}
+		time.Sleep(time.Duration(attempt+1) * 15 * time.Millisecond)
+	}
+	return err
+}
+
+func isConfigurationHistoryTableMissing(err error) bool {
+	if err == nil {
+		return false
+	}
+	detail := strings.ToLower(err.Error())
+	return strings.Contains(detail, "no such table") ||
+		(strings.Contains(detail, "doesn't exist") &&
+			strings.Contains(detail, "software_configuration_history"))
+}
+
+func isConfigurationHistoryDatabaseBusy(err error) bool {
+	if err == nil {
+		return false
+	}
+	detail := strings.ToLower(err.Error())
+	return strings.Contains(detail, "database is locked") ||
+		strings.Contains(detail, "database is busy") ||
+		strings.Contains(detail, "sqlite_busy") ||
+		strings.Contains(detail, "database table is locked")
+}
+
 func configurationHistoryEntry(
 	row models.SoftwareConfigurationHistory,
 ) (ConfigurationHistoryEntry, error) {
-	before := make(map[string]string)
-	if err := json.Unmarshal([]byte(row.BeforeJSON), &before); err != nil {
-		return ConfigurationHistoryEntry{}, fmt.Errorf(
-			"decode configuration history %s before values: %w",
-			row.ID,
-			err,
+	before, err := decodeConfigurationHistoryValues(row.BeforeJSON)
+	if err != nil {
+		return ConfigurationHistoryEntry{}, configurationHistoryDataError(
+			fmt.Errorf("decode configuration history %s before values: %w", row.ID, err),
 		)
 	}
-	after := make(map[string]string)
-	if err := json.Unmarshal([]byte(row.AfterJSON), &after); err != nil {
-		return ConfigurationHistoryEntry{}, fmt.Errorf(
-			"decode configuration history %s after values: %w",
-			row.ID,
-			err,
+	after, err := decodeConfigurationHistoryValues(row.AfterJSON)
+	if err != nil {
+		return ConfigurationHistoryEntry{}, configurationHistoryDataError(
+			fmt.Errorf("decode configuration history %s after values: %w", row.ID, err),
 		)
 	}
 	return ConfigurationHistoryEntry{
@@ -146,4 +242,52 @@ func configurationHistoryEntry(
 		FinishedAt:      row.FinishedAt,
 		CreatedAt:       row.CreatedAt,
 	}, nil
+}
+
+func decodeConfigurationHistoryValues(raw string) (map[string]string, error) {
+	values := make(map[string]string)
+	if strings.TrimSpace(raw) == "" || strings.EqualFold(strings.TrimSpace(raw), "null") {
+		return values, nil
+	}
+	if err := json.Unmarshal([]byte(raw), &values); err != nil {
+		return nil, err
+	}
+	if values == nil {
+		values = make(map[string]string)
+	}
+	return values, nil
+}
+
+func configurationHistoryDatabaseError(err error) error {
+	detail := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(detail, "no such table"),
+		strings.Contains(detail, "no such column"),
+		strings.Contains(detail, "has no column named"):
+		return &configurationHistoryReadError{
+			code:       "CONFIG_HISTORY_SCHEMA_MISSING",
+			safeDetail: "The Panel configuration history schema is missing. Update and restart Panel so the database migration can complete.",
+			err:        err,
+		}
+	case isConfigurationHistoryDatabaseBusy(err):
+		return &configurationHistoryReadError{
+			code:       "CONFIG_HISTORY_DATABASE_BUSY",
+			safeDetail: "The Panel database is busy. Retry after the active write transaction has completed.",
+			err:        err,
+		}
+	default:
+		return &configurationHistoryReadError{
+			code:       "CONFIG_HISTORY_READ_FAILED",
+			safeDetail: "The Panel database could not read component configuration history.",
+			err:        err,
+		}
+	}
+}
+
+func configurationHistoryDataError(err error) error {
+	return &configurationHistoryReadError{
+		code:       "CONFIG_HISTORY_DATA_INVALID",
+		safeDetail: "A component configuration history record is invalid. Inspect the Panel service log for the affected record ID.",
+		err:        err,
+	}
 }
