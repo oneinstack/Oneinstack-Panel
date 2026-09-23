@@ -2,6 +2,7 @@ package software
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -277,6 +278,8 @@ func (installer *Installer) resolveInstallParams(ctx context.Context, params *in
 		"mongodbPort",
 		"apache-port",
 		"apachePort",
+		"tomcat-port",
+		"tomcatPort",
 	)
 
 	NormalizeInstallParams(params)
@@ -804,15 +807,39 @@ func validateResolvedInstallPort(ctx context.Context, params *input.InstallParam
 	if err != nil || portNumber < 1 || portNumber > 65535 {
 		return &InstallParameterError{Field: "port", Message: "must be a valid port between 1 and 65535"}
 	}
-	// A component precheck is authoritative for installation-time port
-	// ownership. A generic bind probe cannot distinguish an existing managed
-	// listener from an unrelated process or account for an explicit migration
-	// flow (for example, Nginx or MySQL takeover). Keep the generic probe only
-	// for legacy/component packages that do not provide a precheck action.
-	if scriptInfo != nil && strings.TrimSpace(scriptInfo.PrecheckPath) != "" {
+	// An upgrade/reinstall may explicitly submit the existing managed Tomcat
+	// port again. That listener is expected and must not block the task before
+	// the component can stop and restart its own service.
+	if managedTomcatInstallPort(params, port) {
+		return nil
+	}
+	// A component precheck remains authoritative for other components. Tomcat
+	// is also checked here so the Panel can reject an occupied port before a
+	// durable task is created; the host-side precheck remains the final guard.
+	if scriptInfo != nil && strings.TrimSpace(scriptInfo.PrecheckPath) != "" &&
+		(params == nil || !strings.EqualFold(strings.TrimSpace(params.Key), "tomcat")) {
 		return nil
 	}
 	return validatePortAvailable(ctx, portNumber)
+}
+
+func managedTomcatInstallPort(params *input.InstallParams, requestedPort string) bool {
+	if params == nil || !strings.EqualFold(strings.TrimSpace(params.Key), "tomcat") ||
+		strings.TrimSpace(requestedPort) == "" {
+		return false
+	}
+	row, err := installedSoftwareRow(params.Key, "tomcat")
+	if err != nil {
+		return false
+	}
+	managedPort := strings.TrimSpace(row.HttpPort)
+	if managedPort == "" && strings.TrimSpace(row.RuntimeParamsJSON) != "" {
+		var runtime map[string]string
+		if json.Unmarshal([]byte(row.RuntimeParamsJSON), &runtime) == nil {
+			managedPort = installParameterValue(runtime, "port", "tomcat-port", "tomcatPort")
+		}
+	}
+	return managedPort != "" && managedPort == strings.TrimSpace(requestedPort)
 }
 
 func explicitPHPInstallPort(params *input.InstallParams) bool {

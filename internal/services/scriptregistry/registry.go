@@ -690,7 +690,18 @@ func (r *Registry) resolveCachedInstalled(
 			}
 			if selected.Root == "" ||
 				compareVersions(manifest.Component.Version, selected.Manifest.Component.Version) > 0 {
-				selected = Package{Manifest: manifest, Root: root, Source: "cache", Metadata: Metadata{Manifest: manifest, SHA256: digestEntry.Name()}}
+				selected = Package{
+					Manifest: manifest,
+					Root:     root,
+					Source:   "cache",
+					Metadata: Metadata{
+						Manifest:        manifest,
+						SHA256:          digestEntry.Name(),
+						TargetOS:        r.host.SystemID,
+						TargetOSVersion: r.host.SystemVersion,
+						TargetArch:      r.host.Architecture,
+					},
+				}
 			}
 		}
 	}
