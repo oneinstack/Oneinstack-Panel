@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"net"
 	"net/http"
@@ -350,6 +351,10 @@ func Preview(c *gin.Context) {
 		var err error
 		payload, err = normalizeSoftwareLifecyclePreviewPayload(c.Request.Context(), operation, payload)
 		if err != nil {
+			log.Printf("software lifecycle preview failed operation=%s: %v", operation, err)
+			if handleSoftwareLifecyclePreviewError(c, err) {
+				return
+			}
 			core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "组件操作预览生成失败"))
 			return
 		}
@@ -494,6 +499,25 @@ func handleSoftwareInstallPreviewError(c *gin.Context, err error, payload json.R
 	return true
 }
 
+func handleSoftwareLifecyclePreviewError(c *gin.Context, err error) bool {
+	if err == nil {
+		return false
+	}
+	stableCode := softwareStableErrorCode(err)
+	if stableCode == "" {
+		detail := strings.ToLower(err.Error())
+		if strings.Contains(detail, "lifecycle preview") ||
+			strings.Contains(detail, "validate uninstall preview parameters") {
+			stableCode = "PACKAGE_PREVIEW_CONTRACT_INVALID"
+		}
+	}
+	if stableCode == "" {
+		return false
+	}
+	core.HandleError(c, softwareStableAppError(stableCode))
+	return true
+}
+
 func handleSoftwareInstallParameterError(c *gin.Context, err error) bool {
 	if errors.Is(err, softwareService.ErrInstallCredentialsCorrupt) {
 		appErr := core.NewErrorWithDetail(core.ErrInvalidParameter, "无法恢复上次安装凭据", "托管凭据已损坏或实例密钥不匹配，请重新输入密码后再升级。")
@@ -540,7 +564,7 @@ func softwareStableErrorCode(err error) string {
 		"CENTER_UNAVAILABLE", "CENTER_TIMEOUT", "CENTER_AUTH_FAILED", "CATALOG_STALE",
 		"PACKAGE_UNPUBLISHED", "PACKAGE_UNAVAILABLE", "PACKAGE_RESOLVE_FAILED",
 		"PACKAGE_CHECKSUM_MISMATCH", "PACKAGE_SIGNATURE_INVALID", "PACKAGE_DOWNLOAD_FAILED",
-		"PACKAGE_VERIFY_FAILED", "PACKAGE_CONTENT_INVALID", "DEPENDENCY_MISSING", "VERSION_UNSUPPORTED",
+		"PACKAGE_VERIFY_FAILED", "PACKAGE_CONTENT_INVALID", "PACKAGE_PREVIEW_CONTRACT_INVALID", "DEPENDENCY_MISSING", "VERSION_UNSUPPORTED",
 		"HOST_PLATFORM_UNSUPPORTED", "HOST_DEPENDENCY_UNAVAILABLE", "SCRIPT_EXECUTION_FAILED",
 		"HOST_PACKAGE_VERSION_UNAVAILABLE", "HOST_REPOSITORY_UNAVAILABLE", "HOST_VERSION_PROBE_UNAVAILABLE", "HOST_VERSION_PROBE_FAILED",
 		"ROLLBACK_FAILED", "RECOVERY_REQUIRED", "PANEL_PORT_NOT_PROTECTED",
@@ -664,6 +688,11 @@ func softwareStableAppError(code string) *core.AppError {
 			status: core.ErrConfigError, message: "组件安装包内容无效",
 			detail:     "The downloaded component package contents are invalid.",
 			suggestion: "请确认 Center 包构建完整并重新发布后重试。",
+		},
+		"PACKAGE_PREVIEW_CONTRACT_INVALID": {
+			status: core.ErrConfigError, message: "组件包生命周期预览声明不完整",
+			detail:     "The resolved component package does not declare rollback behavior for the requested lifecycle action.",
+			suggestion: "请发布包含该动作预览与回滚声明的新组件包，刷新软件目录后重试。",
 		},
 		"PACKAGE_DOWNLOAD_FAILED": {
 			status: core.ErrServiceUnavailable, message: "组件安装包下载失败",
