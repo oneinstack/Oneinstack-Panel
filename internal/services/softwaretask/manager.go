@@ -696,6 +696,9 @@ func (m *Manager) submit(request InstallRequest, requestedBy int64) (*models.Sof
 		if err := tx.Create(event).Error; err != nil {
 			return err
 		}
+		if err := advanceCatalogPackageVersion(tx, request); err != nil {
+			return err
+		}
 		if configurationHistory != nil {
 			return tx.Create(configurationHistory).Error
 		}
@@ -717,6 +720,53 @@ func (m *Manager) submit(request InstallRequest, requestedBy int64) (*models.Sof
 		)
 		return nil, errors.New("software task queue is full")
 	}
+}
+
+// advanceCatalogPackageVersion keeps the software list aligned with the
+// immutable package selected for an online task. Package publication does not
+// change the signed catalog revision, so the periodic catalog snapshot may be
+// behind the package resolver for a short time. Never let an older fixed task
+// move the cached package version backwards, and never advertise an imported
+// offline bundle as the latest Center package.
+func advanceCatalogPackageVersion(tx *gorm.DB, request InstallRequest) error {
+	if tx == nil || request.ResolvedPackage == nil || request.Operation != "install" {
+		return nil
+	}
+	pin := request.ResolvedPackage
+	source := strings.ToLower(strings.TrimSpace(pin.PackageSource))
+	if source != "remote" && source != "cache" {
+		return nil
+	}
+	resolvedVersion := strings.TrimSpace(pin.ResolvedVersion)
+	if resolvedVersion == "" {
+		return nil
+	}
+	var row models.Software
+	result := tx.Where(
+		"`key` = ? AND version = ? AND catalog_managed = ?",
+		request.Key,
+		request.Version,
+		true,
+	).First(&row)
+	if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+		return nil
+	}
+	if result.Error != nil {
+		return fmt.Errorf("read software catalog package version: %w", result.Error)
+	}
+	currentVersion := strings.TrimSpace(row.LatestPackageVersion)
+	if currentVersion != "" && scriptregistry.ComparePackageVersions(resolvedVersion, currentVersion) < 0 {
+		return nil
+	}
+	if currentVersion == resolvedVersion {
+		return nil
+	}
+	if err := tx.Model(&models.Software{}).
+		Where("id = ?", row.Id).
+		Update("latest_package_version", resolvedVersion).Error; err != nil {
+		return fmt.Errorf("update software catalog package version: %w", err)
+	}
+	return nil
 }
 
 func softwareVersionIsOlder(requested, installed string) bool {

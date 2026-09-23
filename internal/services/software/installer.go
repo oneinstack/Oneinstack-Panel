@@ -188,6 +188,8 @@ func NormalizeInstallParams(params *input.InstallParams) {
 			portNames = append(portNames, "nginx-port", "nginxPort", "openresty-port", "openrestyPort", "tengine-port", "tenginePort", "caddy-port", "caddyPort")
 		case "apache":
 			portNames = append(portNames, "apache-port", "apachePort")
+		case "tomcat":
+			portNames = append(portNames, "tomcat-port", "tomcatPort")
 		}
 		params.Port = installParameterValue(params.Parameters, portNames...)
 	}
@@ -1196,6 +1198,13 @@ func (installer *Installer) setScriptParams(scriptInfo *script.ScriptInfo, param
 		}
 		return strings.ToUpper(strings.NewReplacer("-", "_", ".", "_").Replace(strings.TrimSpace(parameter.Name)))
 	}
+	primaryPortParameter := ""
+	for _, parameter := range scriptInfo.ParameterSpecs {
+		if strings.EqualFold(strings.TrimSpace(parameter.Type), "port") {
+			primaryPortParameter = strings.NewReplacer("-", "_", ".", "_").Replace(strings.ToLower(strings.TrimSpace(parameter.Name)))
+			break
+		}
+	}
 	markExplicit := func(parameterName string) {
 		if params.ExplicitParameters != nil {
 			explicit := false
@@ -1323,7 +1332,7 @@ func (installer *Installer) setScriptParams(scriptInfo *script.ScriptInfo, param
 			manifestKey := strings.NewReplacer("-", "_", ".", "_").Replace(strings.ToLower(parameter.Name))
 			parameterKeyCompact := strings.ReplaceAll(parameterKey, "_", "")
 			manifestKeyCompact := strings.ReplaceAll(manifestKey, "_", "")
-			aliasMatch := parameterKey == "port" && strings.HasSuffix(manifestKey, "_port")
+			aliasMatch := parameterKey == "port" && manifestKey == primaryPortParameter
 			if (parameterKey == manifestKey || parameterKeyCompact == manifestKeyCompact || aliasMatch) && value != "" {
 				// firewalld uses panel-port=0 as the form-level sentinel for
 				// "use the Panel's configured listener". The manifest exposes

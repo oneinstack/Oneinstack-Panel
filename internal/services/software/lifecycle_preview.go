@@ -145,7 +145,31 @@ func resolveLifecyclePackage(
 		}
 		return pkg, nil
 	}
-	return registry.ResolveInstalled(ctx, component, version, action)
+	pkg, err := registry.ResolveInstalled(ctx, component, version, action)
+	if err != nil || lifecyclePreviewContractComplete(pkg, action) {
+		return pkg, err
+	}
+
+	// A verified cache may contain an older package whose scripts support the
+	// action but whose preview contract does not. Try the current published
+	// package before returning that stale contract; execution remains pinned to
+	// the package selected by this preview.
+	current, currentErr := registry.Resolve(ctx, component, version)
+	if currentErr == nil &&
+		scriptregistry.ComparePackageVersions(current.Manifest.Component.Version, pkg.Manifest.Component.Version) >= 0 {
+		if _, actionErr := current.Action(action); actionErr == nil && lifecyclePreviewContractComplete(current, action) {
+			return current, nil
+		}
+	}
+	return pkg, nil
+}
+
+func lifecyclePreviewContractComplete(pkg scriptregistry.Package, action string) bool {
+	if pkg.Manifest.Preview == nil {
+		return true
+	}
+	_, exists := pkg.Manifest.Preview.Rollback[strings.ToLower(strings.TrimSpace(action))]
+	return exists
 }
 
 func lifecyclePreviewFromPackage(

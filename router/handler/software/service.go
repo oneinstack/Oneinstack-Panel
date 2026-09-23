@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -442,6 +443,13 @@ func ListComponentServiceConfigurationHistory(c *gin.Context) {
 		pageSize,
 	)
 	if err != nil {
+		log.Printf(
+			"read component configuration history failed component=%s page=%d pageSize=%d: %v",
+			definition.Component,
+			page,
+			pageSize,
+			err,
+		)
 		core.HandleError(c, core.WrapError(err, core.ErrInternalError, "读取组件配置历史失败"))
 		return
 	}
