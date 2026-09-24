@@ -425,8 +425,13 @@ func prepareManagedComponentPurge(ctx context.Context) ([]managedPurgeComponent,
 			}
 			for parameterKey, parameterValue := range ownership.Parameters {
 				if existing := strings.TrimSpace(runtimeValues[parameterKey]); existing != "" && existing != parameterValue {
-					return nil, fmt.Errorf("managed %s ownership state disagrees for %s", component, parameterKey)
+					if managedPurgeParameterConflictIsUnsafe(parameterKey, existing, parameterValue) {
+						return nil, fmt.Errorf("managed %s ownership state disagrees for %s", component, parameterKey)
+					}
 				}
+				// The Panel ownership record is written after a successful managed
+				// action and is the best available value when a non-path runtime
+				// parameter has drifted in the database row.
 				runtimeValues[parameterKey] = parameterValue
 			}
 			ownedPaths = ownership.PurgePaths
@@ -446,7 +451,12 @@ func prepareManagedComponentPurge(ctx context.Context) ([]managedPurgeComponent,
 			}
 			for parameterKey, parameterValue := range supplemental {
 				if existing := strings.TrimSpace(runtimeValues[parameterKey]); existing != "" && existing != parameterValue {
-					return nil, fmt.Errorf("managed %s ownership state disagrees for %s", component, parameterKey)
+					if managedPurgeParameterConflictIsUnsafe(parameterKey, existing, parameterValue) {
+						return nil, fmt.Errorf("managed %s ownership state disagrees for %s", component, parameterKey)
+					}
+					// Keep the Panel database/ownership value ahead of legacy
+					// supplemental scalar state when only a non-path value differs.
+					continue
 				}
 				runtimeValues[parameterKey] = parameterValue
 			}
@@ -940,10 +950,22 @@ func mergeManagedOwnershipParameter(parameters map[string]string, key, value, co
 		normalized = "component-state-dir"
 	}
 	if existing := strings.TrimSpace(parameters[normalized]); existing != "" && existing != value {
-		return fmt.Errorf("managed %s ownership state disagrees for %s", component, normalized)
+		if managedPurgeParameterConflictIsUnsafe(normalized, existing, value) {
+			return fmt.Errorf("managed %s ownership state disagrees for %s", component, normalized)
+		}
+		return nil
 	}
 	parameters[normalized] = value
 	return nil
+}
+
+// A stale scalar parameter must not block Panel removal, but disagreement on a
+// filesystem path can change the purge scope. Keep rejecting those conflicts.
+func managedPurgeParameterConflictIsUnsafe(name, left, right string) bool {
+	if componentstate.IsStateRootParameter(name) || componentstate.IsLegacyPurgeParameter(name) {
+		return true
+	}
+	return filepath.IsAbs(strings.TrimSpace(left)) || filepath.IsAbs(strings.TrimSpace(right))
 }
 
 func readSupplementalManagedState(stateDir, expectedComponent string) (map[string]string, string, error) {
