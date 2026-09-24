@@ -25,6 +25,9 @@ jobs:
       - name: Resolve automatic release tag
         id: release
         shell: bash
+        env:
+          CENTER_RELEASE_URL: ${{ secrets.CENTER_RELEASE_URL }}
+          CENTER_RELEASE_TOKEN: ${{ secrets.CENTER_RELEASE_TOKEN }}
         run: |
           readonly start_major=1
           readonly start_minor=1
@@ -77,6 +80,48 @@ jobs:
                 latest_patch="${parsed_patch}"
               fi
             done < <(git tag --list)
+
+            if [[ -z "${CENTER_RELEASE_URL}" || -z "${CENTER_RELEASE_TOKEN}" ]]; then
+              echo "::warning::Center release URL or token is not configured; using Git tags."
+            elif [[ "${CENTER_RELEASE_URL}" != https://* ]]; then
+              echo "::warning::Center release URL must use HTTPS; using Git tags."
+            else
+              center_temp_dir="$(mktemp -d "${RUNNER_TEMP:-/tmp}/panel-center-version.XXXXXX")"
+              center_curl_config="${center_temp_dir}/curl.conf"
+              center_response_file="${center_temp_dir}/releases.json"
+              trap 'rm -f -- "${center_curl_config}" "${center_response_file}"; rmdir -- "${center_temp_dir}"' EXIT
+              chmod 0700 "${center_temp_dir}"
+              printf 'silent\nfail\nconnect-timeout = 5\nmax-time = 15\nheader = "Authorization: Bearer %s"\n' \
+                "${CENTER_RELEASE_TOKEN}" > "${center_curl_config}"
+              chmod 0600 "${center_curl_config}"
+
+              if center_http_code="$(curl --config "${center_curl_config}" \
+                --output "${center_response_file}" --write-out '%{http_code}' \
+                "${CENTER_RELEASE_URL%/}/v1/admin/panel/releases")"; then
+                if jq -e '(.releases | type == "array") and all(.releases[]; type == "object" and (.version | type == "string"))' \
+                  "${center_response_file}" >/dev/null 2>&1; then
+                  git_latest_value="${latest_value}"
+                  while IFS= read -r version; do
+                    if parse_release_tag "${version}" && (( parsed_value >= start_value && parsed_value > latest_value )); then
+                      latest_value="${parsed_value}"
+                      latest_major="${parsed_major}"
+                      latest_minor="${parsed_minor}"
+                      latest_patch="${parsed_patch}"
+                    fi
+                  done < <(jq -r '.releases[].version' "${center_response_file}")
+                  if (( latest_value > git_latest_value )); then
+                    echo "Center release v${latest_major}.${latest_minor}.${latest_patch} is the next-version base."
+                  else
+                    echo "Center has no higher stable release; using Git tag base."
+                  fi
+                else
+                  echo "::warning::Center release response is invalid; using Git tags."
+                fi
+              else
+                center_curl_status=$?
+                echo "::warning::Center query failed (curl exit ${center_curl_status}, HTTP ${center_http_code:-unknown}); using Git tags."
+              fi
+            fi
 
             if (( latest_value < start_value )); then
               release_tag="v${start_major}.${start_minor}.${start_patch}"
