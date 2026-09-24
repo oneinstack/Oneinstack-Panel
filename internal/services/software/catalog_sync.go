@@ -73,26 +73,40 @@ func StartCatalogSync() {
 	if !app.ONE_CONFIG.ScriptCenter.Enabled {
 		return
 	}
-	syncOnce := func() {
+	interval := time.Duration(app.ONE_CONFIG.ScriptCenter.CatalogSyncIntervalMinutes) * time.Minute
+	if interval <= 0 {
+		interval = 15 * time.Minute
+	}
+	retryDelay := time.Minute
+	timer := time.NewTimer(0)
+	defer timer.Stop()
+	for {
+		<-timer.C
 		timeout := time.Duration(app.ONE_CONFIG.ScriptCenter.RequestTimeoutSeconds+5) * time.Second
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
-		defer cancel()
 		status, syncErr := manager.Sync(ctx)
+		cancel()
 		if syncErr != nil {
+			wait := retryDelay
+			if wait > interval {
+				wait = interval
+			}
 			log.Printf(
 				"同步 Center 软件目录失败，继续使用本地快照 mode=%s revision=%s: %v",
 				status.Mode,
 				status.Revision,
 				syncErr,
 			)
+			if retryDelay < interval {
+				retryDelay *= 2
+				if retryDelay > interval {
+					retryDelay = interval
+				}
+			}
+			timer.Reset(wait)
+			continue
 		}
-	}
-	syncOnce()
-	ticker := time.NewTicker(
-		time.Duration(app.ONE_CONFIG.ScriptCenter.CatalogSyncIntervalMinutes) * time.Minute,
-	)
-	defer ticker.Stop()
-	for range ticker.C {
-		syncOnce()
+		retryDelay = time.Minute
+		timer.Reset(interval)
 	}
 }
