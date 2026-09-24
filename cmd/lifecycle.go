@@ -276,6 +276,7 @@ func runCLIUninstall() error {
 	}
 
 	var purgePlan []managedPurgeComponent
+	var purgeFailures []managedPurgeFailure
 	if uninstallPurge {
 		if err := app.Initialize(); err != nil {
 			return fmt.Errorf("%s: %w", cliLifecycleText(
@@ -284,7 +285,7 @@ func runCLIUninstall() error {
 			), err)
 		}
 		var err error
-		purgePlan, err = prepareManagedComponentPurge(context.Background())
+		purgePlan, _, err = prepareManagedComponentPurge(context.Background())
 		if err != nil {
 			return err
 		}
@@ -298,7 +299,8 @@ func runCLIUninstall() error {
 		// Close the small window between the first read-only preflight and
 		// stopping the Panel service. A just-finished install must be included in
 		// the purge plan instead of becoming a new orphan.
-		purgePlan, err = prepareManagedComponentPurge(context.Background())
+		var preparationFailures []managedPurgeFailure
+		purgePlan, preparationFailures, err = prepareManagedComponentPurge(context.Background())
 		if err != nil {
 			if restoreErr := restorePanelAfterFailedPurge(); restoreErr != nil {
 				return fmt.Errorf("%w; %s: %v", err, cliLifecycleText(
@@ -308,7 +310,9 @@ func runCLIUninstall() error {
 			}
 			return err
 		}
-		if err := executeManagedComponentPurge(context.Background(), purgePlan); err != nil {
+		purgeFailures = mergeManagedPurgeFailures(nil, preparationFailures...)
+		executionFailures, err := executeManagedComponentPurge(context.Background(), purgePlan)
+		if err != nil {
 			if restoreErr := restorePanelAfterFailedPurge(); restoreErr != nil {
 				return fmt.Errorf("%w; %s: %v", err, cliLifecycleText(
 					"restoring Panel service also failed",
@@ -317,6 +321,7 @@ func runCLIUninstall() error {
 			}
 			return err
 		}
+		purgeFailures = mergeManagedPurgeFailures(purgeFailures, executionFailures...)
 	}
 	for _, serviceFile := range serviceFiles {
 		if err := os.Remove(serviceFile); err != nil && !os.IsNotExist(err) {
@@ -336,10 +341,20 @@ func runCLIUninstall() error {
 		if err := os.RemoveAll(basePath); err != nil {
 			return fmt.Errorf("purge Panel data: %w", err)
 		}
-		fmt.Println(cliLifecycleText(
-			"OneinStack Panel, managed components, and owned data were permanently removed.",
-			"OneinStack Panel、受管组件及其所有权范围内的数据已永久删除。",
-		))
+		if len(purgeFailures) == 0 {
+			fmt.Println(cliLifecycleText(
+				"OneinStack Panel, managed components, and owned data were permanently removed.",
+				"OneinStack Panel、受管组件及其所有权范围内的数据已永久删除。",
+			))
+		} else {
+			fmt.Println(cliLifecycleText(
+				"OneinStack Panel was permanently removed, but some managed component cleanup failed. Their remaining owned paths were retained:",
+				"OneinStack Panel 已永久卸载，但部分受管组件清理失败；这些组件剩余的所有权路径已保留：",
+			))
+			for _, failure := range purgeFailures {
+				fmt.Printf("  - %s %s [%s]\n", failure.Component, failure.Version, failure.Code)
+			}
+		}
 	} else {
 		if err := os.Remove(filepath.Join(basePath, "one")); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("remove Panel binary: %w", err)
@@ -366,25 +381,105 @@ type managedPurgeComponent struct {
 	InstallTime  time.Time
 }
 
-func prepareManagedComponentPurge(ctx context.Context) ([]managedPurgeComponent, error) {
+type managedPurgeFailure struct {
+	Component string
+	Version   string
+	Code      string
+}
+
+func mergeManagedPurgeFailures(existing []managedPurgeFailure, additions ...managedPurgeFailure) []managedPurgeFailure {
+	result := append([]managedPurgeFailure(nil), existing...)
+	seen := make(map[string]bool, len(result)+len(additions))
+	for _, failure := range result {
+		seen[failure.Component+"\x00"+failure.Version+"\x00"+failure.Code] = true
+	}
+	for _, failure := range additions {
+		if !validManagedComponentName(failure.Component) {
+			failure.Component = "managed-component"
+		}
+		if !validManagedVersion(failure.Version) {
+			failure.Version = "unknown-version"
+		}
+		if !validManagedPurgeFailureCode(failure.Code) {
+			failure.Code = "PURGE_FAILED"
+		}
+		key := failure.Component + "\x00" + failure.Version + "\x00" + failure.Code
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		result = append(result, failure)
+	}
+	return result
+}
+
+func validManagedPurgeFailureCode(value string) bool {
+	if value == "" || len(value) > 64 {
+		return false
+	}
+	for _, character := range value {
+		if (character < 'a' || character > 'z') &&
+			(character < 'A' || character > 'Z') &&
+			(character < '0' || character > '9') && character != '_' && character != '-' {
+			return false
+		}
+	}
+	return true
+}
+
+func filterUniqueManagedPurgeKeys(plans []managedPurgeComponent) ([]managedPurgeComponent, []managedPurgeFailure) {
+	owners := make(map[string]map[string]managedPurgeComponent)
+	for _, plan := range plans {
+		if owners[plan.Key] == nil {
+			owners[plan.Key] = make(map[string]managedPurgeComponent)
+		}
+		owners[plan.Key][plan.Component] = plan
+	}
+	conflicted := make(map[string]bool)
+	failures := make([]managedPurgeFailure, 0)
+	for _, components := range owners {
+		if len(components) < 2 {
+			continue
+		}
+		for component, plan := range components {
+			conflicted[component] = true
+			failures = mergeManagedPurgeFailures(failures, managedPurgeFailure{
+				Component: component,
+				Version:   plan.Version,
+				Code:      "COMPONENT_KEY_CONFLICT",
+			})
+		}
+	}
+	filtered := make([]managedPurgeComponent, 0, len(plans))
+	for _, plan := range plans {
+		if conflicted[plan.Component] {
+			continue
+		}
+		filtered = append(filtered, plan)
+	}
+	return filtered, failures
+}
+
+func prepareManagedComponentPurge(ctx context.Context) ([]managedPurgeComponent, []managedPurgeFailure, error) {
 	database := app.DB()
 	if database == nil {
-		return nil, errors.New(cliLifecycleText(
+		return nil, nil, errors.New(cliLifecycleText(
 			"Panel database is unavailable; refusing to purge managed components",
 			"Panel 数据库不可用，拒绝清理受管组件",
 		))
 	}
 	if err := ensureNoActiveManagedTasks(database); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	var rows []models.Software
 	if err := database.Where("installed = ?", true).
 		Order("install_time DESC, id DESC").
 		Find(&rows).Error; err != nil {
-		return nil, fmt.Errorf("list installed managed components: %w", err)
+		return nil, nil, fmt.Errorf("list installed managed components: %w", err)
 	}
 	plans := make([]managedPurgeComponent, 0, len(rows))
+	failures := make([]managedPurgeFailure, 0)
 	seen := make(map[string]bool, len(rows))
 	for _, row := range rows {
 		key := strings.ToLower(strings.TrimSpace(row.Key))
@@ -392,25 +487,39 @@ func prepareManagedComponentPurge(ctx context.Context) ([]managedPurgeComponent,
 		if component == "" {
 			component = key
 		}
+		if component != "" && seen[component] {
+			continue
+		}
+		if component != "" {
+			seen[component] = true
+		}
 		version := strings.TrimSpace(row.InstallVersion)
 		if version == "" {
 			version = strings.TrimSpace(row.Version)
 		}
-		if key == "" || component == "" || version == "" {
-			return nil, fmt.Errorf("%s", cliLifecycleText(
-				"installed component metadata is incomplete; refusing destructive purge",
-				"已安装组件元数据不完整，拒绝执行破坏性清理",
-			))
-		}
-		if seen[component] {
+		if key == "" || !validManagedComponentName(component) || version == "" {
+			failureComponent := component
+			if failureComponent == "" {
+				failureComponent = key
+			}
+			if !validManagedComponentName(failureComponent) {
+				failureComponent = "unknown-component"
+			}
+			failures = mergeManagedPurgeFailures(failures, managedPurgeFailure{
+				Component: failureComponent,
+				Version:   version,
+				Code:      "COMPONENT_METADATA_INCOMPLETE",
+			})
 			continue
 		}
-		seen[component] = true
 		stateRoot := "/var/lib/oneinstack/components"
 		runtimeValues := make(map[string]string)
 		if strings.TrimSpace(row.RuntimeParamsJSON) != "" {
 			if err := json.Unmarshal([]byte(row.RuntimeParamsJSON), &runtimeValues); err != nil {
-				return nil, fmt.Errorf("decode %s runtime ownership state: %w", component, err)
+				failures = mergeManagedPurgeFailures(failures, managedPurgeFailure{
+					Component: component, Version: version, Code: "RUNTIME_STATE_INVALID",
+				})
+				continue
 			}
 			runtimeValues = canonicalizePurgeOwnership(runtimeValues)
 			if value := strings.TrimSpace(runtimeValues["component-state-dir"]); value != "" {
@@ -418,15 +527,20 @@ func prepareManagedComponentPurge(ctx context.Context) ([]managedPurgeComponent,
 			}
 		}
 		ownedPaths := []string(nil)
+		componentStateValid := true
 		ownership, ownershipErr := componentstate.Read(filepath.Join(filepath.Clean(stateRoot), component))
 		if ownershipErr == nil {
 			if ownership.Component != component || ownership.SoftwareVersion != version {
-				return nil, fmt.Errorf("managed %s database and ownership state disagree", component)
+				failures = mergeManagedPurgeFailures(failures, managedPurgeFailure{
+					Component: component, Version: version, Code: "OWNERSHIP_STATE_CONFLICT",
+				})
+				continue
 			}
 			for parameterKey, parameterValue := range ownership.Parameters {
 				if existing := strings.TrimSpace(runtimeValues[parameterKey]); existing != "" && existing != parameterValue {
 					if managedPurgeParameterConflictIsUnsafe(parameterKey, existing, parameterValue) {
-						return nil, fmt.Errorf("managed %s ownership state disagrees for %s", component, parameterKey)
+						componentStateValid = false
+						break
 					}
 				}
 				// The Panel ownership record is written after a successful managed
@@ -434,25 +548,41 @@ func prepareManagedComponentPurge(ctx context.Context) ([]managedPurgeComponent,
 				// parameter has drifted in the database row.
 				runtimeValues[parameterKey] = parameterValue
 			}
+			if !componentStateValid {
+				failures = mergeManagedPurgeFailures(failures, managedPurgeFailure{
+					Component: component, Version: version, Code: "OWNERSHIP_STATE_CONFLICT",
+				})
+				continue
+			}
 			ownedPaths = ownership.PurgePaths
 		} else if !os.IsNotExist(ownershipErr) {
-			return nil, fmt.Errorf("read %s Panel ownership state: %w", component, ownershipErr)
+			failures = mergeManagedPurgeFailures(failures, managedPurgeFailure{
+				Component: component, Version: version, Code: "OWNERSHIP_STATE_INVALID",
+			})
+			continue
 		}
 		supplemental, recordedVersion, supplementalErr := readSupplementalManagedState(
 			filepath.Join(filepath.Clean(stateRoot), component),
 			component,
 		)
 		if supplementalErr != nil && !os.IsNotExist(supplementalErr) {
-			return nil, supplementalErr
+			failures = mergeManagedPurgeFailures(failures, managedPurgeFailure{
+				Component: component, Version: version, Code: "SUPPLEMENTAL_STATE_INVALID",
+			})
+			continue
 		}
 		if supplementalErr == nil {
 			if recordedVersion != "" && recordedVersion != version {
-				return nil, fmt.Errorf("managed %s database and component state versions disagree", component)
+				failures = mergeManagedPurgeFailures(failures, managedPurgeFailure{
+					Component: component, Version: version, Code: "COMPONENT_VERSION_CONFLICT",
+				})
+				continue
 			}
 			for parameterKey, parameterValue := range supplemental {
 				if existing := strings.TrimSpace(runtimeValues[parameterKey]); existing != "" && existing != parameterValue {
 					if managedPurgeParameterConflictIsUnsafe(parameterKey, existing, parameterValue) {
-						return nil, fmt.Errorf("managed %s ownership state disagrees for %s", component, parameterKey)
+						componentStateValid = false
+						break
 					}
 					// Keep the Panel database/ownership value ahead of legacy
 					// supplemental scalar state when only a non-path value differs.
@@ -460,22 +590,33 @@ func prepareManagedComponentPurge(ctx context.Context) ([]managedPurgeComponent,
 				}
 				runtimeValues[parameterKey] = parameterValue
 			}
+			if !componentStateValid {
+				failures = mergeManagedPurgeFailures(failures, managedPurgeFailure{
+					Component: component, Version: version, Code: "OWNERSHIP_STATE_CONFLICT",
+				})
+				continue
+			}
 		}
 		plan, err := buildManagedPurgePlan(key, component, version, stateRoot, runtimeValues, ownedPaths)
 		if err != nil {
-			return nil, err
+			failures = mergeManagedPurgeFailures(failures, managedPurgeFailure{
+				Component: component, Version: version, Code: "OWNED_PATH_INVALID",
+			})
+			continue
 		}
 		plan.InstallTime = row.InstallTime
 		plans = append(plans, plan)
 	}
 	orphanPlans, err := discoverOrphanManagedComponentState(database, plans)
 	if err != nil {
-		return nil, err
+		failures = mergeManagedPurgeFailures(failures, managedPurgeFailure{
+			Component: "orphan-component-scan", Code: "ORPHAN_STATE_DISCOVERY_FAILED",
+		})
+	} else {
+		plans = append(plans, orphanPlans...)
 	}
-	plans = append(plans, orphanPlans...)
-	if err := validateUniqueManagedPurgeKeys(plans); err != nil {
-		return nil, err
-	}
+	plans, duplicateFailures := filterUniqueManagedPurgeKeys(plans)
+	failures = mergeManagedPurgeFailures(failures, duplicateFailures...)
 	sort.SliceStable(plans, func(i, j int) bool {
 		if !plans[i].InstallTime.Equal(plans[j].InstallTime) {
 			return plans[i].InstallTime.After(plans[j].InstallTime)
@@ -483,8 +624,8 @@ func prepareManagedComponentPurge(ctx context.Context) ([]managedPurgeComponent,
 		return plans[i].Component < plans[j].Component
 	})
 	installer := softwareService.NewInstaller()
-	for index := range plans {
-		plan := plans[index]
+	resolvedPlans := make([]managedPurgeComponent, 0, len(plans))
+	for _, plan := range plans {
 		parameters := clonePurgeParameters(plan.Parameters)
 		parameters["data-policy"] = "delete"
 		parameters["delete-data-confirm"] = "true"
@@ -494,7 +635,10 @@ func prepareManagedComponentPurge(ctx context.Context) ([]managedPurgeComponent,
 		}
 		resolvedValues, resolvedPaths, err := installer.ResolveUninstallOwnership(ctx, params)
 		if err != nil {
-			return nil, fmt.Errorf("preflight managed component %s uninstall: %w", plan.Component, err)
+			failures = mergeManagedPurgeFailures(failures, managedPurgeFailure{
+				Component: plan.Component, Version: plan.Version, Code: "UNINSTALL_PREFLIGHT_FAILED",
+			})
+			continue
 		}
 		for key, value := range resolvedValues {
 			if strings.TrimSpace(plan.Parameters[key]) == "" {
@@ -521,33 +665,38 @@ func prepareManagedComponentPurge(ctx context.Context) ([]managedPurgeComponent,
 			ownedPaths,
 		)
 		if err != nil {
-			return nil, err
+			failures = mergeManagedPurgeFailures(failures, managedPurgeFailure{
+				Component: plan.Component, Version: plan.Version, Code: "OWNED_PATH_INVALID",
+			})
+			continue
 		}
 		rebuilt.AdoptRowID = plan.AdoptRowID
 		rebuilt.InstallTime = plan.InstallTime
-		plans[index] = rebuilt
+		resolvedPlans = append(resolvedPlans, rebuilt)
 	}
-	return plans, nil
+	return resolvedPlans, failures, nil
 }
 
-func executeManagedComponentPurge(ctx context.Context, plans []managedPurgeComponent) error {
+func executeManagedComponentPurge(ctx context.Context, plans []managedPurgeComponent) ([]managedPurgeFailure, error) {
 	database := app.DB()
 	if err := ensureNoActiveManagedTasks(database); err != nil {
-		return err
+		return nil, err
 	}
 	if len(plans) == 0 {
-		return nil
+		return nil, nil
 	}
-	if err := adoptOrphanManagedComponents(database, plans); err != nil {
-		return err
+	plans, adoptionFailures, err := adoptOrphanManagedComponents(database, plans)
+	if err != nil {
+		return nil, err
 	}
+	failures := mergeManagedPurgeFailures(nil, adoptionFailures...)
 	requestedBy, err := purgeRequestedBy()
 	if err != nil {
-		return err
+		return failures, err
 	}
 	manager, err := softwareHandler.GetTaskManagerForLocalLifecycle()
 	if err != nil {
-		return fmt.Errorf("initialize managed component task runner: %w", err)
+		return failures, fmt.Errorf("initialize managed component task runner: %w", err)
 	}
 	managerStopped := false
 	defer func() {
@@ -573,32 +722,51 @@ func executeManagedComponentPurge(ctx context.Context, plans []managedPurgeCompo
 			requestedBy,
 		)
 		if err != nil {
-			return fmt.Errorf("submit %s purge task: %w", plan.Component, err)
+			failures = mergeManagedPurgeFailures(failures, managedPurgeFailure{
+				Component: plan.Component, Version: plan.Version, Code: "UNINSTALL_SUBMIT_FAILED",
+			})
+			continue
+		}
+		if task == nil {
+			failures = mergeManagedPurgeFailures(failures, managedPurgeFailure{
+				Component: plan.Component, Version: plan.Version, Code: "UNINSTALL_SUBMIT_FAILED",
+			})
+			continue
 		}
 		completed, err := waitForPurgeTask(ctx, manager, task.ID)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if completed.Status != models.SoftwareTaskStatusSucceeded {
-			message := strings.TrimSpace(completed.ErrorMessage)
-			if message == "" {
-				message = strings.TrimSpace(completed.Message)
+			code := strings.TrimSpace(completed.ErrorCode)
+			if !validManagedPurgeFailureCode(code) {
+				code = "UNINSTALL_FAILED"
 			}
-			return fmt.Errorf("managed component %s purge failed [%s]: %s", plan.Component, completed.ErrorCode, message)
+			failures = mergeManagedPurgeFailures(failures, managedPurgeFailure{
+				Component: plan.Component,
+				Version:   plan.Version,
+				Code:      code,
+			})
+			continue
 		}
 		for _, ownedPath := range plan.CleanupPaths {
 			if err := os.RemoveAll(ownedPath); err != nil {
-				return fmt.Errorf("remove %s owned path %s: %w", plan.Component, ownedPath, err)
+				failures = mergeManagedPurgeFailures(failures, managedPurgeFailure{
+					Component: plan.Component,
+					Version:   plan.Version,
+					Code:      "OWNED_PATH_CLEANUP_FAILED",
+				})
+				break
 			}
 		}
 	}
 	stopContext, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := manager.Stop(stopContext); err != nil {
-		return fmt.Errorf("stop managed component task runner: %w", err)
+		return nil, fmt.Errorf("stop managed component task runner: %w", err)
 	}
 	managerStopped = true
-	return nil
+	return failures, nil
 }
 
 func ensureNoActiveManagedTasks(database *gorm.DB) error {
@@ -1132,12 +1300,18 @@ func readManagedInstallParameters(path string) (map[string]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	scanner := bufio.NewScanner(strings.NewReader(string(content)))
-	for scanner.Scan() {
-		line := scanner.Text()
+	// This file is legacy supplemental state. Panel database and ownership
+	// records are the primary sources, so one damaged line must not block an
+	// otherwise safe uninstall. Parse valid assignments independently and
+	// ignore malformed lines; never evaluate the contents as shell code.
+	for _, line := range strings.Split(string(content), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
 		key, value, found := strings.Cut(line, "=")
 		if !found || !validManagedParameterKey(key) || strings.ContainsAny(value, "\x00\r\n") {
-			return nil, errors.New("install-parameters contains an invalid assignment")
+			continue
 		}
 		compactKey := strings.ToUpper(strings.TrimSpace(key))
 		if strings.Contains(compactKey, "PASSWORD") || strings.Contains(compactKey, "SECRET") ||
@@ -1147,9 +1321,6 @@ func readManagedInstallParameters(path string) (map[string]string, error) {
 		}
 		canonical := strings.ToLower(strings.ReplaceAll(compactKey, "_", "-"))
 		result[canonical] = strings.TrimSpace(value)
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, err
 	}
 	return result, nil
 }
@@ -1171,48 +1342,58 @@ func validManagedParameterKey(value string) bool {
 	return true
 }
 
-func adoptOrphanManagedComponents(database *gorm.DB, plans []managedPurgeComponent) error {
+func adoptOrphanManagedComponents(database *gorm.DB, plans []managedPurgeComponent) ([]managedPurgeComponent, []managedPurgeFailure, error) {
 	if err := validateUniqueManagedPurgeKeys(plans); err != nil {
-		return err
+		return nil, nil, err
 	}
-	return database.Transaction(func(tx *gorm.DB) error {
-		for _, plan := range plans {
-			if plan.AdoptRowID == 0 {
-				continue
-			}
-			runtimeJSON, err := json.Marshal(plan.Parameters)
-			if err != nil {
-				return fmt.Errorf("encode %s orphan ownership state: %w", plan.Component, err)
-			}
-			if err := tx.Model(&models.Software{}).
-				Where("`key` = ? AND id <> ?", plan.Key, plan.AdoptRowID).
-				Updates(map[string]any{
-					"installed":       false,
-					"install_version": "",
-					"runtime_params":  "",
-					"is_update":       false,
-				}).Error; err != nil {
-				return err
-			}
-			result := tx.Model(&models.Software{}).
-				Where("id = ? AND component = ?", plan.AdoptRowID, plan.Component).
-				Updates(map[string]any{
-					"installed":       true,
-					"install_version": plan.Version,
-					"runtime_params":  string(runtimeJSON),
-					"status":          models.Soft_Status_Suc,
-					"is_update":       false,
-					"install_time":    time.Now(),
-				})
-			if result.Error != nil {
-				return result.Error
-			}
-			if result.RowsAffected != 1 {
-				return fmt.Errorf("adopt managed orphan %s: catalog row changed", plan.Component)
-			}
+	ready := make([]managedPurgeComponent, 0, len(plans))
+	failures := make([]managedPurgeFailure, 0)
+	for _, plan := range plans {
+		if plan.AdoptRowID == 0 {
+			ready = append(ready, plan)
+			continue
 		}
-		return nil
-	})
+		runtimeJSON, err := json.Marshal(plan.Parameters)
+		if err == nil {
+			err = database.Transaction(func(tx *gorm.DB) error {
+				if err := tx.Model(&models.Software{}).
+					Where("`key` = ? AND id <> ?", plan.Key, plan.AdoptRowID).
+					Updates(map[string]any{
+						"installed":       false,
+						"install_version": "",
+						"runtime_params":  "",
+						"is_update":       false,
+					}).Error; err != nil {
+					return err
+				}
+				result := tx.Model(&models.Software{}).
+					Where("id = ? AND component = ?", plan.AdoptRowID, plan.Component).
+					Updates(map[string]any{
+						"installed":       true,
+						"install_version": plan.Version,
+						"runtime_params":  string(runtimeJSON),
+						"status":          models.Soft_Status_Suc,
+						"is_update":       false,
+						"install_time":    time.Now(),
+					})
+				if result.Error != nil {
+					return result.Error
+				}
+				if result.RowsAffected != 1 {
+					return fmt.Errorf("managed orphan catalog row changed")
+				}
+				return nil
+			})
+		}
+		if err != nil {
+			failures = mergeManagedPurgeFailures(failures, managedPurgeFailure{
+				Component: plan.Component, Version: plan.Version, Code: "ORPHAN_ADOPTION_FAILED",
+			})
+			continue
+		}
+		ready = append(ready, plan)
+	}
+	return ready, failures, nil
 }
 
 func printManagedPurgePlan(plans []managedPurgeComponent) {
