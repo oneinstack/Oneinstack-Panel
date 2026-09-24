@@ -94,20 +94,22 @@ type ComponentConnection struct {
 }
 
 type ComponentRuntime struct {
-	Port        string `json:"port"`
-	BindAddress string `json:"bindAddress"`
-	SocketPath  string `json:"socketPath"`
-	InstallDir  string `json:"installDir"`
-	DataDir     string `json:"dataDir"`
-	LogDir      string `json:"logDir"`
-	RunUser     string `json:"runUser"`
-	RunGroup    string `json:"runGroup"`
-	ConfigFile  string `json:"configFile,omitempty"`
-	VhostDir    string `json:"vhostDir,omitempty"`
-	ServiceName string `json:"serviceName,omitempty"`
-	Version     string `json:"version,omitempty"`
-	JavaHome    string `json:"javaHome,omitempty"`
-	JDKVersion  string `json:"jdkVersion,omitempty"`
+	Port             string `json:"port"`
+	BindAddress      string `json:"bindAddress"`
+	SocketPath       string `json:"socketPath"`
+	InstallDir       string `json:"installDir"`
+	DataDir          string `json:"dataDir"`
+	LogDir           string `json:"logDir"`
+	RunUser          string `json:"runUser"`
+	RunGroup         string `json:"runGroup"`
+	InstallSource    string `json:"installSource,omitempty"`
+	DatabaseAgeHours string `json:"databaseAgeHours,omitempty"`
+	ConfigFile       string `json:"configFile,omitempty"`
+	VhostDir         string `json:"vhostDir,omitempty"`
+	ServiceName      string `json:"serviceName,omitempty"`
+	Version          string `json:"version,omitempty"`
+	JavaHome         string `json:"javaHome,omitempty"`
+	JDKVersion       string `json:"jdkVersion,omitempty"`
 	// RuntimeVersion is the explicit read-only runtime identity used by
 	// production database components. Version remains for compatibility with
 	// existing managed-configuration consumers.
@@ -1690,7 +1692,7 @@ func parseComponentConfiguration(
 	}
 	optional := make(map[string]struct{})
 	var runtime *ComponentRuntime
-	if definition.Component == "mysql" || definition.Component == "mariadb" || definition.Component == "mongodb" || definition.Component == "opensearch" || definition.Component == "php" || definition.Component == "firewalld" || definition.Component == "apache" || definition.Component == "openresty" || definition.Component == "caddy" || definition.Component == "adminer" || definition.Component == "tomcat" {
+	if definition.Component == "mysql" || definition.Component == "mariadb" || definition.Component == "mongodb" || definition.Component == "opensearch" || definition.Component == "php" || definition.Component == "firewalld" || definition.Component == "apache" || definition.Component == "openresty" || definition.Component == "caddy" || definition.Component == "adminer" || definition.Component == "tomcat" || definition.Component == "clamav" {
 		runtime = &ComponentRuntime{}
 		runtimeKeys := []string{"runtime.port", "runtime.bindAddress", "runtime.installDir", "runtime.dataDir", "runtime.logDir", "runtime.runUser", "runtime.runGroup"}
 		if definition.Component == "mariadb" {
@@ -1709,12 +1711,14 @@ func parseComponentConfiguration(
 			runtimeKeys = []string{"runtime.port", "runtime.bindAddress", "runtime.installDir", "runtime.dataDir", "runtime.logDir", "runtime.runUser", "runtime.runGroup", "runtime.configFile", "runtime.serviceName", "runtime.version", "runtime.javaHome", "runtime.jdkVersion"}
 		} else if definition.Component == "adminer" {
 			runtimeKeys = []string{"runtime.port", "runtime.bindAddress", "runtime.socketPath", "runtime.installDir", "runtime.configFile", "runtime.serviceName", "runtime.version", "runtime.packageVersion", "runtime.artifactSha256", "runtime.publicPath", "runtime.accessUrl", "runtime.webServer", "runtime.documentRoot", "runtime.phpVersion", "runtime.phpService"}
+		} else if definition.Component == "clamav" {
+			runtimeKeys = []string{"runtime.socketPath", "runtime.dataDir", "runtime.configFile", "runtime.serviceName", "runtime.runUser", "runtime.runGroup", "runtime.installSource", "runtime.version", "runtime.systemdState", "runtime.databaseAgeHours"}
 		}
 		for _, key := range runtimeKeys {
 			allowed[key] = struct{}{}
 		}
 	}
-	if definition.Component == "redis" || definition.Component == "mongodb" || definition.Component == "opensearch" {
+	if definition.Component == "redis" || definition.Component == "mongodb" || definition.Component == "opensearch" || definition.Component == "webdav" {
 		for _, key := range []string{
 			"connection.port",
 			"connection.bindAddress",
@@ -1790,6 +1794,8 @@ func parseComponentConfiguration(
 		runtime.LogDir = fields["runtime.logDir"]
 		runtime.RunUser = fields["runtime.runUser"]
 		runtime.RunGroup = fields["runtime.runGroup"]
+		runtime.InstallSource = fields["runtime.installSource"]
+		runtime.DatabaseAgeHours = fields["runtime.databaseAgeHours"]
 		runtime.ConfigFile = fields["runtime.configFile"]
 		runtime.VhostDir = fields["runtime.vhostDir"]
 		runtime.ServiceName = fields["runtime.serviceName"]
@@ -1918,7 +1924,7 @@ func parseComponentConfiguration(
 		}
 	}
 	var connection *ComponentConnection
-	if definition.Component == "redis" || definition.Component == "mongodb" || definition.Component == "opensearch" {
+	if definition.Component == "redis" || definition.Component == "mongodb" || definition.Component == "opensearch" || definition.Component == "webdav" {
 		connectionKeys := []string{
 			"connection.port",
 			"connection.bindAddress",
@@ -1942,6 +1948,8 @@ func parseComponentConfiguration(
 				usernameValid = mongodbUsernamePattern.MatchString(username)
 			} else if definition.Component == "opensearch" {
 				usernameValid = username == "admin"
+			} else if definition.Component == "webdav" {
+				usernameValid = mongodbUsernamePattern.MatchString(username)
 			}
 			if parseErr != nil || port < 1 || port > 65535 || strings.TrimSpace(fields["connection.bindAddress"]) == "" ||
 				!usernameValid {

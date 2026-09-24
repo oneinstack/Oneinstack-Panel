@@ -235,6 +235,7 @@ func builtinFrontendButtonDefinitions() []builtinButtonDefinition {
 		item("cluster.node.token.rotate", "轮换节点令牌"),
 		item("cluster.node.delete", "删除集群节点"),
 		item("cluster.policy.update", "修改集群策略"),
+		item("cluster.health.notification.update", "修改集群健康通知"),
 		item("cluster.node.diagnose", "执行节点诊断"),
 		item("cluster.node.lifecycle", "修改节点生命周期"),
 		item("cluster.batch.restart", "批量重启节点"),

@@ -251,15 +251,74 @@ func (m *Manager) enrichNode(node *models.ClusterNode) error {
 		node.LifecycleStatus = models.ClusterNodeLifecycleDisabled
 	}
 	node.EffectiveStatus = effectiveNodeStatus(*node)
-	node.EndpointAddressMismatch = endpointAddressMismatch(*node)
+	if !validClusterPublicKey(node.IdentityPublicKey) || node.AddressIdentityEndpoint != node.Endpoint {
+		node.AddressIdentityStatus = AddressIdentityPending
+		node.AddressIdentityCheckedAt = nil
+	}
+	node.EndpointAddressRelation = endpointAddressRelation(*node)
+	if node.AddressIdentityStatus == AddressIdentityVerified {
+		node.EndpointAddressRelation.Status = AddressIdentityVerified
+	} else if node.AddressIdentityStatus == AddressIdentityDifferentNode {
+		node.EndpointAddressRelation.Status = AddressIdentityDifferentNode
+	}
+	node.EndpointAddressMismatch = node.EndpointAddressRelation.Status == "likely_nat" || node.EndpointAddressRelation.Status == "mismatch" || node.EndpointAddressRelation.Status == AddressIdentityDifferentNode
 	node.MetricHealth = metricHealth(*node, policy)
 	return nil
 }
 
-func endpointAddressMismatch(node models.ClusterNode) bool {
-	configured := net.ParseIP(strings.TrimSpace(hostFromEndpoint(node.Endpoint)))
-	reported := net.ParseIP(strings.TrimSpace(node.IPAddress))
-	return configured != nil && reported != nil && !configured.Equal(reported)
+func endpointAddressRelation(node models.ClusterNode) models.ClusterNodeAddressRelation {
+	configuredHost := strings.TrimSpace(hostFromEndpoint(node.Endpoint))
+	reportedIP := strings.TrimSpace(node.IPAddress)
+	relation := models.ClusterNodeAddressRelation{
+		Status:         "unknown",
+		ConfiguredHost: configuredHost,
+		ReportedIP:     reportedIP,
+	}
+	if configuredHost == "" {
+		return relation
+	}
+
+	configured := net.ParseIP(configuredHost)
+	if configured == nil {
+		// A hostname is not compared with an interface IP without resolving it;
+		// resolution could produce a different answer later.
+		relation.Status = "not_comparable"
+		relation.ConfiguredScope = "hostname"
+		return relation
+	}
+	relation.ConfiguredScope = addressScope(configured)
+	reported := net.ParseIP(reportedIP)
+	if reported == nil {
+		return relation
+	}
+	relation.ReportedScope = addressScope(reported)
+	if configured.Equal(reported) {
+		relation.Status = "exact_match"
+		return relation
+	}
+	if relation.ConfiguredScope == "public" && relation.ReportedScope == "private" {
+		relation.Status = "likely_nat"
+		return relation
+	}
+	relation.Status = "mismatch"
+	return relation
+}
+
+func addressScope(ip net.IP) string {
+	switch {
+	case ip.IsLoopback():
+		return "loopback"
+	case ip.IsPrivate():
+		return "private"
+	case ip.IsLinkLocalUnicast():
+		return "link_local"
+	case ip.IsUnspecified():
+		return "unspecified"
+	case ip.IsGlobalUnicast():
+		return "public"
+	default:
+		return "reserved"
+	}
 }
 
 func hostFromEndpoint(endpoint string) string {

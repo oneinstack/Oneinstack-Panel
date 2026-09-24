@@ -23,8 +23,9 @@ import (
 
 type WebsiteDispatchInput struct {
 	WebsiteID      int64    `json:"websiteId"`
-	Strategy       string   `json:"strategy,omitempty"` // fixed, tag, least_load
+	Strategy       string   `json:"strategy,omitempty"` // fixed, group, tag, least_load
 	NodeIDs        []uint   `json:"nodeIds,omitempty"`
+	Groups         []string `json:"groups,omitempty"`
 	Tags           []string `json:"tags,omitempty"`
 	IdempotencyKey string   `json:"idempotencyKey,omitempty"`
 	IncludeContent bool     `json:"includeContent,omitempty"`
@@ -74,7 +75,13 @@ func (m *Manager) DispatchWebsite(input WebsiteDispatchInput) (WebsiteDispatchRe
 	if strategy == "" {
 		strategy = "least_load"
 	}
-	selected := selectNodes(nodes, strategy, input.NodeIDs, input.Tags)
+	if strategy == "group" && len(normalizeSelectionValues(input.Groups)) == 0 {
+		return WebsiteDispatchResult{}, errors.New("select at least one group")
+	}
+	if strategy == "tag" && len(normalizeSelectionValues(input.Tags)) == 0 {
+		return WebsiteDispatchResult{}, errors.New("select at least one tag")
+	}
+	selected := selectNodes(nodes, strategy, input.NodeIDs, input.Groups, input.Tags)
 	if len(selected) == 0 {
 		return WebsiteDispatchResult{}, errors.New("no eligible nodes found")
 	}
@@ -174,7 +181,7 @@ func packWebsiteContent(root string) ([]byte, error) {
 	return buffer.Bytes(), nil
 }
 
-func selectNodes(nodes []models.ClusterNode, strategy string, fixed []uint, tags []string) []models.ClusterNode {
+func selectNodes(nodes []models.ClusterNode, strategy string, fixed []uint, groups, tags []string) []models.ClusterNode {
 	if strategy == "fixed" && len(fixed) > 0 {
 		set := map[uint]bool{}
 		for _, id := range fixed {
@@ -188,10 +195,21 @@ func selectNodes(nodes []models.ClusterNode, strategy string, fixed []uint, tags
 		}
 		return out
 	}
-	if strategy == "tag" && len(tags) > 0 {
+	if strategy == "group" {
+		wanted := normalizeSelectionValues(groups)
 		out := make([]models.ClusterNode, 0)
 		for _, n := range nodes {
-			if matchesTags(n.Tags, tags) {
+			if matchesGroup(n.Group, wanted) {
+				out = append(out, n)
+			}
+		}
+		return out
+	}
+	if strategy == "tag" && len(tags) > 0 {
+		wanted := normalizeSelectionValues(tags)
+		out := make([]models.ClusterNode, 0)
+		for _, n := range nodes {
+			if matchesTags(n.Tags, wanted) {
 				out = append(out, n)
 			}
 		}
@@ -204,6 +222,31 @@ func selectNodes(nodes []models.ClusterNode, strategy string, fixed []uint, tags
 		return nodes[:1]
 	}
 	return nil
+}
+
+func normalizeSelectionValues(values []string) []string {
+	seen := make(map[string]bool, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		key := strings.ToLower(value)
+		if value == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		result = append(result, value)
+	}
+	return result
+}
+
+func matchesGroup(raw string, wanted []string) bool {
+	group := strings.ToLower(strings.TrimSpace(raw))
+	for _, value := range wanted {
+		if group == strings.ToLower(value) {
+			return true
+		}
+	}
+	return false
 }
 
 func matchesTags(raw string, wanted []string) bool {

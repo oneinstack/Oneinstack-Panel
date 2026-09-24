@@ -424,6 +424,14 @@ func (manager *Manager) deliver(ctx context.Context, event *models.MonitorAlertE
 	}
 }
 
+// DeliverRecordedEvent uses the existing encrypted channels and delivery log
+// for an event already persisted by another service in the same Panel DB.
+func (manager *Manager) DeliverRecordedEvent(ctx context.Context, event *models.MonitorAlertEvent) {
+	if manager != nil && event != nil && event.ID != 0 {
+		manager.deliver(ctx, event)
+	}
+}
+
 // NotifyTaskFailure records a one-shot operational alert and delivers it
 // through the same encrypted notification channels as threshold alerts.
 func (manager *Manager) NotifyTaskFailure(

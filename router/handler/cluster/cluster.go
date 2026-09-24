@@ -1,6 +1,7 @@
 package cluster
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -497,6 +498,62 @@ func CheckEndpoint(c *gin.Context) {
 	core.HandleSuccess(c, result)
 }
 
+func ChallengeIdentity(c *gin.Context) {
+	settings := cluster.GetAgentSettings()
+	if settings.Role != cluster.ClusterRoleNode || !settings.Enabled {
+		core.HandleErrorWithStatus(c, http.StatusNotFound, core.NewError(core.ErrNotFound, "节点不存在"))
+		return
+	}
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 512)
+	var input struct {
+		Nonce string `json:"nonce"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		core.HandleErrorWithStatus(c, http.StatusBadRequest, core.NewError(core.ErrInvalidParameter, "请求参数无效，请检查提交内容"))
+		return
+	}
+	signature, err := cluster.SignAddressChallenge(input.Nonce)
+	if errors.Is(err, cluster.ErrInvalidAddressChallenge) {
+		core.HandleErrorWithStatus(c, http.StatusBadRequest, core.NewError(core.ErrInvalidParameter, "请求参数无效，请检查提交内容"))
+		return
+	}
+	if err != nil {
+		core.HandleErrorWithStatus(c, http.StatusServiceUnavailable, core.NewError(core.ErrInternalError, "节点身份暂不可用，请稍后重试"))
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	core.HandleSuccess(c, gin.H{"signature": signature})
+}
+
+func VerifyNodeAddress(c *gin.Context) {
+	m, ok := manager(c)
+	if !ok {
+		return
+	}
+	id, ok := nodeID(c)
+	if !ok {
+		return
+	}
+	node, err := m.VerifyNodeAddress(c.Request.Context(), id)
+	if errors.Is(err, cluster.ErrNodeNotFound) {
+		core.HandleErrorWithStatus(c, http.StatusNotFound, core.NewError(core.ErrNotFound, "节点不存在"))
+		return
+	}
+	if err != nil {
+		core.HandleError(c, core.NewError(core.ErrInternalError, "地址身份验证失败，请稍后重试"))
+		return
+	}
+	core.HandleSuccess(c, node)
+}
+
+func scheduleNodeAddressVerification(m *cluster.Manager, id uint) {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		defer cancel()
+		_, _ = m.VerifyNodeAddress(ctx, id)
+	}()
+}
+
 func UpdateNode(c *gin.Context) {
 	m, ok := manager(c)
 	if !ok {
@@ -521,6 +578,9 @@ func UpdateNode(c *gin.Context) {
 		return
 	}
 	core.HandleSuccess(c, node)
+	if node.IdentityPublicKey != "" && node.AddressIdentityStatus == cluster.AddressIdentityPending {
+		scheduleNodeAddressVerification(m, node.ID)
+	}
 }
 
 func handleNodeMutationError(c *gin.Context, err error) {
@@ -595,6 +655,9 @@ func RegisterNode(c *gin.Context) {
 		return
 	}
 	core.HandleSuccess(c, gin.H{"nodeId": node.ID, "status": node.Status})
+	if node.IdentityPublicKey != "" {
+		scheduleNodeAddressVerification(m, node.ID)
+	}
 }
 
 func Heartbeat(c *gin.Context) {

@@ -62,6 +62,7 @@ func (a *Agent) Start(ctx context.Context) {
 
 func (a *Agent) run(ctx context.Context) {
 	registered := false
+	var lastHealthReport time.Time
 	if err := a.register(ctx); err != nil {
 		markAgentError(err)
 		fmt.Printf("cluster agent registration failed: %v\n", err)
@@ -95,6 +96,20 @@ func (a *Agent) run(ctx context.Context) {
 				fmt.Printf("cluster agent heartbeat failed: %v\n", err)
 			} else {
 				markAgentHeartbeat()
+			}
+			if registered && time.Since(lastHealthReport) >= 5*time.Minute {
+				lastHealthReport = time.Now()
+				go func() {
+					reportCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+					defer cancel()
+					if err := a.reportHealth(reportCtx); err != nil && ctx.Err() == nil {
+						if reportCtx.Err() != nil {
+							fmt.Printf("cluster health report timed out\n")
+						} else {
+							fmt.Printf("cluster health report failed: %v\n", err)
+						}
+					}
+				}()
 			}
 			if registered {
 				pending, err := a.resumeDeferredPanelUpdate(ctx)
@@ -241,7 +256,10 @@ func (a *Agent) executeTask(ctx context.Context, task *models.ClusterTask) (json
 func (a *Agent) register(ctx context.Context) error {
 	hostname, _ := os.Hostname()
 	snapshot, systemID, systemVersion, _ := collectHostSnapshot(ctx, a.collector)
-	payload := NodeRegistration{Token: a.cfg.Token, Hostname: hostname, SystemID: systemID, SystemVersion: systemVersion, Architecture: runtime.GOARCH, PanelVersion: buildinfo.Version, AgentVersion: buildinfo.Version, Capabilities: PanelUpdateCapabilities(), ServiceActions: a.currentServiceActions(ctx), HeartbeatIntervalSeconds: int(a.cfg.Interval / time.Second), HostSnapshot: snapshot}
+	payload := NodeRegistration{Token: a.cfg.Token, Hostname: hostname, SystemID: systemID, SystemVersion: systemVersion, Architecture: runtime.GOARCH, PanelVersion: buildinfo.Version, AgentVersion: buildinfo.Version, Capabilities: append(PanelUpdateCapabilities(), CapabilityClusterHealth), ServiceActions: a.currentServiceActions(ctx), HeartbeatIntervalSeconds: int(a.cfg.Interval / time.Second), HostSnapshot: snapshot}
+	if identity, err := loadClusterIdentity(); err == nil {
+		payload.IdentityPublicKey = clusterPublicKeyText(identity)
+	}
 	return a.post(ctx, "/cluster/agent/register", payload, nil)
 }
 
@@ -251,8 +269,18 @@ func (a *Agent) heartbeat(ctx context.Context) error {
 		return err
 	}
 	hostname, _ := os.Hostname()
-	payload := NodeHeartbeat{Token: a.cfg.Token, Hostname: hostname, PanelVersion: buildinfo.Version, AgentVersion: buildinfo.Version, Capabilities: PanelUpdateCapabilities(), ServiceActions: a.currentServiceActions(ctx), HeartbeatIntervalSeconds: int(a.cfg.Interval / time.Second), CPUPercent: snapshot.CPUPercent, MemoryPercent: snapshot.MemoryPercent, DiskPercent: snapshot.DiskPercent, NetworkRecvBPS: snapshot.NetworkRecvBPS, NetworkSendBPS: snapshot.NetworkSendBPS, UptimeSeconds: snapshot.UptimeSeconds, CPUTotalCores: snapshot.CPUTotalCores, CPUUsedCores: snapshot.CPUUsedCores, MemoryUsedBytes: snapshot.MemoryUsedBytes, MemoryTotalBytes: snapshot.MemoryTotalBytes, DiskUsedBytes: snapshot.DiskUsedBytes, DiskTotalBytes: snapshot.DiskTotalBytes, IPAddress: snapshot.IPAddress, SubnetMask: snapshot.SubnetMask, Gateway: snapshot.Gateway, MACAddress: snapshot.MACAddress, InterfaceName: snapshot.InterfaceName}
+	payload := NodeHeartbeat{Token: a.cfg.Token, Hostname: hostname, PanelVersion: buildinfo.Version, AgentVersion: buildinfo.Version, Capabilities: append(PanelUpdateCapabilities(), CapabilityClusterHealth), ServiceActions: a.currentServiceActions(ctx), HeartbeatIntervalSeconds: int(a.cfg.Interval / time.Second), CPUPercent: snapshot.CPUPercent, MemoryPercent: snapshot.MemoryPercent, DiskPercent: snapshot.DiskPercent, NetworkRecvBPS: snapshot.NetworkRecvBPS, NetworkSendBPS: snapshot.NetworkSendBPS, UptimeSeconds: snapshot.UptimeSeconds, CPUTotalCores: snapshot.CPUTotalCores, CPUUsedCores: snapshot.CPUUsedCores, MemoryUsedBytes: snapshot.MemoryUsedBytes, MemoryTotalBytes: snapshot.MemoryTotalBytes, DiskUsedBytes: snapshot.DiskUsedBytes, DiskTotalBytes: snapshot.DiskTotalBytes, IPAddress: snapshot.IPAddress, SubnetMask: snapshot.SubnetMask, Gateway: snapshot.Gateway, MACAddress: snapshot.MACAddress, InterfaceName: snapshot.InterfaceName}
 	return a.post(ctx, "/cluster/agent/heartbeat", payload, nil)
+}
+
+func (a *Agent) reportHealth(ctx context.Context) error {
+	items, err := CollectLocalHealth(ctx)
+	if err != nil {
+		return err
+	}
+	client := *a.client
+	client.Timeout = 40 * time.Second
+	return a.postWithClient(ctx, &client, "/cluster/agent/health", HealthReport{Version: 1, Items: items}, nil)
 }
 
 // currentServiceActions reports only services that are actually installed and
@@ -331,6 +359,10 @@ func schedulePanelRestart() {
 }
 
 func (a *Agent) post(ctx context.Context, path string, payload interface{}, output interface{}) error {
+	return a.postWithClient(ctx, a.client, path, payload, output)
+}
+
+func (a *Agent) postWithClient(ctx context.Context, client *http.Client, path string, payload interface{}, output interface{}) error {
 	var body []byte
 	var err error
 	if payload != nil {
@@ -347,7 +379,7 @@ func (a *Agent) post(ctx context.Context, path string, payload interface{}, outp
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+a.cfg.Token)
-	resp, err := a.client.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}

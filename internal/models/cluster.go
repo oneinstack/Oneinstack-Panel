@@ -33,6 +33,17 @@ type ClusterMetricHealth struct {
 	Disk   ClusterMetricLevel `json:"disk"`
 }
 
+// ClusterNodeAddressRelation is derived from the configured Panel endpoint
+// and the latest node-reported IP. A public/private pair may indicate NAT,
+// but does not prove both addresses belong to the same host.
+type ClusterNodeAddressRelation struct {
+	Status          string `json:"status"`
+	ConfiguredHost  string `json:"configuredHost,omitempty"`
+	ReportedIP      string `json:"reportedIp,omitempty"`
+	ConfiguredScope string `json:"configuredScope,omitempty"`
+	ReportedScope   string `json:"reportedScope,omitempty"`
+}
+
 // ClusterServiceActionCapability is a node-reported, read-only view of a
 // managed component service. It intentionally contains only catalog identity
 // and state metadata; task package pins are resolved during the dedicated
@@ -62,6 +73,11 @@ type ClusterNode struct {
 	ConnectionStatus         string                           `gorm:"-" json:"connectionStatus"`
 	EffectiveStatus          string                           `gorm:"-" json:"effectiveStatus"`
 	EndpointAddressMismatch  bool                             `gorm:"-" json:"endpointAddressMismatch"`
+	EndpointAddressRelation  ClusterNodeAddressRelation       `gorm:"-" json:"endpointAddressRelation"`
+	IdentityPublicKey        string                           `gorm:"size:64" json:"-"`
+	AddressIdentityStatus    string                           `gorm:"size:24" json:"addressIdentityStatus"`
+	AddressIdentityCheckedAt *time.Time                       `json:"addressIdentityCheckedAt,omitempty"`
+	AddressIdentityEndpoint  string                           `gorm:"size:512" json:"-"`
 	MetricHealth             ClusterMetricHealth              `gorm:"-" json:"metricHealth"`
 	LastRegisteredAt         *time.Time                       `gorm:"index" json:"lastRegisteredAt,omitempty"`
 	LastSeenAt               *time.Time                       `gorm:"index" json:"lastSeenAt,omitempty"`

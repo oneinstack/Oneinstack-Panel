@@ -75,6 +75,7 @@ type HostSnapshot struct {
 
 type NodeRegistration struct {
 	Token                    string                                  `json:"token"`
+	IdentityPublicKey        string                                  `json:"identityPublicKey,omitempty"`
 	Hostname                 string                                  `json:"hostname,omitempty"`
 	SystemID                 string                                  `json:"systemId,omitempty"`
 	SystemVersion            string                                  `json:"systemVersion,omitempty"`
@@ -231,6 +232,11 @@ func (m *Manager) UpdateNode(id uint, input UpdateNodeInput) (models.ClusterNode
 	} else if exists {
 		return node, ErrEndpointExists
 	}
+	if node.Endpoint != endpoint {
+		node.AddressIdentityStatus = "pending"
+		node.AddressIdentityCheckedAt = nil
+		node.AddressIdentityEndpoint = ""
+	}
 	node.Name, node.Endpoint = name, endpoint
 	node.Group, node.Tags = strings.TrimSpace(input.Group), strings.TrimSpace(input.Tags)
 	if input.Enabled != nil {
@@ -287,6 +293,9 @@ func (m *Manager) RotateToken(id uint) (CreateNodeResult, error) {
 	node.TokenHash = hashToken(token)
 	node.Status = models.ClusterNodeStatusPending
 	node.LastSeenAt = nil
+	node.AddressIdentityStatus = "pending"
+	node.AddressIdentityCheckedAt = nil
+	node.AddressIdentityEndpoint = ""
 	if err := m.db.Save(&node).Error; err != nil {
 		return CreateNodeResult{}, err
 	}
@@ -300,6 +309,16 @@ func (m *Manager) RegisterNode(input NodeRegistration) (models.ClusterNode, erro
 	}
 	if !node.Enabled || node.LifecycleStatus == models.ClusterNodeLifecycleDisabled || node.LifecycleStatus == models.ClusterNodeLifecyclePendingDelete {
 		return node, ErrNodeDisabled
+	}
+	publicKey := strings.TrimSpace(input.IdentityPublicKey)
+	if !validClusterPublicKey(publicKey) {
+		publicKey = ""
+	}
+	if node.IdentityPublicKey != publicKey {
+		node.IdentityPublicKey = publicKey
+		node.AddressIdentityStatus = "pending"
+		node.AddressIdentityCheckedAt = nil
+		node.AddressIdentityEndpoint = ""
 	}
 	now := time.Now()
 	node.Hostname, node.SystemID, node.SystemVersion = strings.TrimSpace(input.Hostname), strings.TrimSpace(input.SystemID), strings.TrimSpace(input.SystemVersion)

@@ -518,6 +518,20 @@ func TestConnectionContext(ctx context.Context, param *input.AddParam) error {
 	return testStorageConnectionContext(ctx, candidate)
 }
 
+// ProbeManagedLocalConnection checks an existing Panel-managed local database
+// without returning its decrypted credential to callers.
+func ProbeManagedLocalConnection(ctx context.Context, id int64) error {
+	connection, err := loadStorage(id)
+	if err != nil {
+		return err
+	}
+	addr := strings.ToLower(strings.TrimSpace(connection.Addr))
+	if addr != "127.0.0.1" && addr != "localhost" && addr != "::1" {
+		return errors.New("database connection is not local")
+	}
+	return testStorageConnectionContext(ctx, connection)
+}
+
 // EnsureManagedLocalMySQLConnection records the SQL login credential generated
 // for a fresh Panel-managed MySQL installation. Existing local connections are
 // preserved so upgrades never overwrite an administrator's credential.

@@ -935,6 +935,8 @@ var englishErrorTexts = map[string]string{
 	"Panel 地址已存在，请勿重复添加节点":                        "The Panel address is already registered. Do not add the same node again.",
 	"节点名称、分组或标签长度超过限制":                            "The node name, group, or tags exceed the allowed length",
 	"节点参数无效":                                      "The node parameters are invalid",
+	"节点身份暂不可用，请稍后重试":                              "The node identity is temporarily unavailable. Try again later.",
+	"地址身份验证失败，请稍后重试":                              "Address identity verification failed. Try again later.",
 	"无法停止 PHP-FPM：运行中的 Web 服务器仍依赖该服务":             "PHP-FPM cannot be stopped because an active Web server still depends on it",
 	"安装请求不能为空，请提供安装参数后重试":                         "The installation request cannot be empty. Provide the installation parameters and retry.",
 	"version 与 software-version 参数不一致，请保持两者一致后重试": "version and software-version do not match. Keep both values identical and retry.",

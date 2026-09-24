@@ -324,6 +324,7 @@ func createTables() error {
 	if err := db.AutoMigrate(
 		&models.ClusterNode{},
 		&models.ClusterNodeMetric{},
+		&models.ClusterHealthResource{},
 		&models.ClusterPolicy{},
 		&models.ClusterTask{},
 		&models.ClusterTaskEvent{},
