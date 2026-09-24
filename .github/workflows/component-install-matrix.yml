@@ -23,7 +23,7 @@ jobs:
         component: [nginx, mysql, php, redis]
     steps:
       - name: Check out source
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Execute production component lifecycle
         id: lifecycle
