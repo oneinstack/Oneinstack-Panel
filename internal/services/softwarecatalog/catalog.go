@@ -744,40 +744,74 @@ func (m *Manager) refreshPackageVersions(ctx context.Context) error {
 	).Find(&installedRows).Error; err != nil {
 		return err
 	}
-	rows := make([]models.Software, 0, len(installedRows))
+	installedKeys := make([]string, 0, len(installedRows))
+	seenKeys := make(map[string]struct{}, len(installedRows))
 	for _, installed := range installedRows {
-		var recommended models.Software
-		err := m.db.Where(
-			"`key` = ? AND catalog_managed = ? AND installable = ? AND recommended = ?",
-			installed.Key,
-			true,
-			true,
-			true,
-		).First(&recommended).Error
-		if errors.Is(err, gorm.ErrRecordNotFound) {
+		if _, exists := seenKeys[installed.Key]; exists {
 			continue
 		}
-		if err != nil {
+		seenKeys[installed.Key] = struct{}{}
+		installedKeys = append(installedKeys, installed.Key)
+	}
+	candidates := make([]models.Software, 0, len(installedKeys))
+	if len(installedKeys) > 0 {
+		if err := m.db.Where(
+			"`key` IN ? AND catalog_managed = ? AND installable = ? AND recommended = ?",
+			installedKeys,
+			true,
+			true,
+			true,
+		).Order("id ASC").Find(&candidates).Error; err != nil {
 			return err
 		}
-		rows = append(rows, recommended)
+	}
+	rows := make([]models.Software, 0, len(candidates))
+	recommendedByKey := make(map[string]models.Software, len(candidates))
+	for _, candidate := range candidates {
+		if _, exists := recommendedByKey[candidate.Key]; exists {
+			continue
+		}
+		recommendedByKey[candidate.Key] = candidate
+		rows = append(rows, candidate)
 	}
 	registry, err := scriptregistry.New(m.config)
 	if err != nil {
 		return err
 	}
+	requests := make([]scriptregistry.PackageBatchRequest, 0, len(rows))
+	for _, row := range rows {
+		requests = append(requests, scriptregistry.PackageBatchRequest{
+			Component: row.Component, SoftwareVersion: row.Version, Channel: row.CatalogChannel,
+		})
+	}
+	requests = dedupePackageBatchRequests(requests)
+	packageVersions, batchErr := registry.ResolvePackageVersionChannelBatch(ctx, requests)
+	if errors.Is(batchErr, scriptregistry.ErrBatchUnsupported) {
+		packageVersions = make(map[string]string, len(requests))
+		for _, request := range requests {
+			version, resolveErr := registry.ResolvePackageVersionChannel(
+				ctx,
+				request.Component,
+				request.SoftwareVersion,
+				request.Channel,
+			)
+			if resolveErr == nil {
+				packageVersions[packageVersionKey(request.Component, request.SoftwareVersion, request.Channel)] = version
+			}
+		}
+		batchErr = nil
+	}
 	resolved := make(map[int]string, len(rows))
 	for _, row := range rows {
-		resolved[row.Id] = ""
-		packageVersion, resolveErr := registry.ResolvePackageVersionChannel(
-			ctx,
-			row.Component,
-			row.Version,
-			row.CatalogChannel,
-		)
-		if resolveErr == nil {
-			resolved[row.Id] = packageVersion
+		if batchErr == nil {
+			resolved[row.Id] = strings.TrimSpace(packageVersions[packageVersionKey(row.Component, row.Version, row.CatalogChannel)])
+		} else {
+			resolved[row.Id] = ""
 		}
+	}
+	for _, row := range rows {
+		row.LatestPackageVersion = resolved[row.Id]
+		recommendedByKey[row.Key] = row
 	}
 	return m.db.Transaction(func(tx *gorm.DB) error {
 		if err := backfillInstalledPackageVersions(tx); err != nil {
@@ -800,19 +834,9 @@ func (m *Manager) refreshPackageVersions(ctx context.Context) error {
 			return err
 		}
 		for _, installed := range installedRows {
-			var recommended models.Software
-			err := tx.Where(
-				"`key` = ? AND catalog_managed = ? AND installable = ? AND recommended = ?",
-				installed.Key,
-				true,
-				true,
-				true,
-			).First(&recommended).Error
-			if errors.Is(err, gorm.ErrRecordNotFound) {
+			recommended, exists := recommendedByKey[installed.Key]
+			if !exists {
 				continue
-			}
-			if err != nil {
-				return err
 			}
 			installedVersion := strings.TrimSpace(installed.InstallVersion)
 			if installedVersion == "" {

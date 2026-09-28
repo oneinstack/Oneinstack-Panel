@@ -37,6 +37,7 @@ type Review struct {
 type FileChange struct {
 	Path          string `json:"path"`
 	Action        string `json:"action"`
+	Role          string `json:"role,omitempty"`
 	ChangeSummary string `json:"changeSummary,omitempty"`
 	Diff          string `json:"diff,omitempty"`
 }
@@ -46,9 +47,28 @@ type Action struct {
 	Name           string `json:"name"`
 	DisplayCommand string `json:"displayCommand,omitempty"`
 	Service        string `json:"service,omitempty"`
+	Verb           string `json:"verb,omitempty"`
+}
+
+type Target struct {
+	Component               string `json:"component"`
+	DisplayName             string `json:"displayName,omitempty"`
+	SoftwareVersion         string `json:"softwareVersion,omitempty"`
+	ComponentPackageVersion string `json:"componentPackageVersion,omitempty"`
+	PackageSHA256           string `json:"packageSHA256,omitempty"`
+	System                  string `json:"system,omitempty"`
+	Architecture            string `json:"architecture,omitempty"`
+	Action                  string `json:"action"`
+}
+
+type PackageChange struct {
+	Manager string `json:"manager"`
+	Name    string `json:"name"`
+	Action  string `json:"action"`
 }
 
 type Precheck struct {
+	Code    string `json:"code,omitempty"`
 	Name    string `json:"name"`
 	Status  string `json:"status"`
 	Message string `json:"message,omitempty"`
@@ -64,6 +84,7 @@ type Impact struct {
 
 type Rollback struct {
 	Supported     bool     `json:"supported"`
+	Strategy      string   `json:"strategy,omitempty"`
 	Summary       string   `json:"summary,omitempty"`
 	Unrecoverable []string `json:"unrecoverable,omitempty"`
 }
@@ -82,6 +103,8 @@ type Document struct {
 	PreviewID       string           `json:"previewId"`
 	Operation       string           `json:"operation"`
 	Review          Review           `json:"review"`
+	Target          *Target          `json:"target,omitempty"`
+	PackageChanges  []PackageChange  `json:"packageChanges,omitempty"`
 	EffectiveValues []EffectiveValue `json:"effectiveValues,omitempty"`
 	Files           []FileChange     `json:"files"`
 	Actions         []Action         `json:"actions"`

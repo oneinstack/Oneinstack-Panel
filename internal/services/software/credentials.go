@@ -1,6 +1,9 @@
 package software
 
 import (
+	"bufio"
+	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,6 +24,8 @@ var (
 	ErrInstallCredentialsUnavailable = errors.New("software install credentials are not managed")
 	ErrInstallCredentialsCorrupt     = errors.New("software install credentials cannot be decrypted")
 )
+
+const maxCredentialProbeBytes = 16 * 1024
 
 type RevealedCredentialField struct {
 	Key    string `json:"key"`
@@ -291,6 +296,135 @@ func RevealInstalledCredentials(configuration ComponentConfiguration) (RevealedC
 		}}, result.Fields...)
 	}
 	if len(result.Fields) == 0 {
+		return RevealedCredentials{}, ErrInstallCredentialsUnavailable
+	}
+	return result, nil
+}
+
+// RevealManagedServiceCredentials reads credentials generated or retained by a
+// signed component package. The caller must perform user reauthentication
+// before invoking this method; ordinary configuration reads never use it.
+func (installer *Installer) RevealManagedServiceCredentials(
+	ctx context.Context,
+	configuration ComponentConfiguration,
+	version string,
+) (RevealedCredentials, error) {
+	definition, err := componentConfigurationDefinition(configuration.Component)
+	if err != nil {
+		return RevealedCredentials{}, err
+	}
+	registry, err := scriptregistry.New(app.ONE_CONFIG.ScriptCenter)
+	if err != nil {
+		return RevealedCredentials{}, err
+	}
+	componentPackage, err := registry.ResolveInstalled(
+		ctx,
+		definition.Component,
+		strings.TrimSpace(version),
+		"credentialGet",
+	)
+	if err != nil {
+		return RevealedCredentials{}, fmt.Errorf("resolve %s credential package: %w", definition.Component, err)
+	}
+	scriptInfo, err := scriptInfoFromPackage(componentPackage, "credentialGet")
+	if err != nil {
+		return RevealedCredentials{}, err
+	}
+	params := installedServiceInstallParams(
+		definition.SoftwareKey,
+		definition.Component,
+		strings.TrimSpace(version),
+	)
+	installer.setScriptParams(scriptInfo, params)
+	output, err := installer.scriptManager.ExecuteProbe(ctx, scriptInfo, maxCredentialProbeBytes)
+	if err != nil {
+		return RevealedCredentials{}, fmt.Errorf("read managed %s credentials: %w", definition.Component, err)
+	}
+	return parseManagedCredentialOutput(output, configuration, componentPackage.Manifest.Parameters)
+}
+
+func parseManagedCredentialOutput(
+	output []byte,
+	configuration ComponentConfiguration,
+	parameters []scriptregistry.Parameter,
+) (RevealedCredentials, error) {
+	if len(output) == 0 || len(output) > maxCredentialProbeBytes {
+		return RevealedCredentials{}, errors.New("managed credential output size is invalid")
+	}
+	type credentialParameter struct {
+		secret bool
+	}
+	allowed := make(map[string]credentialParameter)
+	for _, parameter := range parameters {
+		normalized := componentstate.NormalizeParameterName(parameter.Name)
+		secret := parameter.Secret || strings.EqualFold(strings.TrimSpace(parameter.Type), "password")
+		if normalized == "" || (!secret && !isCredentialIdentityParameter(parameter.Name)) {
+			continue
+		}
+		allowed[normalized] = credentialParameter{secret: secret}
+	}
+
+	component := ""
+	values := make(map[string]string)
+	scanner := bufio.NewScanner(bytes.NewReader(output))
+	scanner.Buffer(make([]byte, 1024), maxCredentialProbeBytes)
+	for scanner.Scan() {
+		line := scanner.Text()
+		key, value, found := strings.Cut(line, "=")
+		if !found || key == "" || value == "" || len(value) > 4096 || strings.ContainsAny(value, "\x00\r") {
+			return RevealedCredentials{}, errors.New("managed credential output contains an invalid line")
+		}
+		if key == "component" {
+			if component != "" {
+				return RevealedCredentials{}, errors.New("managed credential output repeats component identity")
+			}
+			component = strings.TrimSpace(value)
+			continue
+		}
+		if !strings.HasPrefix(key, "credential.") {
+			return RevealedCredentials{}, fmt.Errorf("managed credential output contains unknown field %q", key)
+		}
+		normalized := componentstate.NormalizeParameterName(strings.TrimPrefix(key, "credential."))
+		if _, exists := allowed[normalized]; !exists {
+			return RevealedCredentials{}, fmt.Errorf("managed credential output contains undeclared field %q", key)
+		}
+		if _, exists := values[normalized]; exists {
+			return RevealedCredentials{}, fmt.Errorf("managed credential output repeats field %q", key)
+		}
+		values[normalized] = value
+	}
+	if err := scanner.Err(); err != nil {
+		return RevealedCredentials{}, fmt.Errorf("read managed credential output: %w", err)
+	}
+	if component == "" || component != configuration.Component {
+		return RevealedCredentials{}, errors.New("managed credential output identity is invalid")
+	}
+
+	row, err := installedSoftwareRow(configuration.SoftwareKey, configuration.Component)
+	if err != nil {
+		return RevealedCredentials{}, err
+	}
+	labels := installedParameterLabels(row.Params)
+	result := RevealedCredentials{Component: component, Fields: make([]RevealedCredentialField, 0, len(values))}
+	hasSecret := false
+	for _, parameter := range parameters {
+		normalized := componentstate.NormalizeParameterName(parameter.Name)
+		value, exists := values[normalized]
+		if !exists {
+			continue
+		}
+		metadata := allowed[normalized]
+		label := labels[normalized]
+		if label == "" {
+			label = componentInstallParameterLabel(parameter.Name)
+		}
+		result.Fields = append(result.Fields, RevealedCredentialField{
+			Key: parameter.Name, Label: label, Type: parameter.Type,
+			Value: value, Secret: metadata.secret,
+		})
+		hasSecret = hasSecret || metadata.secret
+	}
+	if !hasSecret {
 		return RevealedCredentials{}, ErrInstallCredentialsUnavailable
 	}
 	return result, nil

@@ -251,15 +251,81 @@ func (m *Manager) enrichNode(node *models.ClusterNode) error {
 		node.LifecycleStatus = models.ClusterNodeLifecycleDisabled
 	}
 	node.EffectiveStatus = effectiveNodeStatus(*node)
-	node.EndpointAddressMismatch, node.EndpointAddressNote = analyzeEndpointAddress(*node)
+	if !validClusterPublicKey(node.IdentityPublicKey) || node.AddressIdentityEndpoint != node.Endpoint {
+		node.AddressIdentityStatus = AddressIdentityPending
+		node.AddressIdentityCheckedAt = nil
+	}
+	node.EndpointAddressRelation = endpointAddressRelation(*node)
+	if node.AddressIdentityStatus == AddressIdentityVerified {
+		node.EndpointAddressRelation.Status = AddressIdentityVerified
+	} else if node.AddressIdentityStatus == AddressIdentityDifferentNode {
+		node.EndpointAddressRelation.Status = AddressIdentityDifferentNode
+	}
+	node.EndpointAddressMismatch = node.EndpointAddressRelation.Status == "likely_nat" || node.EndpointAddressRelation.Status == "mismatch" || node.EndpointAddressRelation.Status == AddressIdentityDifferentNode
+	_, node.EndpointAddressNote = analyzeEndpointAddress(*node)
 	node.MetricHealth = metricHealth(*node, policy)
 	return nil
+}
+
+func endpointAddressRelation(node models.ClusterNode) models.ClusterNodeAddressRelation {
+	configuredHost := strings.TrimSpace(hostFromEndpoint(node.Endpoint))
+	reportedIP := strings.TrimSpace(node.IPAddress)
+	relation := models.ClusterNodeAddressRelation{
+		Status:         "unknown",
+		ConfiguredHost: configuredHost,
+		ReportedIP:     reportedIP,
+	}
+	if configuredHost == "" {
+		return relation
+	}
+
+	configured := net.ParseIP(configuredHost)
+	if configured == nil {
+		// A hostname is not compared with an interface IP without resolving it;
+		// resolution could produce a different answer later.
+		relation.Status = "not_comparable"
+		relation.ConfiguredScope = "hostname"
+		return relation
+	}
+	relation.ConfiguredScope = addressScope(configured)
+	reported := net.ParseIP(reportedIP)
+	if reported == nil {
+		return relation
+	}
+	relation.ReportedScope = addressScope(reported)
+	if configured.Equal(reported) {
+		relation.Status = "exact_match"
+		return relation
+	}
+	if relation.ConfiguredScope == "public" && relation.ReportedScope == "private" {
+		relation.Status = "likely_nat"
+		return relation
+	}
+	relation.Status = "mismatch"
+	return relation
+}
+
+func addressScope(ip net.IP) string {
+	switch {
+	case ip.IsLoopback():
+		return "loopback"
+	case ip.IsPrivate():
+		return "private"
+	case ip.IsLinkLocalUnicast():
+		return "link_local"
+	case ip.IsUnspecified():
+		return "unspecified"
+	case ip.IsGlobalUnicast():
+		return "public"
+	default:
+		return "reserved"
+	}
 }
 
 // analyzeEndpointAddress checks if the endpoint IP differs from the node's
 // reported IP address. For cloud VMs this is common: the endpoint may use a
 // public IP while the node reports its private interface IP. Returns whether
-// there's a mismatch and an explanatory note.
+// there's a mismatch and an explanatory note for the EndpointAddressNote field.
 func analyzeEndpointAddress(node models.ClusterNode) (bool, string) {
 	configured := net.ParseIP(strings.TrimSpace(hostFromEndpoint(node.Endpoint)))
 	reported := net.ParseIP(strings.TrimSpace(node.IPAddress))
@@ -301,7 +367,8 @@ func analyzeEndpointAddress(node models.ClusterNode) (bool, string) {
 	return true, "端点 IP 与节点报告 IP 不同，且节点离线。请检查端点地址配置。"
 }
 
-// isPrivateIP checks if an IP address is in a private range (RFC 1918, RFC 4193)
+// isPrivateIP checks if an IP address is in a private range (RFC 1918, RFC 4193).
+// This includes CGNAT (100.64.0.0/10) which Go's net.IP.IsPrivate() does not cover.
 func isPrivateIP(ip net.IP) bool {
 	if ip4 := ip.To4(); ip4 != nil {
 		// 10.0.0.0/8

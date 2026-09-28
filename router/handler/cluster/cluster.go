@@ -1,6 +1,7 @@
 package cluster
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -380,6 +381,89 @@ func DispatchWebsite(c *gin.Context) {
 	core.HandleSuccess(c, result)
 }
 
+func ListNodeServiceActions(c *gin.Context) {
+	m, ok := manager(c)
+	if !ok {
+		return
+	}
+	id, ok := nodeID(c)
+	if !ok {
+		return
+	}
+	result, err := m.ListNodeServiceActions(id)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		core.HandleError(c, core.NewError(core.ErrNotFound, "节点不存在"))
+		return
+	}
+	if err != nil {
+		core.HandleError(c, core.NewError(core.ErrInternalError, "读取节点服务能力失败"))
+		return
+	}
+	core.HandleSuccess(c, result)
+}
+
+func PreviewServiceAction(c *gin.Context) {
+	m, ok := manager(c)
+	if !ok {
+		return
+	}
+	var input cluster.ServiceActionPreviewInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		core.HandleError(c, core.NewError(core.ErrInvalidParameter, "服务操作参数无效"))
+		return
+	}
+	preview, err := m.PreviewServiceAction(input)
+	if err != nil {
+		recordClusterAudit(c, "cluster.service_action.preview", http.StatusBadRequest, fmt.Sprintf("component=%s action=%s result=failed", boundedAuditMessage(input.Component), boundedAuditMessage(input.Action)))
+		core.HandleError(c, core.NewError(core.ErrInvalidParameter, serviceActionMessage(err)))
+		return
+	}
+	recordClusterAudit(c, "cluster.service_action.preview", http.StatusOK, fmt.Sprintf("preview=%s component=%s action=%s executable=%d blocked=%d", preview.ID, preview.Component, preview.Action, len(preview.Executable), len(preview.Blocked)))
+	core.HandleSuccess(c, preview)
+}
+
+func ExecuteServiceAction(c *gin.Context) {
+	m, ok := manager(c)
+	if !ok {
+		return
+	}
+	var input cluster.ExecuteServiceActionInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		core.HandleError(c, core.NewError(core.ErrInvalidParameter, "服务操作确认参数无效"))
+		return
+	}
+	requestedBy, _ := middleware.AuthenticatedUserID(c)
+	batch, err := m.ExecuteServiceAction(input, requestedBy)
+	switch {
+	case errors.Is(err, cluster.ErrServiceActionPreview):
+		recordClusterAudit(c, "cluster.service_action.execute", http.StatusGone, fmt.Sprintf("preview=%s result=expired", boundedAuditMessage(input.PreviewID)))
+		core.HandleErrorWithStatus(c, http.StatusGone, core.NewError(core.ErrConflict, "服务操作预览不存在或已过期，请重新预览"))
+	case errors.Is(err, cluster.ErrServiceActionStale):
+		recordClusterAudit(c, "cluster.service_action.execute", http.StatusConflict, fmt.Sprintf("preview=%s result=stale", boundedAuditMessage(input.PreviewID)))
+		core.HandleErrorWithStatus(c, http.StatusConflict, core.NewError(core.ErrConflict, "节点服务能力或状态已变化，请重新预览"))
+	case errors.Is(err, cluster.ErrServiceActionConfirm):
+		recordClusterAudit(c, "cluster.service_action.execute", http.StatusBadRequest, fmt.Sprintf("preview=%s result=confirmation", boundedAuditMessage(input.PreviewID)))
+		core.HandleError(c, core.NewError(core.ErrInvalidParameter, "危险服务操作确认文本错误"))
+	case err != nil:
+		recordClusterAudit(c, "cluster.service_action.execute", http.StatusBadRequest, fmt.Sprintf("preview=%s result=failed", boundedAuditMessage(input.PreviewID)))
+		core.HandleError(c, core.NewError(core.ErrInvalidParameter, serviceActionMessage(err)))
+	default:
+		recordClusterAudit(c, "cluster.service_action.execute", http.StatusAccepted, fmt.Sprintf("batch=%s total=%d", batch.ID, batch.Total))
+		c.JSON(http.StatusAccepted, core.SuccessResponseForContext(c, batch))
+	}
+}
+
+func serviceActionMessage(err error) string {
+	switch {
+	case errors.Is(err, cluster.ErrServiceActionInput):
+		return "服务操作仅支持已登记组件的启动、停止、重启或重载"
+	case errors.Is(err, cluster.ErrServiceActionPreview):
+		return "服务操作预览无效"
+	default:
+		return "当前没有可执行的节点服务操作"
+	}
+}
+
 func CreateNode(c *gin.Context) {
 	m, ok := manager(c)
 	if !ok {
@@ -414,6 +498,62 @@ func CheckEndpoint(c *gin.Context) {
 	core.HandleSuccess(c, result)
 }
 
+func ChallengeIdentity(c *gin.Context) {
+	settings := cluster.GetAgentSettings()
+	if settings.Role != cluster.ClusterRoleNode || !settings.Enabled {
+		core.HandleErrorWithStatus(c, http.StatusNotFound, core.NewError(core.ErrNotFound, "节点不存在"))
+		return
+	}
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 512)
+	var input struct {
+		Nonce string `json:"nonce"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		core.HandleErrorWithStatus(c, http.StatusBadRequest, core.NewError(core.ErrInvalidParameter, "请求参数无效，请检查提交内容"))
+		return
+	}
+	signature, err := cluster.SignAddressChallenge(input.Nonce)
+	if errors.Is(err, cluster.ErrInvalidAddressChallenge) {
+		core.HandleErrorWithStatus(c, http.StatusBadRequest, core.NewError(core.ErrInvalidParameter, "请求参数无效，请检查提交内容"))
+		return
+	}
+	if err != nil {
+		core.HandleErrorWithStatus(c, http.StatusServiceUnavailable, core.NewError(core.ErrInternalError, "节点身份暂不可用，请稍后重试"))
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	core.HandleSuccess(c, gin.H{"signature": signature})
+}
+
+func VerifyNodeAddress(c *gin.Context) {
+	m, ok := manager(c)
+	if !ok {
+		return
+	}
+	id, ok := nodeID(c)
+	if !ok {
+		return
+	}
+	node, err := m.VerifyNodeAddress(c.Request.Context(), id)
+	if errors.Is(err, cluster.ErrNodeNotFound) {
+		core.HandleErrorWithStatus(c, http.StatusNotFound, core.NewError(core.ErrNotFound, "节点不存在"))
+		return
+	}
+	if err != nil {
+		core.HandleError(c, core.NewError(core.ErrInternalError, "地址身份验证失败，请稍后重试"))
+		return
+	}
+	core.HandleSuccess(c, node)
+}
+
+func scheduleNodeAddressVerification(m *cluster.Manager, id uint) {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		defer cancel()
+		_, _ = m.VerifyNodeAddress(ctx, id)
+	}()
+}
+
 func UpdateNode(c *gin.Context) {
 	m, ok := manager(c)
 	if !ok {
@@ -438,6 +578,9 @@ func UpdateNode(c *gin.Context) {
 		return
 	}
 	core.HandleSuccess(c, node)
+	if node.IdentityPublicKey != "" && node.AddressIdentityStatus == cluster.AddressIdentityPending {
+		scheduleNodeAddressVerification(m, node.ID)
+	}
 }
 
 func handleNodeMutationError(c *gin.Context, err error) {
@@ -512,6 +655,9 @@ func RegisterNode(c *gin.Context) {
 		return
 	}
 	core.HandleSuccess(c, gin.H{"nodeId": node.ID, "status": node.Status})
+	if node.IdentityPublicKey != "" {
+		scheduleNodeAddressVerification(m, node.ID)
+	}
 }
 
 func Heartbeat(c *gin.Context) {

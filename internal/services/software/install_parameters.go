@@ -20,6 +20,13 @@ func hydratePersistedInstallParameters(runtimeJSON string, params []*output.Soft
 	if json.Unmarshal([]byte(runtimeJSON), &values) != nil {
 		return
 	}
+	primaryPortTarget := ""
+	for _, parameter := range params {
+		if parameter != nil && strings.EqualFold(strings.TrimSpace(parameter.Types), "port") {
+			primaryPortTarget = compactInstallParameterName(parameter.Key)
+			break
+		}
+	}
 	for _, parameter := range params {
 		if parameter == nil || strings.EqualFold(strings.TrimSpace(parameter.Types), "password") {
 			continue
@@ -28,7 +35,7 @@ func hydratePersistedInstallParameters(runtimeJSON string, params []*output.Soft
 		for key, value := range values {
 			candidate := compactInstallParameterName(key)
 			if candidate == target || (target == "port" && strings.HasSuffix(candidate, "port")) ||
-				(candidate == "port" && strings.HasSuffix(target, "port")) {
+				(candidate == "port" && target == primaryPortTarget) {
 				if strings.TrimSpace(value) != "" {
 					parameter.Default = value
 				}

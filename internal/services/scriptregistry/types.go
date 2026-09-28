@@ -23,6 +23,7 @@ var (
 	configurationKeyPattern    = regexp.MustCompile(`^[a-z][A-Za-z0-9-]{0,63}$`)
 	runtimeGroupPattern        = regexp.MustCompile(`^[a-z][a-z0-9-]{1,63}$`)
 	serviceNamePattern         = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.@-]{0,127}$`)
+	packageNamePattern         = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9+._:-]{0,127}$`)
 	buildIDPattern             = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 )
 
@@ -54,6 +55,9 @@ type Manifest struct {
 	Actions       Actions       `json:"actions" yaml:"actions"`
 	Parameters    []Parameter   `json:"parameters,omitempty" yaml:"parameters,omitempty"`
 	Configuration Configuration `json:"configuration,omitempty" yaml:"configuration,omitempty"`
+	// Preview remains optional for compatibility with historical signed
+	// manifests. When present it is the strict lifecycle-preview allowlist.
+	Preview *Preview `json:"preview,omitempty" yaml:"preview,omitempty"`
 	// Sources is optional for compatibility with historical signed manifests.
 	Sources  *Sources `json:"sources,omitempty" yaml:"sources,omitempty"`
 	Timeouts Timeouts `json:"timeouts" yaml:"timeouts"`
@@ -92,31 +96,33 @@ type ComponentDependency struct {
 }
 
 type Actions struct {
-	Precheck    string `json:"precheck" yaml:"precheck"`
-	Install     string `json:"install" yaml:"install"`
-	Configure   string `json:"configure,omitempty" yaml:"configure,omitempty"`
-	Verify      string `json:"verify" yaml:"verify"`
-	Upgrade     string `json:"upgrade,omitempty" yaml:"upgrade,omitempty"`
-	Rollback    string `json:"rollback,omitempty" yaml:"rollback,omitempty"`
-	Uninstall   string `json:"uninstall" yaml:"uninstall"`
-	Status      string `json:"status,omitempty" yaml:"status,omitempty"`
-	Start       string `json:"start,omitempty" yaml:"start,omitempty"`
-	Stop        string `json:"stop,omitempty" yaml:"stop,omitempty"`
-	Restart     string `json:"restart,omitempty" yaml:"restart,omitempty"`
-	Reload      string `json:"reload,omitempty" yaml:"reload,omitempty"`
-	ConfigGet   string `json:"configGet,omitempty" yaml:"configGet,omitempty"`
-	ConfigApply string `json:"configApply,omitempty" yaml:"configApply,omitempty"`
+	Precheck      string `json:"precheck" yaml:"precheck"`
+	Install       string `json:"install" yaml:"install"`
+	Configure     string `json:"configure,omitempty" yaml:"configure,omitempty"`
+	Verify        string `json:"verify" yaml:"verify"`
+	Upgrade       string `json:"upgrade,omitempty" yaml:"upgrade,omitempty"`
+	Rollback      string `json:"rollback,omitempty" yaml:"rollback,omitempty"`
+	Uninstall     string `json:"uninstall" yaml:"uninstall"`
+	Status        string `json:"status,omitempty" yaml:"status,omitempty"`
+	Start         string `json:"start,omitempty" yaml:"start,omitempty"`
+	Stop          string `json:"stop,omitempty" yaml:"stop,omitempty"`
+	Restart       string `json:"restart,omitempty" yaml:"restart,omitempty"`
+	Reload        string `json:"reload,omitempty" yaml:"reload,omitempty"`
+	ConfigGet     string `json:"configGet,omitempty" yaml:"configGet,omitempty"`
+	ConfigApply   string `json:"configApply,omitempty" yaml:"configApply,omitempty"`
+	CredentialGet string `json:"credentialGet,omitempty" yaml:"credentialGet,omitempty"`
 }
 
 type Parameter struct {
-	Name        string `json:"name" yaml:"name"`
-	Env         string `json:"env,omitempty" yaml:"env,omitempty"`
-	Type        string `json:"type" yaml:"type"`
-	Required    bool   `json:"required,omitempty" yaml:"required,omitempty"`
-	Secret      bool   `json:"secret,omitempty" yaml:"secret,omitempty"`
-	Purge       bool   `json:"purge,omitempty" yaml:"purge,omitempty"`
-	Default     string `json:"default,omitempty" yaml:"default,omitempty"`
-	Description string `json:"description,omitempty" yaml:"description,omitempty"`
+	Name             string `json:"name" yaml:"name"`
+	Env              string `json:"env,omitempty" yaml:"env,omitempty"`
+	Type             string `json:"type" yaml:"type"`
+	Required         bool   `json:"required,omitempty" yaml:"required,omitempty"`
+	Secret           bool   `json:"secret,omitempty" yaml:"secret,omitempty"`
+	Purge            bool   `json:"purge,omitempty" yaml:"purge,omitempty"`
+	HideAfterInstall bool   `json:"hideAfterInstall,omitempty" yaml:"hideAfterInstall,omitempty"`
+	Default          string `json:"default,omitempty" yaml:"default,omitempty"`
+	Description      string `json:"description,omitempty" yaml:"description,omitempty"`
 }
 
 type Configuration struct {
@@ -135,6 +141,41 @@ type ConfigurationField struct {
 	Min         *int     `json:"min,omitempty" yaml:"min,omitempty"`
 	Max         *int     `json:"max,omitempty" yaml:"max,omitempty"`
 	Options     []string `json:"options,omitempty" yaml:"options,omitempty"`
+	AllowEmpty  bool     `json:"allowEmpty,omitempty" yaml:"allowEmpty,omitempty"`
+}
+
+type Preview struct {
+	Services []PreviewService             `json:"services,omitempty" yaml:"services,omitempty"`
+	Packages map[string]PreviewPackageSet `json:"packages,omitempty" yaml:"packages,omitempty"`
+	Paths    []PreviewPath                `json:"paths,omitempty" yaml:"paths,omitempty"`
+	Rollback map[string]PreviewRollback   `json:"rollback,omitempty" yaml:"rollback,omitempty"`
+}
+
+type PreviewService struct {
+	Name    string   `json:"name" yaml:"name"`
+	Actions []string `json:"actions" yaml:"actions"`
+}
+
+type PreviewPackageSet struct {
+	Names                 []string `json:"names,omitempty" yaml:"names,omitempty"`
+	InstalledAlternatives []string `json:"installedAlternatives,omitempty" yaml:"installedAlternatives,omitempty"`
+	SoftwareVersions      []string `json:"softwareVersions,omitempty" yaml:"softwareVersions,omitempty"`
+}
+
+type PreviewPath struct {
+	Parameter        string   `json:"parameter,omitempty" yaml:"parameter,omitempty"`
+	Path             string   `json:"path,omitempty" yaml:"path,omitempty"`
+	Role             string   `json:"role" yaml:"role"`
+	PreserveAction   string   `json:"preserveAction" yaml:"preserveAction"`
+	DeleteAction     string   `json:"deleteAction" yaml:"deleteAction"`
+	SoftwareVersions []string `json:"softwareVersions,omitempty" yaml:"softwareVersions,omitempty"`
+}
+
+type PreviewRollback struct {
+	Supported     bool     `json:"supported" yaml:"supported"`
+	Strategy      string   `json:"strategy" yaml:"strategy"`
+	Summary       string   `json:"summary,omitempty" yaml:"summary,omitempty"`
+	Unrecoverable []string `json:"unrecoverable,omitempty" yaml:"unrecoverable,omitempty"`
 }
 
 type Sources struct {
@@ -154,20 +195,21 @@ type SourceRelease struct {
 }
 
 type Timeouts struct {
-	Precheck    int `json:"precheck" yaml:"precheck"`
-	Install     int `json:"install" yaml:"install"`
-	Configure   int `json:"configure,omitempty" yaml:"configure,omitempty"`
-	Verify      int `json:"verify" yaml:"verify"`
-	Upgrade     int `json:"upgrade,omitempty" yaml:"upgrade,omitempty"`
-	Rollback    int `json:"rollback" yaml:"rollback"`
-	Uninstall   int `json:"uninstall" yaml:"uninstall"`
-	Status      int `json:"status,omitempty" yaml:"status,omitempty"`
-	Start       int `json:"start,omitempty" yaml:"start,omitempty"`
-	Stop        int `json:"stop,omitempty" yaml:"stop,omitempty"`
-	Restart     int `json:"restart,omitempty" yaml:"restart,omitempty"`
-	Reload      int `json:"reload,omitempty" yaml:"reload,omitempty"`
-	ConfigGet   int `json:"configGet,omitempty" yaml:"configGet,omitempty"`
-	ConfigApply int `json:"configApply,omitempty" yaml:"configApply,omitempty"`
+	Precheck      int `json:"precheck" yaml:"precheck"`
+	Install       int `json:"install" yaml:"install"`
+	Configure     int `json:"configure,omitempty" yaml:"configure,omitempty"`
+	Verify        int `json:"verify" yaml:"verify"`
+	Upgrade       int `json:"upgrade,omitempty" yaml:"upgrade,omitempty"`
+	Rollback      int `json:"rollback" yaml:"rollback"`
+	Uninstall     int `json:"uninstall" yaml:"uninstall"`
+	Status        int `json:"status,omitempty" yaml:"status,omitempty"`
+	Start         int `json:"start,omitempty" yaml:"start,omitempty"`
+	Stop          int `json:"stop,omitempty" yaml:"stop,omitempty"`
+	Restart       int `json:"restart,omitempty" yaml:"restart,omitempty"`
+	Reload        int `json:"reload,omitempty" yaml:"reload,omitempty"`
+	ConfigGet     int `json:"configGet,omitempty" yaml:"configGet,omitempty"`
+	ConfigApply   int `json:"configApply,omitempty" yaml:"configApply,omitempty"`
+	CredentialGet int `json:"credentialGet,omitempty" yaml:"credentialGet,omitempty"`
 }
 
 type Host struct {
@@ -321,13 +363,14 @@ func (m Manifest) validate() error {
 		return fmt.Errorf("configGet and configApply actions must be declared together")
 	}
 	for name, timeout := range map[string]int{
-		"status":      m.Timeouts.Status,
-		"start":       m.Timeouts.Start,
-		"stop":        m.Timeouts.Stop,
-		"restart":     m.Timeouts.Restart,
-		"reload":      m.Timeouts.Reload,
-		"configGet":   m.Timeouts.ConfigGet,
-		"configApply": m.Timeouts.ConfigApply,
+		"status":        m.Timeouts.Status,
+		"start":         m.Timeouts.Start,
+		"stop":          m.Timeouts.Stop,
+		"restart":       m.Timeouts.Restart,
+		"reload":        m.Timeouts.Reload,
+		"configGet":     m.Timeouts.ConfigGet,
+		"configApply":   m.Timeouts.ConfigApply,
+		"credentialGet": m.Timeouts.CredentialGet,
 	} {
 		action := m.actionMap()[name]
 		if action == "" {
@@ -393,7 +436,13 @@ func (m Manifest) validate() error {
 			if field.Min != nil && field.Max != nil && *field.Min > *field.Max {
 				return fmt.Errorf("configuration field %s has an invalid range", field.Key)
 			}
+			if field.AllowEmpty && field.Type != "string" {
+				return fmt.Errorf("configuration field %s can allow empty values only for string type", field.Key)
+			}
 		}
+	}
+	if err := m.validatePreview(); err != nil {
+		return err
 	}
 	if m.Sources != nil {
 		seenSources := make(map[string][]SourceRelease, len(m.Sources.Releases))
@@ -449,6 +498,102 @@ func (m Manifest) validate() error {
 	return nil
 }
 
+func (m Manifest) validatePreview() error {
+	if m.Preview == nil {
+		return nil
+	}
+	declaredParameters := make(map[string]Parameter, len(m.Parameters))
+	for _, parameter := range m.Parameters {
+		declaredParameters[parameter.Name] = parameter
+	}
+	validAction := func(action string) bool {
+		if action == "uninstall" {
+			return m.Actions.Uninstall != ""
+		}
+		path, ok := m.actionMap()[action]
+		return ok && path != ""
+	}
+	for _, service := range m.Preview.Services {
+		if !serviceNamePattern.MatchString(service.Name) || len(service.Actions) == 0 {
+			return fmt.Errorf("preview service %q is invalid", service.Name)
+		}
+		seen := make(map[string]struct{}, len(service.Actions))
+		for _, action := range service.Actions {
+			if !validAction(action) {
+				return fmt.Errorf("preview service %s declares unsupported action %q", service.Name, action)
+			}
+			if _, exists := seen[action]; exists {
+				return fmt.Errorf("preview service %s repeats action %q", service.Name, action)
+			}
+			seen[action] = struct{}{}
+		}
+	}
+	for manager, packages := range m.Preview.Packages {
+		switch manager {
+		case "apt", "dnf", "yum", "zypper":
+		default:
+			return fmt.Errorf("preview package manager %q is unsupported", manager)
+		}
+		if len(packages.Names) == 0 && len(packages.InstalledAlternatives) == 0 {
+			return fmt.Errorf("preview package manager %s has no packages", manager)
+		}
+		for _, name := range append(append([]string{}, packages.Names...), packages.InstalledAlternatives...) {
+			if !packageNamePattern.MatchString(name) {
+				return fmt.Errorf("preview package name %q is invalid", name)
+			}
+		}
+		for _, version := range packages.SoftwareVersions {
+			if !SupportsSoftwareVersion(m.Component.SoftwareVersions, version) {
+				return fmt.Errorf("preview package version %q is not declared by the component", version)
+			}
+		}
+	}
+	for _, target := range m.Preview.Paths {
+		if (target.Parameter == "") == (target.Path == "") {
+			return fmt.Errorf("preview path must declare exactly one of parameter or path")
+		}
+		if target.Parameter != "" {
+			parameter, ok := declaredParameters[target.Parameter]
+			if !ok || parameter.Type != "path" {
+				return fmt.Errorf("preview path parameter %q is not a declared path parameter", target.Parameter)
+			}
+		} else if !strings.HasPrefix(target.Path, "/") || path.Clean(target.Path) != target.Path || target.Path == "/" {
+			return fmt.Errorf("preview path %q must be a normalized absolute path", target.Path)
+		}
+		switch target.Role {
+		case "program", "config", "data", "log", "state", "integration":
+		default:
+			return fmt.Errorf("preview path role %q is unsupported", target.Role)
+		}
+		for _, action := range []string{target.PreserveAction, target.DeleteAction} {
+			switch action {
+			case "preserve", "remove", "delete", "remove_contents", "remove_managed":
+			default:
+				return fmt.Errorf("preview path action %q is unsupported", action)
+			}
+		}
+		for _, version := range target.SoftwareVersions {
+			if !SupportsSoftwareVersion(m.Component.SoftwareVersions, version) {
+				return fmt.Errorf("preview path version %q is not declared by the component", version)
+			}
+		}
+	}
+	for action, rollback := range m.Preview.Rollback {
+		if !validAction(action) {
+			return fmt.Errorf("preview rollback declares unsupported action %q", action)
+		}
+		switch rollback.Strategy {
+		case "none", "best_effort", "automatic":
+		default:
+			return fmt.Errorf("preview rollback strategy %q is unsupported", rollback.Strategy)
+		}
+		if rollback.Supported && rollback.Strategy == "none" {
+			return fmt.Errorf("preview rollback action %s cannot be supported with strategy none", action)
+		}
+	}
+	return nil
+}
+
 func sourceSystemSelectorsOverlap(left, right []System) bool {
 	if len(left) == 0 || len(right) == 0 {
 		return true
@@ -472,20 +617,21 @@ func sourceSystemSelectorsOverlap(left, right []System) bool {
 
 func (m Manifest) actionMap() map[string]string {
 	return map[string]string{
-		"precheck":    m.Actions.Precheck,
-		"install":     m.Actions.Install,
-		"configure":   m.Actions.Configure,
-		"verify":      m.Actions.Verify,
-		"upgrade":     m.Actions.Upgrade,
-		"rollback":    m.Actions.Rollback,
-		"uninstall":   m.Actions.Uninstall,
-		"status":      m.Actions.Status,
-		"start":       m.Actions.Start,
-		"stop":        m.Actions.Stop,
-		"restart":     m.Actions.Restart,
-		"reload":      m.Actions.Reload,
-		"configGet":   m.Actions.ConfigGet,
-		"configApply": m.Actions.ConfigApply,
+		"precheck":      m.Actions.Precheck,
+		"install":       m.Actions.Install,
+		"configure":     m.Actions.Configure,
+		"verify":        m.Actions.Verify,
+		"upgrade":       m.Actions.Upgrade,
+		"rollback":      m.Actions.Rollback,
+		"uninstall":     m.Actions.Uninstall,
+		"status":        m.Actions.Status,
+		"start":         m.Actions.Start,
+		"stop":          m.Actions.Stop,
+		"restart":       m.Actions.Restart,
+		"reload":        m.Actions.Reload,
+		"configGet":     m.Actions.ConfigGet,
+		"configApply":   m.Actions.ConfigApply,
+		"credentialGet": m.Actions.CredentialGet,
 	}
 }
 

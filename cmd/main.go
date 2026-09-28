@@ -720,6 +720,7 @@ func startServer() error {
 	clusterService.RunNodeStatusSupervisor(ctx)
 	clusterService.RunPanelUpdateCheckSupervisor(ctx)
 	clusterService.RunRetentionSupervisor(ctx)
+	clusterService.RunHealthSupervisor(ctx)
 	fail2banservice.DefaultManager().Start(ctx)
 	go safeservice.RunMaintenance(ctx)
 

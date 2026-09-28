@@ -1,6 +1,7 @@
 package panelbackup
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,30 @@ import (
 	"oneinstack/app"
 	"oneinstack/internal/services/website"
 )
+
+// ListApplicationBackupsReadOnly inspects existing backup metadata without
+// creating the backup directory when the feature has not been used yet.
+func ListApplicationBackupsReadOnly() ([]BackupInfo, error) {
+	root := strings.TrimSpace(os.Getenv("ONEINSTACK_PANEL_BACKUP_DIR"))
+	if root == "" {
+		root = filepath.Join(filepath.Clean(app.GetBasePath()), "backups", "panel")
+	}
+	root = filepath.Clean(root)
+	if !filepath.IsAbs(root) || root == string(filepath.Separator) {
+		return nil, ErrInvalidBackup
+	}
+	info, err := os.Lstat(root)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return nil, ErrInvalidBackup
+	}
+	return (&Manager{config: Config{BackupRoot: root}}).List()
+}
 
 func NewApplicationManager(database *gorm.DB) (*Manager, error) {
 	basePath := filepath.Clean(app.GetBasePath())

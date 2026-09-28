@@ -74,42 +74,45 @@ type HostSnapshot struct {
 }
 
 type NodeRegistration struct {
-	Token                    string   `json:"token"`
-	Hostname                 string   `json:"hostname,omitempty"`
-	SystemID                 string   `json:"systemId,omitempty"`
-	SystemVersion            string   `json:"systemVersion,omitempty"`
-	Architecture             string   `json:"architecture,omitempty"`
-	PanelVersion             string   `json:"panelVersion,omitempty"`
-	AgentVersion             string   `json:"agentVersion,omitempty"`
-	Capabilities             []string `json:"capabilities,omitempty"`
-	HeartbeatIntervalSeconds int      `json:"heartbeatIntervalSeconds,omitempty"`
+	Token                    string                                  `json:"token"`
+	IdentityPublicKey        string                                  `json:"identityPublicKey,omitempty"`
+	Hostname                 string                                  `json:"hostname,omitempty"`
+	SystemID                 string                                  `json:"systemId,omitempty"`
+	SystemVersion            string                                  `json:"systemVersion,omitempty"`
+	Architecture             string                                  `json:"architecture,omitempty"`
+	PanelVersion             string                                  `json:"panelVersion,omitempty"`
+	AgentVersion             string                                  `json:"agentVersion,omitempty"`
+	Capabilities             []string                                `json:"capabilities,omitempty"`
+	ServiceActions           []models.ClusterServiceActionCapability `json:"serviceActions,omitempty"`
+	HeartbeatIntervalSeconds int                                     `json:"heartbeatIntervalSeconds,omitempty"`
 	HostSnapshot
 }
 
 type NodeHeartbeat struct {
-	Token                    string   `json:"token"`
-	Hostname                 string   `json:"hostname,omitempty"`
-	PanelVersion             string   `json:"panelVersion,omitempty"`
-	AgentVersion             string   `json:"agentVersion,omitempty"`
-	Capabilities             []string `json:"capabilities,omitempty"`
-	HeartbeatIntervalSeconds int      `json:"heartbeatIntervalSeconds,omitempty"`
-	CPUPercent               float64  `json:"cpuPercent"`
-	MemoryPercent            float64  `json:"memoryPercent"`
-	DiskPercent              float64  `json:"diskPercent"`
-	NetworkRecvBPS           float64  `json:"networkReceiveBps"`
-	NetworkSendBPS           float64  `json:"networkSendBps"`
-	UptimeSeconds            uint64   `json:"uptimeSeconds"`
-	CPUTotalCores            int      `json:"cpuTotalCores"`
-	CPUUsedCores             float64  `json:"cpuUsedCores"`
-	MemoryUsedBytes          uint64   `json:"memoryUsedBytes"`
-	MemoryTotalBytes         uint64   `json:"memoryTotalBytes"`
-	DiskUsedBytes            uint64   `json:"diskUsedBytes"`
-	DiskTotalBytes           uint64   `json:"diskTotalBytes"`
-	IPAddress                string   `json:"ipAddress,omitempty"`
-	SubnetMask               string   `json:"subnetMask,omitempty"`
-	Gateway                  string   `json:"gateway,omitempty"`
-	MACAddress               string   `json:"macAddress,omitempty"`
-	InterfaceName            string   `json:"interfaceName,omitempty"`
+	Token                    string                                  `json:"token"`
+	Hostname                 string                                  `json:"hostname,omitempty"`
+	PanelVersion             string                                  `json:"panelVersion,omitempty"`
+	AgentVersion             string                                  `json:"agentVersion,omitempty"`
+	Capabilities             []string                                `json:"capabilities,omitempty"`
+	ServiceActions           []models.ClusterServiceActionCapability `json:"serviceActions,omitempty"`
+	HeartbeatIntervalSeconds int                                     `json:"heartbeatIntervalSeconds,omitempty"`
+	CPUPercent               float64                                 `json:"cpuPercent"`
+	MemoryPercent            float64                                 `json:"memoryPercent"`
+	DiskPercent              float64                                 `json:"diskPercent"`
+	NetworkRecvBPS           float64                                 `json:"networkReceiveBps"`
+	NetworkSendBPS           float64                                 `json:"networkSendBps"`
+	UptimeSeconds            uint64                                  `json:"uptimeSeconds"`
+	CPUTotalCores            int                                     `json:"cpuTotalCores"`
+	CPUUsedCores             float64                                 `json:"cpuUsedCores"`
+	MemoryUsedBytes          uint64                                  `json:"memoryUsedBytes"`
+	MemoryTotalBytes         uint64                                  `json:"memoryTotalBytes"`
+	DiskUsedBytes            uint64                                  `json:"diskUsedBytes"`
+	DiskTotalBytes           uint64                                  `json:"diskTotalBytes"`
+	IPAddress                string                                  `json:"ipAddress,omitempty"`
+	SubnetMask               string                                  `json:"subnetMask,omitempty"`
+	Gateway                  string                                  `json:"gateway,omitempty"`
+	MACAddress               string                                  `json:"macAddress,omitempty"`
+	InterfaceName            string                                  `json:"interfaceName,omitempty"`
 }
 
 type CreateNodeResult struct {
@@ -229,6 +232,11 @@ func (m *Manager) UpdateNode(id uint, input UpdateNodeInput) (models.ClusterNode
 	} else if exists {
 		return node, ErrEndpointExists
 	}
+	if node.Endpoint != endpoint {
+		node.AddressIdentityStatus = "pending"
+		node.AddressIdentityCheckedAt = nil
+		node.AddressIdentityEndpoint = ""
+	}
 	node.Name, node.Endpoint = name, endpoint
 	node.Group, node.Tags = strings.TrimSpace(input.Group), strings.TrimSpace(input.Tags)
 	if input.Enabled != nil {
@@ -285,6 +293,9 @@ func (m *Manager) RotateToken(id uint) (CreateNodeResult, error) {
 	node.TokenHash = hashToken(token)
 	node.Status = models.ClusterNodeStatusPending
 	node.LastSeenAt = nil
+	node.AddressIdentityStatus = "pending"
+	node.AddressIdentityCheckedAt = nil
+	node.AddressIdentityEndpoint = ""
 	if err := m.db.Save(&node).Error; err != nil {
 		return CreateNodeResult{}, err
 	}
@@ -299,10 +310,24 @@ func (m *Manager) RegisterNode(input NodeRegistration) (models.ClusterNode, erro
 	if !node.Enabled || node.LifecycleStatus == models.ClusterNodeLifecycleDisabled || node.LifecycleStatus == models.ClusterNodeLifecyclePendingDelete {
 		return node, ErrNodeDisabled
 	}
+	publicKey := strings.TrimSpace(input.IdentityPublicKey)
+	if !validClusterPublicKey(publicKey) {
+		publicKey = ""
+	}
+	if node.IdentityPublicKey != publicKey {
+		node.IdentityPublicKey = publicKey
+		node.AddressIdentityStatus = "pending"
+		node.AddressIdentityCheckedAt = nil
+		node.AddressIdentityEndpoint = ""
+	}
 	now := time.Now()
 	node.Hostname, node.SystemID, node.SystemVersion = strings.TrimSpace(input.Hostname), strings.TrimSpace(input.SystemID), strings.TrimSpace(input.SystemVersion)
 	node.Architecture, node.PanelVersion, node.AgentVersion = strings.TrimSpace(input.Architecture), strings.TrimSpace(input.PanelVersion), strings.TrimSpace(input.AgentVersion)
 	node.Capabilities = normalizeCapabilities(input.Capabilities)
+	if input.ServiceActions != nil {
+		node.ServiceActions = normalizeServiceActionCapabilities(input.ServiceActions)
+		node.ServiceActionsReportedAt = &now
+	}
 	node.HeartbeatIntervalSeconds = normalizeHeartbeatInterval(input.HeartbeatIntervalSeconds)
 	node.Status, node.LastError, node.LastSeenAt, node.LastRegisteredAt, node.DepartedAt = models.ClusterNodeStatusOnline, "", &now, &now, nil
 	applyHostSnapshot(&node, input.HostSnapshot)
@@ -326,6 +351,10 @@ func (m *Manager) Heartbeat(input NodeHeartbeat) (models.ClusterNode, error) {
 	now := time.Now()
 	node.Hostname, node.PanelVersion, node.AgentVersion = strings.TrimSpace(input.Hostname), strings.TrimSpace(input.PanelVersion), strings.TrimSpace(input.AgentVersion)
 	node.Capabilities = normalizeCapabilities(input.Capabilities)
+	if input.ServiceActions != nil {
+		node.ServiceActions = normalizeServiceActionCapabilities(input.ServiceActions)
+		node.ServiceActionsReportedAt = &now
+	}
 	node.HeartbeatIntervalSeconds = normalizeHeartbeatInterval(input.HeartbeatIntervalSeconds)
 	node.CPUPercent, node.MemoryPercent, node.DiskPercent = clamp(input.CPUPercent), clamp(input.MemoryPercent), clamp(input.DiskPercent)
 	node.NetworkRecvBPS, node.NetworkSendBPS, node.UptimeSeconds = max0(input.NetworkRecvBPS), max0(input.NetworkSendBPS), input.UptimeSeconds

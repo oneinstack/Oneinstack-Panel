@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -254,7 +255,8 @@ func RevealComponentServiceCredentials(c *gin.Context) {
 		return
 	}
 	securityservice.ResetPasswordVerificationFailures(userID, remoteIP)
-	configuration, err := softwareService.NewInstaller().InspectServiceConfiguration(
+	installer := softwareService.NewInstaller()
+	configuration, err := installer.InspectServiceConfiguration(
 		c.Request.Context(), component, version,
 	)
 	if err != nil {
@@ -265,6 +267,11 @@ func RevealComponentServiceCredentials(c *gin.Context) {
 	}
 	localizeComponentConfiguration(c.GetString("locale"), &configuration)
 	credentials, err := softwareService.RevealInstalledCredentials(configuration)
+	if errors.Is(err, softwareService.ErrInstallCredentialsUnavailable) {
+		credentials, err = installer.RevealManagedServiceCredentials(
+			c.Request.Context(), configuration, version,
+		)
+	}
 	if err != nil {
 		auditservice.RecordAuthEvent(c, "software.credential_reveal", username, userID,
 			http.StatusBadRequest, "failure", "", "component="+component)
@@ -436,6 +443,13 @@ func ListComponentServiceConfigurationHistory(c *gin.Context) {
 		pageSize,
 	)
 	if err != nil {
+		log.Printf(
+			"read component configuration history failed component=%s page=%d pageSize=%d: %v",
+			definition.Component,
+			page,
+			pageSize,
+			err,
+		)
 		core.HandleError(c, core.WrapError(err, core.ErrInternalError, "读取组件配置历史失败"))
 		return
 	}
