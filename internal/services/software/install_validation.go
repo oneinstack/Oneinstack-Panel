@@ -336,7 +336,7 @@ func (installer *Installer) resolveInstallParams(ctx context.Context, params *in
 	if err := validateClosedLoopCatalogVersion(params); err != nil {
 		return nil, err
 	}
-	scriptInfo, err := installer.getInstallScript(ctx, params, "install")
+	scriptInfo, err := installer.getInstallScriptForPreview(ctx, params, "install")
 	if err != nil {
 		return nil, err
 	}

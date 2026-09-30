@@ -721,6 +721,14 @@ func persistedUninstallParameters(softwareKey string, params *input.RemoveParams
 
 // getInstallScript 获取安装脚本
 func (installer *Installer) getInstallScript(ctx context.Context, params *input.InstallParams, actionName string) (*script.ScriptInfo, error) {
+	return installer.getInstallScriptWithMode(ctx, params, actionName, false)
+}
+
+func (installer *Installer) getInstallScriptForPreview(ctx context.Context, params *input.InstallParams, actionName string) (*script.ScriptInfo, error) {
+	return installer.getInstallScriptWithMode(ctx, params, actionName, true)
+}
+
+func (installer *Installer) getInstallScriptWithMode(ctx context.Context, params *input.InstallParams, actionName string, preview bool) (*script.ScriptInfo, error) {
 	if params == nil {
 		return nil, &InstallParameterError{Field: "install", Message: "installation parameters are required"}
 	}
@@ -868,7 +876,7 @@ func (installer *Installer) getInstallScript(ctx context.Context, params *input.
 			return nil, errors.New("offline package cannot be used by a Center installation")
 		}
 		if params.ResolvedPackage != nil {
-			fixedPackage, fixedErr := registry.ResolveFixed(componentName, params.Version, *params.ResolvedPackage)
+			fixedPackage, fixedErr := registry.ResolveFixedContext(ctx, componentName, params.Version, *params.ResolvedPackage)
 			if fixedErr != nil {
 				return nil, fmt.Errorf("resolve fixed %s %s package: %w", componentName, actionName, fixedErr)
 			}
@@ -880,12 +888,13 @@ func (installer *Installer) getInstallScript(ctx context.Context, params *input.
 			}
 			return scriptInfoFromPackage(fixedPackage, actionName, params.Version)
 		}
-		componentPackage, resolveErr := registry.ResolveChannel(
-			ctx,
-			componentName,
-			params.Version,
-			catalogChannel,
-		)
+		var componentPackage scriptregistry.Package
+		var resolveErr error
+		if preview && strings.EqualFold(componentName, "minio") {
+			componentPackage, resolveErr = registry.ResolvePreviewChannel(ctx, componentName, params.Version, catalogChannel)
+		} else {
+			componentPackage, resolveErr = registry.ResolveChannel(ctx, componentName, params.Version, catalogChannel)
+		}
 		if resolveErr == nil {
 			if actionName == "upgrade" && componentPackage.Manifest.Actions.Upgrade == "" {
 				actionName = "install"

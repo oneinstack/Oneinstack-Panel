@@ -209,6 +209,43 @@ func (r *Registry) Resolve(ctx context.Context, component, softwareVersion strin
 	return Package{}, bundledErr
 }
 
+// ResolvePreviewChannel resolves the signed package metadata used by an
+// installation preview. MinIO packages are intentionally metadata-only here:
+// their large archive is downloaded after the user confirms the operation.
+// All other components retain the existing resolve-and-prepare behavior.
+func (r *Registry) ResolvePreviewChannel(
+	ctx context.Context,
+	component string,
+	softwareVersion string,
+	channel string,
+) (Package, error) {
+	component = strings.ToLower(strings.TrimSpace(component))
+	if component != "minio" {
+		return r.ResolveChannel(ctx, component, softwareVersion, channel)
+	}
+	channel = strings.ToLower(strings.TrimSpace(channel))
+	if channel == "" || channel == r.config.Channel {
+		return r.resolvePreview(ctx, component, softwareVersion)
+	}
+	selected := *r
+	selected.config.Channel = channel
+	return selected.resolvePreview(ctx, component, softwareVersion)
+}
+
+func (r *Registry) resolvePreview(ctx context.Context, component, softwareVersion string) (Package, error) {
+	if r.config.Enabled {
+		metadata, err := r.resolveRemoteMetadata(ctx, component, softwareVersion)
+		if err == nil {
+			return Package{Manifest: metadata.Manifest, Source: "remote", Metadata: metadata}, nil
+		}
+		if !transientCenterPackageError(err) {
+			return Package{}, err
+		}
+	}
+	// Preserve the existing bundled fallback for transient Center failures.
+	return r.resolveBundled(component, softwareVersion)
+}
+
 func transientCenterPackageError(err error) bool {
 	var coded interface{ ErrorCode() string }
 	if !errors.As(err, &coded) {
@@ -225,6 +262,17 @@ func transientCenterPackageError(err error) bool {
 // ResolveFixed resolves only the package captured by an installation preview.
 // It never contacts Center and never selects another package or digest.
 func (r *Registry) ResolveFixed(component, softwareVersion string, pin PackagePin) (Package, error) {
+	return r.resolveFixed(context.Background(), component, softwareVersion, pin, false)
+}
+
+// ResolveFixedContext is used by the confirmed task path. MinIO previews may
+// carry metadata without a cached archive; in that one case this method
+// rechecks the exact signed metadata and downloads the pinned archive now.
+func (r *Registry) ResolveFixedContext(ctx context.Context, component, softwareVersion string, pin PackagePin) (Package, error) {
+	return r.resolveFixed(ctx, component, softwareVersion, pin, true)
+}
+
+func (r *Registry) resolveFixed(ctx context.Context, component, softwareVersion string, pin PackagePin, allowMinIODownload bool) (Package, error) {
 	component = strings.ToLower(strings.TrimSpace(component))
 	if component == "" || pin.Component != component ||
 		strings.TrimSpace(pin.SoftwareVersion) != strings.TrimSpace(softwareVersion) ||
@@ -257,6 +305,30 @@ func (r *Registry) ResolveFixed(component, softwareVersion string, pin PackagePi
 		}
 	} else {
 		manifest, err = validateDirectory(root)
+	}
+	if err != nil {
+		if allowMinIODownload && component == "minio" && pin.PackageSource == "remote" {
+			if ctx == nil {
+				ctx = context.Background()
+			}
+			metadata, metadataErr := r.resolveRemoteMetadata(ctx, component, softwareVersion)
+			if metadataErr != nil {
+				return Package{}, metadataErr
+			}
+			if metadata.Manifest.Component.Version != pin.ResolvedVersion ||
+				!strings.EqualFold(metadata.SHA256, pin.PackageSHA256) ||
+				metadata.Signature != pin.Signature || metadata.KeyID != pin.KeyID ||
+				metadata.DownloadURL != pin.PackageURL {
+				return Package{}, newRegistryError("PACKAGE_RESOLVE_FAILED", "the preview-fixed MinIO package identity changed", nil)
+			}
+			pkg, downloadErr := r.downloadAndPrepare(ctx, metadata)
+			if downloadErr != nil {
+				return Package{}, downloadErr
+			}
+			manifest = pkg.Manifest
+			root = pkg.Root
+			err = nil
+		}
 	}
 	if err != nil {
 		return Package{}, newRegistryError("PACKAGE_UNAVAILABLE", "the preview-fixed package is no longer cached", err)
