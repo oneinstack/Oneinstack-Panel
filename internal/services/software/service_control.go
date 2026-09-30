@@ -95,6 +95,14 @@ func NormalizeServiceComponent(value string) (ComponentServiceDefinition, error)
 			ManageScopes: []string{"database"},
 		}, nil
 	}
+	if normalized == "minio" {
+		return ComponentServiceDefinition{
+			Component:   "minio",
+			SoftwareKey: "minio",
+			DisplayName: "MinIO",
+			ServiceName: "minio",
+		}, nil
+	}
 	return ComponentServiceDefinition{}, fmt.Errorf("unsupported component service: %s", value)
 }
 
@@ -768,7 +776,7 @@ func parseComponentServiceProbe(
 		case "component", "service", "load_state", "active_state", "sub_state",
 			"unit_file_state", "runtime_version", "can_reload":
 		case "recorded_version", "version_state", "ownership", "socket_state":
-			if definition.Component != "php" && definition.Component != "firewalld" && definition.Component != "mariadb" {
+			if definition.Component != "php" && definition.Component != "firewalld" && definition.Component != "mariadb" && !(definition.Component == "minio" && key == "socket_state") {
 				return ComponentServiceProbe{}, fmt.Errorf("component status output contains unknown field %q", key)
 			}
 		case "port":
@@ -842,6 +850,13 @@ func parseComponentServiceProbe(
 		case "ready", "absent", "unknown":
 		default:
 			return ComponentServiceProbe{}, fmt.Errorf("component status output contains invalid socket state")
+		}
+	}
+	if definition.Component == "minio" {
+		switch fields["socket_state"] {
+		case "ready", "service_inactive", "port_unreachable", "health_unavailable", "probe_missing":
+		default:
+			return ComponentServiceProbe{}, fmt.Errorf("MinIO status output contains invalid health state")
 		}
 	}
 	if definition.Component == "firewalld" {

@@ -358,7 +358,9 @@ func parseManagedCredentialOutput(
 	for _, parameter := range parameters {
 		normalized := componentstate.NormalizeParameterName(parameter.Name)
 		secret := parameter.Secret || strings.EqualFold(strings.TrimSpace(parameter.Type), "password")
-		if normalized == "" || (!secret && !isCredentialIdentityParameter(parameter.Name)) {
+		identity := isCredentialIdentityParameter(parameter.Name) ||
+			(configuration.Component == "minio" && normalized == "minio-root-user")
+		if normalized == "" || (!secret && !identity) {
 			continue
 		}
 		allowed[normalized] = credentialParameter{secret: secret}

@@ -266,11 +266,18 @@ func RevealComponentServiceCredentials(c *gin.Context) {
 		return
 	}
 	localizeComponentConfiguration(c.GetString("locale"), &configuration)
-	credentials, err := softwareService.RevealInstalledCredentials(configuration)
-	if errors.Is(err, softwareService.ErrInstallCredentialsUnavailable) {
+	var credentials softwareService.RevealedCredentials
+	if configuration.Component == "minio" {
 		credentials, err = installer.RevealManagedServiceCredentials(
 			c.Request.Context(), configuration, version,
 		)
+	} else {
+		credentials, err = softwareService.RevealInstalledCredentials(configuration)
+		if errors.Is(err, softwareService.ErrInstallCredentialsUnavailable) {
+			credentials, err = installer.RevealManagedServiceCredentials(
+				c.Request.Context(), configuration, version,
+			)
+		}
 	}
 	if err != nil {
 		auditservice.RecordAuthEvent(c, "software.credential_reveal", username, userID,

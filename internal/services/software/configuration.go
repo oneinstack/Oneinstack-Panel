@@ -32,6 +32,8 @@ var (
 	ErrConfigurationConflict = errors.New("configuration revision conflict")
 	configurationKeyPattern  = regexp.MustCompile(`^[a-z][A-Za-z0-9-]{0,63}$`)
 	configurationHashPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	minioReleasePattern      = regexp.MustCompile(`^RELEASE\.[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}-[0-9]{2}-[0-9]{2}Z$`)
+	minioRootUserPattern     = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{2,62}$`)
 	redisUsernamePattern     = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
 	mongodbUsernamePattern   = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9._-]{0,63}$`)
 	mongodbHostnamePattern   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$`)
@@ -411,6 +413,8 @@ func componentConfigurationDefinition(component string) (configurationDefinition
 	case "opensearch":
 		// The signed component manifest owns the complete field schema. This
 		// base registration only enables package resolution and service control.
+		result.ApplyMode = "restart"
+	case "minio":
 		result.ApplyMode = "restart"
 	case "php":
 		result.ApplyMode = "reload"
@@ -938,6 +942,10 @@ func componentInstallParameterLabel(name string) string {
 		return "Redis login username"
 	case "REDIS_PASSWORD":
 		return "Redis password"
+	case "MINIO_ROOT_USER":
+		return "MinIO Root username"
+	case "MINIO_ROOT_PASSWORD":
+		return "MinIO Root password"
 	case "MONGODB_PORT":
 		return "MongoDB listener port"
 	case "MONGODB_BIND_IP":
@@ -1692,7 +1700,7 @@ func parseComponentConfiguration(
 	}
 	optional := make(map[string]struct{})
 	var runtime *ComponentRuntime
-	if definition.Component == "mysql" || definition.Component == "mariadb" || definition.Component == "mongodb" || definition.Component == "opensearch" || definition.Component == "php" || definition.Component == "firewalld" || definition.Component == "apache" || definition.Component == "openresty" || definition.Component == "caddy" || definition.Component == "adminer" || definition.Component == "tomcat" || definition.Component == "clamav" {
+	if definition.Component == "mysql" || definition.Component == "mariadb" || definition.Component == "mongodb" || definition.Component == "minio" || definition.Component == "opensearch" || definition.Component == "php" || definition.Component == "firewalld" || definition.Component == "apache" || definition.Component == "openresty" || definition.Component == "caddy" || definition.Component == "adminer" || definition.Component == "tomcat" || definition.Component == "clamav" {
 		runtime = &ComponentRuntime{}
 		runtimeKeys := []string{"runtime.port", "runtime.bindAddress", "runtime.installDir", "runtime.dataDir", "runtime.logDir", "runtime.runUser", "runtime.runGroup"}
 		if definition.Component == "mariadb" {
@@ -1705,6 +1713,8 @@ func parseComponentConfiguration(
 			runtimeKeys = []string{"runtime.port", "runtime.bindAddress", "runtime.socketPath", "runtime.installDir", "runtime.dataDir", "runtime.logDir", "runtime.runUser", "runtime.runGroup", "runtime.configFile", "runtime.vhostDir", "runtime.serviceName", "runtime.version"}
 		} else if definition.Component == "mongodb" {
 			runtimeKeys = []string{"runtime.port", "runtime.bindAddress", "runtime.installDir", "runtime.dataDir", "runtime.logDir", "runtime.runUser", "runtime.runGroup", "runtime.configFile", "runtime.serviceName", "runtime.version"}
+		} else if definition.Component == "minio" {
+			runtimeKeys = []string{"runtime.port", "runtime.bindAddress", "runtime.installDir", "runtime.dataDir", "runtime.runUser", "runtime.runGroup", "runtime.configFile", "runtime.serviceName", "runtime.version", "runtime.systemdState"}
 		} else if definition.Component == "opensearch" {
 			runtimeKeys = []string{"runtime.port", "runtime.bindAddress", "runtime.installDir", "runtime.dataDir", "runtime.logDir", "runtime.runUser", "runtime.runGroup", "runtime.configFile", "runtime.serviceName", "runtime.version", "runtime.httpsState", "runtime.systemdState"}
 		} else if definition.Component == "tomcat" {
@@ -1718,7 +1728,7 @@ func parseComponentConfiguration(
 			allowed[key] = struct{}{}
 		}
 	}
-	if definition.Component == "redis" || definition.Component == "mongodb" || definition.Component == "opensearch" || definition.Component == "webdav" {
+	if definition.Component == "redis" || definition.Component == "mongodb" || definition.Component == "minio" || definition.Component == "opensearch" || definition.Component == "webdav" {
 		for _, key := range []string{
 			"connection.port",
 			"connection.bindAddress",
@@ -1843,6 +1853,16 @@ func parseComponentConfiguration(
 				runtime.ConfigFile != "/etc/mongod.conf" || runtime.ServiceName != "mongod" || !runtimeVersionPattern.MatchString(runtime.Version) {
 				return ComponentConfiguration{}, errors.New("MongoDB component runtime identity is invalid")
 			}
+		} else if definition.Component == "minio" {
+			port, parseErr := strconv.Atoi(runtime.Port)
+			if parseErr != nil || port < 1 || port > 65535 || runtime.BindAddress == "" ||
+				runtime.InstallDir == "" || !strings.HasPrefix(runtime.InstallDir, "/") || filepath.Clean(runtime.InstallDir) != runtime.InstallDir ||
+				runtime.DataDir == "" || !strings.HasPrefix(runtime.DataDir, "/") || filepath.Clean(runtime.DataDir) != runtime.DataDir ||
+				runtime.RunUser != "minio" || runtime.RunGroup != "minio" ||
+				runtime.ConfigFile != "/etc/default/minio" || runtime.ServiceName != "minio" || !minioReleasePattern.MatchString(runtime.Version) ||
+				!serviceStatePattern.MatchString(runtime.SystemdState) {
+				return ComponentConfiguration{}, errors.New("MinIO component runtime identity is invalid")
+			}
 		} else if definition.Component == "opensearch" {
 			port, parseErr := strconv.Atoi(runtime.Port)
 			if parseErr != nil || port < 1 || port > 65535 || runtime.BindAddress == "" ||
@@ -1924,7 +1944,7 @@ func parseComponentConfiguration(
 		}
 	}
 	var connection *ComponentConnection
-	if definition.Component == "redis" || definition.Component == "mongodb" || definition.Component == "opensearch" || definition.Component == "webdav" {
+	if definition.Component == "redis" || definition.Component == "mongodb" || definition.Component == "minio" || definition.Component == "opensearch" || definition.Component == "webdav" {
 		connectionKeys := []string{
 			"connection.port",
 			"connection.bindAddress",
@@ -1946,6 +1966,8 @@ func parseComponentConfiguration(
 			usernameValid := redisUsernamePattern.MatchString(username)
 			if definition.Component == "mongodb" {
 				usernameValid = mongodbUsernamePattern.MatchString(username)
+			} else if definition.Component == "minio" {
+				usernameValid = minioRootUserPattern.MatchString(username)
 			} else if definition.Component == "opensearch" {
 				usernameValid = username == "admin"
 			} else if definition.Component == "webdav" {

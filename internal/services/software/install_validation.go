@@ -16,6 +16,7 @@ import (
 	"oneinstack/internal/models"
 	"oneinstack/internal/services/script"
 	"oneinstack/internal/services/scriptregistry"
+	"oneinstack/internal/services/softwarecatalog"
 	"oneinstack/router/input"
 
 	"gorm.io/gorm"
@@ -700,6 +701,9 @@ func validateClosedLoopCatalogVersion(params *input.InstallParams) error {
 	if key == "openresty" {
 		versionPattern = openRestyExactVersionPattern
 		versionShape = "x.y.z.w"
+	} else if key == "minio" {
+		versionPattern = minioReleasePattern
+		versionShape = "RELEASE.YYYY-MM-DDThh-mm-ssZ"
 	}
 	if !versionPattern.MatchString(version) {
 		return &InstallParameterError{Field: "version", Message: fmt.Sprintf("版本必须是 %s 精确版本，并且属于 Center 已发布的可安装版本", versionShape)}
@@ -742,6 +746,8 @@ func closedLoopCatalogIdentity(key string) (catalogKey, catalogComponent string,
 		return "mariadb", "mariadb", true
 	case "mongodb":
 		return "mongodb", "mongodb", true
+	case "minio":
+		return "minio", "minio", true
 	case "opensearch":
 		return "opensearch", "opensearch", true
 	case "webserver", "nginx":
@@ -872,12 +878,9 @@ func PreviewInstallationParams(ctx context.Context, params *input.InstallParams)
 
 // PreviewInstallationPackage validates the installation and returns the
 // immutable package identity that must be embedded in the operation preview.
-// Catalog-managed firewalld installations are not allowed to proceed without
-// a Center-verified remote/cache package pin.
+// Catalog-managed installations retain the package identity selected by the
+// preview, including a verified bundled package during a Center outage.
 func PreviewInstallationPackage(ctx context.Context, params *input.InstallParams) ([]EffectiveInstallParameter, scriptregistry.PackagePin, error) {
-	if err := ensureCenterCatalogFreshForFirewalld(ctx, params); err != nil {
-		return nil, scriptregistry.PackagePin{}, err
-	}
 	provided := installParameterPresence(params)
 	installer := NewInstaller()
 	scriptInfo, err := installer.resolveInstallParams(ctx, params)
@@ -958,6 +961,11 @@ func PreviewInstallationPackage(ctx context.Context, params *input.InstallParams
 	if scriptInfo.PackagePin != nil {
 		pin = *scriptInfo.PackagePin
 	}
+	if pin.PackageSource == "bundled" {
+		if err := validateBundledCatalogIdentity(params, pin); err != nil {
+			return nil, scriptregistry.PackagePin{}, err
+		}
+	}
 	expectedComponent, required := closedLoopPackageComponent(params.Key)
 	if !required && declaresManagedPackageTransport(scriptInfo.ParameterSpecs) {
 		expectedComponent = strings.TrimSpace(scriptInfo.Name)
@@ -965,11 +973,49 @@ func PreviewInstallationPackage(ctx context.Context, params *input.InstallParams
 	}
 	if required &&
 		(pin.Component != expectedComponent ||
-			(pin.PackageSource != "remote" && pin.PackageSource != "cache" && pin.PackageSource != "offline") ||
+			(pin.PackageSource != "remote" && pin.PackageSource != "cache" && pin.PackageSource != "offline" && pin.PackageSource != "bundled") ||
 			pin.SoftwareVersion != strings.TrimSpace(params.Version) || pin.PackageSHA256 == "") {
-		return nil, scriptregistry.PackagePin{}, fmt.Errorf("PACKAGE_RESOLVE_FAILED: %s requires a Center-verified fixed package pin", params.Key)
+		return nil, scriptregistry.PackagePin{}, fmt.Errorf("PACKAGE_RESOLVE_FAILED: %s requires a verified fixed package pin", params.Key)
 	}
 	return values, pin, nil
+}
+
+func validateBundledCatalogIdentity(params *input.InstallParams, pin scriptregistry.PackagePin) error {
+	if params == nil || app.DB() == nil {
+		return errors.New("CATALOG_STALE: no trusted Center catalog snapshot is available")
+	}
+	var state models.SoftwareCatalogState
+	if err := app.DB().First(&state, 1).Error; err != nil || state.Revision == "" {
+		return errors.New("CATALOG_STALE: no verified software catalog is available")
+	}
+	if state.Mode == "bundled" {
+		if !softwarecatalog.BundledCatalogPackage(app.ONE_CONFIG.ScriptCenter.BundledPath, state.Revision, pin.Component, pin.ResolvedVersion, pin.PackageSHA256) {
+			return errors.New("CATALOG_STALE: bundled production inventory has changed")
+		}
+	} else if state.Mode != "center" || state.LastSyncedAt == nil {
+		return errors.New("CATALOG_STALE: no trusted Center catalog snapshot is available")
+	}
+	keys := []string{strings.ToLower(strings.TrimSpace(params.Key))}
+	switch pin.Component {
+	case "mysql":
+		keys = []string{"db", "mysql"}
+	case "nginx":
+		keys = []string{"webserver", "nginx"}
+	}
+	var row models.Software
+	query := app.DB().Where(
+		"`key` IN ? AND component = ? AND catalog_channel = ? AND catalog_revision = ? AND catalog_managed = ? AND catalog_visible = ? AND installable = ?",
+		keys, pin.Component, pin.Channel, state.Revision, true, true, true,
+	)
+	if pin.Component != "firewalld" {
+		query = query.Where("version = ?", pin.SoftwareVersion)
+	}
+	err := query.First(&row).Error
+	if err != nil || strings.TrimSpace(row.LatestPackageVersion) == "" ||
+		(state.Mode == "bundled" && row.LatestPackageVersion != pin.ResolvedVersion) {
+		return errors.New("PACKAGE_UNPUBLISHED: requested version is absent from the verified software catalog")
+	}
+	return nil
 }
 
 func declaresManagedPackageTransport(parameters []script.ParameterSpec) bool {
@@ -1010,6 +1056,14 @@ func installParameterWasRestored(params *input.InstallParams, name string) bool 
 
 func closedLoopPackageComponent(key string) (string, bool) {
 	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "adminer", "clamav", "halo", "phpmyadmin", "webdav":
+		return strings.ToLower(strings.TrimSpace(key)), true
+	case "docker":
+		return "docker", true
+	case "docker-compose":
+		return "docker-compose", true
+	case "fail2ban":
+		return "fail2ban", true
 	case "firewalld":
 		return "firewalld", true
 	case "db", "mysql":
@@ -1032,6 +1086,8 @@ func closedLoopPackageComponent(key string) (string, bool) {
 		return "apache", true
 	case "php":
 		return "php", true
+	case "redis":
+		return "redis", true
 	case "nodejs":
 		return "nodejs", true
 	case "tomcat":
@@ -1039,24 +1095,6 @@ func closedLoopPackageComponent(key string) (string, bool) {
 	default:
 		return "", false
 	}
-}
-
-func ensureCenterCatalogFreshForFirewalld(ctx context.Context, params *input.InstallParams) error {
-	if params == nil || !strings.EqualFold(strings.TrimSpace(params.Key), "firewalld") ||
-		!app.ONE_CONFIG.ScriptCenter.Enabled || app.DB() == nil {
-		return nil
-	}
-	status, err := GetCatalogStatus()
-	if err != nil {
-		return fmt.Errorf("CATALOG_STALE: unable to read the Panel software catalog status: %w", err)
-	}
-	if !status.Stale {
-		return nil
-	}
-	if _, err := SyncCatalogNow(ctx); err != nil {
-		return fmt.Errorf("CATALOG_STALE: Panel software catalog refresh failed: %w", err)
-	}
-	return nil
 }
 
 func installParameterEnvironmentName(spec script.ParameterSpec) string {

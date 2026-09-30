@@ -17,6 +17,7 @@ var (
 	componentIDPattern         = regexp.MustCompile(`^[a-z][a-z0-9-]{1,63}$`)
 	versionPattern             = regexp.MustCompile(`^v?[0-9]+(?:\.[0-9]+){1,2}(?:[-+][0-9A-Za-z.-]+)?$`)
 	softwareVersionPattern     = regexp.MustCompile(`^v?[0-9]+(?:\.[0-9]+){1,3}(?:[-+][0-9A-Za-z.-]+)?$`)
+	minioReleasePattern        = regexp.MustCompile(`^RELEASE\.[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}-[0-9]{2}-[0-9]{2}Z$`)
 	softwareVersionLinePattern = regexp.MustCompile(`^v?[0-9]+(?:\.[0-9]+)*\.x$`)
 	parameterPattern           = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_-]{1,63}$`)
 	environmentPattern         = regexp.MustCompile(`^[A-Z][A-Z0-9_]{1,63}$`)
@@ -310,6 +311,9 @@ func (m Manifest) validate() error {
 	}
 	for _, supported := range m.Component.SoftwareVersions {
 		supported = strings.TrimSpace(supported)
+		if m.Component.ID == "minio" && !minioReleasePattern.MatchString(supported) {
+			return fmt.Errorf("MinIO requires an exact RELEASE timestamp version, got %q", supported)
+		}
 		if supported == "" {
 			return fmt.Errorf("component contains an empty software version")
 		}

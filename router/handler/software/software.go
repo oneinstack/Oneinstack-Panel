@@ -60,7 +60,7 @@ func RunInstallation(c *gin.Context) {
 func RunOfflineInstallation(c *gin.Context) {
 	maxPackageBytes := app.ONE_CONFIG.ScriptCenter.MaxPackageBytes
 	if maxPackageBytes < 1 {
-		maxPackageBytes = 64 << 20
+		maxPackageBytes = 128 << 20
 	}
 	if err := c.Request.ParseMultipartForm(maxPackageBytes); err != nil {
 		core.HandleError(c, core.WrapError(err, core.ErrBadRequest, "离线安装包请求格式不正确"))
@@ -103,6 +103,13 @@ func RunOfflineInstallation(c *gin.Context) {
 		"opensearch-cluster-name",
 		"opensearch-node-name",
 		"opensearch-heap-size-mb",
+		"minio-root-user",
+		"minio-root-password",
+		"minio-api-bind",
+		"minio-api-port",
+		"minio-console-bind",
+		"minio-console-port",
+		"minio-browser-redirect-url",
 		"data-dir",
 		"log-dir",
 		"install-dir",
