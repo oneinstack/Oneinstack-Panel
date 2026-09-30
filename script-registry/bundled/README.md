@@ -1,21 +1,25 @@
 # Bundled component packages
 
-Release builds copy signed-off baseline component directories here using:
+`production-lock.json` selects the 22 stable packages shipped with Panel:
+Adminer, Apache, Caddy, ClamAV, Docker, Docker Compose, Fail2ban, firewalld,
+Halo, MariaDB, MongoDB, MySQL, Nginx, Node.js, OpenResty, OpenSearch, PHP,
+phpMyAdmin, Redis, Tengine, Tomcat, and WebDAV. Grafana, Loki, and MinIO are
+excluded. It records the committed Center source revision, package
+versions, and deterministic content digests. Older package directories remain
+available for installed component lifecycle actions.
+`production-catalog.json` contains the 22 matching software-store products
+from the same committed Center source, including versions, parameters, and
+icons. A fresh Panel can display this local catalog before Center sync.
 
-`<component>/<package-version>/manifest.yaml`, `files.sha256`, and action scripts.
+Run `scripts/sync-center-components.sh [CENTER_PATH] [CENTER_COMMIT]` to build
+all 22 packages from one committed Center revision. The script rejects a
+different package under an existing component version. Panel release scripts
+verify the lock, catalog, and package contents before packaging and after extraction.
 
-The Panel prefers a verified package from Oneinstack-Center when enabled, then
-falls back to the newest compatible package in this directory. The embedded
-legacy scripts remain a temporary final fallback until their OneinStack
-component packages have been extracted and accepted.
-
-Current first-party baseline packages:
-
-- Nginx 1.28.2
-- MySQL 8.0 (upstream patch 8.0.45)
-- PHP 8.1, 8.2, and 8.3
-- Redis 7.4.8
-
-They currently target Ubuntu 22.04/24.04 amd64. Run
-`scripts/sync-center-components.sh` after changing the sibling
-`Oneinstack-Center/components/production` sources.
+Center is preferred for new installs. During a Center service outage, Panel
+uses a compatible locked package when the requested software version is in a
+verified Center catalog or the matching bundled production catalog. The latter
+is identified as `bundled`, not as a Center-signed package. The bundled scripts
+still download software and system dependencies as part of online installation;
+they are not offline software bundles. Host support is determined by each
+package manifest and the target host, not by this directory as a whole.
