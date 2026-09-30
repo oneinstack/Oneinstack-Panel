@@ -573,8 +573,16 @@ func (m *CreateTaskManager) run(taskID string) {
 }
 
 func (m *CreateTaskManager) composeLineEmitter(taskID, operation string) func(string) {
+	emit := m.lineEmitter(taskID, operation)
+	var previous string
 	return func(line string) {
-		m.lineEmitter(taskID, operation)(redactContainerLogLine(line))
+		line = strings.TrimSpace(redactContainerLogLine(line))
+		if line == previous && strings.HasPrefix(line, "Network ") &&
+			(strings.HasSuffix(line, " Creating") || strings.HasSuffix(line, " Created")) {
+			return
+		}
+		previous = line
+		emit(line)
 	}
 }
 

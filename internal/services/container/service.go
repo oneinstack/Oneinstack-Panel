@@ -1076,7 +1076,9 @@ func redactContainerBearerToken(message string) string {
 }
 
 func (s *Service) Logs(ctx context.Context, id string, options LogOptions) (string, error) {
-	args, err := containerLogArgs(id, options, false)
+	logOptions := options
+	logOptions.Timestamps = true // Needed to merge Docker's stdout and stderr in event order.
+	args, err := containerLogArgs(id, logOptions, false)
 	if err != nil {
 		return "", err
 	}
@@ -1086,7 +1088,7 @@ func (s *Service) Logs(ctx context.Context, id string, options LogOptions) (stri
 	var runErr error
 	for attempt := 0; ; attempt++ {
 		output.Reset()
-		runErr = s.runContainerLogs(ctx, args, &output)
+		runErr = s.runContainerLogs(ctx, args, &output, true, options.Timestamps)
 		if runErr == nil || !retryableContainerLogsError(runErr) || attempt >= containerReadRetryAttempts-1 {
 			break
 		}
@@ -1115,7 +1117,7 @@ func (s *Service) FollowLogs(ctx context.Context, id string, options LogOptions,
 	if err != nil {
 		return err
 	}
-	if err := s.runContainerLogs(ctx, args, output); err != nil {
+	if err := s.runContainerLogs(ctx, args, output, false, options.Timestamps); err != nil {
 		if errors.Is(err, ErrContainerLogsUnavailable) {
 			if diagnostic, diagnosticErr := s.containerLogDiagnostic(ctx, id, err); diagnosticErr == nil && diagnostic != "" {
 				_, _ = io.WriteString(output, diagnostic)
@@ -1292,17 +1294,24 @@ func (buffer *limitedBuffer) String() string {
 	return buffer.buffer.String()
 }
 
-func (s *Service) runContainerLogs(ctx context.Context, args []string, output io.Writer) error {
+func (s *Service) runContainerLogs(ctx context.Context, args []string, output io.Writer, ordered, showTimestamps bool) error {
 	if _, err := exec.LookPath(s.binary); err != nil {
 		return fmt.Errorf("%w: %s executable file not found in PATH", ErrRuntimeUnavailable, s.binary)
 	}
 	command := exec.CommandContext(ctx, s.binary, args...)
-	safeOutput := newContainerLogRedactingWriter(output)
-	command.Stdout = safeOutput
+	var stdoutOutput, stderrOutput bytes.Buffer
+	stdoutTarget, stderrTarget := output, output
+	if ordered {
+		stdoutTarget, stderrTarget = &stdoutOutput, &stderrOutput
+	}
+	stdoutWriter := newContainerLogRedactingWriter(stdoutTarget)
+	stderrWriter := newContainerLogRedactingWriter(stderrTarget)
+	command.Stdout = stdoutWriter
 	stderr := &limitedBuffer{limit: 8192}
-	command.Stderr = io.MultiWriter(safeOutput, stderr)
+	command.Stderr = io.MultiWriter(stderrWriter, stderr)
 	runErr := command.Run()
-	flushErr := safeOutput.Flush()
+	stdoutFlushErr := stdoutWriter.Flush()
+	stderrFlushErr := stderrWriter.Flush()
 	if runErr != nil {
 		if ctx.Err() != nil {
 			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
@@ -1325,10 +1334,80 @@ func (s *Service) runContainerLogs(ctx context.Context, args []string, output io
 		}
 		return errors.New(message)
 	}
-	if flushErr != nil {
-		return flushErr
+	if stdoutFlushErr != nil {
+		return stdoutFlushErr
+	}
+	if stderrFlushErr != nil {
+		return stderrFlushErr
+	}
+	if ordered {
+		_, err := io.WriteString(output, orderContainerLogStreams(stdoutOutput.String(), stderrOutput.String(), showTimestamps))
+		return err
 	}
 	return nil
+}
+
+type timestampedContainerLogLine struct {
+	time time.Time
+	text string
+}
+
+func orderContainerLogStreams(stdout, stderr string, showTimestamps bool) string {
+	lines := make([]timestampedContainerLogLine, 0)
+	for _, stream := range []string{stdout, stderr} {
+		for stream != "" {
+			line := stream
+			if end := strings.IndexByte(stream, '\n'); end >= 0 {
+				line, stream = stream[:end+1], stream[end+1:]
+			} else {
+				stream = ""
+			}
+			stamp, _, ok := strings.Cut(line, " ")
+			if !ok {
+				return containerLogFallback(stdout, stderr, showTimestamps)
+			}
+			parsed, err := time.Parse(time.RFC3339Nano, stamp)
+			if err != nil {
+				return containerLogFallback(stdout, stderr, showTimestamps)
+			}
+			lines = append(lines, timestampedContainerLogLine{time: parsed, text: line})
+		}
+	}
+	sort.SliceStable(lines, func(i, j int) bool { return lines[i].time.Before(lines[j].time) })
+	var result strings.Builder
+	for _, line := range lines {
+		if showTimestamps {
+			result.WriteString(line.text)
+		} else {
+			_, message, _ := strings.Cut(line.text, " ")
+			result.WriteString(message)
+		}
+	}
+	return result.String()
+}
+
+func containerLogFallback(stdout, stderr string, showTimestamps bool) string {
+	combined := stdout + stderr
+	if showTimestamps {
+		return combined
+	}
+	var result strings.Builder
+	for combined != "" {
+		line := combined
+		if end := strings.IndexByte(combined, '\n'); end >= 0 {
+			line, combined = combined[:end+1], combined[end+1:]
+		} else {
+			combined = ""
+		}
+		stamp, message, ok := strings.Cut(line, " ")
+		if ok {
+			if _, err := time.Parse(time.RFC3339Nano, stamp); err == nil {
+				line = message
+			}
+		}
+		result.WriteString(line)
+	}
+	return result.String()
 }
 
 func (s *Service) PullImage(ctx context.Context, reference string) error {
