@@ -1,0 +1,77 @@
+schemaVersion: 1
+component:
+  id: firewalld
+  name: firewalld
+  version: 1.0.12
+  softwareVersions: ["0.x", "1.x", "2.x"]
+  channel: stable
+  allowCustomVersion: true
+  description: OneinStack-managed firewalld with protected Panel access and reversible rule configuration.
+compatibility:
+  panel: ">=0.1.0-0"
+  systems:
+    - id: ubuntu
+      versions: ["22.04", "24.04", "26.04"]
+    - id: debian
+      versions: ["11", "12", "13"]
+    - id: rhel
+      versions: ["8", "9", "10"]
+    - id: rocky
+      versions: ["8", "9", "10"]
+    - id: almalinux
+      versions: ["8", "9", "10"]
+    - id: centos
+      versions: ["7", "8", "9", "10"]
+    - id: ol
+      versions: ["8", "9", "10"]
+    - id: fedora
+      versions: ["*"]
+    - id: amzn
+      versions: ["2023"]
+    - id: sles
+      versions: ["*"]
+    - id: opensuse-leap
+      versions: ["*"]
+    - id: opensuse-tumbleweed
+      versions: ["*"]
+    - id: opensuse
+      versions: ["*"]
+  architectures: [amd64, arm64]
+dependencies:
+  packages:
+    apt: [firewalld, netbase, ca-certificates]
+    dnf: [firewalld, setup, ca-certificates]
+    yum: [firewalld, setup, ca-certificates]
+    zypper: [firewalld, netcfg, ca-certificates]
+runtimeGroup: firewall
+serviceName: firewalld
+actions:
+  precheck: scripts/precheck.sh
+  install: scripts/install.sh
+  configure: scripts/configure.sh
+  verify: scripts/verify.sh
+  upgrade: scripts/upgrade.sh
+  rollback: scripts/rollback.sh
+  uninstall: scripts/uninstall.sh
+  status: scripts/status.sh
+  start: scripts/start.sh
+  stop: scripts/stop.sh
+  restart: scripts/restart.sh
+  reload: scripts/reload.sh
+  configGet: scripts/config.sh
+  configApply: scripts/config.sh
+parameters:
+  - {name: status-scope, env: ONEINSTACK_STATUS_SCOPE, type: string, default: service, description: Read-only status scope; installation queries cached host package candidates and firewall conflicts.}
+  - {name: software-version, env: SOFTWARE_VERSION, type: string, required: true, default: "2.1.1", description: Requested firewalld runtime version or version line.}
+  - {name: component-state-dir, env: ONEINSTACK_COMPONENT_STATE, type: path, default: /var/lib/oneinstack/components, description: Component state root.}
+  - {name: panel-port, env: PANEL_PORT, type: port, default: "0", description: Panel port used by the safe service protection check.}
+  - {name: migrate-external-firewall, env: ONEINSTACK_ALLOW_EXTERNAL_MIGRATION, type: boolean, default: "false", description: Switch an active UFW or nftables backend to firewalld during installation or upgrade after protecting the Panel port; an iptables backend is retained and firewalld remains stopped until explicit migration.}
+  - {name: uninstall-data-policy, env: UNINSTALL_DATA_POLICY, type: string, default: preserve, description: Preserve or delete component-owned state.}
+  - {name: uninstall-confirm-data-deletion, env: UNINSTALL_CONFIRM_DATA_DELETION, type: boolean, default: "false", description: Required confirmation for deletion.}
+configuration:
+  applyMode: reload
+  fields:
+    - {key: default-zone, label: 默认区域, type: string, env: ONEINSTACK_CONFIG_DEFAULT_ZONE, default: public, description: firewalld 默认区域名称。}
+    - {key: log-denied, label: 拒绝日志, type: select, env: ONEINSTACK_CONFIG_LOG_DENIED, default: off, options: [off, unicast, broadcast, multicast, all], description: firewalld 拒绝流量日志级别。}
+    - {key: rules, label: 受管规则, type: json, env: ONEINSTACK_CONFIG_RULES, default: '{"managed":{"zones":[],"directRules":[],"icmpBlocks":[],"forwardPorts":[]},"effective":{"defaultZone":"public","logDenied":"off","zones":[],"directRules":[]}}', description: Panel 创建并管理的 zones、services、ports、richRules、directRules、forwardPorts 和 ICMP blocks。外部规则只读保留。}
+timeouts: {precheck: 180, install: 1800, configure: 180, verify: 180, upgrade: 1800, rollback: 900, uninstall: 900, status: 30, start: 180, stop: 180, restart: 240, reload: 180, configGet: 60, configApply: 300}

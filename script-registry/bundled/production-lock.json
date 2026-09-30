@@ -1,4 +1,4 @@
-{"schemaVersion":1,"centerCommit":"baca4e6ace47a115cb8ed38b8e9fdf587284d77b","packages":[
+{"schemaVersion":1,"centerCommit":"7937314dc89737b6039f87d4e9e2e18dd5a93158","packages":[
   {"component":"adminer","version":"1.0.7","sha256":"53bc8009ab5a03cd477dd70356c1d71a2d08a987f6d29fee91e1091f68ca241d"},
   {"component":"apache","version":"1.0.17","sha256":"e29b496f17be042b51f9069d1aaa16e70fa59f3fc52af8dd500f69538069004c"},
   {"component":"caddy","version":"1.0.18","sha256":"5b3091df8e58800456fbf047c0ba06289665ea3e5257a70808c94af25f1917d4"},
@@ -6,7 +6,7 @@
   {"component":"docker","version":"1.0.13","sha256":"6a01e6049de603bb7ed0db04160b9cbe4a6b5fddbe435d2c06a640e5c8913f01"},
   {"component":"docker-compose","version":"1.0.4","sha256":"76c0962047df2c15195e3ee3764a156e3aa7a67411b4688bfcc9bb3d5ad6de79"},
   {"component":"fail2ban","version":"1.0.9","sha256":"c1d16476f11c277cf2faab077a5727ef9ca255128200623953a7eca604e18d40"},
-  {"component":"firewalld","version":"1.0.11","sha256":"7ae47e9bb295137761d338b538d0b4084efd543232c6a47976f5ec784b024b6f"},
+  {"component":"firewalld","version":"1.0.12","sha256":"09976d200b18310431237d16be8deeab97e895f34f9248fc04c768bf2735f19c"},
   {"component":"halo","version":"1.0.11","sha256":"c52568dcb279d8db5a04941d0d46b8d173579c7cccf281f62c3d0f8c92b05c19"},
   {"component":"mariadb","version":"2.0.7","sha256":"9d2af7cab78c4d1b13d1e0ae94423d243ef9710821da38ab5b172c1a81fa28df"},
   {"component":"mongodb","version":"1.0.17","sha256":"35d91a5b0ef3d9e7daac074805b20571b2ba3471eb530c3bbb71deb4d8bcdd79"},
