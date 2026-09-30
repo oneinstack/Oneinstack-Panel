@@ -1,0 +1,71 @@
+schemaVersion: 1
+component:
+  id: docker
+  name: Docker Engine
+  version: 1.0.13
+  softwareVersions: ["29.8.0"]
+  channel: stable
+  description: Fixed Docker Engine static binaries with versioned activation, migration rollback, offline Bundle support, and data-preserving lifecycle management.
+compatibility:
+  panel: ">=0.1.0-0"
+  systems:
+    - id: ubuntu
+      versions: ["22.04", "24.04", "26.04"]
+    - id: debian
+      versions: ["11", "12", "13"]
+    - id: rhel
+      versions: ["8", "9", "10"]
+    - id: rocky
+      versions: ["8", "9", "10"]
+    - id: almalinux
+      versions: ["8", "9", "10"]
+    - id: ol
+      versions: ["8", "9", "10"]
+    - id: centos
+      versions: ["7", "8", "9", "10"]
+    - id: fedora
+      versions: ["*"]
+    - id: amzn
+      versions: ["2023"]
+    - id: sles
+      versions: ["*"]
+    - id: opensuse-leap
+      versions: ["*"]
+    - id: opensuse-tumbleweed
+      versions: ["*"]
+  architectures: [amd64, arm64]
+dependencies:
+  packages:
+    apt: [ca-certificates, curl, gzip, iproute2, iptables, procps, tar]
+    dnf: [ca-certificates, curl, gzip, iproute, iptables, procps-ng, tar, xz]
+    yum: [ca-certificates, curl, gzip, iproute, iptables, procps-ng, tar, xz]
+    zypper: [ca-certificates, curl, gzip, iproute2, iptables, procps, tar, xz]
+sources:
+  releases:
+    - {softwareVersion: 29.8.0, architecture: amd64, buildId: docker-29.8.0-static-amd64-oneinstack-1.1.0, url: https://download.docker.com/linux/static/stable/x86_64/docker-29.8.0.tgz, sha256: cc21815cf1e2efed867dc9c8b96b46ffed8ea176ffab32b0aacb54726ded8f25}
+    - {softwareVersion: 29.8.0, architecture: arm64, buildId: docker-29.8.0-static-arm64-oneinstack-1.1.0, url: https://download.docker.com/linux/static/stable/aarch64/docker-29.8.0.tgz, sha256: 1462a696be6029bd478d7d60d7f3c31cdd15affd1178a4a278aaf4a1d1b7f8b5}
+actions:
+  precheck: scripts/precheck.sh
+  install: scripts/install.sh
+  verify: scripts/verify.sh
+  upgrade: scripts/install.sh
+  rollback: scripts/rollback.sh
+  uninstall: scripts/uninstall.sh
+  status: scripts/status.sh
+  start: scripts/start.sh
+  stop: scripts/stop.sh
+  restart: scripts/restart.sh
+parameters:
+  - {name: software-version, env: SOFTWARE_VERSION, type: string, default: 29.8.0, description: Exact Docker Engine software version.}
+  - {name: component-state-dir, env: ONEINSTACK_COMPONENT_STATE, type: path, default: /var/lib/oneinstack/components, description: "OneinStack component state, migration, and rollback directory."}
+timeouts:
+  precheck: 180
+  install: 1800
+  upgrade: 1800
+  verify: 180
+  rollback: 600
+  uninstall: 900
+  status: 30
+  start: 180
+  stop: 180
+  restart: 180

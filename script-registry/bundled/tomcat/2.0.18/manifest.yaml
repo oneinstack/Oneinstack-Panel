@@ -1,0 +1,111 @@
+schemaVersion: 1
+component:
+    id: tomcat
+    name: Apache Tomcat
+    version: 2.0.18
+    softwareVersions: [7.0.109, 8.5.96, 9.0.113, 10.1.50, 11.0.15]
+    channel: stable
+    description: Apache Tomcat 独立生命周期组件，固定 Temurin JDK 8/17，支持在线和完全离线安装。
+compatibility:
+    panel: '>=0.1.0-0'
+    systems:
+        - {id: ubuntu, versions: ["22.04", "24.04", "26.04"]}
+        - {id: debian, versions: ["11", "12", "13"]}
+        - {id: rhel, versions: ["8", "9", "10"]}
+        - {id: rocky, versions: ["8", "9", "10"]}
+        - {id: almalinux, versions: ["8", "9", "10"]}
+        - {id: ol, versions: ["8", "9", "10"]}
+        - {id: centos, versions: ["7"]}
+        - {id: centos-stream, versions: ["8", "9", "10"]}
+        - {id: fedora, versions: ['*']}
+        - {id: amzn, versions: ["2023"]}
+        - {id: sles, versions: ["15", "16"]}
+        - {id: opensuse-leap, versions: ['*']}
+        - {id: opensuse-tumbleweed, versions: ['*']}
+        - {id: opensuse, versions: ['*']}
+    architectures: [amd64, arm64]
+dependencies:
+    packages:
+        apt: [acl, ca-certificates, curl, gzip, iproute2, policycoreutils, procps, tar, util-linux, xz-utils]
+        dnf: [acl, ca-certificates, curl, gzip, iproute, policycoreutils, procps-ng, tar, util-linux, xz]
+        yum: [acl, ca-certificates, curl, gzip, iproute, policycoreutils, procps-ng, tar, util-linux, xz]
+        zypper: [acl, ca-certificates, curl, gzip, iproute2, policycoreutils, procps, tar, util-linux, xz]
+serviceName: tomcat
+runtimeGroup: runtime
+actions:
+    precheck: scripts/precheck.sh
+    install: scripts/install.sh
+    configure: scripts/configure.sh
+    verify: scripts/verify.sh
+    upgrade: scripts/upgrade.sh
+    rollback: scripts/rollback.sh
+    uninstall: scripts/uninstall.sh
+    status: scripts/status.sh
+    start: scripts/start.sh
+    stop: scripts/stop.sh
+    restart: scripts/restart.sh
+    configGet: scripts/config.sh
+    configApply: scripts/config.sh
+parameters:
+    - {name: SOFTWARE_VERSION, type: string, required: true, default: 11.0.15, description: Tomcat 精确版本，只能使用 Manifest 声明版本。}
+    - {name: TOMCAT_PORT, type: port, default: "8080", description: 初始 HTTP 监听端口。}
+    - {name: TOMCAT_BIND_ADDRESS, type: string, default: 127.0.0.1, description: 初始 HTTP 绑定地址。}
+    - {name: TOMCAT_JVM_XMS_MB, type: integer, default: "256", description: JVM 初始堆大小（MB）。}
+    - {name: TOMCAT_JVM_XMX_MB, type: integer, default: "512", description: JVM 最大堆大小（MB）。}
+    - {name: TOMCAT_MAX_THREADS, type: integer, default: "200", description: Connector 最大线程数。}
+    - {name: TOMCAT_ACCEPT_COUNT, type: integer, default: "100", description: Connector 等待队列长度。}
+    - {name: TOMCAT_CONNECTION_TIMEOUT_MS, type: integer, default: "20000", description: Connector 连接超时（毫秒）。}
+    - {name: TOMCAT_URI_ENCODING, type: string, default: UTF-8, description: Connector URI 编码。}
+    - {name: ONEINSTACK_INSTALL_MODE, type: string, default: center, description: Panel 后端注入的在线或完全离线安装模式。}
+    - {name: ONEINSTACK_OFFLINE_PACKAGE_PATH, type: path, description: Panel 后端注入的完全离线 Bundle 路径。}
+    - {name: ONEINSTACK_OFFLINE_BUNDLE_ID, type: string, description: Panel 后端注入的 Bundle ID。}
+    - {name: ONEINSTACK_OFFLINE_BUNDLE_DIGEST, type: string, description: Panel 后端注入的 Bundle 摘要。}
+    - {name: ONEINSTACK_COMPONENT_STATE, type: path, default: /var/lib/oneinstack/components, description: 组件状态根目录。}
+configuration:
+    applyMode: restart
+    fields:
+        - {key: httpPort, label: HTTP 监听端口, type: port, env: ONEINSTACK_CONFIG_HTTP_PORT, default: "8080", min: 1, max: 65535}
+        - {key: bindAddress, label: 绑定地址, type: string, env: ONEINSTACK_CONFIG_BIND_ADDRESS, default: 127.0.0.1}
+        - {key: jvmXmsMB, label: JVM 初始堆, type: integer, env: ONEINSTACK_CONFIG_JVM_XMS_MB, default: "256", unit: MB, min: 16, max: 1048576}
+        - {key: jvmXmxMB, label: JVM 最大堆, type: integer, env: ONEINSTACK_CONFIG_JVM_XMX_MB, default: "512", unit: MB, min: 16, max: 1048576}
+        - {key: maxThreads, label: Connector 最大线程数, type: integer, env: ONEINSTACK_CONFIG_MAX_THREADS, default: "200", min: 1, max: 65535}
+        - {key: acceptCount, label: Connector 等待队列, type: integer, env: ONEINSTACK_CONFIG_ACCEPT_COUNT, default: "100", min: 0, max: 65535}
+        - {key: connectionTimeoutMs, label: 连接超时, type: integer, env: ONEINSTACK_CONFIG_CONNECTION_TIMEOUT_MS, default: "20000", unit: ms, min: 100, max: 3600000}
+        - {key: uriEncoding, label: URI 编码, type: string, env: ONEINSTACK_CONFIG_URI_ENCODING, default: UTF-8}
+        - {key: accessLogEnabled, label: Access Log, type: boolean, env: ONEINSTACK_CONFIG_ACCESS_LOG_ENABLED, default: "false"}
+sources:
+    releases:
+        - {softwareVersion: 7.0.109, architecture: amd64, runtime: tomcat, url: https://archive.apache.org/dist/tomcat/tomcat-7/v7.0.109/bin/apache-tomcat-7.0.109.tar.gz, sha256: ebfeb051e6da24bce583a4105439bfdafefdc7c5bdd642db2ab07e056211cb31}
+        - {softwareVersion: 7.0.109, architecture: arm64, runtime: tomcat, url: https://archive.apache.org/dist/tomcat/tomcat-7/v7.0.109/bin/apache-tomcat-7.0.109.tar.gz, sha256: ebfeb051e6da24bce583a4105439bfdafefdc7c5bdd642db2ab07e056211cb31}
+        - {softwareVersion: 8.5.96, architecture: amd64, runtime: tomcat, url: https://archive.apache.org/dist/tomcat/tomcat-8/v8.5.96/bin/apache-tomcat-8.5.96.tar.gz, sha256: 0307cfb85e58a2ff3d033d464bdc01f03fd5452618b17baf64368b1e6b02e886}
+        - {softwareVersion: 8.5.96, architecture: arm64, runtime: tomcat, url: https://archive.apache.org/dist/tomcat/tomcat-8/v8.5.96/bin/apache-tomcat-8.5.96.tar.gz, sha256: 0307cfb85e58a2ff3d033d464bdc01f03fd5452618b17baf64368b1e6b02e886}
+        - {softwareVersion: 9.0.113, architecture: amd64, runtime: tomcat, url: https://archive.apache.org/dist/tomcat/tomcat-9/v9.0.113/bin/apache-tomcat-9.0.113.tar.gz, sha256: 790db2b8092b7954dec2afc6af71a7bbb6c67998198516dd6a9f865661b5d2a7}
+        - {softwareVersion: 9.0.113, architecture: arm64, runtime: tomcat, url: https://archive.apache.org/dist/tomcat/tomcat-9/v9.0.113/bin/apache-tomcat-9.0.113.tar.gz, sha256: 790db2b8092b7954dec2afc6af71a7bbb6c67998198516dd6a9f865661b5d2a7}
+        - {softwareVersion: 10.1.50, architecture: amd64, runtime: tomcat, url: https://archive.apache.org/dist/tomcat/tomcat-10/v10.1.50/bin/apache-tomcat-10.1.50.tar.gz, sha256: f74f9f1a7ac2cf6eeede2c50f45088d9c3e55f77d5777f9f7033ed3d43ef529c}
+        - {softwareVersion: 10.1.50, architecture: arm64, runtime: tomcat, url: https://archive.apache.org/dist/tomcat/tomcat-10/v10.1.50/bin/apache-tomcat-10.1.50.tar.gz, sha256: f74f9f1a7ac2cf6eeede2c50f45088d9c3e55f77d5777f9f7033ed3d43ef529c}
+        - {softwareVersion: 11.0.15, architecture: amd64, runtime: tomcat, url: https://archive.apache.org/dist/tomcat/tomcat-11/v11.0.15/bin/apache-tomcat-11.0.15.tar.gz, sha256: c515a0edb273846b4d7926fa8175aaa46905f45d5e2af588e01783e35a89a69c}
+        - {softwareVersion: 11.0.15, architecture: arm64, runtime: tomcat, url: https://archive.apache.org/dist/tomcat/tomcat-11/v11.0.15/bin/apache-tomcat-11.0.15.tar.gz, sha256: c515a0edb273846b4d7926fa8175aaa46905f45d5e2af588e01783e35a89a69c}
+        - {softwareVersion: 7.0.109, architecture: amd64, runtime: jdk8, url: https://github.com/adoptium/temurin8-binaries/releases/download/jdk8u504-b01/OpenJDK8U-jdk_x64_linux_hotspot_8u504b01.tar.gz, sha256: 9c70e102f527ac674ac2fe9c7d47b9a04e2d19842ba5ab8e9b33f368bbadfaea}
+        - {softwareVersion: 7.0.109, architecture: arm64, runtime: jdk8, url: https://github.com/adoptium/temurin8-binaries/releases/download/jdk8u504-b01/OpenJDK8U-jdk_aarch64_linux_hotspot_8u504b01.tar.gz, sha256: 57b7ed8af9d48542bb49ff7894448040b17bea0a48b41677d11ecaec6129768d}
+        - {softwareVersion: 8.5.96, architecture: amd64, runtime: jdk8, url: https://github.com/adoptium/temurin8-binaries/releases/download/jdk8u504-b01/OpenJDK8U-jdk_x64_linux_hotspot_8u504b01.tar.gz, sha256: 9c70e102f527ac674ac2fe9c7d47b9a04e2d19842ba5ab8e9b33f368bbadfaea}
+        - {softwareVersion: 8.5.96, architecture: arm64, runtime: jdk8, url: https://github.com/adoptium/temurin8-binaries/releases/download/jdk8u504-b01/OpenJDK8U-jdk_aarch64_linux_hotspot_8u504b01.tar.gz, sha256: 57b7ed8af9d48542bb49ff7894448040b17bea0a48b41677d11ecaec6129768d}
+        - {softwareVersion: 9.0.113, architecture: amd64, runtime: jdk17, url: https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.17%2B10/OpenJDK17U-jdk_x64_linux_hotspot_17.0.17_10.tar.gz, sha256: 992f96e7995075ac7636bb1a8de52b0c61d71ed3137fafc979ab96b4ab78dd75}
+        - {softwareVersion: 9.0.113, architecture: arm64, runtime: jdk17, url: https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.17%2B10/OpenJDK17U-jdk_aarch64_linux_hotspot_17.0.17_10.tar.gz, sha256: dc29ca6d35beb4419b4b00419b8a3dfbf5ae551e1ae2b046b516d9a579d04533}
+        - {softwareVersion: 10.1.50, architecture: amd64, runtime: jdk17, url: https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.17%2B10/OpenJDK17U-jdk_x64_linux_hotspot_17.0.17_10.tar.gz, sha256: 992f96e7995075ac7636bb1a8de52b0c61d71ed3137fafc979ab96b4ab78dd75}
+        - {softwareVersion: 10.1.50, architecture: arm64, runtime: jdk17, url: https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.17%2B10/OpenJDK17U-jdk_aarch64_linux_hotspot_17.0.17_10.tar.gz, sha256: dc29ca6d35beb4419b4b00419b8a3dfbf5ae551e1ae2b046b516d9a579d04533}
+        - {softwareVersion: 11.0.15, architecture: amd64, runtime: jdk17, url: https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.17%2B10/OpenJDK17U-jdk_x64_linux_hotspot_17.0.17_10.tar.gz, sha256: 992f96e7995075ac7636bb1a8de52b0c61d71ed3137fafc979ab96b4ab78dd75}
+        - {softwareVersion: 11.0.15, architecture: arm64, runtime: jdk17, url: https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.17%2B10/OpenJDK17U-jdk_aarch64_linux_hotspot_17.0.17_10.tar.gz, sha256: dc29ca6d35beb4419b4b00419b8a3dfbf5ae551e1ae2b046b516d9a579d04533}
+timeouts:
+    precheck: 300
+    install: 3600
+    configure: 900
+    verify: 300
+    upgrade: 3600
+    rollback: 900
+    uninstall: 900
+    status: 30
+    start: 300
+    stop: 180
+    restart: 300
+    configGet: 30
+    configApply: 600

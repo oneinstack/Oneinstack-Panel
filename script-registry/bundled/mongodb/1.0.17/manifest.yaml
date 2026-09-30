@@ -1,0 +1,114 @@
+schemaVersion: 1
+component:
+  id: mongodb
+  name: MongoDB
+  version: 1.0.17
+  softwareVersions: ["8.0.17", "8.0.32"]
+  channel: stable
+  allowCustomVersion: false
+  description: Managed MongoDB 8.0.17/8.0.32 lifecycle with exact official archives, authenticated bootstrap, transactional configuration, upgrade rollback, and complete offline bundles.
+compatibility:
+  panel: ">=0.1.0-0"
+  systems:
+    - {id: ubuntu, versions: ["20.04", "22.04", "24.04"]}
+    - {id: debian, versions: ["12"]}
+    - {id: rhel, versions: ["8", "9", "10"]}
+    - {id: rocky, versions: ["8", "9", "10"]}
+    - {id: almalinux, versions: ["8", "9", "10"]}
+    - {id: ol, versions: ["8", "9", "10"]}
+    - {id: centos-stream, versions: ["8", "9", "10"]}
+    - {id: amzn, versions: ["2023"]}
+    - {id: sles, versions: ["15"]}
+  architectures: [amd64, arm64]
+sources:
+  releases:
+    - {softwareVersion: 8.0.17, architecture: amd64, systems: [{id: ubuntu, versions: ["20.04"]}], url: https://fastdl.mongodb.org/linux/mongodb-linux-x86_64-ubuntu2004-8.0.17.tgz, signatureUrl: https://fastdl.mongodb.org/linux/mongodb-linux-x86_64-ubuntu2004-8.0.17.tgz.sig, sha256: b90f31da88ba94ad20b7a18801a6abd85b7f31bf42677e11b53ec5f82cd5dedf, publisherFingerprint: 4B0752C1BCA238C0B4EE14DC41DE058A4E7DCA05}
+    - {softwareVersion: 8.0.17, architecture: arm64, systems: [{id: ubuntu, versions: ["20.04"]}], url: https://fastdl.mongodb.org/linux/mongodb-linux-aarch64-ubuntu2004-8.0.17.tgz, signatureUrl: https://fastdl.mongodb.org/linux/mongodb-linux-aarch64-ubuntu2004-8.0.17.tgz.sig, sha256: 6f8de47d323c93a2a3d800f9ba529321d7c24dce8e6f344b933c89b9d744dd3c, publisherFingerprint: 4B0752C1BCA238C0B4EE14DC41DE058A4E7DCA05}
+    - {softwareVersion: 8.0.17, architecture: amd64, systems: [{id: ubuntu, versions: ["22.04"]}], url: https://fastdl.mongodb.org/linux/mongodb-linux-x86_64-ubuntu2204-8.0.17.tgz, signatureUrl: https://fastdl.mongodb.org/linux/mongodb-linux-x86_64-ubuntu2204-8.0.17.tgz.sig, sha256: 4372a8e503a61814c565d4ccbc5f6765787944772e8969c13ba96c99cca11f75, publisherFingerprint: 4B0752C1BCA238C0B4EE14DC41DE058A4E7DCA05}
+    - {softwareVersion: 8.0.17, architecture: arm64, systems: [{id: ubuntu, versions: ["22.04"]}], url: https://fastdl.mongodb.org/linux/mongodb-linux-aarch64-ubuntu2204-8.0.17.tgz, signatureUrl: https://fastdl.mongodb.org/linux/mongodb-linux-aarch64-ubuntu2204-8.0.17.tgz.sig, sha256: 2709ec6acd3de02666d02318d436f5d68dfb7d20b025d24a12a0914aacff4bd3, publisherFingerprint: 4B0752C1BCA238C0B4EE14DC41DE058A4E7DCA05}
+    - {softwareVersion: 8.0.17, architecture: amd64, systems: [{id: ubuntu, versions: ["24.04"]}], url: https://fastdl.mongodb.org/linux/mongodb-linux-x86_64-ubuntu2404-8.0.17.tgz, signatureUrl: https://fastdl.mongodb.org/linux/mongodb-linux-x86_64-ubuntu2404-8.0.17.tgz.sig, sha256: fe7bccea2ac1eed16867e9ae5a60481455ee30796f285fe67d0d02a6c2abbdda, publisherFingerprint: 4B0752C1BCA238C0B4EE14DC41DE058A4E7DCA05}
+    - {softwareVersion: 8.0.17, architecture: arm64, systems: [{id: ubuntu, versions: ["24.04"]}], url: https://fastdl.mongodb.org/linux/mongodb-linux-aarch64-ubuntu2404-8.0.17.tgz, signatureUrl: https://fastdl.mongodb.org/linux/mongodb-linux-aarch64-ubuntu2404-8.0.17.tgz.sig, sha256: 8dc5919025dbabe2103b8e187e2102492af93c08842c37114272bd894e5cfc13, publisherFingerprint: 4B0752C1BCA238C0B4EE14DC41DE058A4E7DCA05}
+    - {softwareVersion: 8.0.17, architecture: amd64, systems: [{id: debian, versions: ["12"]}], url: https://fastdl.mongodb.org/linux/mongodb-linux-x86_64-debian12-8.0.17.tgz, signatureUrl: https://fastdl.mongodb.org/linux/mongodb-linux-x86_64-debian12-8.0.17.tgz.sig, sha256: b774ed64ec13732d25cd8c937bcd221ceadd0c746371f2279aa63aa492c1d0d0, publisherFingerprint: 4B0752C1BCA238C0B4EE14DC41DE058A4E7DCA05}
+    - {softwareVersion: 8.0.17, architecture: amd64, systems: [{id: rhel, versions: ["8"]}, {id: rocky, versions: ["8"]}, {id: almalinux, versions: ["8"]}, {id: ol, versions: ["8"]}, {id: centos-stream, versions: ["8"]}], url: https://fastdl.mongodb.org/linux/mongodb-linux-x86_64-rhel8-8.0.17.tgz, signatureUrl: https://fastdl.mongodb.org/linux/mongodb-linux-x86_64-rhel8-8.0.17.tgz.sig, sha256: c8986f6fc001d456bd2160c2e96d24201599627eb5832f49d95673779a2768cf, publisherFingerprint: 4B0752C1BCA238C0B4EE14DC41DE058A4E7DCA05}
+    - {softwareVersion: 8.0.17, architecture: arm64, systems: [{id: rhel, versions: ["8"]}, {id: rocky, versions: ["8"]}, {id: almalinux, versions: ["8"]}], url: https://fastdl.mongodb.org/linux/mongodb-linux-aarch64-rhel8-8.0.17.tgz, signatureUrl: https://fastdl.mongodb.org/linux/mongodb-linux-aarch64-rhel8-8.0.17.tgz.sig, sha256: f7118b78fe5f60724109bf3548d46d4c898f9ec14a7bb4821d43a080a8a98572, publisherFingerprint: 4B0752C1BCA238C0B4EE14DC41DE058A4E7DCA05}
+    - {softwareVersion: 8.0.17, architecture: amd64, systems: [{id: rhel, versions: ["9"]}, {id: rocky, versions: ["9"]}, {id: almalinux, versions: ["9"]}, {id: ol, versions: ["9"]}, {id: centos-stream, versions: ["9"]}], url: https://fastdl.mongodb.org/linux/mongodb-linux-x86_64-rhel93-8.0.17.tgz, signatureUrl: https://fastdl.mongodb.org/linux/mongodb-linux-x86_64-rhel93-8.0.17.tgz.sig, sha256: 9bcb2b0ae5d114a752e3fa9105a50020a104b6c5eaf69d7c248cae43b812196e, publisherFingerprint: 4B0752C1BCA238C0B4EE14DC41DE058A4E7DCA05}
+    - {softwareVersion: 8.0.17, architecture: arm64, systems: [{id: rhel, versions: ["9"]}, {id: rocky, versions: ["9"]}, {id: almalinux, versions: ["9"]}], url: https://fastdl.mongodb.org/linux/mongodb-linux-aarch64-rhel93-8.0.17.tgz, signatureUrl: https://fastdl.mongodb.org/linux/mongodb-linux-aarch64-rhel93-8.0.17.tgz.sig, sha256: 7192d831f58cc5eece0e3d24921dc4612c99b506ee432c703c8ba687f6322894, publisherFingerprint: 4B0752C1BCA238C0B4EE14DC41DE058A4E7DCA05}
+    - {softwareVersion: 8.0.17, architecture: amd64, systems: [{id: amzn, versions: ["2023"]}], url: https://fastdl.mongodb.org/linux/mongodb-linux-x86_64-amazon2023-8.0.17.tgz, signatureUrl: https://fastdl.mongodb.org/linux/mongodb-linux-x86_64-amazon2023-8.0.17.tgz.sig, sha256: 29c195b32b1dd3f0dfa8a497e2199ec313e1e86d3b56966f49822ccb65f1cfcd, publisherFingerprint: 4B0752C1BCA238C0B4EE14DC41DE058A4E7DCA05}
+    - {softwareVersion: 8.0.17, architecture: arm64, systems: [{id: amzn, versions: ["2023"]}], url: https://fastdl.mongodb.org/linux/mongodb-linux-aarch64-amazon2023-8.0.17.tgz, signatureUrl: https://fastdl.mongodb.org/linux/mongodb-linux-aarch64-amazon2023-8.0.17.tgz.sig, sha256: 6f26e7d510d5136eb3397cc15e54adb28adb9e0eeb5648d4f3e2aac3a561dfb4, publisherFingerprint: 4B0752C1BCA238C0B4EE14DC41DE058A4E7DCA05}
+    - {softwareVersion: 8.0.17, architecture: amd64, systems: [{id: sles, versions: ["15"]}], url: https://fastdl.mongodb.org/linux/mongodb-linux-x86_64-suse15-8.0.17.tgz, signatureUrl: https://fastdl.mongodb.org/linux/mongodb-linux-x86_64-suse15-8.0.17.tgz.sig, sha256: 255490e01c2f10ebbf56b284e08d2b1830e5693842b5ba9849d88a92ce5c3cb5, publisherFingerprint: 4B0752C1BCA238C0B4EE14DC41DE058A4E7DCA05}
+    - {softwareVersion: 8.0.32, architecture: amd64, systems: [{id: ubuntu, versions: ["20.04"]}], url: https://fastdl.mongodb.org/linux/mongodb-linux-x86_64-ubuntu2004-8.0.32.tgz, signatureUrl: https://fastdl.mongodb.org/linux/mongodb-linux-x86_64-ubuntu2004-8.0.32.tgz.sig, sha256: db3533f4fdeeb9f590b2b4e8219007bc3d5ae65b5b5c843aecca3f730cf0eb41, publisherFingerprint: 4B0752C1BCA238C0B4EE14DC41DE058A4E7DCA05}
+    - {softwareVersion: 8.0.32, architecture: arm64, systems: [{id: ubuntu, versions: ["20.04"]}], url: https://fastdl.mongodb.org/linux/mongodb-linux-aarch64-ubuntu2004-8.0.32.tgz, signatureUrl: https://fastdl.mongodb.org/linux/mongodb-linux-aarch64-ubuntu2004-8.0.32.tgz.sig, sha256: 7063f857e5ce0b2bbd168b5a6f140de83dddaf819af3c3974aabf667b6c993cc, publisherFingerprint: 4B0752C1BCA238C0B4EE14DC41DE058A4E7DCA05}
+    - {softwareVersion: 8.0.32, architecture: amd64, systems: [{id: ubuntu, versions: ["22.04"]}], url: https://fastdl.mongodb.org/linux/mongodb-linux-x86_64-ubuntu2204-8.0.32.tgz, signatureUrl: https://fastdl.mongodb.org/linux/mongodb-linux-x86_64-ubuntu2204-8.0.32.tgz.sig, sha256: 41da8d92dde2896ebda278cf296ae86462da6b39eda81ce6ce4fb9ce819adb2e, publisherFingerprint: 4B0752C1BCA238C0B4EE14DC41DE058A4E7DCA05}
+    - {softwareVersion: 8.0.32, architecture: arm64, systems: [{id: ubuntu, versions: ["22.04"]}], url: https://fastdl.mongodb.org/linux/mongodb-linux-aarch64-ubuntu2204-8.0.32.tgz, signatureUrl: https://fastdl.mongodb.org/linux/mongodb-linux-aarch64-ubuntu2204-8.0.32.tgz.sig, sha256: 7411bc9efef53346a26e67241ca9db9926c30b7a056e2515068223b497682c81, publisherFingerprint: 4B0752C1BCA238C0B4EE14DC41DE058A4E7DCA05}
+    - {softwareVersion: 8.0.32, architecture: amd64, systems: [{id: ubuntu, versions: ["24.04"]}], url: https://fastdl.mongodb.org/linux/mongodb-linux-x86_64-ubuntu2404-8.0.32.tgz, signatureUrl: https://fastdl.mongodb.org/linux/mongodb-linux-x86_64-ubuntu2404-8.0.32.tgz.sig, sha256: b411be17c31ef249767ed91974d876e007c91afd5f45e1534057d247eada9f0d, publisherFingerprint: 4B0752C1BCA238C0B4EE14DC41DE058A4E7DCA05}
+    - {softwareVersion: 8.0.32, architecture: arm64, systems: [{id: ubuntu, versions: ["24.04"]}], url: https://fastdl.mongodb.org/linux/mongodb-linux-aarch64-ubuntu2404-8.0.32.tgz, signatureUrl: https://fastdl.mongodb.org/linux/mongodb-linux-aarch64-ubuntu2404-8.0.32.tgz.sig, sha256: 8cca3993520a7f189790264ee57fb5d55a91094fb4be5f06bbbaf67c974d273f, publisherFingerprint: 4B0752C1BCA238C0B4EE14DC41DE058A4E7DCA05}
+    - {softwareVersion: 8.0.32, architecture: amd64, systems: [{id: debian, versions: ["12"]}], url: https://fastdl.mongodb.org/linux/mongodb-linux-x86_64-debian12-8.0.32.tgz, signatureUrl: https://fastdl.mongodb.org/linux/mongodb-linux-x86_64-debian12-8.0.32.tgz.sig, sha256: b61cda162c6592347b7503c683145304f74c900b1c10a395520c7c24d3f8445c, publisherFingerprint: 4B0752C1BCA238C0B4EE14DC41DE058A4E7DCA05}
+    - {softwareVersion: 8.0.32, architecture: amd64, systems: [{id: rhel, versions: ["8"]}, {id: rocky, versions: ["8"]}, {id: almalinux, versions: ["8"]}, {id: ol, versions: ["8"]}, {id: centos-stream, versions: ["8"]}], url: https://fastdl.mongodb.org/linux/mongodb-linux-x86_64-rhel8-8.0.32.tgz, signatureUrl: https://fastdl.mongodb.org/linux/mongodb-linux-x86_64-rhel8-8.0.32.tgz.sig, sha256: 0c582aa72b45fb74e15c47f4d13d329a506ae5b7ceef65362fa11b40826da0aa, publisherFingerprint: 4B0752C1BCA238C0B4EE14DC41DE058A4E7DCA05}
+    - {softwareVersion: 8.0.32, architecture: arm64, systems: [{id: rhel, versions: ["8"]}, {id: rocky, versions: ["8"]}, {id: almalinux, versions: ["8"]}], url: https://fastdl.mongodb.org/linux/mongodb-linux-aarch64-rhel8-8.0.32.tgz, signatureUrl: https://fastdl.mongodb.org/linux/mongodb-linux-aarch64-rhel8-8.0.32.tgz.sig, sha256: a7ff6ade9efb7c0566a4b2f3bc828a245729c1a0553c311d992f3564fab3f5bf, publisherFingerprint: 4B0752C1BCA238C0B4EE14DC41DE058A4E7DCA05}
+    - {softwareVersion: 8.0.32, architecture: amd64, systems: [{id: rhel, versions: ["9"]}, {id: rocky, versions: ["9"]}, {id: almalinux, versions: ["9"]}, {id: ol, versions: ["9"]}, {id: centos-stream, versions: ["9"]}], url: https://fastdl.mongodb.org/linux/mongodb-linux-x86_64-rhel93-8.0.32.tgz, signatureUrl: https://fastdl.mongodb.org/linux/mongodb-linux-x86_64-rhel93-8.0.32.tgz.sig, sha256: 91d7f9fd463d3b91359528bcce8d8c2c30ff6aa90f1f58480e225d70a7057566, publisherFingerprint: 4B0752C1BCA238C0B4EE14DC41DE058A4E7DCA05}
+    - {softwareVersion: 8.0.32, architecture: arm64, systems: [{id: rhel, versions: ["9"]}, {id: rocky, versions: ["9"]}, {id: almalinux, versions: ["9"]}], url: https://fastdl.mongodb.org/linux/mongodb-linux-aarch64-rhel93-8.0.32.tgz, signatureUrl: https://fastdl.mongodb.org/linux/mongodb-linux-aarch64-rhel93-8.0.32.tgz.sig, sha256: 76e77cf57421604d3f302078e73d37523d067716f587c6c634ed94adbc8540d0, publisherFingerprint: 4B0752C1BCA238C0B4EE14DC41DE058A4E7DCA05}
+    - {softwareVersion: 8.0.32, architecture: amd64, systems: [{id: rhel, versions: ["10"]}, {id: rocky, versions: ["10"]}, {id: almalinux, versions: ["10"]}, {id: ol, versions: ["10"]}, {id: centos-stream, versions: ["10"]}], url: https://fastdl.mongodb.org/linux/mongodb-linux-x86_64-rhel10-8.0.32.tgz, signatureUrl: https://fastdl.mongodb.org/linux/mongodb-linux-x86_64-rhel10-8.0.32.tgz.sig, sha256: dd14cbda4cbdee634d459f88c1cb8e4120f7591495b9334d29e30d35730ba718, publisherFingerprint: 4B0752C1BCA238C0B4EE14DC41DE058A4E7DCA05}
+    - {softwareVersion: 8.0.32, architecture: arm64, systems: [{id: rhel, versions: ["10"]}, {id: rocky, versions: ["10"]}, {id: almalinux, versions: ["10"]}], url: https://fastdl.mongodb.org/linux/mongodb-linux-aarch64-rhel10-8.0.32.tgz, signatureUrl: https://fastdl.mongodb.org/linux/mongodb-linux-aarch64-rhel10-8.0.32.tgz.sig, sha256: fca3f0670838e46859f54d800fd8f81dd21ab031852f1bd15a81dbce52bf64de, publisherFingerprint: 4B0752C1BCA238C0B4EE14DC41DE058A4E7DCA05}
+    - {softwareVersion: 8.0.32, architecture: amd64, systems: [{id: amzn, versions: ["2023"]}], url: https://fastdl.mongodb.org/linux/mongodb-linux-x86_64-amazon2023-8.0.32.tgz, signatureUrl: https://fastdl.mongodb.org/linux/mongodb-linux-x86_64-amazon2023-8.0.32.tgz.sig, sha256: 6c2a714294985566a21cb9b97dd7422a0d46e43affca95d2d1dc303f0e60515e, publisherFingerprint: 4B0752C1BCA238C0B4EE14DC41DE058A4E7DCA05}
+    - {softwareVersion: 8.0.32, architecture: arm64, systems: [{id: amzn, versions: ["2023"]}], url: https://fastdl.mongodb.org/linux/mongodb-linux-aarch64-amazon2023-8.0.32.tgz, signatureUrl: https://fastdl.mongodb.org/linux/mongodb-linux-aarch64-amazon2023-8.0.32.tgz.sig, sha256: b55cd433aa3c3ea43b9545d3625e52068e25f18eea7ba156b12d97b28d4fc4f9, publisherFingerprint: 4B0752C1BCA238C0B4EE14DC41DE058A4E7DCA05}
+    - {softwareVersion: 8.0.32, architecture: amd64, systems: [{id: sles, versions: ["15"]}], url: https://fastdl.mongodb.org/linux/mongodb-linux-x86_64-suse15-8.0.32.tgz, signatureUrl: https://fastdl.mongodb.org/linux/mongodb-linux-x86_64-suse15-8.0.32.tgz.sig, sha256: b8b6267af41a4d879eb69bfee4955ab7d6dcfcd9541b84ba23b348e9d9b8315c, publisherFingerprint: 4B0752C1BCA238C0B4EE14DC41DE058A4E7DCA05}
+dependencies:
+  packages:
+    apt: [acl, ca-certificates, curl, gnupg, gzip, iproute2, libcurl4, libgssapi-krb5-2, libldap-2.4-2, libldap-2.5-0, libldap2, liblzma5, libsasl2-2, libsasl2-modules, libsasl2-modules-gssapi-mit, libwrap0, openssl, tar]
+    dnf: [acl, ca-certificates, cyrus-sasl, cyrus-sasl-gssapi, cyrus-sasl-plain, curl, gnupg2, gzip, krb5-libs, libcurl, libpcap, openldap, openssl-libs, tar, xz-libs]
+    yum: [acl, ca-certificates, cyrus-sasl, cyrus-sasl-gssapi, cyrus-sasl-plain, curl, gnupg2, gzip, krb5-libs, libcurl, libpcap, openldap, openssl-libs, tar, xz-libs]
+    zypper: [acl, ca-certificates, cyrus-sasl, curl, gpg2, gzip, krb5, libcurl4, libldap-2_4-2, libopenssl3, libpcap1, libwrap0, libzio1, tar, xz]
+serviceName: mongod
+actions:
+  precheck: scripts/precheck.sh
+  install: scripts/install.sh
+  configure: scripts/configure.sh
+  verify: scripts/verify.sh
+  upgrade: scripts/install.sh
+  rollback: scripts/rollback.sh
+  uninstall: scripts/uninstall.sh
+  status: scripts/status.sh
+  start: scripts/start.sh
+  stop: scripts/stop.sh
+  restart: scripts/restart.sh
+  configGet: scripts/config.sh
+  configApply: scripts/config.sh
+parameters:
+  - {name: software-version, env: SOFTWARE_VERSION, type: string, required: true, default: "8.0.32", description: "MongoDB 精确版本，只允许 8.0.17 或 8.0.32。"}
+  - {name: mongodb-port, env: MONGODB_PORT, type: port, default: "27017", description: "MongoDB TCP 监听端口。"}
+  - {name: mongodb-bind-ip, env: MONGODB_BIND_IP, type: string, default: "127.0.0.1", description: "逗号分隔的 IP 或主机名；非回环绑定仍强制启用认证。"}
+  - {name: install-dir, env: INSTALL_DIR, type: path, default: /usr/local/mongodb, description: "受管安装目录，安装后不可在线迁移。"}
+  - {name: data-dir, env: DATA_DIR, type: path, default: /data/mongodb, description: "MongoDB 数据目录；拒绝接管非空外部目录。"}
+  - {name: log-dir, env: LOG_DIR, type: path, default: /data/mongodb, description: "MongoDB 日志目录。"}
+  - {name: run-user, env: RUN_USER, type: string, default: mongod}
+  - {name: run-group, env: RUN_GROUP, type: string, default: mongod}
+  - {name: mongodb-admin-username, env: MONGODB_ADMIN_USERNAME, type: string, default: root, description: "MongoDB admin 数据库管理员用户名。"}
+  - {name: mongodb-admin-password, env: MONGODB_ADMIN_PASSWORD, type: password, required: true, secret: true, description: "首次初始化必填，12-128 字符；只通过安全输入传递且不持久化。"}
+  - {name: ONEINSTACK_INSTALL_MODE, type: string, default: center, description: "Panel 后端注入的安装模式。"}
+  - {name: ONEINSTACK_OFFLINE_PACKAGE_PATH, type: path, description: "Panel 后端注入的完全离线 Bundle 根目录。"}
+  - {name: ONEINSTACK_COMPONENT_STATE, type: path, default: /var/lib/oneinstack/components, description: "Panel 后端注入的组件状态目录。"}
+  - {name: data-policy, env: UNINSTALL_DATA_POLICY, type: string, default: preserve, description: "卸载数据策略；默认保留。"}
+  - {name: delete-data-confirm, env: UNINSTALL_CONFIRM_DATA_DELETION, type: boolean, default: "false", description: "data-policy=delete 时必须同时明确确认。"}
+configuration:
+  applyMode: restart
+  fields:
+    - {key: mongodbPort, label: 监听端口, type: port, env: ONEINSTACK_CONFIG_MONGODB_PORT, default: "27017", min: 1, max: 65535}
+    - {key: bindIp, label: 绑定地址, type: string, env: ONEINSTACK_CONFIG_BIND_IP, default: "127.0.0.1", description: "逗号分隔的 IP 或主机名，禁止换行及 YAML 注入。"}
+    - {key: maxIncomingConnections, label: 最大入站连接数, type: integer, env: ONEINSTACK_CONFIG_MAX_INCOMING_CONNECTIONS, default: "0", min: 0, max: 1000000, description: "0 表示使用 MongoDB 自动值；非零值最小为 100。"}
+    - {key: wiredTigerCacheSizeGB, label: WiredTiger 缓存, type: integer, env: ONEINSTACK_CONFIG_WIREDTIGER_CACHE_SIZE_GB, unit: GB, default: "0", min: 0, max: 1024, description: "0 表示自动；非零值最小为 1 GB。"}
+    - {key: operationProfilingMode, label: 性能分析模式, type: select, env: ONEINSTACK_CONFIG_OPERATION_PROFILING_MODE, default: off, options: [off, slowOp, all]}
+    - {key: slowOpThresholdMs, label: 慢操作阈值, type: integer, env: ONEINSTACK_CONFIG_SLOW_OP_THRESHOLD_MS, unit: 毫秒, default: "100", min: 1, max: 600000}
+timeouts:
+  precheck: 180
+  install: 1800
+  configure: 600
+  verify: 180
+  upgrade: 1800
+  rollback: 600
+  uninstall: 300
+  status: 30
+  start: 180
+  stop: 180
+  restart: 300
+  configGet: 30
+  configApply: 600

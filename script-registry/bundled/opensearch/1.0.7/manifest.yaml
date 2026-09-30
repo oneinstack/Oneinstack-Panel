@@ -1,0 +1,98 @@
+schemaVersion: 1
+component:
+    id: opensearch
+    name: OpenSearch
+    version: 1.0.7
+    softwareVersions: [3.7.0]
+    channel: stable
+    description: OpenSearch 3.7.0 单节点服务，使用官方内置 JDK Tar 制品，支持在线与完全离线安装。
+compatibility:
+    panel: '>=0.1.0-0'
+    systems:
+        - {id: ubuntu, versions: ["22.04", "24.04", "26.04"]}
+        - {id: debian, versions: ["11", "12", "13"]}
+        - {id: rhel, versions: ["8", "9", "10"]}
+        - {id: rocky, versions: ["8", "9", "10"]}
+        - {id: almalinux, versions: ["8", "9", "10"]}
+        - {id: ol, versions: ["8", "9", "10"]}
+        - {id: centos-stream, versions: ["8", "9", "10"]}
+        - {id: amzn, versions: ["2023"]}
+        - {id: sles, versions: ["15", "16"]}
+    architectures: [amd64, arm64]
+dependencies:
+    packages:
+        apt: [ca-certificates, curl, gnupg, iproute2, procps, tar, gzip]
+        dnf: [ca-certificates, curl, gnupg2, iproute, procps-ng, tar, gzip]
+        zypper: [ca-certificates, curl, gpg2, iproute2, procps, tar, gzip]
+serviceName: opensearch
+actions:
+    precheck: scripts/precheck.sh
+    install: scripts/install.sh
+    configure: scripts/configure.sh
+    verify: scripts/verify.sh
+    upgrade: scripts/install.sh
+    rollback: scripts/rollback.sh
+    uninstall: scripts/uninstall.sh
+    status: scripts/status.sh
+    start: scripts/start.sh
+    stop: scripts/stop.sh
+    restart: scripts/restart.sh
+    configGet: scripts/config.sh
+    configApply: scripts/config.sh
+parameters:
+    - {name: SOFTWARE_VERSION, type: string, required: true, default: 3.7.0, description: "Center 发布的 OpenSearch 精确版本。"}
+    - {name: OPENSEARCH_INITIAL_ADMIN_PASSWORD, type: password, required: true, secret: true, description: "OpenSearch 初始管理员密码，仅通过受保护环境传入，不持久化明文。"}
+    - {name: OPENSEARCH_PORT, type: port, default: "9200", description: "OpenSearch HTTPS 监听端口。"}
+    - {name: OPENSEARCH_BIND_ADDRESS, type: string, default: 127.0.0.1, description: "OpenSearch HTTP 绑定地址。"}
+    - {name: OPENSEARCH_CLUSTER_NAME, type: string, default: oneinstack-opensearch, description: "单节点集群名称。"}
+    - {name: OPENSEARCH_NODE_NAME, type: string, default: oneinstack-opensearch-1, description: "节点名称。"}
+    - {name: OPENSEARCH_HEAP_SIZE_MB, type: integer, default: "1024", description: "OpenSearch JVM 初始与最大堆大小（MB）。"}
+    - {name: DATA_DIR, type: path, default: /var/lib/opensearch, description: "OpenSearch 数据目录。"}
+    - {name: LOG_DIR, type: path, default: /var/log/opensearch, description: "OpenSearch 日志目录。"}
+    - {name: INSTALL_DIR, type: path, default: /opt/oneinstack/opensearch, description: "OpenSearch 程序安装目录。"}
+    - {name: data-policy, env: UNINSTALL_DATA_POLICY, type: string, default: preserve, description: "卸载数据策略，仅允许 preserve 或 delete。"}
+    - {name: delete-data-confirm, env: UNINSTALL_CONFIRM_DATA_DELETION, type: boolean, default: "false", description: "data-policy=delete 时必须显式确认。"}
+    - {name: ONEINSTACK_INSTALL_MODE, type: string, default: center, description: "Panel 后端注入的在线或完全离线安装模式。"}
+    - {name: ONEINSTACK_OFFLINE_PACKAGE_PATH, type: path, description: "Panel 后端注入并校验的完全离线 Bundle 路径。"}
+    - {name: ONEINSTACK_COMPONENT_STATE, type: path, default: /var/lib/oneinstack/components, description: "Panel 后端注入的组件状态根目录。"}
+configuration:
+    applyMode: restart
+    fields:
+        - {key: httpPort, label: HTTPS 监听端口, type: port, env: ONEINSTACK_CONFIG_HTTP_PORT, default: "9200", min: 1, max: 65535}
+        - {key: bindAddress, label: 绑定地址, type: string, env: ONEINSTACK_CONFIG_BIND_ADDRESS, default: 127.0.0.1}
+        - {key: clusterName, label: 集群名称, type: string, env: ONEINSTACK_CONFIG_CLUSTER_NAME, default: oneinstack-opensearch}
+        - {key: nodeName, label: 节点名称, type: string, env: ONEINSTACK_CONFIG_NODE_NAME, default: oneinstack-opensearch-1}
+        - {key: heapSizeMB, label: JVM 堆大小, type: integer, env: ONEINSTACK_CONFIG_HEAP_SIZE_MB, default: "1024", unit: MB, min: 512, max: 1048576}
+        - {key: memoryLock, label: 锁定进程内存, type: boolean, env: ONEINSTACK_CONFIG_MEMORY_LOCK, default: "false"}
+sources:
+    releases:
+        - softwareVersion: 3.7.0
+          architecture: amd64
+          runtime: bundled-jdk
+          buildId: opensearch-3.7.0-linux-x64
+          url: https://artifacts.opensearch.org/releases/bundle/opensearch/3.7.0/opensearch-3.7.0-linux-x64.tar.gz
+          signatureUrl: https://artifacts.opensearch.org/releases/bundle/opensearch/3.7.0/opensearch-3.7.0-linux-x64.tar.gz.sig
+          sha256: ae4edf0e80ff38ef9e502a51200c7f54e313cc4275020fff5b60789081546184
+          publisherFingerprint: A8B2D9E04CD51FEF6AA2DB53BA81D99981191457
+        - softwareVersion: 3.7.0
+          architecture: arm64
+          runtime: bundled-jdk
+          buildId: opensearch-3.7.0-linux-arm64
+          url: https://artifacts.opensearch.org/releases/bundle/opensearch/3.7.0/opensearch-3.7.0-linux-arm64.tar.gz
+          signatureUrl: https://artifacts.opensearch.org/releases/bundle/opensearch/3.7.0/opensearch-3.7.0-linux-arm64.tar.gz.sig
+          sha256: 99fd6dc590de6d8af93f5a0368a063601141d115239df2ea75d99ad6d0fe9886
+          publisherFingerprint: A8B2D9E04CD51FEF6AA2DB53BA81D99981191457
+timeouts:
+    precheck: 300
+    install: 3600
+    configure: 900
+    verify: 300
+    upgrade: 3600
+    rollback: 900
+    uninstall: 900
+    status: 30
+    start: 300
+    stop: 180
+    restart: 300
+    configGet: 30
+    configApply: 600

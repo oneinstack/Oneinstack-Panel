@@ -79,7 +79,7 @@ scriptCenter:
   channel: stable
   enabled: true
   maxExpandedBytes: 268435456
-  maxPackageBytes: 67108864
+  maxPackageBytes: 134217728
   requestTimeoutSeconds: 120
   trustedKeys:
     bc45fa5195e00419: Gqd34lRBmSIIweF5OVUIXwM1FyMOgcuIS2n+Kn5mbV8=

@@ -1,0 +1,409 @@
+schemaVersion: 1
+component:
+    id: nodejs
+    name: Node.js
+    version: 1.0.8
+    softwareVersions:
+        - 22.12.0
+        - 16.20.2
+    channel: stable
+    description: Pinned Node.js runtime packages; Node.js 16.20.2 is a CentOS 7 legacy compatibility version and Node.js 22.12.0 uses a CentOS 7 source-build route.
+compatibility:
+    panel: '>=0.1.0-0'
+    systems:
+        - id: ubuntu
+          versions:
+            - "22.04"
+            - "24.04"
+            - "26.04"
+        - id: debian
+          versions:
+            - "11"
+            - "12"
+            - "13"
+        - id: rhel
+          versions:
+            - "8"
+            - "9"
+            - "10"
+        - id: rocky
+          versions:
+            - "8"
+            - "9"
+            - "10"
+        - id: almalinux
+          versions:
+            - "8"
+            - "9"
+            - "10"
+        - id: ol
+          versions:
+            - "8"
+            - "9"
+            - "10"
+        - id: centos
+          versions:
+            - "7"
+            - "8"
+            - "9"
+            - "10"
+        - id: fedora
+          versions:
+            - '*'
+        - id: amzn
+          versions:
+            - "2023"
+        - id: sles
+          versions:
+            - '*'
+        - id: opensuse-leap
+          versions:
+            - '*'
+        - id: opensuse-tumbleweed
+          versions:
+            - '*'
+        - id: opensuse
+          versions:
+            - '*'
+    architectures:
+        - amd64
+        - arm64
+dependencies:
+    packages:
+        apt:
+            - ca-certificates
+            - curl
+            - tar
+            - xz-utils
+            - make
+            - gcc
+            - g++
+            - python3
+        dnf:
+            - ca-certificates
+            - curl
+            - tar
+            - xz
+            - make
+            - gcc
+            - gcc-c++
+            - python3
+        yum:
+            - ca-certificates
+            - curl
+            - tar
+            - xz
+            - make
+            - gcc
+            - gcc-c++
+            - python3
+        zypper:
+            - ca-certificates
+            - curl
+            - tar
+            - xz
+            - make
+            - gcc
+            - gcc-c++
+            - python3
+actions:
+    precheck: scripts/precheck.sh
+    install: scripts/install.sh
+    verify: scripts/verify.sh
+    rollback: scripts/rollback.sh
+    uninstall: scripts/uninstall.sh
+parameters:
+    - name: SOFTWARE_VERSION
+      type: string
+      required: true
+      default: 22.12.0
+      description: Exact Node.js runtime version selected by Panel.
+    - name: INSTALL_DIR
+      type: path
+      default: /usr/local/node
+      description: Managed Node.js installation directory.
+    - name: TAKEOVER_UNMANAGED_CONFLICTS
+      type: boolean
+      default: "false"
+      description: Back up and replace an unmanaged Node.js installation directory, global entrypoints, or profile configuration.
+    - name: ONEINSTACK_COMPONENT_STATE
+      type: path
+      default: /var/lib/oneinstack/components
+      description: Internal component state directory.
+    - name: ONEINSTACK_INSTALL_MODE
+      type: string
+      default: center
+      description: Internal Center or offline execution mode.
+    - name: ONEINSTACK_OFFLINE_PACKAGE_PATH
+      type: path
+      description: Internal validated offline package root.
+sources:
+    releases:
+        - softwareVersion: 16.20.2
+          architecture: amd64
+          runtime: glibc2.17+
+          systems:
+            - id: ubuntu
+              versions:
+                - "22.04"
+                - "24.04"
+                - "26.04"
+            - id: debian
+              versions:
+                - "11"
+                - "12"
+                - "13"
+            - id: rhel
+              versions:
+                - "8"
+                - "9"
+                - "10"
+            - id: rocky
+              versions:
+                - "8"
+                - "9"
+                - "10"
+            - id: almalinux
+              versions:
+                - "8"
+                - "9"
+                - "10"
+            - id: ol
+              versions:
+                - "8"
+                - "9"
+                - "10"
+            - id: centos
+              versions:
+                - "7"
+                - "8"
+                - "9"
+                - "10"
+            - id: fedora
+              versions:
+                - '*'
+            - id: amzn
+              versions:
+                - "2023"
+            - id: sles
+              versions:
+                - '*'
+            - id: opensuse-leap
+              versions:
+                - '*'
+            - id: opensuse-tumbleweed
+              versions:
+                - '*'
+            - id: opensuse
+              versions:
+                - '*'
+          buildId: nodejs-16.20.2-binary-amd64
+          url: https://nodejs.org/dist/v16.20.2/node-v16.20.2-linux-x64.tar.xz
+          sha256: 874463523f26ed528634580247f403d200ba17a31adf2de98a7b124c6eb33d87
+        - softwareVersion: 16.20.2
+          architecture: arm64
+          runtime: glibc2.17+
+          systems:
+            - id: ubuntu
+              versions:
+                - "22.04"
+                - "24.04"
+                - "26.04"
+            - id: debian
+              versions:
+                - "11"
+                - "12"
+                - "13"
+            - id: rhel
+              versions:
+                - "8"
+                - "9"
+                - "10"
+            - id: rocky
+              versions:
+                - "8"
+                - "9"
+                - "10"
+            - id: almalinux
+              versions:
+                - "8"
+                - "9"
+                - "10"
+            - id: ol
+              versions:
+                - "8"
+                - "9"
+                - "10"
+            - id: centos
+              versions:
+                - "7"
+                - "8"
+                - "9"
+                - "10"
+            - id: fedora
+              versions:
+                - '*'
+            - id: amzn
+              versions:
+                - "2023"
+            - id: sles
+              versions:
+                - '*'
+            - id: opensuse-leap
+              versions:
+                - '*'
+            - id: opensuse-tumbleweed
+              versions:
+                - '*'
+            - id: opensuse
+              versions:
+                - '*'
+          buildId: nodejs-16.20.2-binary-arm64
+          url: https://nodejs.org/dist/v16.20.2/node-v16.20.2-linux-arm64.tar.xz
+          sha256: e88d86154d1ce53dc52fd74d79d4bfdf0b05f58c0bb2639adfa36e9378b770c4
+        - softwareVersion: 22.12.0
+          architecture: amd64
+          runtime: glibc2.28+
+          systems:
+            - id: ubuntu
+              versions:
+                - "22.04"
+                - "24.04"
+                - "26.04"
+            - id: debian
+              versions:
+                - "11"
+                - "12"
+                - "13"
+            - id: rhel
+              versions:
+                - "8"
+                - "9"
+                - "10"
+            - id: rocky
+              versions:
+                - "8"
+                - "9"
+                - "10"
+            - id: almalinux
+              versions:
+                - "8"
+                - "9"
+                - "10"
+            - id: ol
+              versions:
+                - "8"
+                - "9"
+                - "10"
+            - id: centos
+              versions:
+                - "8"
+                - "9"
+                - "10"
+            - id: fedora
+              versions:
+                - '*'
+            - id: amzn
+              versions:
+                - "2023"
+            - id: sles
+              versions:
+                - '*'
+            - id: opensuse-leap
+              versions:
+                - '*'
+            - id: opensuse-tumbleweed
+              versions:
+                - '*'
+            - id: opensuse
+              versions:
+                - '*'
+          buildId: nodejs-22.12.0-binary-amd64
+          url: https://nodejs.org/dist/v22.12.0/node-v22.12.0-linux-x64.tar.xz
+          sha256: 22982235e1b71fa8850f82edd09cdae7e3f32df1764a9ec298c72d25ef2c164f
+        - softwareVersion: 22.12.0
+          architecture: arm64
+          runtime: glibc2.28+
+          systems:
+            - id: ubuntu
+              versions:
+                - "22.04"
+                - "24.04"
+                - "26.04"
+            - id: debian
+              versions:
+                - "11"
+                - "12"
+                - "13"
+            - id: rhel
+              versions:
+                - "8"
+                - "9"
+                - "10"
+            - id: rocky
+              versions:
+                - "8"
+                - "9"
+                - "10"
+            - id: almalinux
+              versions:
+                - "8"
+                - "9"
+                - "10"
+            - id: ol
+              versions:
+                - "8"
+                - "9"
+                - "10"
+            - id: centos
+              versions:
+                - "8"
+                - "9"
+                - "10"
+            - id: fedora
+              versions:
+                - '*'
+            - id: amzn
+              versions:
+                - "2023"
+            - id: sles
+              versions:
+                - '*'
+            - id: opensuse-leap
+              versions:
+                - '*'
+            - id: opensuse-tumbleweed
+              versions:
+                - '*'
+            - id: opensuse
+              versions:
+                - '*'
+          buildId: nodejs-22.12.0-binary-arm64
+          url: https://nodejs.org/dist/v22.12.0/node-v22.12.0-linux-arm64.tar.xz
+          sha256: 8cfd5a8b9afae5a2e0bd86b0148ca31d2589c0ea669c2d0b11c132e35d90ed68
+        - softwareVersion: 22.12.0
+          architecture: amd64
+          runtime: glibc2.17
+          systems:
+            - id: centos
+              versions:
+                - "7"
+          buildId: nodejs-22.12.0-source-centos7-amd64
+          url: https://nodejs.org/dist/v22.12.0/node-v22.12.0.tar.xz
+          sha256: fe1bc4be004dc12721ea2cb671b08a21de01c6976960ef8a1248798589679e16
+        - softwareVersion: 22.12.0
+          architecture: arm64
+          runtime: glibc2.17
+          systems:
+            - id: centos
+              versions:
+                - "7"
+          buildId: nodejs-22.12.0-source-centos7-arm64
+          url: https://nodejs.org/dist/v22.12.0/node-v22.12.0.tar.xz
+          sha256: fe1bc4be004dc12721ea2cb671b08a21de01c6976960ef8a1248798589679e16
+timeouts:
+    precheck: 180
+    install: 14400
+    verify: 300
+    rollback: 900
+    uninstall: 900

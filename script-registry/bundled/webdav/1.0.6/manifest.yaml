@@ -1,0 +1,77 @@
+schemaVersion: 1
+component:
+  id: webdav
+  name: WebDAV
+  version: 1.0.6
+  softwareVersions: ["5.16.0"]
+  channel: stable
+  allowCustomVersion: false
+  description: 固定 WebDAV 5.16.0 的认证文件服务，支持精确制品、在线和完全离线安装及配置事务。
+compatibility:
+  panel: ">=0.1.0-0"
+  # CentOS 7 仅允许 amd64，由 sources.releases 的架构和系统选择器限制。
+  systems:
+    - {id: ubuntu, versions: ["20.04", "22.04", "24.04"]}
+    - {id: debian, versions: ["11", "12"]}
+    - {id: rocky, versions: ["8", "9"]}
+    - {id: almalinux, versions: ["8", "9"]}
+    - {id: centos, versions: ["7"]}
+  architectures: [amd64, arm64]
+dependencies:
+  packages:
+    apt: [acl, apache2-utils, ca-certificates, curl, iproute2, openssl, tar]
+    dnf: [acl, httpd-tools, ca-certificates, curl, iproute, openssl, tar]
+serviceName: webdav
+actions:
+  precheck: scripts/precheck.sh
+  install: scripts/install.sh
+  verify: scripts/verify.sh
+  rollback: scripts/rollback.sh
+  uninstall: scripts/uninstall.sh
+  status: scripts/status.sh
+  start: scripts/start.sh
+  stop: scripts/stop.sh
+  restart: scripts/restart.sh
+  configGet: scripts/config.sh
+  configApply: scripts/config.sh
+parameters:
+  - {name: software-version, env: SOFTWARE_VERSION, type: string, required: true, default: "5.16.0", description: "精确固定的 WebDAV 运行版本。"}
+  - {name: webdav-port, env: WEBDAV_PORT, type: port, default: "5005", description: "WebDAV 监听端口；主机 precheck 检查占用。"}
+  - {name: webdav-bind-address, env: WEBDAV_BIND_ADDRESS, type: string, default: 127.0.0.1, description: "默认仅本机监听。"}
+  - {name: webdav-username, env: WEBDAV_USERNAME, type: string, default: webdav_admin, description: "WebDAV 登录账号。"}
+  - {name: webdav-password, env: WEBDAV_PASSWORD, type: password, required: true, secret: true, description: "WebDAV 密码；12-72 字符，主机仅保存 bcrypt 哈希。"}
+  - {name: install-dir, env: INSTALL_DIR, type: path, default: /opt/oneinstack/webdav, description: "受管程序目录；安装后不可在线迁移。"}
+  - {name: data-dir, env: DATA_DIR, type: path, default: /var/lib/webdav, description: "受管文件目录；不得与程序和状态目录重叠。"}
+  - {name: preserve-data, env: PRESERVE_DATA, type: boolean, default: "true", description: "卸载时默认保留数据。"}
+  - {name: ONEINSTACK_INSTALL_MODE, type: string, default: center, description: "Panel 后端注入的来源模式。"}
+  - {name: ONEINSTACK_OFFLINE_PACKAGE_PATH, type: path, description: "Panel 后端注入的离线 Bundle 路径。"}
+  - {name: ONEINSTACK_OFFLINE_BUNDLE_ID, type: string, description: "Panel 后端注入的 Bundle 身份。"}
+  - {name: ONEINSTACK_OFFLINE_BUNDLE_DIGEST, type: string, description: "Panel 后端注入的 Bundle 摘要。"}
+  - {name: ONEINSTACK_COMPONENT_STATE, type: path, default: /var/lib/oneinstack/components, description: "Panel 后端注入的受管状态根目录。"}
+configuration:
+  applyMode: restart
+  fields:
+    - {key: webdavPort, label: 监听端口, type: port, env: ONEINSTACK_CONFIG_WEBDAV_PORT, default: "5005", min: 1, max: 65535}
+    - {key: bindAddress, label: 监听地址, type: string, env: ONEINSTACK_CONFIG_BIND_ADDRESS, default: 127.0.0.1}
+    - {key: prefix, label: 访问前缀, type: string, env: ONEINSTACK_CONFIG_PREFIX, default: /}
+    - {key: permissions, label: 默认权限, type: select, env: ONEINSTACK_CONFIG_PERMISSIONS, default: CRUD, options: [R, RC, RU, RCU, CRUD]}
+    - {key: behindProxy, label: 位于反向代理后, type: boolean, env: ONEINSTACK_CONFIG_BEHIND_PROXY, default: "false"}
+    - {key: tls, label: 启用服务端 TLS, type: boolean, env: ONEINSTACK_CONFIG_TLS, default: "false"}
+    - {key: tlsCert, label: TLS 证书路径, type: string, env: ONEINSTACK_CONFIG_TLS_CERT, allowEmpty: true}
+    - {key: tlsKey, label: TLS 私钥路径, type: string, env: ONEINSTACK_CONFIG_TLS_KEY, allowEmpty: true}
+sources:
+  releases:
+    - {softwareVersion: "5.16.0", architecture: amd64, url: "https://github.com/hacdias/webdav/releases/download/v5.16.0/linux-amd64-webdav.tar.gz", sha256: f632f359335a78f2d99b491250da54150281c27386cd4352d667ed6c30efb58b}
+    - {softwareVersion: "5.16.0", architecture: arm64, systems: [{id: ubuntu, versions: ["20.04", "22.04", "24.04"]}, {id: debian, versions: ["11", "12"]}, {id: rocky, versions: ["8", "9"]}, {id: almalinux, versions: ["8", "9"]}], url: "https://github.com/hacdias/webdav/releases/download/v5.16.0/linux-arm64-webdav.tar.gz", sha256: 05a84c466001a179c9abb457374122480c5367b8d2b3bf0892d98bccc5b32ad2}
+timeouts:
+  precheck: 180
+  install: 3600
+  verify: 300
+  rollback: 900
+  uninstall: 900
+  status: 30
+  start: 180
+  stop: 180
+  restart: 300
+  configGet: 30
+  configApply: 600

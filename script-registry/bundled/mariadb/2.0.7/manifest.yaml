@@ -1,0 +1,233 @@
+schemaVersion: 1
+component:
+  id: mariadb
+  name: MariaDB
+  version: 2.0.7
+  softwareVersions: ["10.11.19", "11.4.13"]
+  channel: stable
+  allowCustomVersion: false
+  description: MariaDB LTS production component with verified official source and CentOS 7 RPM runtimes, transactional online installation, and fully offline lifecycle support.
+compatibility:
+  panel: ">=0.1.0-0"
+  systems:
+    - id: ubuntu
+      versions: ["22.04", "24.04", "26.04"]
+    - id: debian
+      versions: ["12", "13"]
+    - id: rhel
+      versions: ["8", "9", "10"]
+    - id: rocky
+      versions: ["8", "9", "10"]
+    - id: almalinux
+      versions: ["8", "9", "10"]
+    - id: ol
+      versions: ["8", "9", "10"]
+    - id: centos-stream
+      versions: ["9", "10"]
+    - id: centos
+      versions: ["7"]
+    - id: amzn
+      versions: ["2023"]
+    - id: sles
+      versions: ["15", "16"]
+  architectures: [amd64, arm64]
+sources:
+  releases:
+    - softwareVersion: "10.11.19"
+      architecture: amd64
+      systems: &source-build-systems
+        - {id: ubuntu, versions: ["22.04", "24.04", "26.04"]}
+        - {id: debian, versions: ["12", "13"]}
+        - {id: rhel, versions: ["8", "9", "10"]}
+        - {id: rocky, versions: ["8", "9", "10"]}
+        - {id: almalinux, versions: ["8", "9", "10"]}
+        - {id: ol, versions: ["8", "9", "10"]}
+        - {id: centos-stream, versions: ["9", "10"]}
+        - {id: amzn, versions: ["2023"]}
+        - {id: sles, versions: ["15", "16"]}
+      buildId: mariadb-10.11.19-source-oneinstack-2.0.7
+      url: https://archive.mariadb.org/mariadb-10.11.19/source/mariadb-10.11.19.tar.gz
+      signatureUrl: https://archive.mariadb.org/mariadb-10.11.19/source/mariadb-10.11.19.tar.gz.asc
+      sha256: b8e543ee69d380fb1cfd563226f49e0fe96e4d67e7b7a9045ee514a168ed2066
+      publisherFingerprint: 177F4010FE56CA3336300305F1656F24C74CD1D8
+    - softwareVersion: "10.11.19"
+      architecture: arm64
+      systems: *source-build-systems
+      buildId: mariadb-10.11.19-source-oneinstack-2.0.7
+      url: https://archive.mariadb.org/mariadb-10.11.19/source/mariadb-10.11.19.tar.gz
+      signatureUrl: https://archive.mariadb.org/mariadb-10.11.19/source/mariadb-10.11.19.tar.gz.asc
+      sha256: b8e543ee69d380fb1cfd563226f49e0fe96e4d67e7b7a9045ee514a168ed2066
+      publisherFingerprint: 177F4010FE56CA3336300305F1656F24C74CD1D8
+    - softwareVersion: "10.11.19"
+      architecture: amd64
+      systems:
+        - {id: centos, versions: ["7"]}
+      buildId: mariadb-10.11.19-rhel7-rpmset-oneinstack-2.0.7
+      url: https://archive.mariadb.org/mariadb-10.11.19/yum/rhel7-amd64/rpms/MariaDB-server-10.11.19-1.el7_9.x86_64.rpm
+      sha256: 44f2d9ab69ce7f9bb51e7bad4ece2982f1cf1ad9882a0d55f5362456e54e8a21
+    - softwareVersion: "11.4.13"
+      architecture: amd64
+      systems: *source-build-systems
+      buildId: mariadb-11.4.13-source-oneinstack-2.0.7
+      url: https://archive.mariadb.org/mariadb-11.4.13/source/mariadb-11.4.13.tar.gz
+      signatureUrl: https://archive.mariadb.org/mariadb-11.4.13/source/mariadb-11.4.13.tar.gz.asc
+      sha256: 1bb254b106d0a7ca871cfa18fa6e18d4b80a7430f9ec9d1571ec4271a13def96
+      publisherFingerprint: 177F4010FE56CA3336300305F1656F24C74CD1D8
+    - softwareVersion: "11.4.13"
+      architecture: arm64
+      systems: *source-build-systems
+      buildId: mariadb-11.4.13-source-oneinstack-2.0.7
+      url: https://archive.mariadb.org/mariadb-11.4.13/source/mariadb-11.4.13.tar.gz
+      signatureUrl: https://archive.mariadb.org/mariadb-11.4.13/source/mariadb-11.4.13.tar.gz.asc
+      sha256: 1bb254b106d0a7ca871cfa18fa6e18d4b80a7430f9ec9d1571ec4271a13def96
+      publisherFingerprint: 177F4010FE56CA3336300305F1656F24C74CD1D8
+dependencies:
+  packages:
+    apt: [build-essential, bison, ca-certificates, cmake, curl, gnupg, iproute2, libaio-dev, libncurses-dev, libssl-dev, libsystemd-dev, make, perl, pkg-config, tar]
+    dnf: [bison, ca-certificates, cmake, curl, gcc, gcc-c++, gnupg2, iproute, libaio-devel, make, ncurses-devel, openssl-devel, perl, pkgconf-pkg-config, systemd-devel, tar]
+    yum: [bison, ca-certificates, cmake, cpio, curl, gcc, gcc-c++, gnupg2, iproute, libaio-devel, make, ncurses-devel, openssl-devel, pcre2, perl, perl-DBI, perl-Data-Dumper, pkgconfig, rpm, systemd-devel, tar]
+    zypper: [bison, ca-certificates, cmake, curl, gcc, gcc-c++, gpg2, iproute2, libaio-devel, libopenssl-devel, make, ncurses-devel, perl, pkg-config, systemd-devel, tar]
+conflicts: [mysql, percona]
+runtimeGroup: database
+serviceName: mariadb
+actions:
+  precheck: scripts/precheck.sh
+  install: scripts/install.sh
+  configure: scripts/configure.sh
+  verify: scripts/verify.sh
+  upgrade: scripts/install.sh
+  rollback: scripts/rollback.sh
+  uninstall: scripts/uninstall.sh
+  status: scripts/status.sh
+  start: scripts/start.sh
+  stop: scripts/stop.sh
+  restart: scripts/restart.sh
+  configGet: scripts/config.sh
+  configApply: scripts/config.sh
+parameters:
+  - name: software-version
+    env: SOFTWARE_VERSION
+    type: string
+    required: true
+    default: "11.4.13"
+    description: Exact MariaDB LTS version; CentOS 7 x86_64 supports only 10.11.19, while other compatible hosts support 10.11.19 and 11.4.13.
+  - name: mariadb-port
+    env: MARIADB_PORT
+    type: port
+    default: "3306"
+    description: MariaDB TCP listener port.
+  - name: mariadb-bind-address
+    env: MARIADB_BIND_ADDRESS
+    type: string
+    default: "127.0.0.1"
+    description: MariaDB listener address; loopback-only by default.
+  - name: install-dir
+    env: INSTALL_DIR
+    type: path
+    default: /usr/local/mariadb
+  - name: data-dir
+    env: DATA_DIR
+    type: path
+    default: /data/mariadb
+    description: Existing data is accepted only with Oneinstack ownership state or a verified preserved-data uninstall record.
+  - name: log-dir
+    env: LOG_DIR
+    type: path
+    default: /data/mariadb
+  - name: run-user
+    env: RUN_USER
+    type: string
+    default: mysql
+  - name: run-group
+    env: RUN_GROUP
+    type: string
+    default: mysql
+  - name: mysql-username
+    env: MYSQL_USERNAME
+    type: string
+    default: root
+    description: MariaDB administrative SQL login; the MySQL-compatible key preserves the Panel database contract.
+  - name: mysql-password
+    env: MYSQL_PASSWORD
+    type: password
+    secret: true
+    description: Required for new data and preserved-data recovery; when omitted Panel generates and delivers a 24-character password.
+  - name: component-state-dir
+    env: COMPONENT_STATE_DIR
+    type: path
+    default: /var/lib/oneinstack/components
+  - name: data-policy
+    env: DATA_POLICY
+    type: string
+    default: preserve
+    description: Uninstall data policy; managed data is preserved by default.
+  - name: delete-data-confirm
+    env: DELETE_DATA_CONFIRM
+    type: boolean
+    default: "false"
+    description: Must be true together with data-policy=delete.
+configuration:
+  applyMode: restart
+  fields:
+    - key: maxConnections
+      label: 最大连接数
+      type: integer
+      env: ONEINSTACK_CONFIG_MAX_CONNECTIONS
+      default: "300"
+      min: 10
+      max: 100000
+    - key: maxAllowedPacket
+      label: 数据包上限
+      type: integer
+      env: ONEINSTACK_CONFIG_MAX_ALLOWED_PACKET
+      unit: MB
+      default: "64"
+      min: 1
+      max: 1024
+    - key: innodbBufferPoolSize
+      label: InnoDB 缓冲池
+      type: integer
+      env: ONEINSTACK_CONFIG_INNODB_BUFFER_POOL_SIZE
+      unit: MB
+      default: "128"
+      min: 128
+      max: 1048576
+    - key: slowQueryLog
+      label: 慢查询日志
+      type: boolean
+      env: ONEINSTACK_CONFIG_SLOW_QUERY_LOG
+      default: "false"
+    - key: longQueryTime
+      label: 慢查询阈值
+      type: integer
+      env: ONEINSTACK_CONFIG_LONG_QUERY_TIME
+      unit: 秒
+      default: "10"
+      min: 1
+      max: 600
+    - key: mariadbPort
+      label: 监听端口
+      type: port
+      env: ONEINSTACK_CONFIG_MARIADB_PORT
+      min: 1
+      max: 65535
+      description: MariaDB TCP listener port; changing it restarts the service.
+    - key: bindAddress
+      label: 绑定地址
+      type: string
+      env: ONEINSTACK_CONFIG_BIND_ADDRESS
+      description: MariaDB TCP listener address.
+timeouts:
+  precheck: 300
+  install: 14400
+  configure: 1200
+  verify: 300
+  upgrade: 14400
+  rollback: 900
+  uninstall: 600
+  status: 30
+  start: 300
+  stop: 300
+  restart: 600
+  configGet: 30
+  configApply: 600

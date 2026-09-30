@@ -32,7 +32,7 @@ const defaultConfig = `scriptCenter:
     url: "https://scripts.example.com"
     channel: "stable"
     requestTimeoutSeconds: 10
-    maxPackageBytes: 67108864
+    maxPackageBytes: 134217728
     maxExpandedBytes: 268435456
     cachePath: "/usr/local/one/script-registry/cache"
     bundledPath: "/usr/local/one/script-registry/bundled"
@@ -229,7 +229,7 @@ func LoadConfig(path ...string) (*viper.Viper, error) {
 	v.SetDefault("scriptCenter.allowInsecureHTTP", false)
 	v.SetDefault("scriptCenter.channel", "stable")
 	v.SetDefault("scriptCenter.requestTimeoutSeconds", 10)
-	v.SetDefault("scriptCenter.maxPackageBytes", int64(64<<20))
+	v.SetDefault("scriptCenter.maxPackageBytes", int64(128<<20))
 	v.SetDefault("scriptCenter.maxExpandedBytes", int64(256<<20))
 	v.SetDefault("scriptCenter.cachePath", filepath.Join(GetBasePath(), "script-registry", "cache"))
 	v.SetDefault("scriptCenter.bundledPath", filepath.Join(GetBasePath(), "script-registry", "bundled"))

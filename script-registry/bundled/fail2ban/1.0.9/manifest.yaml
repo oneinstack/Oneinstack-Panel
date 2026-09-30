@@ -1,0 +1,113 @@
+schemaVersion: 1
+component:
+  id: fail2ban
+  name: Fail2ban
+  version: 1.0.9
+  softwareVersions: ["1.1.1", "1.0.2", "system"]
+  channel: stable
+  description: Installs the distribution Fail2ban service for system and verified upstream source runtimes for exact versions, with the constrained OneinStack event-reporting integration.
+compatibility:
+  panel: ">=0.1.0-0"
+  systems:
+    - id: ubuntu
+      versions: ["22.04", "24.04", "26.04"]
+    - id: debian
+      versions: ["11", "12", "13"]
+    - id: rhel
+      versions: ["8", "9", "10"]
+    - id: rocky
+      versions: ["8", "9", "10"]
+    - id: almalinux
+      versions: ["8", "9", "10"]
+    - id: ol
+      versions: ["8", "9", "10"]
+    - id: centos
+      versions: ["7", "8", "9", "10"]
+    - id: fedora
+      versions: ["*"]
+    - id: amzn
+      versions: ["2023"]
+    - id: sles
+      versions: ["*"]
+    - id: opensuse-leap
+      versions: ["*"]
+    - id: opensuse-tumbleweed
+      versions: ["*"]
+    - id: opensuse
+      versions: ["*"]
+  architectures: [amd64, arm64]
+dependencies:
+  packages:
+    apt: [ca-certificates, curl, fail2ban, gzip, python3, python3-setuptools, tar]
+    dnf: [ca-certificates, curl, fail2ban, gzip, python3, python3-setuptools, tar]
+    yum: [ca-certificates, curl, fail2ban, gzip, python3, python3-setuptools, tar]
+    zypper: [ca-certificates, curl, fail2ban, gzip, python3, python3-setuptools, tar]
+serviceName: fail2ban
+sources:
+  releases:
+    - {softwareVersion: 1.1.1, architecture: amd64, buildId: fail2ban-1.1.1-source-amd64-oneinstack-1.0.9, url: https://github.com/fail2ban/fail2ban/archive/1.1.1.tar.gz, sha256: 4be0ea0488e32de260058462a44a040f0542cd26a9fb6fa6d2514f9dd8ec1609}
+    - {softwareVersion: 1.1.1, architecture: arm64, buildId: fail2ban-1.1.1-source-arm64-oneinstack-1.0.9, url: https://github.com/fail2ban/fail2ban/archive/1.1.1.tar.gz, sha256: 4be0ea0488e32de260058462a44a040f0542cd26a9fb6fa6d2514f9dd8ec1609}
+    - {softwareVersion: 1.0.2, architecture: amd64, buildId: fail2ban-1.0.2-source-amd64-oneinstack-1.0.9, url: https://github.com/fail2ban/fail2ban/archive/1.0.2.tar.gz, sha256: ae8b0b41f27a7be12d40488789d6c258029b23a01168e3c0d347ee80b325ac23}
+    - {softwareVersion: 1.0.2, architecture: arm64, buildId: fail2ban-1.0.2-source-arm64-oneinstack-1.0.9, url: https://github.com/fail2ban/fail2ban/archive/1.0.2.tar.gz, sha256: ae8b0b41f27a7be12d40488789d6c258029b23a01168e3c0d347ee80b325ac23}
+actions:
+  precheck: scripts/precheck.sh
+  install: scripts/install.sh
+  verify: scripts/verify.sh
+  rollback: scripts/rollback.sh
+  uninstall: scripts/uninstall.sh
+  status: scripts/status.sh
+  start: scripts/start.sh
+  stop: scripts/stop.sh
+  restart: scripts/restart.sh
+  configGet: scripts/config.sh
+  configApply: scripts/config.sh
+parameters:
+  - {name: software-version, env: SOFTWARE_VERSION, type: string, default: 1.1.1, description: Fail2ban runtime version.}
+  - {name: default-maxretry, env: FAIL2BAN_DEFAULT_MAXRETRY, type: integer, default: "5", description: Default number of failures before banning.}
+  - {name: default-findtime, env: FAIL2BAN_DEFAULT_FINDTIME, type: integer, default: "600", description: Default failure observation window in seconds.}
+  - {name: default-bantime, env: FAIL2BAN_DEFAULT_BANTIME, type: integer, default: "3600", description: Default ban duration in seconds.}
+  - {name: ignore-ip, env: FAIL2BAN_IGNORE_IP, type: string, description: Space-separated IP addresses or CIDRs excluded from bans.}
+  - {name: component-state-dir, env: ONEINSTACK_COMPONENT_STATE, type: path, default: /var/lib/oneinstack/components, description: OneinStack component state directory.}
+configuration:
+  applyMode: reload
+  fields:
+    - {key: maxRetry, label: 最大重试次数, type: integer, env: ONEINSTACK_CONFIG_MAX_RETRY, default: "5", min: 1, max: 100, description: 单个 jail 在统计窗口内允许的最大失败次数。}
+    - {key: findTimeSeconds, label: 统计窗口, type: integer, env: ONEINSTACK_CONFIG_FIND_TIME, unit: 秒, default: "600", min: 1, max: 604800, description: 统计失败次数的时间窗口。}
+    - {key: banTimeSeconds, label: 封禁时长, type: integer, env: ONEINSTACK_CONFIG_BAN_TIME, unit: 秒, default: "3600", min: 60, max: 31536000, description: 命中规则后封禁 IP 的持续时间。}
+    - {key: ignoreIps, label: 忽略 IP, type: string, env: ONEINSTACK_CONFIG_IGNORE_IPS, default: "127.0.0.1/8 ::1", description: 空格分隔的 IP 地址或网段，这些地址不会被 Fail2ban 封禁。}
+preview:
+  services:
+    - {name: fail2ban.service, actions: [start, stop, restart, uninstall]}
+  packages:
+    apt:
+      names: [fail2ban]
+      softwareVersions: [system]
+    dnf:
+      installedAlternatives: [fail2ban, fail2ban-server]
+      softwareVersions: [system]
+    yum:
+      installedAlternatives: [fail2ban, fail2ban-server]
+      softwareVersions: [system]
+    zypper:
+      installedAlternatives: [fail2ban, fail2ban-server]
+      softwareVersions: [system]
+  paths:
+    - {path: /usr/local/lib/oneinstack/fail2ban/1.1.1, role: program, preserveAction: remove, deleteAction: remove, softwareVersions: [1.1.1]}
+    - {path: /usr/local/lib/oneinstack/fail2ban/1.0.2, role: program, preserveAction: remove, deleteAction: remove, softwareVersions: [1.0.2]}
+    - {path: /etc/fail2ban, role: config, preserveAction: preserve, deleteAction: preserve}
+    - {path: /etc/fail2ban/jail.d, role: integration, preserveAction: remove_managed, deleteAction: remove_managed}
+    - {path: /etc/fail2ban/action.d, role: integration, preserveAction: remove_managed, deleteAction: remove_managed}
+    - {path: /etc/fail2ban/filter.d, role: integration, preserveAction: remove_managed, deleteAction: remove_managed}
+    - {path: /usr/local/libexec, role: integration, preserveAction: remove_managed, deleteAction: remove_managed}
+    - {path: /var/lib/oneinstack/fail2ban, role: data, preserveAction: preserve, deleteAction: preserve}
+    - {path: /var/lib/oneinstack/components/fail2ban, role: state, preserveAction: remove_contents, deleteAction: remove_contents}
+  rollback:
+    uninstall:
+      supported: false
+      strategy: none
+      summary: Removed runtime files or system packages are not restored automatically; external Fail2ban configuration is preserved.
+      unrecoverable: [runtime_or_packages_removed]
+    start: {supported: false, strategy: none, summary: Service actions are not automatically reversed.}
+    stop: {supported: false, strategy: none, summary: Service actions are not automatically reversed.}
+    restart: {supported: false, strategy: none, summary: Service actions are not automatically reversed.}
+timeouts: {precheck: 120, install: 1200, verify: 120, rollback: 300, uninstall: 600, status: 30, start: 120, stop: 120, restart: 120, configGet: 30, configApply: 180}

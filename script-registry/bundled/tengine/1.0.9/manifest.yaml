@@ -1,0 +1,280 @@
+schemaVersion: 1
+component:
+    id: tengine
+    name: Tengine
+    version: 1.0.9
+    softwareVersions:
+        - 3.1.0
+    channel: stable
+    description: Tengine 3.1.0 source installer with native paths, systemd lifecycle, and a verified fully offline Bundle.
+compatibility:
+    panel: '>=0.1.0-0'
+    systems:
+        - id: ubuntu
+          versions:
+            - "22.04"
+            - "24.04"
+            - "26.04"
+        - id: debian
+          versions:
+            - "11"
+            - "12"
+            - "13"
+        - id: rhel
+          versions:
+            - "8"
+            - "9"
+            - "10"
+        - id: rocky
+          versions:
+            - "8"
+            - "9"
+            - "10"
+        - id: almalinux
+          versions:
+            - "8"
+            - "9"
+            - "10"
+        - id: ol
+          versions:
+            - "8"
+            - "9"
+            - "10"
+        - id: centos
+          versions:
+            - "7"
+        - id: centos-stream
+          versions:
+            - "8"
+            - "9"
+            - "10"
+        - id: fedora
+          versions:
+            - '*'
+        - id: amzn
+          versions:
+            - "2023"
+        - id: sles
+          versions:
+            - "15"
+            - "16"
+        - id: opensuse-leap
+          versions:
+            - '*'
+        - id: opensuse-tumbleweed
+          versions:
+            - '*'
+        - id: opensuse
+          versions:
+            - '*'
+    architectures:
+        - amd64
+        - arm64
+dependencies:
+    packages:
+        apt:
+            - acl
+            - build-essential
+            - ca-certificates
+            - curl
+            - iproute2
+            - libpcre2-dev
+            - libssl-dev
+            - tar
+            - zlib1g-dev
+        dnf:
+            - acl
+            - gcc
+            - gcc-c++
+            - make
+            - ca-certificates
+            - curl
+            - iproute
+            - pcre2-devel
+            - openssl-devel
+            - tar
+            - gzip
+            - zlib-devel
+        yum:
+            - acl
+            - gcc
+            - gcc-c++
+            - make
+            - ca-certificates
+            - curl
+            - iproute
+            - pcre2-devel
+            - openssl-devel
+            - tar
+            - gzip
+            - zlib-devel
+        zypper:
+            - acl
+            - gcc
+            - gcc-c++
+            - make
+            - ca-certificates
+            - curl
+            - iproute2
+            - libpcre2-devel
+            - libopenssl-devel
+            - tar
+            - gzip
+            - zlib-devel
+conflicts:
+    - nginx
+    - openresty
+    - caddy
+    - apache
+runtimeGroup: web-server
+serviceName: oneinstack-tengine
+actions:
+    precheck: scripts/precheck.sh
+    install: scripts/install.sh
+    configure: scripts/configure.sh
+    verify: scripts/verify.sh
+    upgrade: scripts/install.sh
+    rollback: scripts/rollback.sh
+    uninstall: scripts/uninstall.sh
+    status: scripts/status.sh
+    start: scripts/start.sh
+    stop: scripts/stop.sh
+    restart: scripts/restart.sh
+    reload: scripts/reload.sh
+    configGet: scripts/config.sh
+    configApply: scripts/config.sh
+parameters:
+    - name: SOFTWARE_VERSION
+      type: string
+      required: true
+      default: 3.1.0
+      description: Tengine exact version published by Center.
+    - name: TENGINE_PORT
+      type: port
+      default: "80"
+      description: Tengine HTTP listener port.
+    - name: PHP_FPM_SOCKET
+      type: path
+      default: /dev/shm/php-cgi.sock
+      description: PHP-FPM Unix socket used by the default PHP location.
+    - name: INSTALL_DIR
+      type: path
+      default: /usr/local/tengine
+    - name: WEB_ROOT
+      type: path
+      default: /data/wwwroot
+    - name: LOG_DIR
+      type: path
+      default: /data/wwwlogs
+    - name: WEB_VHOST_ROOT
+      type: path
+      default: /usr/local/one/vhost
+    - name: RUN_USER
+      type: string
+      default: www
+    - name: RUN_GROUP
+      type: string
+      default: www
+    - name: UNINSTALL_DATA_POLICY
+      type: string
+      default: preserve
+    - name: UNINSTALL_CONFIRM_DATA_DELETION
+      type: boolean
+      default: "false"
+    - name: ONEINSTACK_INSTALL_MODE
+      type: string
+      default: center
+      description: Internal Center or fully offline execution mode.
+    - name: ONEINSTACK_OFFLINE_PACKAGE_PATH
+      type: path
+      description: Internal validated offline Bundle path.
+    - name: ONEINSTACK_COMPONENT_STATE
+      type: path
+      default: /var/lib/oneinstack/components
+configuration:
+    applyMode: reload
+    fields:
+        - key: workerProcesses
+          label: 工作进程数
+          type: worker_processes
+          env: ONEINSTACK_CONFIG_WORKER_PROCESSES
+          default: auto
+          description: 建议保持 auto；手动设置范围为 1–99。
+        - key: workerConnections
+          label: 单进程连接数
+          type: integer
+          env: ONEINSTACK_CONFIG_WORKER_CONNECTIONS
+          min: 512
+          max: 65535
+        - key: keepaliveTimeout
+          label: 长连接超时
+          type: integer
+          env: ONEINSTACK_CONFIG_KEEPALIVE_TIMEOUT
+          unit: 秒
+          min: 5
+          max: 300
+        - key: clientMaxBodySize
+          label: 请求体上限
+          type: integer
+          env: ONEINSTACK_CONFIG_CLIENT_MAX_BODY_SIZE
+          unit: MB
+          min: 1
+          max: 10240
+        - key: tenginePort
+          label: 监听端口
+          type: port
+          env: ONEINSTACK_CONFIG_TENGINE_PORT
+          min: 1
+          max: 65535
+        - key: phpFpmSocket
+          label: PHP-FPM Socket
+          type: path
+          env: ONEINSTACK_CONFIG_PHP_FPM_SOCKET
+        - key: installDir
+          label: 安装目录
+          type: path
+          env: ONEINSTACK_CONFIG_INSTALL_DIR
+          description: 安装目录不可在线迁移。
+        - key: webRoot
+          label: 网站根目录
+          type: path
+          env: ONEINSTACK_CONFIG_WEB_ROOT
+        - key: logDir
+          label: 日志目录
+          type: path
+          env: ONEINSTACK_CONFIG_LOG_DIR
+        - key: runUser
+          label: 运行账号
+          type: string
+          env: ONEINSTACK_CONFIG_RUN_USER
+        - key: runGroup
+          label: 运行用户组
+          type: string
+          env: ONEINSTACK_CONFIG_RUN_GROUP
+sources:
+    releases:
+        - softwareVersion: 3.1.0
+          architecture: amd64
+          buildId: tengine-3.1.0-amd64-oneinstack-1.0.9
+          url: https://mirrors.oneinstack.com/oneinstack/src/tengine-3.1.0.tar.gz
+          sha256: 64ed7155c0c904ce0fe7199c21b8eb6c2abfc267278fa8af832c0cb781e864dc
+        - softwareVersion: 3.1.0
+          architecture: arm64
+          buildId: tengine-3.1.0-arm64-oneinstack-1.0.9
+          url: https://mirrors.oneinstack.com/oneinstack/src/tengine-3.1.0.tar.gz
+          sha256: 64ed7155c0c904ce0fe7199c21b8eb6c2abfc267278fa8af832c0cb781e864dc
+timeouts:
+    precheck: 180
+    install: 14400
+    configure: 180
+    verify: 300
+    upgrade: 14400
+    rollback: 900
+    uninstall: 900
+    status: 30
+    start: 180
+    stop: 180
+    restart: 300
+    reload: 180
+    configGet: 30
+    configApply: 300

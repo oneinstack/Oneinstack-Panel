@@ -1,0 +1,321 @@
+schemaVersion: 1
+component:
+    id: openresty
+    name: OpenResty
+    version: 1.0.13
+    softwareVersions:
+        - 1.27.1.2
+        - 1.31.1.1
+    channel: stable
+    description: OpenResty official-source installer with transactional configuration, upgrade, rollback, and verified fully offline Bundle support.
+compatibility:
+    panel: '>=0.1.0-0'
+    systems:
+        - id: ubuntu
+          versions:
+            - "22.04"
+            - "24.04"
+            - "26.04"
+        - id: debian
+          versions:
+            - "11"
+            - "12"
+            - "13"
+        - id: rhel
+          versions:
+            - "8"
+            - "9"
+            - "10"
+        - id: rocky
+          versions:
+            - "8"
+            - "9"
+            - "10"
+        - id: almalinux
+          versions:
+            - "8"
+            - "9"
+            - "10"
+        - id: ol
+          versions:
+            - "8"
+            - "9"
+            - "10"
+        - id: centos
+          versions:
+            - "7"
+            - "8"
+            - "9"
+            - "10"
+        - id: fedora
+          versions:
+            - '*'
+        - id: amzn
+          versions:
+            - "2023"
+        - id: sles
+          versions:
+            - "15"
+            - "16"
+        - id: opensuse-leap
+          versions:
+            - '*'
+        - id: opensuse-tumbleweed
+          versions:
+            - '*'
+        - id: opensuse
+          versions:
+            - '*'
+    architectures:
+        - amd64
+        - arm64
+dependencies:
+    packages:
+        apt:
+            - build-essential
+            - patch
+            - ca-certificates
+            - curl
+            - gnupg
+            - iproute2
+            - libpcre2-dev
+            - libreadline-dev
+            - libssl-dev
+            - perl
+            - tar
+            - zlib1g-dev
+        dnf:
+            - gcc
+            - gcc-c++
+            - make
+            - patch
+            - ca-certificates
+            - curl
+            - gnupg2
+            - iproute
+            - pcre2-devel
+            - readline-devel
+            - openssl-devel
+            - perl
+            - tar
+            - gzip
+            - zlib-devel
+        yum:
+            - gcc
+            - gcc-c++
+            - make
+            - patch
+            - ca-certificates
+            - curl
+            - gnupg2
+            - iproute
+            - pcre-devel
+            - readline-devel
+            - openssl11-devel
+            - perl
+            - tar
+            - gzip
+            - zlib-devel
+        zypper:
+            - gcc
+            - gcc-c++
+            - make
+            - patch
+            - ca-certificates
+            - curl
+            - gpg2
+            - iproute2
+            - pcre2-devel
+            - readline-devel
+            - libopenssl-devel
+            - perl
+            - tar
+            - gzip
+            - zlib-devel
+conflicts:
+    - nginx
+    - tengine
+    - caddy
+    - apache
+runtimeGroup: web-server
+serviceName: oneinstack-openresty
+actions:
+    precheck: scripts/precheck.sh
+    install: scripts/install.sh
+    configure: scripts/configure.sh
+    verify: scripts/verify.sh
+    upgrade: scripts/install.sh
+    rollback: scripts/rollback.sh
+    uninstall: scripts/uninstall.sh
+    status: scripts/status.sh
+    start: scripts/start.sh
+    stop: scripts/stop.sh
+    restart: scripts/restart.sh
+    reload: scripts/reload.sh
+    configGet: scripts/config.sh
+    configApply: scripts/config.sh
+parameters:
+    - name: SOFTWARE_VERSION
+      type: string
+      required: true
+      default: 1.31.1.1
+      description: OpenResty exact version published by Center.
+    - name: OPENRESTY_PORT
+      type: port
+      default: "80"
+      description: OpenResty HTTP listener port.
+    - name: PHP_FPM_SOCKET
+      type: path
+      default: /dev/shm/php-cgi.sock
+      description: PHP-FPM Unix socket used by the default PHP location.
+    - name: INSTALL_DIR
+      type: path
+      default: /usr/local/openresty
+      description: Managed OpenResty prefix; it cannot be migrated online after installation.
+    - name: WEB_ROOT
+      type: path
+      default: /data/wwwroot
+    - name: LOG_DIR
+      type: path
+      default: /data/wwwlogs
+    - name: WEB_VHOST_ROOT
+      type: path
+      default: /usr/local/one/vhost
+      description: Internal Panel-managed virtual-host root.
+    - name: RUN_USER
+      type: string
+      default: www
+    - name: RUN_GROUP
+      type: string
+      default: www
+    - name: UNINSTALL_DATA_POLICY
+      type: string
+      default: preserve
+    - name: UNINSTALL_CONFIRM_DATA_DELETION
+      type: boolean
+      default: "false"
+    - name: ONEINSTACK_INSTALL_MODE
+      type: string
+      default: center
+      description: Internal Center or fully offline execution mode.
+    - name: ONEINSTACK_OFFLINE_PACKAGE_PATH
+      type: path
+      description: Internal validated offline Bundle path.
+    - name: ONEINSTACK_COMPONENT_STATE
+      type: path
+      default: /var/lib/oneinstack/components
+configuration:
+    applyMode: reload
+    fields:
+        - key: workerProcesses
+          label: 工作进程数
+          type: worker_processes
+          env: ONEINSTACK_CONFIG_WORKER_PROCESSES
+          default: auto
+          description: 建议保持 auto；手动设置范围为 1–99。
+        - key: workerConnections
+          label: 单进程连接数
+          type: integer
+          env: ONEINSTACK_CONFIG_WORKER_CONNECTIONS
+          default: "4096"
+          min: 512
+          max: 65535
+        - key: keepaliveTimeout
+          label: 长连接超时
+          type: integer
+          env: ONEINSTACK_CONFIG_KEEPALIVE_TIMEOUT
+          default: "65"
+          unit: 秒
+          min: 5
+          max: 300
+        - key: clientMaxBodySize
+          label: 请求体上限
+          type: integer
+          env: ONEINSTACK_CONFIG_CLIENT_MAX_BODY_SIZE
+          default: "1"
+          unit: MB
+          min: 1
+          max: 10240
+        - key: openrestyPort
+          label: 监听端口
+          type: port
+          env: ONEINSTACK_CONFIG_OPENRESTY_PORT
+          default: "80"
+          min: 1
+          max: 65535
+        - key: phpFpmSocket
+          label: PHP-FPM Socket
+          type: path
+          env: ONEINSTACK_CONFIG_PHP_FPM_SOCKET
+          default: /dev/shm/php-cgi.sock
+        - key: installDir
+          label: 安装目录
+          type: path
+          env: ONEINSTACK_CONFIG_INSTALL_DIR
+          default: /usr/local/openresty
+          description: 安装目录不可在线迁移。
+        - key: webRoot
+          label: 网站根目录
+          type: path
+          env: ONEINSTACK_CONFIG_WEB_ROOT
+          default: /data/wwwroot
+        - key: logDir
+          label: 日志目录
+          type: path
+          env: ONEINSTACK_CONFIG_LOG_DIR
+          default: /data/wwwlogs
+        - key: runUser
+          label: 运行账号
+          type: string
+          env: ONEINSTACK_CONFIG_RUN_USER
+          default: www
+        - key: runGroup
+          label: 运行用户组
+          type: string
+          env: ONEINSTACK_CONFIG_RUN_GROUP
+          default: www
+sources:
+    releases:
+        - softwareVersion: 1.27.1.2
+          architecture: amd64
+          buildId: openresty-1.27.1.2-amd64-oneinstack-1.0.13
+          url: https://openresty.org/download/openresty-1.27.1.2.tar.gz
+          signatureUrl: https://openresty.org/download/openresty-1.27.1.2.tar.gz.asc
+          sha256: 74f076f7e364b2a99a6c5f9bb531c27610c78985abe956b442b192a2295f7548
+          publisherFingerprint: 25451EB088460026195BD62CB550E09EA0E98066
+        - softwareVersion: 1.27.1.2
+          architecture: arm64
+          buildId: openresty-1.27.1.2-arm64-oneinstack-1.0.13
+          url: https://openresty.org/download/openresty-1.27.1.2.tar.gz
+          signatureUrl: https://openresty.org/download/openresty-1.27.1.2.tar.gz.asc
+          sha256: 74f076f7e364b2a99a6c5f9bb531c27610c78985abe956b442b192a2295f7548
+          publisherFingerprint: 25451EB088460026195BD62CB550E09EA0E98066
+        - softwareVersion: 1.31.1.1
+          architecture: amd64
+          buildId: openresty-1.31.1.1-amd64-oneinstack-1.0.13
+          url: https://openresty.org/download/openresty-1.31.1.1.tar.gz
+          signatureUrl: https://openresty.org/download/openresty-1.31.1.1.tar.gz.asc
+          sha256: 65b78baadd3f0984055de89bf13f4a1932e5bfe9c31932037a134ea2b1a0ce42
+          publisherFingerprint: 25451EB088460026195BD62CB550E09EA0E98066
+        - softwareVersion: 1.31.1.1
+          architecture: arm64
+          buildId: openresty-1.31.1.1-arm64-oneinstack-1.0.13
+          url: https://openresty.org/download/openresty-1.31.1.1.tar.gz
+          signatureUrl: https://openresty.org/download/openresty-1.31.1.1.tar.gz.asc
+          sha256: 65b78baadd3f0984055de89bf13f4a1932e5bfe9c31932037a134ea2b1a0ce42
+          publisherFingerprint: 25451EB088460026195BD62CB550E09EA0E98066
+timeouts:
+    precheck: 180
+    install: 14400
+    configure: 180
+    verify: 300
+    upgrade: 14400
+    rollback: 900
+    uninstall: 900
+    status: 30
+    start: 180
+    stop: 180
+    restart: 300
+    reload: 180
+    configGet: 30
+    configApply: 300

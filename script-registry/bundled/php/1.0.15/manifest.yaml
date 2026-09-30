@@ -1,0 +1,99 @@
+schemaVersion: 1
+component:
+  id: php
+  name: PHP
+  version: 1.0.15
+  softwareVersions: ["5.3.x", "5.4.x", "7.0.x", "8.1.x", "8.2.x", "8.3.x"]
+  channel: stable
+  allowCustomVersion: false
+  description: PHP-FPM exact-release component. Modern and legacy release profiles are separately validated; PHP 5.1/5.2 are not exposed because this component requires PHP-FPM.
+compatibility:
+  panel: ">=0.1.0-0"
+  systems:
+    - id: ubuntu
+      versions: ["22.04", "24.04", "26.04"]
+    - id: debian
+      versions: ["11", "12", "13"]
+    - id: rhel
+      versions: ["8", "9", "10"]
+    - id: rocky
+      versions: ["8", "9", "10"]
+    - id: almalinux
+      versions: ["8", "9", "10"]
+    - id: ol
+      versions: ["8", "9", "10"]
+    - id: centos
+      versions: ["7", "8", "9", "10"]
+    - id: fedora
+      versions: ["40", "41", "42", "43", "44"]
+    - id: sles
+      versions: ["15", "16"]
+    - id: opensuse-leap
+      versions: ["15.6", "16.0"]
+    - id: opensuse
+      versions: ["15.6", "16.0"]
+    - id: amzn
+      versions: ["2023"]
+  architectures: [amd64, arm64]
+dependencies:
+  packages:
+    apt: [build-essential, ca-certificates, curl, openssl, pkg-config, perl, xz-utils, zlib1g-dev, libxml2-dev, libssl-dev, libcurl4-openssl-dev, libjpeg-dev, libpng-dev, libwebp-dev, libfreetype6-dev, libonig-dev, libsqlite3-dev, libreadline-dev, libsodium-dev, libxslt1-dev, libicu-dev, libargon2-dev]
+    dnf: [gcc, gcc-c++, make, autoconf, automake, libtool, ca-certificates, curl, openssl, pkgconf-pkg-config, perl, xz, tar, gzip, libxml2-devel, openssl-devel, libcurl-devel, libjpeg-turbo-devel, libpng-devel, libwebp-devel, freetype-devel, oniguruma-devel, zlib-devel, sqlite-devel, readline-devel, libsodium-devel, libxslt-devel, libicu-devel, libargon2-devel]
+    yum: [gcc, gcc-c++, make, autoconf, automake, libtool, ca-certificates, curl, openssl, pkgconfig, perl, xz, tar, gzip, libxml2-devel, openssl-devel, libcurl-devel, libjpeg-turbo-devel, libpng-devel, libwebp-devel, freetype-devel, oniguruma-devel, zlib-devel, sqlite-devel, readline-devel, libsodium-devel, libxslt-devel, libicu-devel, libargon2-devel]
+    zypper: [gcc, gcc-c++, make, autoconf, automake, libtool, ca-certificates, curl, openssl, pkg-config, perl, xz, tar, gzip, libxml2-devel, libopenssl-devel, libcurl-devel, libjpeg8-devel, libpng16-devel, libwebp-devel, freetype2-devel, libonig-devel, zlib-devel, sqlite3-devel, readline-devel, libsodium-devel, libxslt-devel, libicu-devel, libargon2-devel]
+sources:
+  releases:
+    - {softwareVersion: 5.3.29, architecture: amd64, systems: [{id: ubuntu, versions: ["22.04", "24.04", "26.04"]}, {id: debian, versions: ["11", "12", "13"]}, {id: rhel, versions: ["8", "9", "10"]}, {id: rocky, versions: ["8", "9", "10"]}, {id: almalinux, versions: ["8", "9", "10"]}, {id: ol, versions: ["8", "9", "10"]}, {id: centos, versions: ["7", "8", "9", "10"]}, {id: fedora, versions: ["40", "41", "42", "43", "44"]}, {id: sles, versions: ["15", "16"]}, {id: opensuse-leap, versions: ["15.6", "16.0"]}, {id: opensuse, versions: ["15.6", "16.0"]}, {id: amzn, versions: ["2023"]}], buildId: php-5.3.29-amd64-legacy-oneinstack-1.0.15, url: https://www.php.net/distributions/php-5.3.29.tar.xz, sha256: 8438c2f14ab8f3d6cd2495aa37de7b559e33b610f9ab264f0c61b531bf0c262d}
+    - {softwareVersion: 5.3.29, architecture: arm64, systems: [{id: ubuntu, versions: ["22.04", "24.04", "26.04"]}, {id: debian, versions: ["11", "12", "13"]}, {id: rhel, versions: ["8", "9", "10"]}, {id: rocky, versions: ["8", "9", "10"]}, {id: almalinux, versions: ["8", "9", "10"]}, {id: ol, versions: ["8", "9", "10"]}, {id: centos, versions: ["7", "8", "9", "10"]}, {id: fedora, versions: ["40", "41", "42", "43", "44"]}, {id: sles, versions: ["15", "16"]}, {id: opensuse-leap, versions: ["15.6", "16.0"]}, {id: opensuse, versions: ["15.6", "16.0"]}, {id: amzn, versions: ["2023"]}], buildId: php-5.3.29-arm64-legacy-oneinstack-1.0.15, url: https://www.php.net/distributions/php-5.3.29.tar.xz, sha256: 8438c2f14ab8f3d6cd2495aa37de7b559e33b610f9ab264f0c61b531bf0c262d}
+    - {softwareVersion: 5.4.45, architecture: amd64, systems: [{id: ubuntu, versions: ["22.04", "24.04", "26.04"]}, {id: debian, versions: ["11", "12", "13"]}, {id: rhel, versions: ["8", "9", "10"]}, {id: rocky, versions: ["8", "9", "10"]}, {id: almalinux, versions: ["8", "9", "10"]}, {id: ol, versions: ["8", "9", "10"]}, {id: centos, versions: ["7", "8", "9", "10"]}, {id: fedora, versions: ["40", "41", "42", "43", "44"]}, {id: sles, versions: ["15", "16"]}, {id: opensuse-leap, versions: ["15.6", "16.0"]}, {id: opensuse, versions: ["15.6", "16.0"]}, {id: amzn, versions: ["2023"]}], buildId: php-5.4.45-amd64-legacy-oneinstack-1.0.15, url: https://www.php.net/distributions/php-5.4.45.tar.gz, sha256: 25bc4723955f4e352935258002af14a14a9810b491a19400d76fcdfa9d04b28f}
+    - {softwareVersion: 5.4.45, architecture: arm64, systems: [{id: ubuntu, versions: ["22.04", "24.04", "26.04"]}, {id: debian, versions: ["11", "12", "13"]}, {id: rhel, versions: ["8", "9", "10"]}, {id: rocky, versions: ["8", "9", "10"]}, {id: almalinux, versions: ["8", "9", "10"]}, {id: ol, versions: ["8", "9", "10"]}, {id: centos, versions: ["7", "8", "9", "10"]}, {id: fedora, versions: ["40", "41", "42", "43", "44"]}, {id: sles, versions: ["15", "16"]}, {id: opensuse-leap, versions: ["15.6", "16.0"]}, {id: opensuse, versions: ["15.6", "16.0"]}, {id: amzn, versions: ["2023"]}], buildId: php-5.4.45-arm64-legacy-oneinstack-1.0.15, url: https://www.php.net/distributions/php-5.4.45.tar.gz, sha256: 25bc4723955f4e352935258002af14a14a9810b491a19400d76fcdfa9d04b28f}
+    - {softwareVersion: 7.0.33, architecture: amd64, systems: [{id: ubuntu, versions: ["22.04", "24.04", "26.04"]}, {id: debian, versions: ["11", "12", "13"]}, {id: rhel, versions: ["8", "9", "10"]}, {id: rocky, versions: ["8", "9", "10"]}, {id: almalinux, versions: ["8", "9", "10"]}, {id: ol, versions: ["8", "9", "10"]}, {id: centos, versions: ["7", "8", "9", "10"]}, {id: fedora, versions: ["40", "41", "42", "43", "44"]}, {id: sles, versions: ["15", "16"]}, {id: opensuse-leap, versions: ["15.6", "16.0"]}, {id: opensuse, versions: ["15.6", "16.0"]}, {id: amzn, versions: ["2023"]}], buildId: php-7.0.33-amd64-legacy-oneinstack-1.0.15, url: https://www.php.net/distributions/php-7.0.33.tar.xz, sha256: ab8c5be6e32b1f8d032909dedaaaa4bbb1a209e519abb01a52ce3914f9a13d96}
+    - {softwareVersion: 7.0.33, architecture: arm64, systems: [{id: ubuntu, versions: ["22.04", "24.04", "26.04"]}, {id: debian, versions: ["11", "12", "13"]}, {id: rhel, versions: ["8", "9", "10"]}, {id: rocky, versions: ["8", "9", "10"]}, {id: almalinux, versions: ["8", "9", "10"]}, {id: ol, versions: ["8", "9", "10"]}, {id: centos, versions: ["7", "8", "9", "10"]}, {id: fedora, versions: ["40", "41", "42", "43", "44"]}, {id: sles, versions: ["15", "16"]}, {id: opensuse-leap, versions: ["15.6", "16.0"]}, {id: opensuse, versions: ["15.6", "16.0"]}, {id: amzn, versions: ["2023"]}], buildId: php-7.0.33-arm64-legacy-oneinstack-1.0.15, url: https://www.php.net/distributions/php-7.0.33.tar.xz, sha256: ab8c5be6e32b1f8d032909dedaaaa4bbb1a209e519abb01a52ce3914f9a13d96}
+    - {softwareVersion: 8.1.34, architecture: amd64, buildId: php-8.1.34-amd64-glibc-oneinstack-1.0.15, url: https://www.php.net/distributions/php-8.1.34.tar.xz, sha256: ffa9e0982e82eeaea848f57687b425ed173aa278fe563001310ae2638db5c251}
+    - {softwareVersion: 8.1.34, architecture: arm64, buildId: php-8.1.34-arm64-glibc-oneinstack-1.0.15, url: https://www.php.net/distributions/php-8.1.34.tar.xz, sha256: ffa9e0982e82eeaea848f57687b425ed173aa278fe563001310ae2638db5c251}
+    - {softwareVersion: 8.2.30, architecture: amd64, buildId: php-8.2.30-amd64-glibc-oneinstack-1.0.15, url: https://www.php.net/distributions/php-8.2.30.tar.xz, sha256: bc90523e17af4db46157e75d0c9ef0b9d0030b0514e62c26ba7b513b8c4eb015}
+    - {softwareVersion: 8.2.30, architecture: arm64, buildId: php-8.2.30-arm64-glibc-oneinstack-1.0.15, url: https://www.php.net/distributions/php-8.2.30.tar.xz, sha256: bc90523e17af4db46157e75d0c9ef0b9d0030b0514e62c26ba7b513b8c4eb015}
+    - {softwareVersion: 8.3.30, architecture: amd64, buildId: php-8.3.30-amd64-glibc-oneinstack-1.0.15, url: https://www.php.net/distributions/php-8.3.30.tar.xz, sha256: 67f084d36852daab6809561a7c8023d130ca07fc6af8fb040684dd1414934d48}
+    - {softwareVersion: 8.3.30, architecture: arm64, buildId: php-8.3.30-arm64-glibc-oneinstack-1.0.15, url: https://www.php.net/distributions/php-8.3.30.tar.xz, sha256: 67f084d36852daab6809561a7c8023d130ca07fc6af8fb040684dd1414934d48}
+serviceName: php-fpm
+runtimeGroup: php-runtime
+actions:
+  precheck: scripts/precheck.sh
+  install: scripts/install.sh
+  configure: scripts/configure.sh
+  verify: scripts/verify.sh
+  upgrade: scripts/install.sh
+  rollback: scripts/rollback.sh
+  uninstall: scripts/uninstall.sh
+  status: scripts/status.sh
+  start: scripts/start.sh
+  stop: scripts/stop.sh
+  restart: scripts/restart.sh
+  reload: scripts/reload.sh
+  configGet: scripts/config.sh
+  configApply: scripts/config.sh
+parameters:
+  - {name: software-version, env: SOFTWARE_VERSION, type: string, required: true, description: "Exact PHP release published by Center; legacy and modern releases use separate build profiles and host matrices."}
+  - {name: install-dir, env: INSTALL_DIR, type: path, default: /usr/local/php, description: "Managed PHP installation directory."}
+  - {name: log-dir, env: LOG_DIR, type: path, default: /var/log/php-fpm, description: "Managed PHP-FPM log directory."}
+  - {name: socket-path, env: SOCKET_PATH, type: path, default: /dev/shm/php-cgi.sock, description: "PHP-FPM Unix socket path."}
+  - {name: run-user, env: RUN_USER, type: string, default: www, description: "PHP-FPM worker account."}
+  - {name: run-group, env: RUN_GROUP, type: string, default: www, description: "PHP-FPM worker group."}
+  - {name: component-state-dir, env: ONEINSTACK_COMPONENT_STATE, type: path, default: /var/lib/oneinstack/components, description: "Oneinstack component state directory."}
+  - {name: php-memory-limit, env: PHP_MEMORY_LIMIT, type: string, default: 256M, description: "Legacy install-time memory limit compatibility parameter."}
+  - {name: migrate-external-php, env: MIGRATE_EXTERNAL_PHP, type: boolean, default: false, description: "Allow migration of a detected external PHP-FPM installation."}
+  - {name: migrate-external-confirm, env: MIGRATE_EXTERNAL_CONFIRM, type: boolean, default: false, description: "Explicit confirmation for external PHP-FPM migration."}
+  - {name: data-policy, env: DATA_POLICY, type: string, default: preserve, description: "Uninstall data policy; preserve is the default."}
+  - {name: delete-data-confirm, env: DELETE_DATA_CONFIRM, type: boolean, default: false, description: "Explicit confirmation for component-owned data deletion."}
+timeouts: {precheck: 120, install: 7200, configure: 120, verify: 120, upgrade: 7200, rollback: 300, uninstall: 300, status: 10, start: 120, stop: 120, restart: 180, reload: 120, configGet: 10, configApply: 180}
+configuration:
+  applyMode: reload
+  fields:
+    - {key: memoryLimit, label: "脚本内存上限", type: integer, env: ONEINSTACK_CONFIG_MEMORY_LIMIT, default: "256", unit: MB, min: 32, max: 8192}
+    - {key: uploadMaxFilesize, label: "单文件上传上限", type: integer, env: ONEINSTACK_CONFIG_UPLOAD_MAX_FILESIZE, default: "2", unit: MB, min: 1, max: 2048}
+    - {key: postMaxSize, label: "POST 数据上限", type: integer, env: ONEINSTACK_CONFIG_POST_MAX_SIZE, default: "8", unit: MB, min: 1, max: 4096}
+    - {key: maxExecutionTime, label: "脚本执行超时", type: integer, env: ONEINSTACK_CONFIG_MAX_EXECUTION_TIME, default: "30", unit: 秒, min: 10, max: 3600}
+    - {key: pmMaxChildren, label: "最大子进程数", type: integer, env: ONEINSTACK_CONFIG_PM_MAX_CHILDREN, default: "32", min: 1, max: 10000}
+    - {key: pmStartServers, label: "启动进程数", type: integer, env: ONEINSTACK_CONFIG_PM_START_SERVERS, default: "4", min: 1, max: 10000}
+    - {key: pmMinSpareServers, label: "最小空闲进程", type: integer, env: ONEINSTACK_CONFIG_PM_MIN_SPARE_SERVERS, default: "2", min: 1, max: 10000}
+    - {key: pmMaxSpareServers, label: "最大空闲进程", type: integer, env: ONEINSTACK_CONFIG_PM_MAX_SPARE_SERVERS, default: "8", min: 1, max: 10000}

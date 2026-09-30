@@ -1,0 +1,146 @@
+schemaVersion: 1
+component:
+    id: phpmyadmin
+    name: phpMyAdmin
+    version: 1.0.16
+    softwareVersions:
+        - 4.4.15.10
+        - 5.2.3
+    channel: stable
+    description: Official OneinStack phpMyAdmin installer adapter for legacy and current PHP lines. Pinned to OneinStack commit 42d59b33765ad57c455b83bc3d4eb09ed367754a.
+compatibility:
+    panel: '>=0.1.0-0'
+    systems:
+        - id: ubuntu
+          versions:
+            - "20.04"
+            - "22.04"
+            - "24.04"
+            - "26.04"
+        - id: debian
+          versions:
+            - "11"
+            - "12"
+            - "13"
+        - id: rhel
+          versions:
+            - "8"
+            - "9"
+            - "10"
+        - id: rocky
+          versions:
+            - "8"
+            - "9"
+            - "10"
+        - id: almalinux
+          versions:
+            - "8"
+            - "9"
+            - "10"
+        - id: centos
+          versions:
+            - "7"
+            - "8"
+            - "9"
+            - "10"
+        - id: ol
+          versions:
+            - "8"
+            - "9"
+            - "10"
+        - id: fedora
+          versions:
+            - '*'
+        - id: sles
+          versions:
+            - "15"
+            - "16"
+        - id: opensuse-leap
+          versions:
+            - '*'
+        - id: opensuse-tumbleweed
+          versions:
+            - '*'
+        - id: opensuse
+          versions:
+            - '*'
+        - id: amzn
+          versions:
+            - "2023"
+    architectures:
+        - amd64
+        - arm64
+dependencies:
+    components:
+        - id: php
+          constraint: '>=5.3'
+    packages:
+        apt:
+            - ca-certificates
+            - curl
+            - gzip
+            - tar
+            - xz-utils
+        dnf:
+            - ca-certificates
+            - curl
+            - gzip
+            - tar
+            - xz
+        yum:
+            - ca-certificates
+            - curl
+            - gzip
+            - tar
+            - xz
+        zypper:
+            - ca-certificates
+            - curl
+            - gzip
+            - tar
+            - xz
+actions:
+    precheck: scripts/precheck.sh
+    install: scripts/install.sh
+    verify: scripts/verify.sh
+    rollback: scripts/rollback.sh
+    uninstall: scripts/uninstall.sh
+parameters:
+    - name: SOFTWARE_VERSION
+      type: string
+      required: true
+      description: Exact OneinStack software version line selected by Panel.
+    - name: ONEINSTACK_COMPONENT_STATE
+      type: path
+      default: /var/lib/oneinstack/components
+    - name: ONEINSTACK_INSTALL_MODE
+      type: string
+      default: center
+      description: center uses the Center/online source path; offline uses a local immutable bundle.
+    - name: ONEINSTACK_OFFLINE_PACKAGE_PATH
+      type: path
+      description: Required local bundle path when ONEINSTACK_INSTALL_MODE=offline.
+sources:
+    releases:
+        - softwareVersion: 4.4.15.10
+          architecture: amd64
+          url: https://files.phpmyadmin.net/phpMyAdmin/4.4.15.10/phpMyAdmin-4.4.15.10-all-languages.tar.gz
+          sha256: c28ba15b3b95b9d179b312f5c9fcd59a0593a315ddc6f7906f98a74508ffd32d
+        - softwareVersion: 4.4.15.10
+          architecture: arm64
+          url: https://files.phpmyadmin.net/phpMyAdmin/4.4.15.10/phpMyAdmin-4.4.15.10-all-languages.tar.gz
+          sha256: c28ba15b3b95b9d179b312f5c9fcd59a0593a315ddc6f7906f98a74508ffd32d
+        - softwareVersion: 5.2.3
+          architecture: amd64
+          url: https://files.phpmyadmin.net/phpMyAdmin/5.2.3/phpMyAdmin-5.2.3-all-languages.tar.gz
+          sha256: 12ba1c425fa4071abbd4e7668c9ebdeac0b0755a467a6d6d5026122bb47c102b
+        - softwareVersion: 5.2.3
+          architecture: arm64
+          url: https://files.phpmyadmin.net/phpMyAdmin/5.2.3/phpMyAdmin-5.2.3-all-languages.tar.gz
+          sha256: 12ba1c425fa4071abbd4e7668c9ebdeac0b0755a467a6d6d5026122bb47c102b
+timeouts:
+    precheck: 180
+    install: 14400
+    verify: 300
+    rollback: 900
+    uninstall: 900

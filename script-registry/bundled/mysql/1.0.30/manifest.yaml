@@ -1,0 +1,236 @@
+schemaVersion: 1
+component:
+  id: mysql
+  name: MySQL 8.0
+  version: 1.0.30
+  softwareVersions: ["8.0.x"]
+  channel: stable
+  allowCustomVersion: false
+  description: MySQL 8.0.45 generic-binary production component; 8.0.x remains an internal compatibility line only.
+compatibility:
+  systems:
+    - id: ubuntu
+      versions: ["22.04", "24.04", "26.04"]
+    - id: debian
+      versions: ["11", "12", "13"]
+    - id: rhel
+      versions: ["8", "9", "10"]
+    - id: rocky
+      versions: ["8", "9", "10"]
+    - id: almalinux
+      versions: ["8", "9", "10"]
+    - id: ol
+      versions: ["8", "9", "10"]
+    - id: centos
+      versions: ["7", "8", "9", "10"]
+    - id: fedora
+      versions: ["*"]
+    - id: sles
+      versions: ["15", "16"]
+    - id: opensuse-leap
+      versions: ["*"]
+    - id: opensuse-tumbleweed
+      versions: ["*"]
+    - id: opensuse
+      versions: ["*"]
+    - id: amzn
+      versions: ["2023"]
+  architectures: [amd64, arm64]
+sources:
+  releases:
+    - {softwareVersion: 8.0.45, architecture: amd64, runtime: glibc2.17, url: https://cdn.mysql.com/archives/mysql-8.0/mysql-8.0.45-linux-glibc2.17-x86_64.tar.xz, sha256: 3a9a7163ce42dbf4277281cdf4fbb52fb486246f6e29001e666e47a437c8b91e}
+    - {softwareVersion: 8.0.45, architecture: amd64, runtime: glibc2.28+, url: https://cdn.mysql.com/archives/mysql-8.0/mysql-8.0.45-linux-glibc2.28-x86_64.tar.xz, sha256: c09137539ab42590c8682d498716e6b97a45d83d2188339fa2e980dd54b6e0af}
+    - {softwareVersion: 8.0.45, architecture: arm64, runtime: glibc2.28+, url: https://cdn.mysql.com/archives/mysql-8.0/mysql-8.0.45-linux-glibc2.28-aarch64.tar.xz, sha256: 2bbbdd107bc02bd6a135d5140b6a790de5ed4d4ff5389803600c26c79e208d2a}
+dependencies:
+  packages:
+    apt: [acl, ca-certificates, curl, gnupg, iproute2, libaio1, libncurses6, libnuma1, libtinfo6, xz-utils]
+    dnf: [acl, ca-certificates, curl, gnupg2, iproute, libaio, ncurses-compat-libs, numactl-libs, xz]
+    yum: [acl, ca-certificates, curl, gnupg2, iproute, libaio, ncurses-libs, numactl-libs, xz]
+    zypper: [acl, ca-certificates, curl, gpg2, iproute2, libaio1, libnuma1, ncurses6, xz]
+conflicts: [mariadb, percona]
+serviceName: mysql
+runtimeGroup: database
+actions:
+  precheck: scripts/precheck.sh
+  install: scripts/install.sh
+  configure: scripts/configure.sh
+  verify: scripts/verify.sh
+  upgrade: scripts/install.sh
+  rollback: scripts/rollback.sh
+  uninstall: scripts/uninstall.sh
+  status: scripts/status.sh
+  start: scripts/start.sh
+  stop: scripts/stop.sh
+  restart: scripts/restart.sh
+  configGet: scripts/config.sh
+  configApply: scripts/config.sh
+parameters:
+  - name: software-version
+    env: SOFTWARE_VERSION
+    type: string
+    required: true
+    default: "8.0.45"
+    description: MySQL 8.0.x 版本；未发布精确版本时从 MySQL 官方下载并校验。
+  - name: mysql-port
+    env: MYSQL_PORT
+    type: port
+    default: "3306"
+    description: MySQL 本机监听端口。
+  - name: mysql-bind-address
+    env: MYSQL_BIND_ADDRESS
+    type: string
+    default: "127.0.0.1"
+    description: MySQL 监听地址，默认仅允许本机访问。
+  - name: install-dir
+    env: INSTALL_DIR
+    type: path
+    default: /usr/local/mysql
+  - name: data-dir
+    env: DATA_DIR
+    type: path
+    default: /data/mysql
+    description: 已有数据目录不会被普通升级覆盖。
+  - name: log-dir
+    env: LOG_DIR
+    type: path
+    default: /data/mysql
+  - name: run-user
+    env: RUN_USER
+    type: string
+    default: mysql
+  - name: run-group
+    env: RUN_GROUP
+    type: string
+    default: mysql
+  - name: mysql-username
+    env: MYSQL_USERNAME
+    type: string
+    default: root
+    description: MySQL 数据库登录用户；非 root 用户会获得本机管理权限。
+  - name: mysql-password
+    env: MYSQL_PASSWORD
+    type: password
+    secret: true
+    description: 新建数据目录时必填；用于 root 和指定 MySQL 登录用户，未传入时由 Panel 生成 24 位密码并一次性交付。
+  - name: migrate-external-mysql
+    env: MIGRATE_EXTERNAL_MYSQL
+    type: boolean
+    default: "false"
+  - name: migrate-external-confirm
+    env: MIGRATE_EXTERNAL_CONFIRM
+    type: boolean
+    default: "false"
+  - name: reset-existing-root-password
+    env: RESET_EXISTING_ROOT_PASSWORD
+    type: boolean
+    default: "true"
+    description: 已有 MySQL 数据目录认证失败时，默认使用隔离的本地恢复实例重置 root 密码。
+  - name: reset-existing-root-password-confirm
+    env: RESET_EXISTING_ROOT_PASSWORD_CONFIRM
+    type: boolean
+    default: "true"
+    description: 默认确认重置已有 MySQL 数据目录的 root 密码；可在安装参数中关闭。
+  - name: component-state-dir
+    env: COMPONENT_STATE_DIR
+    type: path
+    default: /var/lib/oneinstack/components
+  - name: data-policy
+    env: DATA_POLICY
+    type: string
+    default: preserve
+    description: 卸载时的数据策略；默认保留数据。
+  - name: delete-data-confirm
+    env: DELETE_DATA_CONFIRM
+    type: boolean
+    default: "false"
+    description: 仅在 data-policy=delete 时明确确认删除组件数据。
+configuration:
+  applyMode: restart
+  fields:
+    - key: maxConnections
+      label: 最大连接数
+      type: integer
+      env: ONEINSTACK_CONFIG_MAX_CONNECTIONS
+      default: "300"
+      min: 10
+      max: 100000
+    - key: maxAllowedPacket
+      label: 数据包上限
+      type: integer
+      env: ONEINSTACK_CONFIG_MAX_ALLOWED_PACKET
+      unit: MB
+      default: "64"
+      min: 1
+      max: 1024
+    - key: innodbBufferPoolSize
+      label: InnoDB 缓冲池
+      type: integer
+      env: ONEINSTACK_CONFIG_INNODB_BUFFER_POOL_SIZE
+      unit: MB
+      default: "128"
+      min: 128
+      max: 1048576
+    - key: slowQueryLog
+      label: 慢查询日志
+      type: boolean
+      env: ONEINSTACK_CONFIG_SLOW_QUERY_LOG
+      default: "false"
+    - key: longQueryTime
+      label: 慢查询阈值
+      type: integer
+      env: ONEINSTACK_CONFIG_LONG_QUERY_TIME
+      unit: 秒
+      default: "10"
+      min: 1
+      max: 600
+    - key: mysqlPort
+      label: 监听端口
+      type: port
+      env: ONEINSTACK_CONFIG_MYSQL_PORT
+      min: 1
+      max: 65535
+      description: MySQL TCP 监听端口，修改后会重启 MySQL 服务。
+    - key: bindAddress
+      label: 绑定地址
+      type: string
+      env: ONEINSTACK_CONFIG_BIND_ADDRESS
+      description: MySQL TCP 监听地址。
+    - key: installDir
+      label: 安装目录
+      type: path
+      env: ONEINSTACK_CONFIG_INSTALL_DIR
+      description: MySQL 已安装文件所在目录；安装后不能直接迁移。
+    - key: dataDir
+      label: 数据目录
+      type: path
+      env: ONEINSTACK_CONFIG_DATA_DIR
+      description: MySQL 数据目录；如需迁移请使用专门的数据迁移流程。
+    - key: logDir
+      label: 日志目录
+      type: path
+      env: ONEINSTACK_CONFIG_LOG_DIR
+      description: MySQL 错误日志目录。
+    - key: runUser
+      label: 运行账号
+      type: string
+      env: ONEINSTACK_CONFIG_RUN_USER
+      description: MySQL 服务进程运行账号。
+    - key: runGroup
+      label: 运行用户组
+      type: string
+      env: ONEINSTACK_CONFIG_RUN_GROUP
+      description: MySQL 服务进程运行用户组。
+timeouts:
+  precheck: 180
+  install: 7200
+  configure: 900
+  verify: 180
+  upgrade: 7200
+  rollback: 600
+  uninstall: 300
+  status: 10
+  start: 180
+  stop: 180
+  restart: 300
+  configGet: 10
+  configApply: 600

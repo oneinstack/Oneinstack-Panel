@@ -1,0 +1,84 @@
+schemaVersion: 1
+component:
+  id: redis
+  name: Redis
+  version: 1.0.17
+  softwareVersions: ["7.4.8", "8.4.0"]
+  channel: stable
+  description: OneinStack-style source installation of Redis with verified upstream downloads, systemd, online and fully offline lifecycle support.
+compatibility:
+  panel: ">=0.1.0-0"
+  systems:
+    - id: ubuntu
+      versions: ["22.04", "24.04", "26.04"]
+    - id: debian
+      versions: ["11", "12", "13"]
+    - id: rhel
+      versions: ["8", "9", "10"]
+    - id: rocky
+      versions: ["8", "9", "10"]
+    - id: almalinux
+      versions: ["8", "9", "10"]
+    - id: ol
+      versions: ["8", "9", "10"]
+    - id: centos
+      versions: ["7", "8", "9", "10"]
+    - id: fedora
+      versions: ["*"]
+    - id: amzn
+      versions: ["2023"]
+    - id: sles
+      versions: ["*"]
+    - id: opensuse-leap
+      versions: ["*"]
+    - id: opensuse-tumbleweed
+      versions: ["*"]
+    - id: opensuse
+      versions: ["*"]
+  architectures: [amd64, arm64]
+dependencies:
+  packages:
+    apt: [acl, build-essential, ca-certificates, curl, gzip, libssl-dev, pkg-config, tar, xz-utils]
+    dnf: [acl, ca-certificates, curl, gcc, gcc-c++, gzip, make, openssl-devel, pkgconf-pkg-config, tar, xz]
+    yum: [acl, ca-certificates, curl, gcc, gcc-c++, gzip, make, openssl-devel, pkgconf-pkg-config, tar, xz]
+    zypper: [acl, ca-certificates, curl, gcc, gcc-c++, gzip, libopenssl-devel, make, pkg-config, tar, xz]
+serviceName: redis
+actions:
+  precheck: scripts/precheck.sh
+  install: scripts/install.sh
+  configure: scripts/configure.sh
+  verify: scripts/verify.sh
+  upgrade: scripts/install.sh
+  rollback: scripts/rollback.sh
+  uninstall: scripts/uninstall.sh
+  status: scripts/status.sh
+  start: scripts/start.sh
+  stop: scripts/stop.sh
+  restart: scripts/restart.sh
+  configGet: scripts/config.sh
+  configApply: scripts/config.sh
+parameters:
+  - {name: SOFTWARE_VERSION, type: string, required: true, default: "7.4.8", description: "Redis software version: 7.4.8 or 8.4.0."}
+  - {name: INSTALL_DIR, type: path, default: /usr/local/redis, description: "Managed Redis program directory."}
+  - {name: DATA_DIR, type: path, default: /data/redis, description: "Persistent RDB/AOF data directory; preserved on uninstall."}
+  - {name: REDIS_PORT, type: port, default: "6379", description: "Redis TCP listener port."}
+  - {name: REDIS_BIND, type: string, default: "127.0.0.1 ::1", description: "Space-separated IPv4/IPv6 listener addresses; local-only by default."}
+  - {name: REDIS_USERNAME, type: string, default: default, description: "Redis ACL login username."}
+  - {name: REDIS_PASSWORD, type: password, secret: true, description: "Optional Redis password; never returned in task output."}
+  - {name: ONEINSTACK_COMPONENT_STATE, type: path, default: /var/lib/oneinstack/components, description: "Managed component state and rollback directory."}
+configuration:
+  applyMode: restart
+  fields:
+    - {key: port, label: Redis listener port, type: port, env: ONEINSTACK_CONFIG_PORT, default: "6379", min: 1, max: 65535, description: "Redis TCP listener port."}
+    - {key: maxmemory, label: Max memory, type: integer, env: ONEINSTACK_CONFIG_MAXMEMORY, default: "0", unit: MB, min: 0, max: 1048576, description: "0 means no Redis memory limit."}
+    - {key: maxmemoryPolicy, label: Max memory policy, type: select, env: ONEINSTACK_CONFIG_MAXMEMORY_POLICY, default: noeviction, description: "How Redis handles new writes after reaching the memory limit.", options: [noeviction, allkeys-lru, allkeys-lfu, allkeys-random, volatile-lru, volatile-lfu, volatile-random, volatile-ttl]}
+    - {key: appendonly, label: AOF persistence, type: boolean, env: ONEINSTACK_CONFIG_APPENDONLY, default: "true", description: "Appends write operations to the AOF file."}
+    - {key: timeout, label: Idle connection timeout, type: integer, env: ONEINSTACK_CONFIG_TIMEOUT, default: "0", unit: seconds, min: 0, max: 86400, description: "0 means idle clients are not disconnected automatically."}
+    - {key: tcpKeepalive, label: TCP keepalive, type: integer, env: ONEINSTACK_CONFIG_TCP_KEEPALIVE, default: "300", unit: seconds, min: 0, max: 3600, description: "TCP keepalive probe interval; 0 disables it."}
+sources:
+  releases:
+    - {softwareVersion: 7.4.8, architecture: amd64, buildId: redis-7.4.8-source-amd64, url: "https://download.redis.io/releases/redis-7.4.8.tar.gz", sha256: f6773cb7d63be236c59c2917a82f1f08e47b77d89b2f0c9f53becb22b8ea4172}
+    - {softwareVersion: 7.4.8, architecture: arm64, buildId: redis-7.4.8-source-arm64, url: "https://download.redis.io/releases/redis-7.4.8.tar.gz", sha256: f6773cb7d63be236c59c2917a82f1f08e47b77d89b2f0c9f53becb22b8ea4172}
+    - {softwareVersion: 8.4.0, architecture: amd64, buildId: redis-8.4.0-source-amd64, url: "https://download.redis.io/releases/redis-8.4.0.tar.gz", sha256: ca909aa15252f2ecb3a048cd086469827d636bf8334f50bb94d03fba4bfc56e8}
+    - {softwareVersion: 8.4.0, architecture: arm64, buildId: redis-8.4.0-source-arm64, url: "https://download.redis.io/releases/redis-8.4.0.tar.gz", sha256: ca909aa15252f2ecb3a048cd086469827d636bf8334f50bb94d03fba4bfc56e8}
+timeouts: {precheck: 180, install: 14400, configure: 300, verify: 300, upgrade: 14400, rollback: 900, uninstall: 900, status: 30, start: 180, stop: 180, restart: 300, configGet: 30, configApply: 300}

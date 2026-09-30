@@ -65,10 +65,15 @@ for target in "${targets[@]}"; do
   mkdir -p "$package_root"
 
   install -m 0755 "$binary" "${package_root}/one"
-  # config.yaml is a release template. Never ship operator credentials from
-  # a developer checkout; existing installations keep their own local config
-  # during an in-place update.
+  # config.yaml is a release template. Keep Center resolution enabled even if
+  # this checkout is configured for outage testing, and never ship operator
+  # credentials. Existing installations keep their local config on update.
   awk '
+    /^scriptCenter:[[:space:]]*$/ { in_script_center = 1 }
+    /^[^[:space:]#][^:]*:/ && !/^scriptCenter:/ { in_script_center = 0 }
+    in_script_center && /^[[:space:]]*enabled:[[:space:]]*/ {
+      sub(/:.*/, ": true")
+    }
     /^[[:space:]]*secret(Id|Key):[[:space:]]*/ {
       sub(/:.*/, ": \"\"")
     }
@@ -79,6 +84,7 @@ for target in "${targets[@]}"; do
   install -m 0644 "${project_dir}/README-zh.md" "${package_root}/README-zh.md"
   install -m 0644 "${project_dir}/BUILD.md" "${package_root}/BUILD.md"
   install -m 0644 "${project_dir}/LICENSE" "${package_root}/LICENSE"
+  (cd "${project_dir}" && go run ./cmd/bundled-package verify "${project_dir}/script-registry/bundled")
   mkdir -p "${package_root}/script-registry"
   cp -R "${project_dir}/script-registry/bundled" "${package_root}/script-registry/bundled"
   for installer in install.sh install-cent.sh install-ubuntu.sh; do
@@ -86,7 +92,9 @@ for target in "${targets[@]}"; do
   done
 
   archive="${output_dir}/${package_name}.tar.gz"
-  tar -C "$temporary_dir" -czf "$archive" "$package_name"
+  # macOS bsdtar otherwise emits AppleDouble ._* entries for extended
+  # attributes. Linux extracts them as real files that fail package checksums.
+  COPYFILE_DISABLE=1 tar --no-xattrs -C "$temporary_dir" -czf "$archive" "$package_name"
 
   (
     cd "$output_dir"

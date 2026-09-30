@@ -1,0 +1,75 @@
+schemaVersion: 1
+component:
+  id: adminer
+  name: Adminer
+  version: 1.0.7
+  softwareVersions: ["6.1.0"]
+  channel: stable
+  allowCustomVersion: false
+  description: Managed Adminer 6.1.0 with an exact upstream artifact, transactional web route, access controls, and complete offline bundles.
+compatibility:
+  panel: ">=0.1.0-0"
+  systems:
+    - {id: ubuntu, versions: ["22.04", "24.04", "26.04"]}
+    - {id: debian, versions: ["11", "12", "13"]}
+    - {id: rhel, versions: ["8", "9", "10"]}
+    - {id: rocky, versions: ["8", "9", "10"]}
+    - {id: almalinux, versions: ["8", "9", "10"]}
+    - {id: ol, versions: ["8", "9", "10"]}
+    - {id: centos, versions: ["7", "8", "9", "10"]}
+    - {id: fedora, versions: ["40", "41", "42", "43", "44"]}
+    - {id: amzn, versions: ["2023"]}
+    - {id: sles, versions: ["15", "16"]}
+    - {id: opensuse-leap, versions: ["15.6", "16.0"]}
+    - {id: opensuse, versions: ["15.6", "16.0"]}
+  architectures: [amd64, arm64]
+dependencies:
+  components:
+    - {id: php, constraint: ">=5.3"}
+  packages:
+    apt: [acl, ca-certificates, curl]
+    dnf: [acl, ca-certificates, curl]
+    yum: [acl, ca-certificates, curl]
+    zypper: [acl, ca-certificates, curl]
+sources:
+  releases:
+    - {softwareVersion: 6.1.0, architecture: amd64, url: https://github.com/vrana/adminer/releases/download/v6.1.0/adminer-6.1.0.php, sha256: 95bf24b510b41904446f720f4f1212c9e28b1d523f3df44259480d7a12ea181e}
+    - {softwareVersion: 6.1.0, architecture: arm64, url: https://github.com/vrana/adminer/releases/download/v6.1.0/adminer-6.1.0.php, sha256: 95bf24b510b41904446f720f4f1212c9e28b1d523f3df44259480d7a12ea181e}
+actions:
+  precheck: scripts/precheck.sh
+  install: scripts/install.sh
+  verify: scripts/verify.sh
+  upgrade: scripts/install.sh
+  rollback: scripts/rollback.sh
+  uninstall: scripts/uninstall.sh
+  configGet: scripts/config.sh
+  configApply: scripts/config.sh
+parameters:
+  - {name: software-version, env: SOFTWARE_VERSION, type: string, required: true, default: "6.1.0", description: "Exact Adminer version published by Center; only 6.1.0 is supported."}
+  - {name: adminer-public-path, env: ADMINER_PUBLIC_PATH, type: string, default: /adminer/, description: "Single-segment public URL path; must not conflict with another web route."}
+  - {name: adminer-access-policy, env: ADMINER_ACCESS_POLICY, type: string, default: public, description: "Access policy: public, local, or allowlist. Public exposes Adminer to remote clients."}
+  - {name: adminer-allowed-cidrs, env: ADMINER_ALLOWED_CIDRS, type: string, default: "", description: "Comma-separated IPv4/IPv6 CIDRs; required when access policy is allowlist."}
+  - {name: adminer-default-driver, env: ADMINER_DEFAULT_DRIVER, type: string, default: mysql, description: "Default login driver: mysql or pgsql. MariaDB uses mysql."}
+  - {name: adminer-default-server, env: ADMINER_DEFAULT_SERVER, type: string, default: 127.0.0.1, description: "Default database host or IP, optionally with a port; credentials and URLs are forbidden."}
+  - {name: ONEINSTACK_INSTALL_MODE, type: string, default: center, description: "Panel-injected install mode: center or offline."}
+  - {name: ONEINSTACK_OFFLINE_PACKAGE_PATH, type: path, description: "Panel-injected complete offline Bundle root."}
+  - {name: ONEINSTACK_COMPONENT_STATE, type: path, default: /var/lib/oneinstack/components, description: "Panel-injected managed component state root."}
+  - {name: data-policy, env: UNINSTALL_DATA_POLICY, type: string, default: preserve, description: "Uninstall policy; preserve keeps user plugin files, delete removes the whole managed directory after confirmation."}
+  - {name: delete-data-confirm, env: UNINSTALL_CONFIRM_DATA_DELETION, type: boolean, default: "false", description: "Must be true together with data-policy=delete."}
+configuration:
+  applyMode: reload
+  fields:
+    - {key: publicPath, label: Public path, type: string, env: ONEINSTACK_CONFIG_PUBLIC_PATH, default: /adminer/, description: "Single-segment URL path. The old route is removed only after the new route passes HTTP verification."}
+    - {key: accessPolicy, label: Access policy, type: select, env: ONEINSTACK_CONFIG_ACCESS_POLICY, default: public, options: [public, local, allowlist], description: "Public allows remote access; local and allowlist are recommended for production."}
+    - {key: allowedCidrs, label: Allowed CIDRs, type: string, env: ONEINSTACK_CONFIG_ALLOWED_CIDRS, default: "", description: "Comma-separated IPv4/IPv6 CIDRs; required when the access policy is allowlist."}
+    - {key: defaultDriver, label: Default database driver, type: select, env: ONEINSTACK_CONFIG_DEFAULT_DRIVER, default: mysql, options: [mysql, pgsql], description: "MariaDB uses the mysql driver."}
+    - {key: defaultServer, label: Default database server, type: string, env: ONEINSTACK_CONFIG_DEFAULT_SERVER, default: 127.0.0.1, description: "Host or IP with an optional port; credentials and URLs are forbidden."}
+timeouts:
+  precheck: 180
+  install: 900
+  verify: 300
+  upgrade: 900
+  rollback: 300
+  uninstall: 300
+  configGet: 30
+  configApply: 300

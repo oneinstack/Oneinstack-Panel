@@ -1,0 +1,66 @@
+schemaVersion: 1
+component:
+  id: docker-compose
+  name: Docker Compose
+  version: 1.0.4
+  softwareVersions: ["5.5.1"]
+  channel: stable
+  description: Fixed Docker Compose CLI plugin with versioned activation, offline Bundle support, and plugin-only rollback and uninstall.
+compatibility:
+  panel: ">=0.1.0-0"
+  systems:
+    - id: ubuntu
+      versions: ["22.04", "24.04", "26.04"]
+    - id: debian
+      versions: ["11", "12", "13"]
+    - id: rhel
+      versions: ["8", "9", "10"]
+    - id: rocky
+      versions: ["8", "9", "10"]
+    - id: almalinux
+      versions: ["8", "9", "10"]
+    - id: ol
+      versions: ["8", "9", "10"]
+    - id: centos
+      versions: ["7", "8", "9", "10"]
+    - id: fedora
+      versions: ["*"]
+    - id: amzn
+      versions: ["2023"]
+    - id: sles
+      versions: ["*"]
+    - id: opensuse-leap
+      versions: ["*"]
+    - id: opensuse-tumbleweed
+      versions: ["*"]
+  architectures: [amd64, arm64]
+dependencies:
+  components:
+    - id: docker
+      constraint: ">=1.0.6"
+  packages:
+    apt: [ca-certificates, curl]
+    dnf: [ca-certificates, curl]
+    yum: [ca-certificates, curl]
+    zypper: [ca-certificates, curl]
+sources:
+  releases:
+    - {softwareVersion: 5.5.1, architecture: amd64, buildId: docker-compose-5.5.1-amd64-oneinstack-1.1.0, url: https://github.com/docker/compose/releases/download/v5.5.1/docker-compose-linux-x86_64, sha256: db1889184726840f75c4f9c001048430d4f25b3be3cb084d3ddd762bc0aed576}
+    - {softwareVersion: 5.5.1, architecture: arm64, buildId: docker-compose-5.5.1-arm64-oneinstack-1.1.0, url: https://github.com/docker/compose/releases/download/v5.5.1/docker-compose-linux-aarch64, sha256: 732e3a84c1a0f67256ce80bc2598a24546b10ca05f9faa97efceb1171ece2ef7}
+actions:
+  precheck: scripts/precheck.sh
+  install: scripts/install.sh
+  verify: scripts/verify.sh
+  upgrade: scripts/install.sh
+  rollback: scripts/rollback.sh
+  uninstall: scripts/uninstall.sh
+parameters:
+  - {name: software-version, env: SOFTWARE_VERSION, type: string, default: 5.5.1, description: Exact Docker Compose software version.}
+  - {name: component-state-dir, env: ONEINSTACK_COMPONENT_STATE, type: path, default: /var/lib/oneinstack/components, description: "OneinStack component state, migration, and rollback directory."}
+timeouts:
+  precheck: 180
+  install: 900
+  upgrade: 900
+  verify: 180
+  rollback: 600
+  uninstall: 600

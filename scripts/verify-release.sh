@@ -33,6 +33,10 @@ for archive in "$@"; do
   )
 
   listing="$(tar -tzf "$archive")"
+  if grep -Eq '(^|/)\._|(^|/)__MACOSX(/|$)' <<<"$listing"; then
+    echo "AppleDouble metadata files are forbidden in $archive" >&2
+    exit 1
+  fi
   root="${listing%%/*}"
   for required in one config.yaml install.sh install-cent.sh install-ubuntu.sh README.md README-zh.md BUILD.md LICENSE; do
     if ! grep -Fxq "${root}/${required}" <<<"$listing"; then
@@ -44,6 +48,10 @@ for archive in "$@"; do
     echo "Missing ${root}/script-registry/bundled in $archive" >&2
     exit 1
   fi
+  bundled_check_dir="$(mktemp -d "${TMPDIR:-/tmp}/oneinstack-bundled-verify.XXXXXX")"
+  tar -xzf "$archive" -C "$bundled_check_dir" "${root}/script-registry/bundled"
+  (cd "$(dirname "$0")/.." && go run ./cmd/bundled-package verify "${bundled_check_dir}/${root}/script-registry/bundled")
+  rm -rf -- "$bundled_check_dir"
   if tar -xOf "$archive" "${root}/config.yaml" |
     grep -Eq "^[[:space:]]*secret(Id|Key):[[:space:]]*(\"[^\"]+\"|'[^']+'|[^#[:space:]\"']+)"; then
     echo "Release config contains a non-empty credential: $archive" >&2

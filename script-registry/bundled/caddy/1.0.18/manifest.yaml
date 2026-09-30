@@ -1,0 +1,203 @@
+schemaVersion: 1
+component:
+    id: caddy
+    name: Caddy
+    version: 1.0.18
+    softwareVersions:
+        - 2.10.2
+    channel: stable
+    description: Caddy 2.10.2 official static-binary installer with identical online and fully offline artifacts, transactional configuration, and managed systemd lifecycle.
+compatibility:
+    panel: '>=0.1.0-0'
+    systems:
+        - id: ubuntu
+          versions:
+            - "22.04"
+            - "24.04"
+            - "26.04"
+        - id: debian
+          versions:
+            - "11"
+            - "12"
+            - "13"
+        - id: rhel
+          versions:
+            - "8"
+            - "9"
+            - "10"
+        - id: rocky
+          versions:
+            - "8"
+            - "9"
+            - "10"
+        - id: almalinux
+          versions:
+            - "8"
+            - "9"
+            - "10"
+        - id: ol
+          versions:
+            - "8"
+            - "9"
+            - "10"
+        - id: centos
+          versions:
+            - "7"
+        - id: centos-stream
+          versions:
+            - "8"
+            - "9"
+            - "10"
+        - id: fedora
+          versions:
+            - '*'
+        - id: amzn
+          versions:
+            - "2023"
+        - id: sles
+          versions:
+            - "15"
+            - "16"
+        - id: opensuse-leap
+          versions:
+            - '*'
+        - id: opensuse-tumbleweed
+          versions:
+            - '*'
+        - id: opensuse
+          versions:
+            - '*'
+    architectures:
+        - amd64
+        - arm64
+dependencies:
+    packages:
+        apt:
+            - acl
+        dnf:
+            - acl
+        yum:
+            - acl
+        zypper:
+            - acl
+runtimeGroup: web-server
+serviceName: oneinstack-caddy
+actions:
+    precheck: scripts/precheck.sh
+    install: scripts/install.sh
+    configure: scripts/configure.sh
+    verify: scripts/verify.sh
+    upgrade: scripts/install.sh
+    rollback: scripts/rollback.sh
+    uninstall: scripts/uninstall.sh
+    status: scripts/status.sh
+    start: scripts/start.sh
+    stop: scripts/stop.sh
+    restart: scripts/restart.sh
+    reload: scripts/reload.sh
+    configGet: scripts/config.sh
+    configApply: scripts/config.sh
+parameters:
+    - name: SOFTWARE_VERSION
+      type: string
+      required: true
+      default: 2.10.2
+      description: Caddy exact version published by Center.
+    - name: CADDY_PORT
+      type: port
+      default: "80"
+      description: Caddy managed default-site HTTP listener port.
+    - name: PHP_FPM_SOCKET
+      type: path
+      default: /dev/shm/php-cgi.sock
+      description: PHP-FPM Unix socket used for fail-closed PHP request forwarding.
+    - name: INSTALL_DIR
+      type: path
+      default: /usr/local/caddy
+      description: Server-managed immutable installation directory.
+    - name: WEB_ROOT
+      type: path
+      default: /data/wwwroot
+    - name: LOG_DIR
+      type: path
+      default: /data/wwwlogs
+    - name: WEB_VHOST_ROOT
+      type: path
+      default: /usr/local/one/vhost
+      description: Server-managed Panel vhost root.
+    - name: RUN_USER
+      type: string
+      default: caddy
+      description: Server-managed service account.
+    - name: RUN_GROUP
+      type: string
+      default: caddy
+      description: Server-managed service group.
+    - name: UNINSTALL_DATA_POLICY
+      type: string
+      default: preserve
+    - name: UNINSTALL_CONFIRM_DATA_DELETION
+      type: boolean
+      default: "false"
+    - name: ONEINSTACK_INSTALL_MODE
+      type: string
+      default: center
+      description: Internal Center or fully offline execution mode.
+    - name: ONEINSTACK_OFFLINE_PACKAGE_PATH
+      type: path
+      description: Internal validated offline Bundle path.
+    - name: ONEINSTACK_COMPONENT_STATE
+      type: path
+      default: /var/lib/oneinstack/components
+configuration:
+    applyMode: reload
+    fields:
+        - key: port
+          label: 监听端口
+          type: port
+          env: ONEINSTACK_CONFIG_PORT
+          default: "80"
+          min: 1
+          max: 65535
+        - key: phpFpmSocket
+          label: PHP-FPM Socket
+          type: path
+          env: ONEINSTACK_CONFIG_PHP_FPM_SOCKET
+          default: /dev/shm/php-cgi.sock
+        - key: webRoot
+          label: 网站根目录
+          type: path
+          env: ONEINSTACK_CONFIG_WEB_ROOT
+          default: /data/wwwroot
+        - key: logDir
+          label: 日志目录
+          type: path
+          env: ONEINSTACK_CONFIG_LOG_DIR
+          default: /data/wwwlogs
+sources:
+    releases:
+        - softwareVersion: 2.10.2
+          architecture: amd64
+          buildId: caddy-2.10.2-linux-amd64-oneinstack-1.0.18
+          url: https://github.com/caddyserver/caddy/releases/download/v2.10.2/caddy_2.10.2_linux_amd64.tar.gz
+          sha256: 5c218bc34c9197369263da7e9317a83acdbd80ef45d94dca5eff76e727c67cdd
+        - softwareVersion: 2.10.2
+          architecture: arm64
+          buildId: caddy-2.10.2-linux-arm64-oneinstack-1.0.18
+          url: https://github.com/caddyserver/caddy/releases/download/v2.10.2/caddy_2.10.2_linux_arm64.tar.gz
+          sha256: 501e955fa634c5aab63247458c3ac655cfdd6cbf1e0436528f41248451c190ac
+timeouts:
+    precheck: 180
+    install: 900
+    configure: 180
+    verify: 300
+    upgrade: 900
+    rollback: 300
+    uninstall: 300
+    status: 30
+    start: 180
+    stop: 180
+    restart: 300
+    reload: 180
+    configGet: 30
+    configApply: 300

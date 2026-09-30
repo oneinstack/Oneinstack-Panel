@@ -1,0 +1,80 @@
+schemaVersion: 1
+component:
+  id: clamav
+  name: ClamAV
+  version: 1.0.26
+  softwareVersions: [latest]
+  channel: stable
+  description: CentOS Linux 7 amd64 的 ClamAV 1.4 LTS 独立运行时；其他系统继续使用既有组件版本。
+compatibility:
+  panel: '>=0.1.0-0'
+  systems:
+    - {id: centos, versions: ["7"]}
+  architectures: [amd64]
+serviceName: oneinstack-clamav
+actions:
+  precheck: scripts/precheck.sh
+  install: scripts/install.sh
+  upgrade: scripts/install.sh
+  verify: scripts/verify.sh
+  rollback: scripts/rollback.sh
+  uninstall: scripts/uninstall.sh
+  status: scripts/status.sh
+  start: scripts/start.sh
+  stop: scripts/stop.sh
+  restart: scripts/restart.sh
+  configGet: scripts/config.sh
+  configApply: scripts/config.sh
+parameters:
+  - {name: software-version, env: SOFTWARE_VERSION, type: string, required: true, default: latest, description: "CentOS 7 amd64 固定官方 ClamAV 1.4.6 容器；不接受用户覆盖来源。"}
+  - {name: data-dir, env: DATA_DIR, type: path, default: /var/lib/clamav, description: "病毒库数据目录；不得与受管配置或状态目录重叠。"}
+  - {name: data-policy, env: UNINSTALL_DATA_POLICY, type: string, default: preserve, description: "卸载病毒库数据策略：preserve 或 delete。"}
+  - {name: delete-data-confirm, env: UNINSTALL_CONFIRM_DATA_DELETION, type: boolean, default: "false", description: "data-policy=delete 时必须显式确认。"}
+configuration:
+  applyMode: restart
+  fields:
+    - {key: databaseUpdateMode, label: 病毒库更新模式, type: select, env: ONEINSTACK_CONFIG_DATABASE_UPDATE_MODE, default: auto, options: [auto, manual], description: "离线安装固定为 manual，不能启用网络更新。"}
+    - {key: checksPerDay, label: 每日更新检查次数, type: integer, env: ONEINSTACK_CONFIG_CHECKS_PER_DAY, default: "12", min: 1, max: 24}
+    - {key: databaseMirror, label: 病毒库镜像, type: string, env: ONEINSTACK_CONFIG_DATABASE_MIRROR, default: database.clamav.net, allowEmpty: true, description: "仅在线模式可改；留空使用官方镜像，或填写可信内网镜像域名。"}
+    - {key: maxThreads, label: 最大扫描线程, type: integer, env: ONEINSTACK_CONFIG_MAX_THREADS, default: "10", min: 1, max: 64}
+    - {key: maxQueue, label: 最大扫描队列, type: integer, env: ONEINSTACK_CONFIG_MAX_QUEUE, default: "100", min: 1, max: 512}
+    - {key: maxScanSizeMB, label: 最大扫描大小, type: integer, env: ONEINSTACK_CONFIG_MAX_SCAN_SIZE_MB, default: "400", unit: MB, min: 1, max: 4096}
+    - {key: maxFileSizeMB, label: 最大单文件大小, type: integer, env: ONEINSTACK_CONFIG_MAX_FILE_SIZE_MB, default: "100", unit: MB, min: 1, max: 4096}
+    - {key: maxRecursion, label: 最大归档递归层级, type: integer, env: ONEINSTACK_CONFIG_MAX_RECURSION, default: "16", min: 1, max: 100}
+    - {key: maxFiles, label: 最大归档文件数, type: integer, env: ONEINSTACK_CONFIG_MAX_FILES, default: "10000", min: 1, max: 1000000}
+    - {key: logVerbose, label: 详细日志, type: boolean, env: ONEINSTACK_CONFIG_LOG_VERBOSE, default: "false"}
+preview:
+  services:
+    - {name: oneinstack-clamav.service, actions: [start, stop, restart, uninstall]}
+    - {name: oneinstack-clamav-update.service, actions: [uninstall]}
+    - {name: oneinstack-clamav-update.timer, actions: [uninstall]}
+  paths:
+    - {parameter: data-dir, role: data, preserveAction: preserve, deleteAction: delete}
+    - {path: /etc/oneinstack/clamav, role: config, preserveAction: remove_managed, deleteAction: remove_managed}
+    - {path: /var/log/oneinstack/clamav, role: log, preserveAction: remove_managed, deleteAction: remove_managed}
+    - {path: /etc/systemd/system/oneinstack-clamav.service, role: integration, preserveAction: remove_managed, deleteAction: remove_managed}
+    - {path: /etc/systemd/system/oneinstack-clamav-update.service, role: integration, preserveAction: remove_managed, deleteAction: remove_managed}
+    - {path: /etc/systemd/system/oneinstack-clamav-update.timer, role: integration, preserveAction: remove_managed, deleteAction: remove_managed}
+    - {path: /var/lib/oneinstack/components/clamav, role: state, preserveAction: remove_contents, deleteAction: remove_contents}
+  rollback:
+    uninstall:
+      supported: false
+      strategy: none
+      summary: 受管容器服务和配置会移除；Docker 镜像缓存保留；显式删除的新病毒库数据不可自动恢复，迁移前已有数据与原生服务会恢复。
+      unrecoverable: [deleted_paths]
+    start: {supported: false, strategy: none, summary: 服务动作不会自动反转。}
+    stop: {supported: false, strategy: none, summary: 服务动作不会自动反转。}
+    restart: {supported: false, strategy: none, summary: 服务动作不会自动反转。}
+timeouts:
+  precheck: 300
+  install: 3600
+  verify: 300
+  upgrade: 3600
+  rollback: 900
+  uninstall: 900
+  status: 30
+  start: 180
+  stop: 180
+  restart: 300
+  configGet: 30
+  configApply: 600

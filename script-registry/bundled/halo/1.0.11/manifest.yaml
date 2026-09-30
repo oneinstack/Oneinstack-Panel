@@ -1,0 +1,122 @@
+schemaVersion: 1
+component:
+  id: halo
+  name: Halo
+  version: 1.0.11
+  softwareVersions: ["2.22.9", "2.25.4"]
+  channel: stable
+  allowCustomVersion: false
+  description: Halo 2.x 私有 Temurin Java 21 宿主机组件，支持受管升级、配置事务及精确完全离线 Bundle。
+compatibility:
+  panel: ">=0.1.0-0"
+  # CentOS 7 仅匹配普通 CentOS Linux 7，不与 CentOS Stream 混用；其余目标系统待逐项完成真机验收后再开放。
+  systems:
+    - {id: ubuntu, versions: ["20.04", "22.04", "24.04"]}
+    - {id: debian, versions: ["11", "12"]}
+    - {id: rocky, versions: ["8", "9"]}
+    - {id: almalinux, versions: ["8", "9"]}
+    - {id: centos, versions: ["7"]}
+  architectures: [amd64, arm64]
+dependencies:
+  packages:
+    apt: [acl, ca-certificates, coreutils, curl, findutils, gnupg, gzip, iproute2, passwd, procps, tar, util-linux]
+    dnf: [acl, ca-certificates, coreutils, curl, findutils, gnupg2, gzip, iproute, procps-ng, shadow-utils, tar, util-linux]
+    yum: [acl, ca-certificates, coreutils, curl, findutils, gnupg2, gzip, iproute, procps-ng, shadow-utils, tar, util-linux]
+    zypper: [acl, ca-certificates, coreutils, curl, findutils, gpg2, gzip, iproute2, procps, shadow, tar, util-linux]
+serviceName: halo
+actions:
+  precheck: scripts/precheck.sh
+  install: scripts/install.sh
+  configure: scripts/configure.sh
+  verify: scripts/verify.sh
+  upgrade: scripts/install.sh
+  rollback: scripts/rollback.sh
+  uninstall: scripts/uninstall.sh
+  status: scripts/status.sh
+  start: scripts/start.sh
+  stop: scripts/stop.sh
+  restart: scripts/restart.sh
+  configGet: scripts/config.sh
+  configApply: scripts/config.sh
+  credentialGet: scripts/credentials.sh
+parameters:
+  - {name: software-version, env: SOFTWARE_VERSION, type: string, required: true, default: "2.25.4", description: "仅允许 2.22.9 或 2.25.4；受管实例只允许单向升级。"}
+  - {name: halo-port, env: HALO_PORT, type: port, default: "8090", description: "Halo HTTP 监听端口。"}
+  - {name: halo-bind-address, env: HALO_BIND_ADDRESS, type: string, default: 127.0.0.1, description: "默认仅本机监听；脚本不自动开放防火墙。"}
+  - {name: halo-external-url, env: HALO_EXTERNAL_URL, type: string, description: "可选的外部 HTTP/HTTPS 地址。"}
+  - {name: install-dir, env: INSTALL_DIR, type: path, default: /opt/oneinstack/halo, description: "私有 JRE 与 Halo JAR 目录；安装后不可在线迁移。"}
+  - {name: data-dir, env: DATA_DIR, type: path, default: /var/lib/halo, description: "Halo work-dir、插件、主题、附件与 H2 数据目录。"}
+  - {name: config-dir, env: CONFIG_DIR, type: path, default: /etc/halo, description: "受管 application.yaml 与数据库密钥环境文件目录。"}
+  - {name: run-user, env: RUN_USER, type: string, default: halo, description: "非 root 系统运行账号；安装后不可在线修改。"}
+  - {name: run-group, env: RUN_GROUP, type: string, default: halo, description: "非 root 系统运行组；安装后不可在线修改。"}
+  - {name: jvm-xms-mb, env: JVM_XMS_MB, type: integer, default: "256", description: "JVM 初始堆内存 MB。"}
+  - {name: jvm-xmx-mb, env: JVM_XMX_MB, type: integer, default: "256", description: "JVM 最大堆内存 MB，必须不小于 Xms。"}
+  - {name: database-type, env: DATABASE_TYPE, type: string, default: h2, hideAfterInstall: true, description: "仅允许 h2、postgresql、mysql 或 mariadb；H2 不建议用于正式生产环境。"}
+  - {name: database-host, env: DATABASE_HOST, type: string, default: 127.0.0.1, hideAfterInstall: true, description: "外部数据库主机。"}
+  - {name: database-port, env: DATABASE_PORT, type: port, hideAfterInstall: true, description: "留空时 PostgreSQL 使用 5432，MySQL/MariaDB 使用 3306。"}
+  - {name: database-name, env: DATABASE_NAME, type: string, default: halo, hideAfterInstall: true, description: "外部数据库名称。"}
+  - {name: database-username, env: DATABASE_USERNAME, type: string, default: halo, hideAfterInstall: true, description: "外部数据库用户名。"}
+  - {name: database-password, env: DATABASE_PASSWORD, type: password, secret: true, hideAfterInstall: true, description: "外部数据库必填；H2 首次安装自动生成。普通配置读取不回显，仅允许面板密码二次验证后查看。"}
+  - {name: adopt-legacy-data, env: ADOPT_LEGACY_DATA, type: boolean, default: "true", hideAfterInstall: true, description: "检测到已停止且通过安全校验的 /root/.halo2 旧站点时，默认先完整快照再迁移到 2.25.4；设为 false 可拒绝迁移。"}
+  - {name: data-policy, env: UNINSTALL_DATA_POLICY, type: string, default: preserve, description: "卸载数据策略，仅允许 preserve 或 delete。"}
+  - {name: delete-data-confirm, env: UNINSTALL_CONFIRM_DATA_DELETION, type: boolean, default: "false", description: "data-policy=delete 时必须显式确认。"}
+  - {name: ONEINSTACK_INSTALL_MODE, type: string, default: center, description: "Panel 后端注入的在线或完全离线模式，不对普通用户开放。"}
+  - {name: ONEINSTACK_OFFLINE_PACKAGE_PATH, type: path, description: "Panel 后端注入并校验的完全离线 Bundle 路径。"}
+  - {name: ONEINSTACK_OFFLINE_BUNDLE_ID, type: string, description: "Panel 后端注入的 Bundle 身份。"}
+  - {name: ONEINSTACK_OFFLINE_BUNDLE_DIGEST, type: string, description: "Panel 后端注入的 Bundle 清单摘要。"}
+  - {name: ONEINSTACK_COMPONENT_STATE, type: path, default: /var/lib/oneinstack/components, description: "Panel 后端注入的组件状态根目录。"}
+configuration:
+  applyMode: restart
+  fields:
+    - {key: haloPort, label: HTTP 监听端口, type: port, env: ONEINSTACK_CONFIG_HALO_PORT, default: "8090", min: 1, max: 65535}
+    - {key: bindAddress, label: 绑定地址, type: string, env: ONEINSTACK_CONFIG_BIND_ADDRESS, default: 127.0.0.1}
+    - {key: externalUrl, label: 外部访问地址, type: string, env: ONEINSTACK_CONFIG_EXTERNAL_URL, allowEmpty: true}
+    - {key: useAbsolutePermalink, label: 使用绝对固定链接, type: boolean, env: ONEINSTACK_CONFIG_USE_ABSOLUTE_PERMALINK, default: "false"}
+    - {key: forwardHeadersStrategy, label: 转发头策略, type: select, env: ONEINSTACK_CONFIG_FORWARD_HEADERS_STRATEGY, default: native, options: [native, framework, none]}
+    - {key: compressionEnabled, label: 启用响应压缩, type: boolean, env: ONEINSTACK_CONFIG_COMPRESSION_ENABLED, default: "true"}
+    - {key: staticCacheMaxAgeDays, label: 静态缓存天数, type: integer, env: ONEINSTACK_CONFIG_STATIC_CACHE_MAX_AGE_DAYS, default: "365", min: 0, max: 3650}
+    - {key: jvmXmsMb, label: JVM 初始堆内存, type: integer, env: ONEINSTACK_CONFIG_JVM_XMS_MB, default: "256", unit: MB, min: 64, max: 1048576}
+    - {key: jvmXmxMb, label: JVM 最大堆内存, type: integer, env: ONEINSTACK_CONFIG_JVM_XMX_MB, default: "256", unit: MB, min: 64, max: 1048576}
+    - {key: logMaxFileSizeMB, label: 单日志文件上限, type: integer, env: ONEINSTACK_CONFIG_LOG_MAX_FILE_SIZE_MB, default: "10", unit: MB, min: 1, max: 1024}
+    - {key: logTotalSizeCapMB, label: 日志总容量上限, type: integer, env: ONEINSTACK_CONFIG_LOG_TOTAL_SIZE_CAP_MB, default: "1024", unit: MB, min: 10, max: 1048576}
+    - {key: logMaxHistory, label: 日志保留天数, type: integer, env: ONEINSTACK_CONFIG_LOG_MAX_HISTORY, default: "0", unit: 天, min: 0, max: 3650}
+preview:
+  services:
+    - {name: halo, actions: [install, upgrade, configure, verify, start, stop, restart, uninstall]}
+  packages:
+    apt: {names: [acl, ca-certificates, coreutils, curl, findutils, gnupg, gzip, iproute2, passwd, procps, tar, util-linux], softwareVersions: ["2.22.9", "2.25.4"]}
+    dnf: {names: [acl, ca-certificates, coreutils, curl, findutils, gnupg2, gzip, iproute, procps-ng, shadow-utils, tar, util-linux], softwareVersions: ["2.22.9", "2.25.4"]}
+    yum: {names: [acl, ca-certificates, coreutils, curl, findutils, gnupg2, gzip, iproute, procps-ng, shadow-utils, tar, util-linux], softwareVersions: ["2.22.9", "2.25.4"]}
+    zypper: {names: [acl, ca-certificates, coreutils, curl, findutils, gpg2, gzip, iproute2, procps, shadow, tar, util-linux], softwareVersions: ["2.22.9", "2.25.4"]}
+  paths:
+    - {parameter: install-dir, role: program, preserveAction: remove, deleteAction: remove, softwareVersions: ["2.22.9", "2.25.4"]}
+    - {parameter: data-dir, role: data, preserveAction: preserve, deleteAction: remove, softwareVersions: ["2.22.9", "2.25.4"]}
+    - {parameter: config-dir, role: config, preserveAction: preserve, deleteAction: remove, softwareVersions: ["2.22.9", "2.25.4"]}
+  rollback:
+    install: {supported: true, strategy: automatic, summary: "恢复受管 JAR、私有 JRE、配置、unit、H2 数据和本组件新增 ACL。"}
+    upgrade: {supported: true, strategy: automatic, summary: "H2 数据随文件快照恢复；外部数据库模式变更不可由脚本回滚。", unrecoverable: ["外部 PostgreSQL/MySQL/MariaDB 的模式变更"]}
+    uninstall: {supported: false, strategy: none, summary: "卸载会移除受管程序和服务；数据与受保护配置按 preserve/delete 选择处理，外部数据库始终保留。"}
+    start: {supported: false, strategy: none, summary: "启动服务不会自动执行反向操作。"}
+    stop: {supported: false, strategy: none, summary: "停止服务不会自动执行反向操作。"}
+    restart: {supported: false, strategy: none, summary: "重启服务不会自动执行反向操作。"}
+sources:
+  releases:
+    - {softwareVersion: "2.22.9", architecture: amd64, runtime: temurin-jre-21.0.12+8, buildId: halo-2.22.9-amd64-oneinstack-1.0.11, url: https://dl.halo.run/release/halo-2.22.9.jar, sha256: c6a12f67c62bf9e57f284364d797e9cab5c7cdb586f70fa128b240893ff4dbff}
+    - {softwareVersion: "2.22.9", architecture: arm64, runtime: temurin-jre-21.0.12+8, buildId: halo-2.22.9-arm64-oneinstack-1.0.11, url: https://dl.halo.run/release/halo-2.22.9.jar, sha256: c6a12f67c62bf9e57f284364d797e9cab5c7cdb586f70fa128b240893ff4dbff}
+    - {softwareVersion: "2.25.4", architecture: amd64, runtime: temurin-jre-21.0.12+8, buildId: halo-2.25.4-amd64-oneinstack-1.0.11, url: https://dl.halo.run/release/halo-2.25.4.jar, sha256: 537756c406ff013db34d47a3740093ed2cd1cbdedf5b3da34ca8017de61aa04e}
+    - {softwareVersion: "2.25.4", architecture: arm64, runtime: temurin-jre-21.0.12+8, buildId: halo-2.25.4-arm64-oneinstack-1.0.11, url: https://dl.halo.run/release/halo-2.25.4.jar, sha256: 537756c406ff013db34d47a3740093ed2cd1cbdedf5b3da34ca8017de61aa04e}
+timeouts:
+  precheck: 300
+  install: 3600
+  configure: 900
+  verify: 600
+  upgrade: 3600
+  rollback: 1200
+  uninstall: 900
+  status: 30
+  start: 600
+  stop: 180
+  restart: 600
+  configGet: 30
+  configApply: 900
+  credentialGet: 30
