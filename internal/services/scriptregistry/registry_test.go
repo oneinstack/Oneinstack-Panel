@@ -66,7 +66,7 @@ func TestResolveRemoteVerifiesAndCachesPackage(t *testing.T) {
 		MaxPackageBytes:       8 << 20,
 		MaxExpandedBytes:      32 << 20,
 		CachePath:             cachePath,
-		BundledPath:           filepath.Join(t.TempDir(), "missing"),
+		BundledPath:           filepath.Join("..", "..", "..", "script-registry", "bundled"),
 		TrustedKeys: map[string]string{
 			keyID: base64.StdEncoding.EncodeToString(publicKey),
 		},
@@ -246,6 +246,92 @@ func TestResolveInstalledReusesVerifiedPackageAcrossChannelChange(t *testing.T) 
 	); err == nil {
 		t.Fatal("package missing a required action was selected")
 	}
+}
+
+func TestProductionBundledFallbackIsPinnedAndRejectsCenterDenials(t *testing.T) {
+	bundledPath := filepath.Join("..", "..", "..", "script-registry", "bundled")
+	for _, component := range []struct{ name, version string }{{"nginx", "1.28.2"}, {"firewalld", "2.1.1"}} {
+		t.Run(component.name, func(t *testing.T) {
+			registry, err := New(config.ScriptCenter{
+				Enabled: true, URL: "http://127.0.0.1:8189", Channel: "stable",
+				RequestTimeoutSeconds: 5, CachePath: t.TempDir(), BundledPath: bundledPath,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			registry.host = Host{PanelVersion: "v0.1.0-test", SystemID: "ubuntu", SystemVersion: "24.04", Architecture: "amd64"}
+			registry.client.Transport = handlerTransport{handler: http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+				http.Error(response, "Center unavailable", http.StatusServiceUnavailable)
+			})}
+			pkg, err := registry.Resolve(context.Background(), component.name, component.version)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if pkg.Source != "bundled" || pkg.Metadata.SHA256 == "" {
+				t.Fatalf("unexpected fallback identity: %+v", pkg.Metadata)
+			}
+			pin := PackagePin{
+				Component: component.name, SoftwareVersion: component.version,
+				ResolvedVersion: pkg.Manifest.Component.Version, Channel: "stable",
+				PackageSource: "bundled", PackageSHA256: pkg.Metadata.SHA256,
+				TargetOS: "ubuntu", TargetOSVersion: "24.04", TargetArch: "amd64",
+			}
+			fixed, err := registry.ResolveFixed(component.name, component.version, pin)
+			if err != nil || fixed.Root != pkg.Root {
+				t.Fatalf("fixed fallback changed: root=%s err=%v", fixed.Root, err)
+			}
+			pin.PackageSHA256 = hex.EncodeToString(make([]byte, sha256.Size))
+			if _, err := registry.ResolveFixed(component.name, component.version, pin); err == nil {
+				t.Fatal("changed bundled digest was accepted")
+			}
+			registry.client.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+				return nil, context.DeadlineExceeded
+			})
+			if timedOut, err := registry.Resolve(context.Background(), component.name, component.version); err != nil || timedOut.Source != "bundled" || timedOut.Metadata.SHA256 != pkg.Metadata.SHA256 {
+				t.Fatalf("timeout did not retain the bundled identity: source=%s err=%v", timedOut.Source, err)
+			}
+			for _, status := range []int{http.StatusUnauthorized, http.StatusNotFound, http.StatusBadRequest} {
+				registry.client.Transport = handlerTransport{handler: http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+					response.Header().Set("Content-Type", "application/json")
+					response.WriteHeader(status)
+					_, _ = response.Write([]byte(`{"error":{"code":"service_unavailable","message":"try again"}}`))
+				})}
+				if _, err := registry.Resolve(context.Background(), component.name, component.version); err == nil {
+					t.Fatalf("Center denial %d silently selected bundled package", status)
+				}
+			}
+			registry.client.Transport = handlerTransport{handler: http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+				if request.URL.Path == "/health/ready" {
+					response.WriteHeader(http.StatusOK)
+					return
+				}
+				response.Header().Set("Content-Type", "application/json")
+				response.WriteHeader(http.StatusServiceUnavailable)
+				_, _ = response.Write([]byte(`{"error":{"code":"signature_invalid","message":"bad signature"}}`))
+			})}
+			if _, err := registry.Resolve(context.Background(), component.name, component.version); err == nil {
+				t.Fatal("Center signature error silently selected bundled package")
+			}
+			registry.config.BundledPath = t.TempDir()
+			registry.client.Transport = handlerTransport{handler: http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+				response.WriteHeader(http.StatusServiceUnavailable)
+			})}
+			if _, err := registry.Resolve(context.Background(), component.name, component.version); err == nil {
+				t.Fatal("missing bundled package was accepted")
+			}
+			registry.config.BundledPath = bundledPath
+			registry.host.Architecture = "s390x"
+			if _, err := registry.Resolve(context.Background(), component.name, component.version); err == nil {
+				t.Fatal("incompatible bundled package was accepted")
+			}
+		})
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (roundTrip roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return roundTrip(request)
 }
 
 type handlerTransport struct {

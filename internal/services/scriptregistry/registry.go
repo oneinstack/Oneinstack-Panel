@@ -129,7 +129,7 @@ func (r *Registry) ImportOfflineBundle(
 	}
 	maxPackageBytes := r.config.MaxPackageBytes
 	if maxPackageBytes < 1 {
-		maxPackageBytes = 64 << 20
+		maxPackageBytes = 128 << 20
 	}
 	maxExpandedBytes := r.config.MaxExpandedBytes
 	if maxExpandedBytes < 1 {
@@ -195,12 +195,9 @@ func (r *Registry) Resolve(ctx context.Context, component, softwareVersion strin
 			return pkg, nil
 		}
 		remoteErr = err
-	}
-	if strings.EqualFold(strings.TrimSpace(component), "firewalld") {
-		if remoteErr != nil {
-			return Package{}, remoteErr
+		if !transientCenterPackageError(err) {
+			return Package{}, err
 		}
-		return Package{}, newRegistryError("CENTER_UNAVAILABLE", "firewalld is catalog-managed and requires a published Center package", nil)
 	}
 	pkg, bundledErr := r.resolveBundled(component, softwareVersion)
 	if bundledErr == nil {
@@ -212,6 +209,19 @@ func (r *Registry) Resolve(ctx context.Context, component, softwareVersion strin
 	return Package{}, bundledErr
 }
 
+func transientCenterPackageError(err error) bool {
+	var coded interface{ ErrorCode() string }
+	if !errors.As(err, &coded) {
+		return false
+	}
+	switch coded.ErrorCode() {
+	case "CENTER_TIMEOUT", "CENTER_UNAVAILABLE", "PACKAGE_DOWNLOAD_FAILED":
+		return true
+	default:
+		return false
+	}
+}
+
 // ResolveFixed resolves only the package captured by an installation preview.
 // It never contacts Center and never selects another package or digest.
 func (r *Registry) ResolveFixed(component, softwareVersion string, pin PackagePin) (Package, error) {
@@ -219,8 +229,11 @@ func (r *Registry) ResolveFixed(component, softwareVersion string, pin PackagePi
 	if component == "" || pin.Component != component ||
 		strings.TrimSpace(pin.SoftwareVersion) != strings.TrimSpace(softwareVersion) ||
 		strings.TrimSpace(pin.ResolvedVersion) == "" ||
-		(strings.TrimSpace(pin.PackageSource) != "remote" && strings.TrimSpace(pin.PackageSource) != "cache" && strings.TrimSpace(pin.PackageSource) != "offline") {
+		(strings.TrimSpace(pin.PackageSource) != "remote" && strings.TrimSpace(pin.PackageSource) != "cache" && strings.TrimSpace(pin.PackageSource) != "offline" && strings.TrimSpace(pin.PackageSource) != "bundled") {
 		return Package{}, newRegistryError("PACKAGE_RESOLVE_FAILED", "fixed package identity does not match the installation request", nil)
+	}
+	if !componentIDPattern.MatchString(component) || !versionPattern.MatchString(pin.ResolvedVersion) {
+		return Package{}, newRegistryError("PACKAGE_RESOLVE_FAILED", "fixed package path identity is invalid", nil)
 	}
 	if len(pin.PackageSHA256) != sha256.Size*2 {
 		return Package{}, newRegistryError("PACKAGE_CHECKSUM_MISMATCH", "fixed package digest is invalid", nil)
@@ -231,8 +244,20 @@ func (r *Registry) ResolveFixed(component, softwareVersion string, pin PackagePi
 	root := filepath.Join(r.config.CachePath, "components", component, pin.ResolvedVersion, strings.ToLower(pin.PackageSHA256))
 	if strings.EqualFold(strings.TrimSpace(pin.PackageSource), "offline") {
 		root = filepath.Join(r.config.CachePath, "components", component, "offline", strings.ToLower(pin.PackageSHA256))
+	} else if pin.PackageSource == "bundled" {
+		root = filepath.Join(r.config.BundledPath, component, pin.ResolvedVersion)
 	}
-	manifest, err := validateDirectory(root)
+	var manifest Manifest
+	var err error
+	if pin.PackageSource == "bundled" {
+		var digest string
+		manifest, digest, err = BundledPackageDigest(root)
+		if err == nil && digest != strings.ToLower(pin.PackageSHA256) {
+			return Package{}, newRegistryError("PACKAGE_CHECKSUM_MISMATCH", "fixed bundled package contents changed", nil)
+		}
+	} else {
+		manifest, err = validateDirectory(root)
+	}
 	if err != nil {
 		return Package{}, newRegistryError("PACKAGE_UNAVAILABLE", "the preview-fixed package is no longer cached", err)
 	}
@@ -563,12 +588,6 @@ func (r *Registry) ResolveInstalled(
 		}
 	}
 
-	if strings.EqualFold(strings.TrimSpace(component), "firewalld") {
-		return Package{}, fmt.Errorf(
-			"no verified package for installed firewalld %s (configured channel: %v; cache: %v; fallback channels: %v)",
-			softwareVersion, currentErr, cacheErr, fallbackErr,
-		)
-	}
 	bundled, bundledErr := r.resolveBundledInstalled(component, softwareVersion, requiredActions)
 	if bundledErr == nil {
 		return bundled, nil
@@ -602,9 +621,6 @@ func (r *Registry) ResolveInstalledUninstall(
 	if cacheErr == nil {
 		return cached, nil
 	}
-	if strings.EqualFold(strings.TrimSpace(component), "firewalld") {
-		return Package{}, fmt.Errorf("no verified uninstall package for installed firewalld %s (lifecycle: %v; cache: %v)", softwareVersion, err, cacheErr)
-	}
 	bundled, bundledErr := r.resolveBundledInstalled(component, softwareVersion, []string{"uninstall"}, false)
 	if bundledErr == nil {
 		return bundled, nil
@@ -632,9 +648,6 @@ func (r *Registry) ResolveInstalledLocal(
 	cached, cacheErr := r.resolveCachedInstalled(component, softwareVersion, requiredActions)
 	if cacheErr == nil {
 		return cached, nil
-	}
-	if strings.EqualFold(strings.TrimSpace(component), "firewalld") {
-		return Package{}, fmt.Errorf("no compatible local package for installed firewalld %s (cache: %v)", softwareVersion, cacheErr)
 	}
 	bundled, bundledErr := r.resolveBundledInstalled(component, softwareVersion, requiredActions)
 	if bundledErr == nil {
@@ -749,6 +762,11 @@ func (r *Registry) resolveBundledInstalled(
 	if selected.Root == "" {
 		return Package{}, fmt.Errorf("no compatible bundled %s package for installed software version %s", component, softwareVersion)
 	}
+	_, digest, err := BundledPackageDigest(selected.Root)
+	if err != nil {
+		return Package{}, err
+	}
+	selected.Metadata.SHA256 = digest
 	return selected, nil
 }
 
@@ -790,6 +808,9 @@ func (r *Registry) resolveRemoteMetadata(ctx context.Context, component, softwar
 	request.Header.Set("Content-Type", "application/json")
 	response, err := r.client.Do(request)
 	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return Metadata{}, err
+		}
 		if errors.Is(err, context.DeadlineExceeded) {
 			return Metadata{}, newRegistryError("CENTER_TIMEOUT", "Center resolve request timed out", err)
 		}
@@ -827,6 +848,9 @@ func (r *Registry) checkReady(ctx context.Context) error {
 	}
 	response, err := r.client.Do(request)
 	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return err
+		}
 		if errors.Is(err, context.DeadlineExceeded) {
 			return newRegistryError("CENTER_TIMEOUT", "Center readiness check timed out", err)
 		}
@@ -840,7 +864,10 @@ func (r *Registry) checkReady(ctx context.Context) error {
 		if response.StatusCode == http.StatusRequestTimeout || response.StatusCode == http.StatusGatewayTimeout {
 			return newRegistryError("CENTER_TIMEOUT", "Center readiness check timed out", nil)
 		}
-		return newRegistryError("CENTER_UNAVAILABLE", "Center is not ready", nil)
+		if response.StatusCode >= http.StatusInternalServerError {
+			return newRegistryError("CENTER_UNAVAILABLE", "Center is not ready", nil)
+		}
+		return newRegistryError("PACKAGE_RESOLVE_FAILED", "Center readiness check was rejected", nil)
 	}
 	return nil
 }
@@ -909,6 +936,9 @@ func (r *Registry) downloadAndPrepare(ctx context.Context, metadata Metadata) (P
 	response, err := r.client.Do(request)
 	if err != nil {
 		archive.Close()
+		if errors.Is(err, context.Canceled) {
+			return Package{}, err
+		}
 		if errors.Is(err, context.DeadlineExceeded) {
 			return Package{}, newRegistryError("CENTER_TIMEOUT", "Center package download timed out", err)
 		}
@@ -920,7 +950,10 @@ func (r *Registry) downloadAndPrepare(ctx context.Context, metadata Metadata) (P
 		if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
 			return Package{}, newRegistryError("CENTER_AUTH_FAILED", "Center rejected the package download", nil)
 		}
-		return Package{}, newRegistryError("PACKAGE_DOWNLOAD_FAILED", "Center package download returned an unexpected response", nil)
+		if response.StatusCode >= http.StatusInternalServerError {
+			return Package{}, newRegistryError("CENTER_UNAVAILABLE", "Center package download service is unavailable", nil)
+		}
+		return Package{}, newRegistryError("PACKAGE_UNAVAILABLE", "Center package download was rejected", nil)
 	}
 	hash := sha256.New()
 	size, copyErr := io.Copy(io.MultiWriter(archive, hash), io.LimitReader(response.Body, r.config.MaxPackageBytes+1))
@@ -954,6 +987,11 @@ func (r *Registry) downloadAndPrepare(ctx context.Context, metadata Metadata) (P
 }
 
 func (r *Registry) resolveBundled(component, softwareVersion string) (Package, error) {
+	for _, production := range productionComponents {
+		if component == production {
+			return r.resolveProductionBundled(component, softwareVersion)
+		}
+	}
 	componentRoot := filepath.Join(r.config.BundledPath, component)
 	entries, err := os.ReadDir(componentRoot)
 	if err != nil {
@@ -997,7 +1035,32 @@ func decodeAPIError(response *http.Response) error {
 }
 
 func stableCenterErrorCode(code string, status int) string {
-	switch strings.ToLower(strings.TrimSpace(code)) {
+	code = strings.ToLower(strings.TrimSpace(code))
+	// HTTP denials are authoritative even if the response body advertises a
+	// transient error. Never turn an authorization or publication denial into
+	// permission to use a local package.
+	switch status {
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return "CENTER_AUTH_FAILED"
+	case http.StatusNotFound:
+		return "PACKAGE_UNPUBLISHED"
+	}
+	if status >= http.StatusBadRequest && status < http.StatusInternalServerError &&
+		status != http.StatusRequestTimeout {
+		switch code {
+		case "host_platform_unsupported":
+			return "HOST_PLATFORM_UNSUPPORTED"
+		case "package_unpublished", "not_found":
+			return "PACKAGE_UNPUBLISHED"
+		case "package_checksum_mismatch", "checksum_mismatch":
+			return "PACKAGE_CHECKSUM_MISMATCH"
+		case "package_signature_invalid", "signature_invalid":
+			return "PACKAGE_SIGNATURE_INVALID"
+		default:
+			return "PACKAGE_RESOLVE_FAILED"
+		}
+	}
+	switch code {
 	case "package_unpublished", "not_found":
 		return "PACKAGE_UNPUBLISHED"
 	case "host_platform_unsupported":
@@ -1006,6 +1069,10 @@ func stableCenterErrorCode(code string, status int) string {
 		return "PACKAGE_RESOLVE_FAILED"
 	case "package_unavailable":
 		return "PACKAGE_UNAVAILABLE"
+	case "package_checksum_mismatch", "checksum_mismatch":
+		return "PACKAGE_CHECKSUM_MISMATCH"
+	case "package_signature_invalid", "signature_invalid":
+		return "PACKAGE_SIGNATURE_INVALID"
 	case "unauthorized", "authentication_failed", "auth_failed":
 		return "CENTER_AUTH_FAILED"
 	case "not_ready", "service_unavailable":
@@ -1014,15 +1081,14 @@ func stableCenterErrorCode(code string, status int) string {
 		return "CENTER_TIMEOUT"
 	}
 	switch status {
-	case http.StatusUnauthorized, http.StatusForbidden:
-		return "CENTER_AUTH_FAILED"
 	case http.StatusRequestTimeout, http.StatusGatewayTimeout:
 		return "CENTER_TIMEOUT"
-	case http.StatusNotFound:
-		return "PACKAGE_UNPUBLISHED"
 	case http.StatusServiceUnavailable:
 		return "CENTER_UNAVAILABLE"
 	default:
+		if status >= http.StatusInternalServerError {
+			return "CENTER_UNAVAILABLE"
+		}
 		return "PACKAGE_RESOLVE_FAILED"
 	}
 }

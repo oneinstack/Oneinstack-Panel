@@ -179,6 +179,9 @@ func NewWithInstanceID(centerConfig config.ScriptCenter, db *gorm.DB, instanceID
 
 func (m *Manager) Sync(ctx context.Context) (Status, error) {
 	if !m.config.Enabled {
+		if err := m.EnsureBundledCatalog(ctx); err != nil {
+			return Status{}, err
+		}
 		return m.Status()
 	}
 	state, _ := m.loadState()
@@ -191,7 +194,7 @@ func (m *Manager) Sync(ctx context.Context) (Status, error) {
 	if err != nil {
 		return m.failSync(err)
 	}
-	if state.Revision != "" && state.Channel == m.config.Channel {
+	if state.Mode == "center" && state.Revision != "" && state.Channel == m.config.Channel {
 		request.Header.Set("If-None-Match", `"`+state.Revision+`"`)
 	}
 	if m.instanceID != "" {
@@ -258,7 +261,7 @@ func (m *Manager) Sync(ctx context.Context) (Status, error) {
 		}
 		packageVersions := m.resolvePackageVersions(ctx, document)
 		publishedPackageVersions := m.resolvePublishedPackageVersions(ctx, document)
-		if err := m.apply(document, packageVersions, publishedPackageVersions); err != nil {
+		if err := m.apply(document, packageVersions, publishedPackageVersions, "center"); err != nil {
 			return m.failSync(fmt.Errorf("apply Center software catalog: %w", err))
 		}
 		return m.Status()
@@ -304,15 +307,22 @@ func (m *Manager) Status() (Status, error) {
 			time.Duration(m.config.CatalogStaleAfterHours) * time.Hour,
 		))
 	}
+	if state.Mode == "bundled" {
+		status.Stale = false
+	}
 	if !m.config.Enabled {
-		if state.Revision != "" {
+		if state.Mode == "bundled" {
+			status.Mode = "bundled"
+		} else if state.Revision != "" {
 			status.Mode = "center-cache-disabled"
 		} else {
 			status.Mode = "local"
 		}
 		return status, nil
 	}
-	if state.Revision == "" {
+	if state.Mode == "bundled" {
+		status.Mode = "bundled"
+	} else if state.Revision == "" {
 		status.Mode = "local-fallback"
 		status.Stale = true
 	} else if state.LastError != "" || status.Stale {
@@ -321,7 +331,7 @@ func (m *Manager) Status() (Status, error) {
 	return status, nil
 }
 
-func (m *Manager) apply(document Document, packageVersions, publishedPackageVersions map[string]string) error {
+func (m *Manager) apply(document Document, packageVersions, publishedPackageVersions map[string]string, mode string) error {
 	now := m.now().UTC()
 	productCount := 0
 	versionCount := 0
@@ -360,6 +370,15 @@ func (m *Manager) apply(document Document, packageVersions, publishedPackageVers
 			if len(applicableVersions) == 0 {
 				continue
 			}
+			if mode == "bundled" && packageVersions[packageVersionKey(product.Component, recommendedVersion, m.config.Channel)] == "" {
+				recommendedVersion = ""
+				for _, version := range applicableVersions {
+					if packageVersions[packageVersionKey(product.Component, version.Version, version.Channel)] != "" &&
+						(recommendedVersion == "" || scriptregistry.ComparePackageVersions(version.Version, recommendedVersion) > 0) {
+						recommendedVersion = version.Version
+					}
+				}
+			}
 			productCount++
 			productHasInstallableVersion := false
 			parameters, err := json.Marshal(filterServerOwnedParameters(product.Parameters))
@@ -393,12 +412,12 @@ func (m *Manager) apply(document Document, packageVersions, publishedPackageVers
 					"service_name":           strings.TrimSpace(product.ServiceName),
 					"runtime_group":          strings.TrimSpace(product.RuntimeGroup),
 					"params":                 string(parameters),
-					"resource":               "center",
+					"resource":               mode,
 					"catalog_managed":        true,
 					"catalog_channel":        version.Channel,
 					"catalog_visible":        product.Visible && version.Enabled,
-					"installable":            product.Installable && version.Enabled,
-					"recommended":            version.Recommended,
+					"installable":            product.Installable && version.Enabled && (mode != "bundled" || packageAvailable),
+					"recommended":            version.Version == recommendedVersion,
 					"version_line":           version.Line,
 					"allow_custom_version":   version.AllowCustomVersion,
 					"catalog_order":          product.Order,
@@ -461,7 +480,7 @@ func (m *Manager) apply(document Document, packageVersions, publishedPackageVers
 		}
 		state := models.SoftwareCatalogState{
 			ID:                      1,
-			Mode:                    "center",
+			Mode:                    mode,
 			Channel:                 m.config.Channel,
 			Revision:                document.Revision,
 			KeyID:                   document.KeyID,

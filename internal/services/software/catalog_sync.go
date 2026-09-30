@@ -70,6 +70,9 @@ func StartCatalogSync() {
 		log.Printf("初始化 Center 软件目录失败: %v", err)
 		return
 	}
+	if err := manager.EnsureBundledCatalog(context.Background()); err != nil {
+		log.Printf("加载 Panel 内置生产组件目录失败: %v", err)
+	}
 	if !app.ONE_CONFIG.ScriptCenter.Enabled {
 		return
 	}

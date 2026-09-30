@@ -5,11 +5,13 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"oneinstack/app"
 	"oneinstack/config"
 	"oneinstack/internal/models"
 	"oneinstack/internal/services/script"
+	"oneinstack/internal/services/scriptregistry"
 	"oneinstack/router/input"
 )
 
@@ -34,6 +36,54 @@ func TestSetScriptParamsMapsGenericCatalogDatabasePassword(t *testing.T) {
 	}
 	if info.Params["SOFTWARE_VERSION"] != params.Version {
 		t.Fatalf("SOFTWARE_VERSION = %q", info.Params["SOFTWARE_VERSION"])
+	}
+}
+
+func TestBundledInstallRequiresTrustedCatalogSnapshot(t *testing.T) {
+	if err := app.InitDB(filepath.Join(t.TempDir(), "bundled-catalog.db")); err != nil {
+		t.Fatal(err)
+	}
+	row := models.Software{
+		Key: "docker", Version: "29.8.0", Component: "docker",
+		CatalogChannel: "stable", CatalogRevision: "signed-revision",
+		CatalogManaged: true, CatalogVisible: true, Installable: true,
+		LatestPackageVersion: "1.0.13",
+	}
+	if err := app.DB().Create(&row).Error; err != nil {
+		t.Fatal(err)
+	}
+	pin := scriptregistry.PackagePin{Component: "docker", SoftwareVersion: "29.8.0", Channel: "stable"}
+	params := &input.InstallParams{Key: "docker", Version: "29.8.0"}
+	if err := validateBundledCatalogIdentity(params, pin); err == nil || !strings.Contains(err.Error(), "CATALOG_STALE") {
+		t.Fatalf("first-sync fallback was accepted: %v", err)
+	}
+	now := time.Now().UTC()
+	if err := app.DB().Save(&models.SoftwareCatalogState{
+		ID: 1, Mode: "center", Revision: "signed-revision", LastSyncedAt: &now,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := validateBundledCatalogIdentity(params, pin); err != nil {
+		t.Fatalf("saved catalog identity was rejected: %v", err)
+	}
+	pin.SoftwareVersion = "29.9.0"
+	if err := validateBundledCatalogIdentity(params, pin); err == nil || !strings.Contains(err.Error(), "PACKAGE_UNPUBLISHED") {
+		t.Fatalf("unpublished version was accepted: %v", err)
+	}
+	firewalld := models.Software{
+		Key: "firewalld", Version: "1.0.0", Component: "firewalld",
+		CatalogChannel: "stable", CatalogRevision: "signed-revision",
+		CatalogManaged: true, CatalogVisible: true, Installable: true,
+		LatestPackageVersion: "1.0.11",
+	}
+	if err := app.DB().Create(&firewalld).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := validateBundledCatalogIdentity(
+		&input.InstallParams{Key: "firewalld", Version: "2.1.1"},
+		scriptregistry.PackagePin{Component: "firewalld", SoftwareVersion: "2.1.1", Channel: "stable"},
+	); err != nil {
+		t.Fatalf("host-versioned firewalld was rejected: %v", err)
 	}
 }
 

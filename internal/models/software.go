@@ -103,9 +103,8 @@ type Softwares struct {
 	RecommendedVersion string `gorm:"column:recommended_version"`
 }
 
-// SoftwareCatalogState records the last verified Center catalog snapshot.
-// The software rows remain the offline cache; this record only describes
-// provenance, freshness, and the last synchronization error.
+// SoftwareCatalogState records the active signed Center or bundled release
+// catalog. Its mode keeps local release provenance distinct from Center trust.
 type SoftwareCatalogState struct {
 	ID                      uint       `json:"-" gorm:"primaryKey"`
 	Mode                    string     `json:"mode" gorm:"size:32;not null"`
