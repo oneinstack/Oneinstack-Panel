@@ -1178,7 +1178,46 @@ func persistManagedConfiguration(params *input.InstallParams, values map[string]
 	if strings.EqualFold(strings.TrimSpace(params.Key), "adminer") {
 		return persistManagedAdminerConfiguration(values)
 	}
+	if strings.EqualFold(strings.TrimSpace(params.Key), "webdav") {
+		return persistManagedWebDAVConfiguration(values)
+	}
 	return persistManagedMySQLConfiguration(params, values)
+}
+
+func persistManagedWebDAVConfiguration(values map[string]string) error {
+	port := strings.TrimSpace(values["webdavPort"])
+	if port == "" {
+		return errors.New("WebDAV configuration is missing the listener port")
+	}
+	var row models.Software
+	if err := app.DB().Where("installed = ?", true).
+		Where("(`key` = ? OR component = ?)", "webdav", "webdav").
+		Order("install_time DESC, id DESC").First(&row).Error; err != nil {
+		return err
+	}
+	runtime := make(map[string]string)
+	if strings.TrimSpace(row.RuntimeParamsJSON) != "" {
+		if err := json.Unmarshal([]byte(row.RuntimeParamsJSON), &runtime); err != nil {
+			return fmt.Errorf("decode WebDAV runtime parameters: %w", err)
+		}
+	}
+	if runtime == nil {
+		runtime = make(map[string]string)
+	}
+	for key := range runtime {
+		if normalized := compactInstallParameterName(key); normalized == "webdavport" || normalized == "port" {
+			runtime[key] = port
+		}
+	}
+	runtime["webdav-port"] = port
+	encoded, err := json.Marshal(runtime)
+	if err != nil {
+		return fmt.Errorf("encode WebDAV runtime parameters: %w", err)
+	}
+	return app.DB().Model(&row).Updates(map[string]interface{}{
+		"http_port":      port,
+		"runtime_params": string(encoded),
+	}).Error
 }
 
 func persistManagedAdminerConfiguration(values map[string]string) error {

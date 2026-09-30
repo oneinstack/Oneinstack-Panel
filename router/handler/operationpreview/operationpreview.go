@@ -10,6 +10,8 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -28,6 +30,7 @@ import (
 	safeservice "oneinstack/internal/services/safe"
 	"oneinstack/internal/services/scriptregistry"
 	softwareService "oneinstack/internal/services/software"
+	"oneinstack/internal/services/softwaretask"
 	systemservice "oneinstack/internal/services/system"
 	"oneinstack/internal/services/website"
 	"oneinstack/router/handler/software"
@@ -468,6 +471,24 @@ func handleSoftwareInstallPreviewError(c *gin.Context, err error, payload json.R
 	if err == nil {
 		return false
 	}
+	var exclusivityErr *softwaretask.InstallExclusivityError
+	if errors.As(err, &exclusivityErr) {
+		labels := map[string]string{
+			"nginx": "Nginx", "tengine": "Tengine", "openresty": "OpenResty",
+			"caddy": "Caddy", "apache": "Apache",
+		}
+		component, conflict := labels[exclusivityErr.Component], labels[exclusivityErr.InstalledComponent]
+		if component == "" || conflict == "" {
+			core.HandleError(c, core.NewError(core.ErrConflict, "Web 服务器安装存在互斥冲突，请刷新软件状态后重试"))
+			return true
+		}
+		message := fmt.Sprintf("不能安装 %s，因为已安装 %s；请先卸载冲突组件后重试。", component, conflict)
+		appErr := core.NewErrorWithDetail(core.ErrConflict, message, message)
+		appErr.PublicDetail = true
+		appErr.StableCode = "SOFTWARE_INSTALL_CONFLICT"
+		core.HandleError(c, appErr)
+		return true
+	}
 	if handleSoftwareInstallParameterError(c, err) {
 		return true
 	}
@@ -861,6 +882,9 @@ func normalizeSoftwareInstallPreviewPayload(ctx context.Context, payload json.Ra
 		return nil, err
 	}
 	softwareService.NormalizeInstallParams(&validationRequest)
+	if err := validateSoftwareInstallExclusivity(validationRequest.Key); err != nil {
+		return nil, err
+	}
 	_, pin, err := softwareService.PreviewInstallationPackage(ctx, &validationRequest)
 	if err != nil {
 		return nil, err
@@ -871,6 +895,10 @@ func normalizeSoftwareInstallPreviewPayload(ctx context.Context, payload json.Ra
 		return nil, fmt.Errorf("固定软件安装包: %w", err)
 	}
 	return encoded, nil
+}
+
+func validateSoftwareInstallExclusivity(key string) error {
+	return softwaretask.ValidateWebServerInstallExclusivity(app.DB(), key)
 }
 
 func normalizeSoftwareLifecyclePreviewPayload(ctx context.Context, operation string, payload json.RawMessage) (json.RawMessage, error) {
@@ -925,6 +953,24 @@ func softwareInstallExplicitParameters(request input.InstallParams) map[string]b
 		result[key] = true
 	}
 	return result
+}
+
+func firewalldPreviewMayRestartService(ctx context.Context, migrate bool) bool {
+	if migrate {
+		return true
+	}
+	output, err := exec.CommandContext(ctx, "systemctl", "is-active", "firewalld.service").Output()
+	if err == nil {
+		return true
+	}
+	// Only a definite stopped state removes the restart warning. Missing
+	// systemd or an inconclusive probe keeps the conservative warning.
+	switch strings.TrimSpace(string(output)) {
+	case "inactive", "failed":
+		return false
+	default:
+		return true
+	}
 }
 
 func cloneStringMap(values map[string]string) map[string]string {
@@ -1598,6 +1644,82 @@ func softwarePreviewRuntimeFileChanges(runtimeValues map[string]string, uninstal
 	return files
 }
 
+// Tomcat's managed paths are fixed by its component scripts rather than
+// exposed as editable installation parameters.
+func tomcatInstallPreviewFiles(stateRoot string) []previewservice.FileChange {
+	return []previewservice.FileChange{
+		{Path: "/usr/local/tomcat", Action: "replace", ChangeSummary: "替换 Tomcat 程序目录；旧目录移至组件回滚快照"},
+		{Path: "/data/tomcat/conf/server.xml", Action: "update", ChangeSummary: "更新受管 Connector 配置"},
+		{Path: "/data/tomcat/bin/setenv.sh", Action: "update", ChangeSummary: "更新受管 JVM 启动参数"},
+		{Path: "/etc/systemd/system/tomcat.service", Action: "update", ChangeSummary: "更新并重启 Tomcat 服务"},
+		{Path: filepath.Join(stateRoot, "tomcat", "rollback"), Action: "replace", ChangeSummary: "保存本次升级的程序、配置及服务回滚快照；下次安装或升级会覆盖"},
+	}
+}
+
+func tomcatPreviewStateRoot() string {
+	root := strings.TrimSpace(os.Getenv("ONEINSTACK_COMPONENT_STATE"))
+	if root == "" {
+		root = "/var/lib/oneinstack/components"
+	}
+	return filepath.Clean(root)
+}
+
+func tomcatMajorVersion(version string) string {
+	major, _, ok := strings.Cut(strings.TrimSpace(version), ".")
+	if !ok {
+		return ""
+	}
+	if _, err := strconv.Atoi(major); err != nil {
+		return ""
+	}
+	return major
+}
+
+func applyTomcatInstallPreview(ctx context.Context, document *previewservice.Document, requestedVersion string) error {
+	stateRoot := tomcatPreviewStateRoot()
+	if app.DB() == nil {
+		return errors.New("software database is unavailable")
+	}
+	var installed models.Software
+	err := app.DB().Where("installed = ? AND (`key` = ? OR component = ?)", true, "tomcat", "tomcat").
+		Order("install_time DESC, id DESC").First(&installed).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read installed Tomcat state: %w", err)
+	}
+	document.Files = tomcatInstallPreviewFiles(stateRoot)
+	previousVersion := strings.TrimSpace(installed.InstallVersion)
+	if previousVersion == "" {
+		previousVersion = strings.TrimSpace(installed.Version)
+	}
+	verifiedVersion := ""
+	if previousVersion != "" {
+		if configuration, probeErr := softwareService.NewInstaller().InspectServiceConfiguration(ctx, "tomcat", previousVersion); probeErr == nil && configuration.Runtime != nil {
+			verifiedVersion = configuration.Runtime.Version
+		}
+	}
+	majorFrom, majorTo := tomcatMajorVersion(verifiedVersion), tomcatMajorVersion(requestedVersion)
+	if majorFrom != "" && majorTo != "" && majorFrom != majorTo {
+		document.Review.Reason = fmt.Sprintf("Tomcat %s → %s 为跨大版本升级；服务启动成功不代表应用兼容，请先备份应用并验证业务功能", verifiedVersion, requestedVersion)
+	} else if verifiedVersion == "" {
+		document.Review.Reason = "无法回读当前 Tomcat 运行版本；升级前请核对实际版本、备份应用并验证兼容性"
+		if recordedMajor := tomcatMajorVersion(previousVersion); recordedMajor != "" && majorTo != "" && recordedMajor != majorTo {
+			document.Review.Reason = fmt.Sprintf("安装记录显示 Tomcat %s → %s 可能跨大版本，但未能回读实际运行版本；请核对版本、备份应用并验证兼容性", previousVersion, requestedVersion)
+		}
+	}
+	document.Prechecks = append(document.Prechecks, previewservice.Precheck{
+		Code: "tomcat_app_compatibility", Name: "Web 应用兼容性", Status: "deferred",
+		Message: "Panel 无法验证应用兼容性；Tomcat 9 及更早版本到 10+ 需迁移 javax.* 到 jakarta.*，Tomcat 11 需 Java 17，并检查新版配置与应用功能",
+	})
+	rollbackDir := filepath.Join(stateRoot, "tomcat", "rollback")
+	document.Rollback = previewservice.Rollback{Supported: true,
+		Summary: fmt.Sprintf("失败时脚本尝试从 %s 恢复；旧程序：%s；配置快照：%s。/data/tomcat/webapps 不在此快照中，请升级前单独备份应用与数据；下次安装或升级会覆盖快照", rollbackDir, filepath.Join(rollbackDir, "previous-install"), filepath.Join(rollbackDir, "previous-config")),
+	}
+	return nil
+}
+
 func previewSystemdUnit(service string) string {
 	service = strings.TrimSpace(service)
 	if service == "" || strings.Contains(service, ".") {
@@ -1910,6 +2032,9 @@ func buildDocument(ctx context.Context, operation string, payload json.RawMessag
 			return previewservice.Document{}, "", err
 		}
 		softwareService.NormalizeInstallParams(&value)
+		if err := validateSoftwareInstallExclusivity(value.Key); err != nil {
+			return previewservice.Document{}, "", err
+		}
 		effectiveValues, packagePin, err := softwareService.PreviewInstallationPackage(ctx, &value)
 		if err != nil {
 			return previewservice.Document{}, "", err
@@ -1917,6 +2042,7 @@ func buildDocument(ctx context.Context, operation string, payload json.RawMessag
 		document.EffectiveValues = make([]previewservice.EffectiveValue, 0, len(effectiveValues))
 		resetExistingRootPassword := false
 		resetExistingRootPasswordConfirmed := false
+		migrateExternalFirewall := false
 		for _, value := range effectiveValues {
 			document.EffectiveValues = append(document.EffectiveValues, previewservice.EffectiveValue{
 				Key:       value.Key,
@@ -1929,6 +2055,8 @@ func buildDocument(ctx context.Context, operation string, payload json.RawMessag
 				resetExistingRootPassword = strings.EqualFold(value.Value, "true")
 			case "reset-existing-root-password-confirm":
 				resetExistingRootPasswordConfirmed = strings.EqualFold(value.Value, "true")
+			case "migrate-external-firewall":
+				migrateExternalFirewall = strings.EqualFold(value.Value, "true")
 			}
 		}
 		for key, value := range map[string]string{
@@ -1961,7 +2089,15 @@ func buildDocument(ctx context.Context, operation string, payload json.RawMessag
 		document.Files = append(document.Files, softwarePreviewRuntimeFileChanges(installRuntimeValues, false, "preserve")...)
 		document.Actions = []previewservice.Action{{Type: "component", Name: "执行受控软件安装动作", DisplayCommand: "由组件安装器按软件 key 和版本执行"}, {Type: "service", Name: "安装后验证服务状态", Service: "由组件探测器确定"}}
 		document.Impact = previewservice.Impact{WriteFiles: true, ModifyDatabase: true, RestartService: true}
+		if strings.EqualFold(value.Key, "firewalld") {
+			document.Impact.RestartService = firewalldPreviewMayRestartService(ctx, migrateExternalFirewall)
+		}
 		document.Rollback = previewservice.Rollback{Supported: true, Summary: "任务失败时由软件任务执行器按组件策略回滚或保留失败现场"}
+		if strings.EqualFold(value.Key, "tomcat") {
+			if err := applyTomcatInstallPreview(ctx, &document, value.Version); err != nil {
+				return previewservice.Document{}, "", err
+			}
+		}
 		if resetExistingRootPassword && resetExistingRootPasswordConfirmed {
 			document.Actions = append(document.Actions, previewservice.Action{
 				Type: "component", Name: "通过隔离本地实例重置已有 MySQL root 密码",

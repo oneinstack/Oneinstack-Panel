@@ -943,6 +943,7 @@ var englishErrorTexts = map[string]string{
 	"port 与端口参数不一致，请保持两者一致后重试":                    "port and the port parameter do not match. Keep both values identical and retry.",
 	"未填写软件标识 key，请提供要安装的软件后重试":                    "The software identifier key is empty. Provide the software to install and retry.",
 	"未填写软件版本 version，请提供要安装的版本后重试":                "The software version is empty. Provide the version to install and retry.",
+	"Web 服务器安装存在互斥冲突，请刷新软件状态后重试":                  "The Web server installation conflicts with an installed component. Refresh the software status and retry.",
 	"未填写监听端口 port，请提供端口后重试":                       "The listening port is empty. Provide a port and retry.",
 	"安装参数未填写，请补充必填参数后重试":                          "A required installation parameter is empty. Provide it and retry.",
 	"PHP 版本必须是 8.x.y 格式，并且属于 Center 已发布的版本线":      "The PHP version must use the 8.x.y format and belong to a version line published by Center.",

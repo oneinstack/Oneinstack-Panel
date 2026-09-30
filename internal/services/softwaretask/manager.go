@@ -95,6 +95,23 @@ type RuntimeGroupOwner struct {
 	ServiceName string
 }
 
+// InstallExclusivityError identifies an installed component that blocks a
+// mutually exclusive installation. Preview and task submission share the
+// same database check; the task path must still recheck after preview.
+type InstallExclusivityError struct {
+	Component          string
+	InstalledComponent string
+	InstalledName      string
+}
+
+func (e *InstallExclusivityError) Error() string {
+	conflict := strings.TrimSpace(e.InstalledName)
+	if conflict == "" {
+		conflict = e.InstalledComponent
+	}
+	return fmt.Sprintf("cannot install %s while %s is installed; uninstall the conflicting component first", e.Component, conflict)
+}
+
 type queuedTask struct {
 	taskID  string
 	request InstallRequest
@@ -1485,15 +1502,30 @@ func (m *Manager) validateExclusiveWebServerInstall(component string) error {
 	if err != nil {
 		return fmt.Errorf("check mutually exclusive web-server software: %w", err)
 	}
-	conflict := strings.TrimSpace(installed.Name)
-	if conflict == "" {
-		conflict = strings.TrimSpace(installed.Component)
+	return &InstallExclusivityError{
+		Component:          component,
+		InstalledComponent: strings.ToLower(strings.TrimSpace(installed.Component)),
+		InstalledName:      installed.Name,
 	}
-	return fmt.Errorf(
-		"cannot install %s while %s is installed; uninstall the conflicting component first",
-		component,
-		conflict,
-	)
+}
+
+// ValidateWebServerInstallExclusivity exposes the task submission rule to the
+// read-only install preview without starting the task manager or resolving a package.
+func ValidateWebServerInstallExclusivity(db *gorm.DB, key string) error {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "webserver", "nginx", "tengine", "openresty", "caddy", "apache":
+	default:
+		return nil
+	}
+	if db == nil {
+		return errors.New("software task database is not initialized")
+	}
+	m := &Manager{db: db}
+	component, err := m.componentForKey(key)
+	if err != nil {
+		return err
+	}
+	return m.validateExclusiveWebServerInstall(component)
 }
 
 func (m *Manager) runtimeGroupForComponent(component string) string {
