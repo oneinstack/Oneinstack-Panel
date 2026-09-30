@@ -374,6 +374,15 @@ func DispatchWebsite(c *gin.Context) {
 		core.HandleError(c, core.NewError(core.ErrNotFound, "网站不存在"))
 		return
 	}
+	var preflightErr *cluster.WebsiteDispatchPreflightError
+	if errors.As(err, &preflightErr) {
+		detail := preflightErr.Localized(c.GetString("locale"))
+		responseErr := core.NewErrorWithDetail(core.ErrConflict, detail, detail)
+		responseErr.StableCode = "WEBSITE_DISPATCH_INCOMPATIBLE"
+		responseErr.Field = "nodeIds"
+		core.HandleErrorWithStatus(c, http.StatusConflict, responseErr)
+		return
+	}
 	if err != nil {
 		core.HandleError(c, core.NewError(core.ErrInvalidParameter, err.Error()))
 		return

@@ -96,6 +96,43 @@ type renderedWebsiteSettings struct {
 	ErrorLogEnabled   bool
 }
 
+// ClusterSettingsIncompatibility checks the same generated directives used by
+// website publishing before a cross-node sync task is queued. It returns
+// setting identifiers rather than directive text so errors cannot disclose
+// site-specific configuration values.
+func ClusterSettingsIncompatibility(site models.Website, settings WebsiteSettings, targetEngine string) ([]string, error) {
+	record, err := settings.toModel(site.ID)
+	if err != nil {
+		return nil, err
+	}
+	rendered, err := renderWebsiteSettings(&site, site.RootDir, record)
+	if err != nil {
+		return nil, err
+	}
+	_, err = renderWebsiteEngineConfig(targetEngine, site.Type, siteTemplateData{
+		RewriteDirectives: rendered.RewriteDirectives,
+		ServerDirectives:  rendered.ServerDirectives,
+		ExtraLocations:    rendered.ExtraLocations,
+	})
+	if err == nil {
+		return nil, nil
+	}
+	if !strings.Contains(err.Error(), "UNSUPPORTED_ENGINE_DIRECTIVE") {
+		return nil, err
+	}
+	features := make([]string, 0, 3)
+	if strings.TrimSpace(rendered.RewriteDirectives) != "" {
+		features = append(features, "rewrite_rules")
+	}
+	if strings.TrimSpace(rendered.ServerDirectives) != "" {
+		features = append(features, "server_directives")
+	}
+	if strings.TrimSpace(rendered.ExtraLocations) != "" {
+		features = append(features, "extra_locations")
+	}
+	return features, nil
+}
+
 func defaultWebsiteSettings() WebsiteSettings {
 	return WebsiteSettings{
 		DefaultDocuments:  "index.php index.html index.htm",

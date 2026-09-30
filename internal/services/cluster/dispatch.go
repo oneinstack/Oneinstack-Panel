@@ -48,6 +48,23 @@ type WebsiteContentSyncPayload struct {
 	SHA256        string                          `json:"sha256"`
 }
 
+type WebsiteDispatchPreflightError struct {
+	NodeName string
+	ReasonZH string
+	ReasonEN string
+}
+
+func (err *WebsiteDispatchPreflightError) Error() string {
+	return fmt.Sprintf("节点 %s：%s", err.NodeName, err.ReasonZH)
+}
+
+func (err *WebsiteDispatchPreflightError) Localized(locale string) string {
+	if strings.EqualFold(locale, "en-US") {
+		return fmt.Sprintf("Node %s: %s", err.NodeName, err.ReasonEN)
+	}
+	return err.Error()
+}
+
 func (m *Manager) DispatchWebsite(input WebsiteDispatchInput) (WebsiteDispatchResult, error) {
 	if input.WebsiteID <= 0 {
 		return WebsiteDispatchResult{}, errors.New("website id is required")
@@ -89,6 +106,11 @@ func (m *Manager) DispatchWebsite(input WebsiteDispatchInput) (WebsiteDispatchRe
 	if err != nil {
 		return WebsiteDispatchResult{}, err
 	}
+	for _, node := range selected {
+		if err := preflightWebsiteDispatchNode(node, site, settingsDocument.Settings); err != nil {
+			return WebsiteDispatchResult{}, err
+		}
+	}
 	payload, _ := json.Marshal(WebsiteSyncPayload{Website: site, Settings: &settingsDocument.Settings})
 	contentPayload := []byte(nil)
 	if input.IncludeContent {
@@ -123,6 +145,58 @@ func (m *Manager) DispatchWebsite(input WebsiteDispatchInput) (WebsiteDispatchRe
 		}
 	}
 	return result, nil
+}
+
+func preflightWebsiteDispatchNode(node models.ClusterNode, site models.Website, settings websiteService.WebsiteSettings) error {
+	reject := func(zh, en string) error {
+		return &WebsiteDispatchPreflightError{NodeName: node.Name, ReasonZH: zh, ReasonEN: en}
+	}
+	if node.ServiceActionsReportedAt == nil {
+		return reject("尚未上报 Web Server 状态，请升级节点 Agent 或等待心跳后重试", "Web server status has not been reported; upgrade the node Agent or wait for a heartbeat")
+	}
+	var engines []string
+	for _, service := range node.ServiceActions {
+		switch strings.ToLower(strings.TrimSpace(service.Component)) {
+		case "nginx", "openresty", "tengine", "apache", "caddy":
+			if strings.EqualFold(strings.TrimSpace(service.ActiveState), "active") {
+				engines = append(engines, strings.ToLower(strings.TrimSpace(service.Component)))
+			}
+		}
+	}
+	if len(engines) == 0 {
+		return reject("未探测到运行中的受管 Web Server，请检查节点的服务操作状态", "No running managed Web server was detected; check the node's service actions")
+	}
+	if len(engines) > 1 {
+		return reject("探测到多个运行中的 Web Server，无法确定网站下发目标", "Multiple running Web servers were detected; the website target is ambiguous")
+	}
+	features, err := websiteService.ClusterSettingsIncompatibility(site, settings, engines[0])
+	if err != nil {
+		return err
+	}
+	if len(features) == 0 {
+		if engines[0] == "apache" {
+			// SyncClusterWebsite creates a missing site before applying its
+			// transferred settings. That create uses Nginx-only default security
+			// headers, so an Apache target is unsafe even when the transferred
+			// settings themselves contain no unsupported directives.
+			return reject(
+				"当前网站下发流程在创建网站时会生成 Apache 无法渲染的默认安全响应头，请先完善 Apache 网站创建能力",
+				"The current website sync creates sites with default security headers that Apache cannot render; Apache website creation must be supported before dispatch",
+			)
+		}
+		return nil
+	}
+	zhNames := map[string]string{"rewrite_rules": "重写规则", "server_directives": "访问控制、限速或安全响应头", "extra_locations": "子目录绑定、重定向、反向代理等 location 规则"}
+	enNames := map[string]string{"rewrite_rules": "rewrite rules", "server_directives": "access control, rate limits or security headers", "extra_locations": "directory bindings, redirects or proxy location rules"}
+	zh, en := make([]string, 0, len(features)), make([]string, 0, len(features))
+	for _, feature := range features {
+		zh = append(zh, zhNames[feature])
+		en = append(en, enNames[feature])
+	}
+	return reject(
+		fmt.Sprintf("目标 Web Server 为 %s；源网站设置包含无法渲染的 Nginx 指令：%s。请调整源网站设置或选择兼容节点", engines[0], strings.Join(zh, "、")),
+		fmt.Sprintf("Target Web server is %s; source website settings contain Nginx directives it cannot render: %s. Adjust the source settings or select a compatible node", engines[0], strings.Join(en, ", ")),
+	)
 }
 
 const maxWebsiteSyncBytes = 64 << 20
