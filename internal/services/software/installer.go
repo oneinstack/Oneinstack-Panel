@@ -98,6 +98,9 @@ func (installer *Installer) install(ctx context.Context, params *input.InstallPa
 
 	// 设置脚本参数
 	installer.setScriptParams(scriptInfo, params)
+	if err := preparePhpMyAdminWebRoute(ctx, scriptInfo); err != nil {
+		return "", err
+	}
 
 	// 执行脚本
 	return installer.scriptManager.ExecuteScript(scriptInfo, params, async)
@@ -140,6 +143,9 @@ func (installer *Installer) InstallTask(
 	}
 	reportPackageResolution(observer, scriptInfo)
 	installer.setScriptParams(scriptInfo, params)
+	if err := preparePhpMyAdminWebRoute(ctx, scriptInfo); err != nil {
+		return "", err
+	}
 	return installer.scriptManager.ExecuteScriptTask(ctx, scriptInfo, params, logPath, observer)
 }
 

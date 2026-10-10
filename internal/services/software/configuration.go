@@ -815,6 +815,19 @@ func (installer *Installer) inspectServiceConfiguration(
 	if err != nil {
 		return ComponentConfiguration{}, err
 	}
+	if definition.Component == "nginx" || definition.Component == "tengine" ||
+		definition.Component == "openresty" || definition.Component == "apache" ||
+		definition.Component == "caddy" {
+		// Package probes may report an install-time WEB_ROOT. Configuration
+		// previews and history must use the live managed default site instead.
+		root, err := managedDefaultDocumentRoot(definition.Component)
+		if err != nil {
+			return ComponentConfiguration{}, fmt.Errorf("read managed %s default site root: %w", definition.Component, err)
+		}
+		webRoot := normalizeNginxWebRoot(root)
+		configuration.Values["webRoot"] = webRoot
+		scriptInfo.Params["WEB_ROOT"] = webRoot
+	}
 	configuration.PackageSource = componentPackage.Source
 	configuration.InstallParameters = componentInstallParameters(definition.Component, componentPackage.Manifest.Parameters, scriptInfo.Params)
 	if configuration.Connection == nil && definition.Component == "redis" {
@@ -903,7 +916,8 @@ func serverOwnedInstallParameterName(name string) bool {
 	case "ONEINSTACK_INSTALL_MODE", "ONEINSTACK_OFFLINE_PACKAGE_PATH", "ONEINSTACK_COMPONENT_STATE",
 		"ONEINSTACK_OFFLINE_BUNDLE_ID", "ONEINSTACK_OFFLINE_BUNDLE_DIGEST",
 		"INSTALL_MODE", "OFFLINE_PACKAGE_ID", "OFFLINE_PACKAGE_PATH", "COMPONENT_STATE_DIR",
-		"UNINSTALL_DATA_POLICY", "UNINSTALL_CONFIRM_DATA_DELETION", "DATA_POLICY", "DELETE_DATA_CONFIRM", "WEB_VHOST_ROOT":
+		"UNINSTALL_DATA_POLICY", "UNINSTALL_CONFIRM_DATA_DELETION", "DATA_POLICY", "DELETE_DATA_CONFIRM", "WEB_VHOST_ROOT",
+		"ONEINSTACK_WEB_SERVER_KIND", "ONEINSTACK_WEB_DOCUMENT_ROOT":
 		return true
 	default:
 		return false
@@ -1151,6 +1165,11 @@ func persistManagedConfiguration(params *input.InstallParams, values map[string]
 	if params == nil || app.DB() == nil {
 		return nil
 	}
+	if strings.EqualFold(strings.TrimSpace(params.Key), "webserver") ||
+		strings.EqualFold(strings.TrimSpace(params.Key), "nginx") ||
+		strings.EqualFold(strings.TrimSpace(params.Key), "tengine") {
+		return persistManagedNginxFamilyConfiguration(params, values)
+	}
 	if strings.EqualFold(strings.TrimSpace(params.Key), "php") {
 		return persistManagedPHPConfiguration(params, values)
 	}
@@ -1182,6 +1201,66 @@ func persistManagedConfiguration(params *input.InstallParams, values map[string]
 		return persistManagedWebDAVConfiguration(values)
 	}
 	return persistManagedMySQLConfiguration(params, values)
+}
+
+func persistManagedNginxFamilyConfiguration(params *input.InstallParams, values map[string]string) error {
+	component, portKey, parameterPortKey := "nginx", "nginxPort", "nginx-port"
+	if strings.EqualFold(strings.TrimSpace(params.Key), "tengine") {
+		component, portKey, parameterPortKey = "tengine", "tenginePort", "tengine-port"
+	}
+	var row models.Software
+	if err := app.DB().Where("installed = ? AND (`key` = ? OR component = ?)", true, params.Key, component).
+		Order("install_time DESC, id DESC").First(&row).Error; err != nil {
+		return err
+	}
+	runtime := make(map[string]string)
+	if strings.TrimSpace(row.RuntimeParamsJSON) != "" {
+		if err := json.Unmarshal([]byte(row.RuntimeParamsJSON), &runtime); err != nil {
+			return fmt.Errorf("decode %s runtime parameters: %w", component, err)
+		}
+	}
+	if runtime == nil {
+		runtime = make(map[string]string)
+	}
+	for valueKey, parameterKey := range map[string]string{
+		portKey:        parameterPortKey,
+		"phpFpmSocket": "php-fpm-socket",
+		"installDir":   "install-dir",
+		"webRoot":      "web-root",
+		"logDir":       "log-dir",
+		"runUser":      "run-user",
+		"runGroup":     "run-group",
+	} {
+		value := strings.TrimSpace(values[valueKey])
+		if value == "" {
+			continue
+		}
+		for key := range runtime {
+			compactKey := compactInstallParameterName(key)
+			compactParameterKey := compactInstallParameterName(parameterKey)
+			if compactKey == compactParameterKey || compactKey == component+compactParameterKey ||
+				(valueKey == portKey && compactKey == "port") {
+				delete(runtime, key)
+			}
+		}
+		runtime[parameterKey] = value
+	}
+	encoded, err := json.Marshal(runtime)
+	if err != nil {
+		return fmt.Errorf("encode %s runtime parameters: %w", component, err)
+	}
+	updates := map[string]interface{}{"runtime_params": string(encoded)}
+	if port := strings.TrimSpace(values[portKey]); port != "" {
+		updates["http_port"] = port
+	}
+	result := app.DB().Model(&models.Software{}).Where("id = ?", row.Id).Updates(updates)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("%s software runtime parameters were not updated", component)
+	}
+	return nil
 }
 
 func persistManagedWebDAVConfiguration(values map[string]string) error {

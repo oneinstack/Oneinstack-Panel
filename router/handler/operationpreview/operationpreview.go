@@ -550,11 +550,12 @@ func handleSoftwareInstallParameterError(c *gin.Context, err error) bool {
 	if !errors.As(err, &parameterErr) {
 		return false
 	}
-	message := parameterErr.InstallationMessage()
+	message := parameterErr.InstallationMessageForLocale(c.GetString("locale"))
 	if message == "" {
 		message = "安装参数无效，请检查字段类型、格式和取值范围后重试"
 	}
 	appErr := core.NewError(core.ErrInvalidParameter, message)
+	appErr.StableCode = parameterErr.PhpMyAdminWebRouteCode()
 	appErr.Field = strings.TrimSpace(parameterErr.Field)
 	core.HandleSimpleError(c, appErr)
 	return true

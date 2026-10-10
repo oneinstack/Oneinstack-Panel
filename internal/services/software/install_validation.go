@@ -106,6 +106,12 @@ func (e *InstallParameterError) InstallationMessage() string {
 		return message
 	case "Adminer 版本必须选择 Center 发布的精确版本 6.1.0":
 		return message
+	case "PHPMA_WEB_SERVER_NOT_FOUND":
+		return "未找到正在运行的受管 Web Server，请先安装并启动一个受支持的 Web Server"
+	case "PHPMA_WEB_SERVER_AMBIGUOUS_OR_UNMANAGED":
+		return "Web Server 状态不唯一或不是 OneinStack 受管服务，请先处理服务冲突"
+	case "PHPMA_DOCUMENT_ROOT_UNAVAILABLE":
+		return "无法确认 Web Server 默认站点的实际目录，请检查受管配置和目录是否存在"
 	case "Adminer publicPath must be one safe URL segment such as /adminer/":
 		return "Adminer 公开路径必须是单层安全 URL 路径，例如 /adminer/"
 	case "Adminer accessPolicy must be public, local, or allowlist":
@@ -190,6 +196,34 @@ func (e *InstallParameterError) InstallationMessage() string {
 		return fmt.Sprintf("安装参数 %s 无效，请检查字段类型、格式和取值范围后重试", field)
 	}
 	return "安装参数无效，请检查字段类型、格式和取值范围后重试"
+}
+
+// PhpMyAdminWebRouteCode identifies the server-owned route preflight failures
+// that callers can handle without exposing configuration paths.
+func (e *InstallParameterError) PhpMyAdminWebRouteCode() string {
+	if e == nil || e.Field != "web-server" {
+		return ""
+	}
+	switch e.Message {
+	case "PHPMA_WEB_SERVER_NOT_FOUND", "PHPMA_WEB_SERVER_AMBIGUOUS_OR_UNMANAGED", "PHPMA_DOCUMENT_ROOT_UNAVAILABLE":
+		return e.Message
+	default:
+		return ""
+	}
+}
+
+func (e *InstallParameterError) InstallationMessageForLocale(locale string) string {
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(locale)), "en") {
+		switch e.PhpMyAdminWebRouteCode() {
+		case "PHPMA_WEB_SERVER_NOT_FOUND":
+			return "No active managed Web Server was found. Install and start a supported Web Server first."
+		case "PHPMA_WEB_SERVER_AMBIGUOUS_OR_UNMANAGED":
+			return "The active Web Server is ambiguous or unmanaged. Resolve the service conflict first."
+		case "PHPMA_DOCUMENT_ROOT_UNAVAILABLE":
+			return "The managed default site's document root could not be confirmed. Check its configuration and directory."
+		}
+	}
+	return e.InstallationMessage()
 }
 
 func installPortUserMessage(message string) string {
@@ -341,6 +375,9 @@ func (installer *Installer) resolveInstallParams(ctx context.Context, params *in
 		return nil, err
 	}
 	installer.setScriptParams(scriptInfo, params)
+	if err := preparePhpMyAdminWebRoute(ctx, scriptInfo); err != nil {
+		return nil, err
+	}
 	if err := validateResolvedMySQLRootPasswordReset(params.Key, scriptInfo); err != nil {
 		return nil, err
 	}
