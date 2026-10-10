@@ -21,6 +21,30 @@ const (
 	defaultAgentTimeoutSeconds  = 10
 )
 
+// NormalizeControllerURL cleans up user-provided controller URLs by trimming
+// whitespace, trailing slashes, and the common misconfiguration of appending
+// "/v1". The agent endpoints live at /cluster/agent/* (without /v1 prefix),
+// so including /v1 in the controllerUrl causes 404 errors. Returns the
+// normalized URL and whether a /v1 suffix was stripped.
+//
+// Only strips "/v1" when it appears as the sole path component (e.g.,
+// "http://host:8089/v1" -> "http://host:8089"). Does not strip "/v1" from
+// longer paths like "/api/v1" to avoid breaking intentional configurations.
+func NormalizeControllerURL(raw string) (string, bool) {
+	result := strings.TrimRight(strings.TrimSpace(raw), "/")
+	stripped := false
+
+	parsed, err := url.Parse(result)
+	if err == nil && (parsed.Path == "/v1" || parsed.Path == "v1") {
+		parsed.Path = ""
+		parsed.RawPath = ""
+		result = parsed.String()
+		stripped = true
+	}
+
+	return result, stripped
+}
+
 var (
 	ErrClusterRoleInvalid         = errors.New("cluster role must be controller or node")
 	ErrClusterRoleAlreadySelected = errors.New("cluster role has already been selected")
@@ -36,6 +60,7 @@ type AgentSettings struct {
 	IntervalSeconds   int                `json:"intervalSeconds"`
 	RequestTimeoutSec int                `json:"requestTimeoutSeconds"`
 	Runtime           AgentRuntimeStatus `json:"runtime"`
+	Notices           []string           `json:"notices,omitempty"`
 }
 
 type UpdateAgentSettingsInput struct {
@@ -136,7 +161,7 @@ func UpdateAgentSettings(input UpdateAgentSettingsInput) (AgentSettings, error) 
 	if EffectiveClusterRole(app.ONE_CONFIG.ClusterAgent) != ClusterRoleNode {
 		return AgentSettings{}, ErrClusterNodeRoleRequired
 	}
-	controllerURL := strings.TrimRight(strings.TrimSpace(input.ControllerURL), "/")
+	controllerURL, v1Stripped := NormalizeControllerURL(input.ControllerURL)
 	token := strings.TrimSpace(input.Token)
 	if token == "" {
 		token = strings.TrimSpace(app.ONE_CONFIG.ClusterAgent.Token)
@@ -161,5 +186,9 @@ func UpdateAgentSettings(input UpdateAgentSettingsInput) (AgentSettings, error) 
 	if err := app.PersistClusterAgentConfig(ClusterRoleNode, true, controllerURL, token, interval, timeout); err != nil {
 		return AgentSettings{}, err
 	}
-	return GetAgentSettings(), nil
+	settings := GetAgentSettings()
+	if v1Stripped {
+		settings.Notices = append(settings.Notices, "controllerUrl 中的 /v1 后缀已自动移除。Agent 端点无需 /v1 前缀。")
+	}
+	return settings, nil
 }
