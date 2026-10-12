@@ -123,6 +123,12 @@ func (e *InstallParameterError) InstallationMessage() string {
 	case "Adminer allowedCidrs contains an empty item or surrounding whitespace",
 		"Adminer allowedCidrs contains an invalid IPv4/IPv6 CIDR":
 		return "Adminer 允许访问的 CIDR 格式无效，请使用逗号分隔的 IPv4/IPv6 CIDR"
+	case "Apache installation directory is fixed":
+		return "Apache 安装目录固定为 /usr/local/apache，请使用默认值"
+	case "Apache website root is fixed":
+		return "Apache 网站根目录固定为 /data/wwwroot，请使用默认值"
+	case "Apache virtual host root is fixed":
+		return "Apache 虚拟主机目录固定为 /usr/local/one/vhost，请使用默认值"
 	case "Adminer defaultDriver must be mysql or pgsql":
 		return "Adminer 默认数据库驱动必须是 mysql 或 pgsql"
 	case "Adminer defaultServer must be a host or IP with an optional port; credentials and URLs are forbidden",
@@ -214,6 +220,14 @@ func (e *InstallParameterError) PhpMyAdminWebRouteCode() string {
 
 func (e *InstallParameterError) InstallationMessageForLocale(locale string) string {
 	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(locale)), "en") {
+		switch strings.TrimSpace(e.Message) {
+		case "Apache installation directory is fixed":
+			return "Apache installs to /usr/local/apache. Use the default installation directory."
+		case "Apache website root is fixed":
+			return "Apache uses /data/wwwroot for managed websites. Use the default website root."
+		case "Apache virtual host root is fixed":
+			return "Apache uses /usr/local/one/vhost for managed virtual hosts. Use the default virtual host root."
+		}
 		switch e.PhpMyAdminWebRouteCode() {
 		case "PHPMA_WEB_SERVER_NOT_FOUND":
 			return "No active managed Web Server was found. Install and start a supported Web Server first."
@@ -318,6 +332,9 @@ func (installer *Installer) resolveInstallParams(ctx context.Context, params *in
 	)
 
 	NormalizeInstallParams(params)
+	if err := validateApacheInstallPaths(params); err != nil {
+		return nil, err
+	}
 	if flatVersion != "" && parameterVersion != "" && flatVersion != parameterVersion {
 		return nil, &InstallParameterError{
 			Field:   "software-version",
@@ -388,6 +405,30 @@ func (installer *Installer) resolveInstallParams(ctx context.Context, params *in
 		return nil, scriptParameterError(err)
 	}
 	return scriptInfo, nil
+}
+
+func validateApacheInstallPaths(params *input.InstallParams) error {
+	if params == nil || !strings.EqualFold(strings.TrimSpace(params.Key), "apache") {
+		return nil
+	}
+	for _, item := range []struct {
+		field, expected, message string
+		aliases                  []string
+	}{
+		{"install-dir", "/usr/local/apache", "Apache installation directory is fixed", []string{"install-dir", "apache-install-dir"}},
+		{"web-root", "/data/wwwroot", "Apache website root is fixed", []string{"web-root", "apache-web-root"}},
+		{"web-vhost-root", "/usr/local/one/vhost", "Apache virtual host root is fixed", []string{"web-vhost-root", "apache-vhost-root"}},
+	} {
+		for key, value := range params.Parameters {
+			for _, alias := range item.aliases {
+				if compactInstallParameterName(key) == compactInstallParameterName(alias) &&
+					strings.TrimSpace(value) != "" && strings.TrimSpace(value) != item.expected {
+					return &InstallParameterError{Field: item.field, Message: item.message}
+				}
+			}
+		}
+	}
+	return nil
 }
 
 func scriptParameterError(err error) *InstallParameterError {
@@ -982,7 +1023,11 @@ func PreviewInstallationPackage(ctx context.Context, params *input.InstallParams
 			continue
 		}
 		source := "derived"
-		if installParameterWasRestored(params, spec.Name) {
+		if isManagedMySQLInstallKey(params.Key) &&
+			(spec.Name == "reset-existing-root-password" || spec.Name == "reset-existing-root-password-confirm") &&
+			!explicitMySQLRootResetParameter(params.ExplicitParameters, spec.Name) {
+			source = "server_default"
+		} else if installParameterWasRestored(params, spec.Name) {
 			source = "previous_install"
 		} else if installParameterWasProvided(provided, spec.Name) {
 			source = "request"
@@ -1201,6 +1246,16 @@ func installParameterWasProvided(presence map[string]bool, name string) bool {
 	default:
 		return false
 	}
+}
+
+func explicitMySQLRootResetParameter(explicit map[string]bool, name string) bool {
+	target := compactInstallParameterName(name)
+	for key, present := range explicit {
+		if present && compactInstallParameterName(key) == target {
+			return true
+		}
+	}
+	return false
 }
 
 func isPasswordParameter(name string) bool {

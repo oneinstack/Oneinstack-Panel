@@ -12,9 +12,10 @@ import (
 )
 
 var (
-	phpMyAdminNginxRoot  = regexp.MustCompile(`(?m)^[[:space:]]*root[[:space:]]+([^;[:space:]]+);`)
-	phpMyAdminApacheRoot = regexp.MustCompile(`(?m)^[[:space:]]*DocumentRoot[[:space:]]+"?([^"[:space:]]+)"?`)
-	phpMyAdminCaddyRoot  = regexp.MustCompile(`(?m)^[[:space:]]*root[[:space:]]+\*[[:space:]]+([^[:space:]{}]+)`)
+	phpMyAdminNginxRoot            = regexp.MustCompile(`(?m)^[[:space:]]*root[[:space:]]+([^;[:space:]]+);`)
+	phpMyAdminApacheRoot           = regexp.MustCompile(`(?m)^[[:space:]]*DocumentRoot[[:space:]]+"?([^"[:space:]]+)"?`)
+	phpMyAdminApacheManagedInclude = regexp.MustCompile(`(?m)^[[:space:]]*Include(Optional)?[[:space:]]+[^\n]*oneinstack\.conf`)
+	phpMyAdminCaddyRoot            = regexp.MustCompile(`(?m)^[[:space:]]*root[[:space:]]+\*[[:space:]]+([^[:space:]{}]+)`)
 )
 
 // preparePhpMyAdminWebRoute supplies server-owned values only for packages
@@ -63,14 +64,19 @@ func managedDefaultDocumentRoot(kind string) (string, error) {
 	case "apache":
 		installDir := detectApacheInstallParameters()["install-dir"]
 		path = filepath.Join(installDir, "conf/httpd.conf")
-		if mainConfig, err := os.ReadFile(path); err == nil && strings.Contains(string(mainConfig), "oneinstack.conf") {
-			for _, relative := range []string{"conf/extra/oneinstack.conf", "conf/oneinstack.conf"} {
+		if mainConfig, err := os.ReadFile(path); err == nil && phpMyAdminApacheManagedInclude.Match(mainConfig) {
+			managedConfigFound := false
+			for _, relative := range []string{"conf/oneinstack/oneinstack.conf", "conf/extra/oneinstack.conf", "conf/oneinstack.conf"} {
 				candidate := filepath.Join(installDir, relative)
 				contents, err := os.ReadFile(candidate)
 				if err == nil && phpMyAdminApacheRoot.Match(contents) {
 					path = candidate
+					managedConfigFound = true
 					break
 				}
+			}
+			if !managedConfigFound {
+				return "", errors.New("managed Apache default site configuration is unavailable")
 			}
 		}
 		pattern = phpMyAdminApacheRoot

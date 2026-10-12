@@ -788,6 +788,7 @@ func (installer *Installer) inspectServiceConfiguration(
 	if err != nil {
 		return ComponentConfiguration{}, err
 	}
+	refreshClamavConfigurationPackage(ctx, definition, version)
 	componentPackage, err := installer.resolveConfigurationPackage(definition, version)
 	if err != nil {
 		return ComponentConfiguration{}, err
@@ -1061,6 +1062,7 @@ func (installer *Installer) ApplyServiceConfigurationTask(
 	if !configurationHashPattern.MatchString(revision) {
 		return "", errors.New("invalid configuration revision")
 	}
+	refreshClamavConfigurationPackage(ctx, definition, version)
 	componentPackage, err := installer.resolveConfigurationPackage(definition, version)
 	if err != nil {
 		return "", err
@@ -1802,6 +1804,20 @@ func (installer *Installer) resolveConfigurationPackage(
 		)
 	}
 	return componentPackage, nil
+}
+
+// Explicit ClamAV configuration operations can adopt a newer verified component
+// package without reinstalling the running service. A Center outage keeps the
+// existing local package available for inspection and recovery.
+func refreshClamavConfigurationPackage(ctx context.Context, definition configurationDefinition, version string) {
+	if definition.Component != "clamav" || !app.ONE_CONFIG.ScriptCenter.Enabled {
+		return
+	}
+	registry, err := scriptregistry.New(app.ONE_CONFIG.ScriptCenter)
+	if err != nil {
+		return
+	}
+	_, _ = registry.Resolve(ctx, definition.Component, strings.TrimSpace(version))
 }
 
 func parseComponentConfiguration(

@@ -14,6 +14,7 @@ type Software struct {
 	Resource                string            `json:"resource"`
 	Log                     string            `json:"log"`
 	Installed               bool              `json:"installed"`
+	ResidueUnverified       bool              `json:"residueUnverified,omitempty"`
 	Versions                []string          `json:"versions"`
 	InstallVersion          string            `json:"install_version"`
 	VersionOptions          []VersionOption   `json:"versionOptions"`

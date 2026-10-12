@@ -1362,6 +1362,19 @@ func (installer *Installer) setScriptParams(scriptInfo *script.ScriptInfo, param
 			}
 		}
 	}
+	if isManagedMySQLInstallKey(componentKey) {
+		// Older signed MySQL packages default both recovery switches to true.
+		// A missing form field must never authorize a root password change.
+		for name, env := range map[string]string{
+			"reset-existing-root-password":         "RESET_EXISTING_ROOT_PASSWORD",
+			"reset-existing-root-password-confirm": "RESET_EXISTING_ROOT_PASSWORD_CONFIRM",
+		} {
+			if !explicitMySQLRootResetParameter(params.ExplicitParameters, name) ||
+				installParameterValue(params.Parameters, name) == "" {
+				scriptInfo.Params[env] = "false"
+			}
+		}
+	}
 
 	// 通用参数
 	scriptInfo.Params["SOFTWARE_VERSION"] = scriptVersion

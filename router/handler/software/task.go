@@ -229,6 +229,16 @@ func GetTaskManagerForLocalLifecycle() (*softwaretask.Manager, error) {
 }
 
 func restoreManagedWebsiteConfigs(ctx context.Context) error {
+	var enabledSites int64
+	if err := app.DB().Model(&models.Website{}).
+		Where("enabled = ?", true).
+		Count(&enabledSites).Error; err != nil {
+		return fmt.Errorf("count enabled websites: %w", err)
+	}
+	if enabledSites == 0 {
+		return nil
+	}
+
 	webServerKeys := []string{"webserver", "nginx", "openresty", "tengine", "apache", "caddy"}
 	var installed models.Software
 	if err := app.DB().
@@ -751,6 +761,7 @@ func StreamSoftwareTaskEvents(c *gin.Context) {
 }
 
 func GetSoftwareTaskLog(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
 	manager, ok := taskManagerForRequest(c)
 	if !ok {
 		return

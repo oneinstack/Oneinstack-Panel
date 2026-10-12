@@ -394,6 +394,18 @@ func apacheOwnershipVerified(installDir string) bool {
 	return strings.Contains(string(unitBytes), "ExecStart="+filepath.Join(installDir, "bin", "httpd")+" -DFOREGROUND")
 }
 
+func apacheResidueUnverified(installDir string) bool {
+	if apacheOwnershipVerified(installDir) {
+		return false
+	}
+	for _, path := range []string{installDir, "/etc/systemd/system/oneinstack-httpd.service"} {
+		if _, err := os.Lstat(path); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
 func checkPhpMyAdmin(sf *models.Software) bool {
 	for _, path := range []string{
 		"/data/wwwroot/phpMyAdmin/index.php",
@@ -681,13 +693,28 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 			RuntimeGroup:            item.RuntimeGroup,
 			Versions:                splitSoftwareVersions(item.Versions),
 		})
+		if strings.EqualFold(strings.TrimSpace(item.Component), "apache") || strings.EqualFold(strings.TrimSpace(item.Key), "apache") {
+			groupedResults[i].ResidueUnverified = apacheResidueUnverified(defaultApacheInstallDir)
+		}
 		params := make([]*output.SoftParam, 0)
 		_ = json.Unmarshal([]byte(item.Params), &params)
 		if params == nil {
 			params = make([]*output.SoftParam, 0)
 		}
 		params = slices.DeleteFunc(params, func(parameter *output.SoftParam) bool {
-			return parameter != nil && scriptregistry.IsServerOwnedInstallParameterName(parameter.Key)
+			if parameter == nil {
+				return false
+			}
+			if scriptregistry.IsServerOwnedInstallParameterName(parameter.Key) {
+				return true
+			}
+			if strings.EqualFold(strings.TrimSpace(item.Component), "apache") || strings.EqualFold(strings.TrimSpace(item.Key), "apache") {
+				switch compactInstallParameterName(parameter.Key) {
+				case "installdir", "webroot", "webvhostroot":
+					return true
+				}
+			}
+			return false
 		})
 		hydratePersistedInstallParameters(item.RuntimeParamsJSON, params)
 		installParameterValues := hydrateNginxInstallParameters(item.Component, item.Key, params)
