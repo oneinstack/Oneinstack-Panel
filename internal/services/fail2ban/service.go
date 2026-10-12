@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -884,7 +885,14 @@ func (s *Service) Unban(ctx context.Context, request BanRequest) error {
 	}
 	if _, err := run(ctx, "set", policy.JailName, "unbanip", request.IP); err != nil {
 		output, statusErr := run(ctx, "status", policy.JailName)
-		if statusErr != nil || containsAddress(parseBannedIPs(output), request.IP) {
+		if statusErr != nil {
+			// A removed jail cannot hold a Fail2ban ban. Confirm that the daemon is
+			// reachable and no longer lists the jail before retiring our stale record.
+			jails, listErr := run(ctx, "status")
+			if listErr != nil || !strings.Contains(jails, "Jail list:") || slices.Contains(parseJailList(jails), policy.JailName) {
+				return err
+			}
+		} else if containsAddress(parseBannedIPs(output), request.IP) {
 			return err
 		}
 	}

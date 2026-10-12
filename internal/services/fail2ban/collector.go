@@ -251,6 +251,8 @@ func (m *Manager) ensureIncidentAuditEvent(incident *models.SecurityIncident) er
 	if m == nil || m.db == nil || incident == nil || incident.Source == "panel-login" || len(incident.Evidence) > 0 {
 		return nil
 	}
+	m.incidentAuditMu.Lock()
+	defer m.incidentAuditMu.Unlock()
 	requestID := "fail2ban-incident-" + incident.ID
 	var event models.AuditEvent
 	err := m.db.Where("request_id = ? AND action = ?", requestID, incidentAuditAction).First(&event).Error
@@ -292,17 +294,15 @@ func (m *Manager) ensureIncidentAuditEvent(incident *models.SecurityIncident) er
 }
 
 func (m *Manager) attachIncidentAuditEvidence(incident *models.SecurityIncident, eventID uint64) error {
-	evidence, err := json.Marshal([]uint64{eventID})
-	if err != nil {
-		return err
-	}
+	mergedEvidence := `(SELECT json_group_array(value) FROM (` +
+		`SELECT DISTINCT CAST(value AS INTEGER) AS value FROM json_each(COALESCE(NULLIF(security_incident.evidence, ''), '[]')) WHERE type = 'integer' AND value > 0 ` +
+		`UNION SELECT ? AS value ORDER BY value DESC LIMIT 20))`
 	if err := m.db.Model(&models.SecurityIncident{}).
 		Where("id = ? AND source <> ?", incident.ID, "panel-login").
-		Update("evidence", string(evidence)).Error; err != nil {
+		Update("evidence", gorm.Expr(mergedEvidence, eventID)).Error; err != nil {
 		return err
 	}
-	incident.Evidence = []uint64{eventID}
-	return nil
+	return m.db.Select("evidence").First(incident, "id = ?", incident.ID).Error
 }
 
 func (m *Manager) recordIncident(ctx context.Context, policy *models.Fail2banPolicy, source, address string, attempts int, first, last time.Time, evidence []uint64) (*models.SecurityIncident, error) {
@@ -313,17 +313,41 @@ func (m *Manager) recordIncident(ctx context.Context, policy *models.Fail2banPol
 		Fingerprint: fingerprint, Attempts: attempts, Severity: incidentSeverity(attempts, policy.MaxRetry),
 		Status: "open", Evidence: evidence, FirstSeenAt: first, LastSeenAt: last,
 	}
-	err := m.db.Where("fingerprint = ?", fingerprint).FirstOrCreate(incident).Error
+	// A collector retry and another Panel process can observe the same bucket at
+	// the same time. Merge the complete observation in SQLite instead of doing a
+	// SELECT followed by a competing INSERT. Attempts are a window count, so
+	// adding them on each scan would count the same failures repeatedly.
+	mergedEvidence := `(SELECT json_group_array(value) FROM (` +
+		`SELECT DISTINCT CAST(value AS INTEGER) AS value FROM json_each(COALESCE(NULLIF(security_incident.evidence, ''), '[]')) WHERE type = 'integer' AND value > 0 ` +
+		`UNION SELECT DISTINCT CAST(value AS INTEGER) AS value FROM json_each(COALESCE(NULLIF(excluded.evidence, ''), '[]')) WHERE type = 'integer' AND value > 0 ` +
+		`ORDER BY value DESC LIMIT 20))`
+	err := m.db.Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "fingerprint"}},
+		DoUpdates: clause.Assignments(map[string]any{
+			"attempts":      gorm.Expr("MAX(security_incident.attempts, excluded.attempts)"),
+			"severity":      gorm.Expr("CASE WHEN excluded.attempts > security_incident.attempts THEN excluded.severity ELSE security_incident.severity END"),
+			"evidence":      gorm.Expr(mergedEvidence),
+			"first_seen_at": gorm.Expr("MIN(security_incident.first_seen_at, excluded.first_seen_at)"),
+			"last_seen_at":  gorm.Expr("MAX(security_incident.last_seen_at, excluded.last_seen_at)"),
+		}),
+	}).Create(incident).Error
 	if err != nil {
 		return nil, err
 	}
+	var stored models.SecurityIncident
+	if err := m.db.First(&stored, "fingerprint = ?", fingerprint).Error; err != nil {
+		return nil, err
+	}
+	incident = &stored
 	if incident.Status == "open" && policy.EnforcementMode == "autoBan" && incident.TaskID == "" && m.allowAutoBan() {
 		task, submitErr := m.SubmitBan("ban_ip", BanRequest{
 			IncidentID: incident.ID, PolicyID: policy.ID, Reason: "规则达到阈值后自动封禁",
 		}, 0, "", "system")
 		if submitErr == nil {
 			incident.TaskID = task.ID
-			_ = m.db.Model(&models.SecurityIncident{}).Where("id = ? AND task_id = ''", incident.ID).Update("task_id", task.ID).Error
+			if err := m.db.Model(&models.SecurityIncident{}).Where("id = ? AND task_id = ''", incident.ID).Update("task_id", task.ID).Error; err != nil {
+				return nil, err
+			}
 		}
 	}
 	return incident, nil

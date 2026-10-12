@@ -16,6 +16,7 @@ import (
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type TaskListOptions struct {
@@ -38,16 +39,17 @@ type taskParameters struct {
 }
 
 type Manager struct {
-	db           *gorm.DB
-	service      *Service
-	queue        chan string
-	once         sync.Once
-	ctx          context.Context
-	mu           sync.Mutex
-	submitMu     sync.Mutex
-	banMu        sync.Mutex
-	banSince     time.Time
-	bansInWindow int
+	db              *gorm.DB
+	service         *Service
+	queue           chan string
+	once            sync.Once
+	ctx             context.Context
+	mu              sync.Mutex
+	submitMu        sync.Mutex
+	incidentAuditMu sync.Mutex
+	banMu           sync.Mutex
+	banSince        time.Time
+	bansInWindow    int
 }
 
 var defaultManager = &Manager{}
@@ -130,6 +132,19 @@ func (m *Manager) SubmitBan(operation string, request BanRequest, userID int64, 
 	}
 	if incident != nil {
 		task.IncidentID = incident.ID
+		if operation == "ban_ip" && triggeredBy == "system" {
+			var existing models.Fail2banTask
+			if err := m.db.Where("incident_id = ? AND operation = ? AND triggered_by = ?", incident.ID, operation, "system").
+				Order("created_at ASC").First(&existing).Error; err == nil {
+				return &existing, nil
+			} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil, err
+			}
+			// The incident is the idempotency boundary for automatic bans,
+			// including after a collector restart or a second Panel process.
+			task.ID = uuid.NewSHA1(uuid.NameSpaceOID, []byte("fail2ban-auto-ban|"+incident.ID)).String()
+			task.IdempotencyKey = digest("auto-ban|" + incident.ID)
+		}
 	}
 	return m.submit(task)
 }
@@ -175,13 +190,29 @@ func (m *Manager) submit(task *models.Fail2banTask) (*models.Fail2banTask, error
 			return nil, err
 		}
 	}
+	var existing *models.Fail2banTask
 	if err := m.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Create(task).Error; err != nil {
+		created := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(task)
+		if created.Error != nil {
+			return created.Error
+		}
+		if created.RowsAffected == 0 {
+			var found models.Fail2banTask
+			if err := tx.First(&found, "id = ?", task.ID).Error; err != nil {
+				return err
+			}
+			existing = &found
+			return nil
+		}
+		if err := createTaskEvent(tx, task, "queued", "info", "任务已进入持久队列"); err != nil {
 			return err
 		}
-		return createTaskEvent(tx, task, "queued", "info", "任务已进入持久队列")
+		return nil
 	}); err != nil {
 		return nil, err
+	}
+	if existing != nil {
+		return existing, nil
 	}
 	m.Start(context.Background())
 	m.enqueue(task.ID)
