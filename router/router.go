@@ -403,6 +403,7 @@ func SetupRouter() *gin.Engine {
 		serviceg.GET("/:component", middleware.RequirePermission(accessservice.PermissionServiceRead), software.GetComponentService)
 		serviceg.POST("/:component/actions", middleware.RequirePermission(accessservice.PermissionServiceWrite), software.RunComponentServiceAction)
 		serviceg.GET("/:component/config", middleware.RequirePermission(accessservice.PermissionServiceRead), software.GetComponentServiceConfiguration)
+		serviceg.GET("/:component/logs", middleware.RequirePermission(accessservice.PermissionServiceRead), software.GetComponentServiceLog)
 		serviceg.POST("/:component/credentials/reveal", middleware.RequirePermission(accessservice.PermissionServiceRead), software.RevealComponentServiceCredentials)
 		serviceg.POST("/:component/config/preview", middleware.RequirePermission(accessservice.PermissionServiceRead), software.PreviewComponentServiceConfiguration)
 		serviceg.POST("/:component/config/apply", middleware.RequirePermission(accessservice.PermissionServiceWrite), software.ApplyComponentServiceConfiguration)

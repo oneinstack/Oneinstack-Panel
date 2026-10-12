@@ -188,6 +188,7 @@ func RuntimeDependencyBusyAppError(err error) (*core.AppError, bool) {
 }
 
 func GetComponentServiceConfiguration(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
 	definition, version, ok := installedConfigurationTarget(c)
 	if !ok {
 		return
@@ -203,6 +204,54 @@ func GetComponentServiceConfiguration(c *gin.Context) {
 	}
 	localizeComponentConfiguration(c.GetString("locale"), &configuration)
 	core.HandleSuccess(c, configuration)
+}
+
+func GetComponentServiceLog(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
+	c.Header("Pragma", "no-cache")
+	if c.Param("component") != "clamav" {
+		message, detail := "当前组件没有受管服务日志", "请在组件支持的日志入口查看。"
+		if strings.HasPrefix(c.GetString("locale"), "en") {
+			message, detail = "Managed service logs are unavailable for this component", "Use a log source supported by the component."
+		}
+		failure := core.NewErrorWithDetail(core.ErrBadRequest, message, detail)
+		failure.StableCode = "SERVICE_LOG_UNSUPPORTED"
+		core.HandleError(c, failure)
+		return
+	}
+	definition, version, ok := installedConfigurationTarget(c)
+	if !ok {
+		return
+	}
+	if _, err := softwareService.NewInstaller().InspectServiceConfiguration(c.Request.Context(), definition.Component, version); err != nil {
+		message, detail := "ClamAV 受管服务配置不可用", "请先检查目标机安装状态和服务配置，再刷新页面。"
+		if strings.HasPrefix(c.GetString("locale"), "en") {
+			message, detail = "Managed ClamAV configuration is unavailable", "Check the target installation and service configuration, then refresh the page."
+		}
+		failure := core.NewErrorWithDetail(core.ErrBadRequest, message, detail)
+		failure.StableCode = "SERVICE_LOG_CONFIG_UNAVAILABLE"
+		core.HandleError(c, failure)
+		return
+	}
+	result, err := softwareService.ReadClamavServiceLog(strings.TrimSpace(c.DefaultQuery("source", "clamd")))
+	if err != nil {
+		message, detail, stableCode, code := "读取 ClamAV 服务日志失败", "请检查受管日志文件的权限和服务状态后重试。", "SERVICE_LOG_READ_FAILED", core.ErrInternalError
+		if errors.Is(err, softwareService.ErrInvalidClamavLogSource) {
+			message, detail, stableCode, code = "不支持的 ClamAV 日志来源", "source 仅支持 clamd 或 freshclam。", "SERVICE_LOG_SOURCE_INVALID", core.ErrBadRequest
+		}
+		if strings.HasPrefix(c.GetString("locale"), "en") {
+			if stableCode == "SERVICE_LOG_SOURCE_INVALID" {
+				message, detail = "Unsupported ClamAV log source", "source must be clamd or freshclam."
+			} else {
+				message, detail = "Could not read the ClamAV service log", "Check the managed log file permissions and service status, then retry."
+			}
+		}
+		failure := core.NewErrorWithDetail(code, message, detail)
+		failure.StableCode = stableCode
+		core.HandleError(c, failure)
+		return
+	}
+	core.HandleSuccess(c, result)
 }
 
 type revealComponentCredentialsRequest struct {
@@ -429,6 +478,7 @@ func handleFirewalldTaskCreationError(c *gin.Context, err error) bool {
 }
 
 func ListComponentServiceConfigurationHistory(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
 	definition, _, ok := installedConfigurationTarget(c)
 	if !ok {
 		return
