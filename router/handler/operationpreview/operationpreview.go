@@ -34,6 +34,7 @@ import (
 	systemservice "oneinstack/internal/services/system"
 	"oneinstack/internal/services/website"
 	"oneinstack/router/handler/software"
+	websitehandler "oneinstack/router/handler/website"
 	"oneinstack/router/input"
 	"oneinstack/router/middleware"
 
@@ -1025,11 +1026,13 @@ func handleWebsitePreviewError(c *gin.Context, operation string, err error) bool
 		if detail == "" {
 			detail = "请检查网站设置字段后重试。"
 		}
-		core.HandleError(c, core.NewErrorWithDetail(
+		appErr := core.NewErrorWithDetail(
 			core.ErrInvalidParameter,
 			"网站设置格式错误",
 			detail,
-		))
+		)
+		appErr.StableCode = "WEBSITE_SETTINGS_INVALID"
+		core.HandleError(c, appErr)
 	case errors.Is(err, website.ErrWebsiteParameterInvalid):
 		detail := strings.TrimSpace(strings.TrimPrefix(
 			err.Error(), website.ErrWebsiteParameterInvalid.Error()+":",
@@ -1039,11 +1042,13 @@ func handleWebsitePreviewError(c *gin.Context, operation string, err error) bool
 		}
 		core.HandleError(c, core.NewErrorWithDetail(core.ErrInvalidParameter, "网站参数无效", detail))
 	case errors.Is(err, website.ErrWebServerConfigValidate):
-		core.HandleError(c, core.WrapError(
+		appErr := core.WrapError(
 			err,
 			core.ErrConfigValidateFailed,
 			"Web Server 配置语法校验失败，请根据诊断信息修正后重新预览",
-		))
+		)
+		appErr.StableCode = "WEBSITE_CONFIG_VALIDATE_FAILED"
+		core.HandleError(c, appErr)
 	case errors.Is(err, website.ErrWebServerConfigConflict):
 		core.HandleError(c, core.NewError(core.ErrConflict, "配置已发生变化，请重新预览后再执行"))
 	case errors.Is(err, website.ErrWebsiteConflict):
@@ -2094,6 +2099,9 @@ func buildDocument(ctx context.Context, operation string, payload json.RawMessag
 			document.Impact.RestartService = firewalldPreviewMayRestartService(ctx, migrateExternalFirewall)
 		}
 		document.Rollback = previewservice.Rollback{Supported: true, Summary: "任务失败时由软件任务执行器按组件策略回滚或保留失败现场"}
+		if strings.EqualFold(value.Key, "mysql") || strings.EqualFold(value.Key, "db") {
+			document.Rollback.Summary = "失败时尝试恢复受管程序与配置；数据库内容不在回滚快照中，新初始化的数据会保留为失败现场"
+		}
 		if strings.EqualFold(value.Key, "tomcat") {
 			if err := applyTomcatInstallPreview(ctx, &document, value.Version); err != nil {
 				return previewservice.Document{}, "", err
@@ -2101,11 +2109,11 @@ func buildDocument(ctx context.Context, operation string, payload json.RawMessag
 		}
 		if resetExistingRootPassword && resetExistingRootPasswordConfirmed {
 			document.Actions = append(document.Actions, previewservice.Action{
-				Type: "component", Name: "通过隔离本地实例重置已有 MySQL root 密码",
+				Type: "component", Name: "仅当已有 MySQL 数据目录认证失败时，通过隔离本地实例重置 root 密码",
 			})
 			document.Rollback = previewservice.Rollback{
 				Supported: false,
-				Summary:   "root 密码重置后无法自动恢复旧密码；新密码按一次性凭据交付",
+				Summary:   "若执行中已变更 root 密码，失败回滚会尝试恢复受管程序和配置并保留数据目录，但不会撤销密码变更或自动恢复旧密码；新密码按一次性凭据交付",
 			}
 		}
 	case "software.uninstall":
@@ -2457,25 +2465,19 @@ func executeOperation(ctx context.Context, operation string, payload json.RawMes
 		if err := service.EnsureWebsiteOwnerActive(&before.Website); err != nil {
 			return nil, err
 		}
-		beforeJSON, err := json.Marshal(before)
+		revision, err := service.RuntimeRevision(id)
 		if err != nil {
 			return nil, err
 		}
-		snapshot, err := createWebsiteOperationSnapshot("settings.update", id, before.Settings, request.Settings, beforeJSON, "website-before.json", userID)
+		manager, err := websitehandler.DefaultWebsiteTaskManager()
 		if err != nil {
 			return nil, err
 		}
-		document, err := service.UpdateSettings(ctx, id, request.Settings)
+		task, err := manager.SubmitSettingsUpdate(id, request.Settings, revision, userID)
 		if err != nil {
-			_ = configsnapshot.Default().Mark(snapshot.ID, "failed", err.Error())
-			recordWebsiteOperationAudit(snapshot.ID, "failed", err.Error(), userID, requestIP)
 			return nil, err
 		}
-		if err := configsnapshot.Default().MarkWithAfter(snapshot.ID, document.Settings, "succeeded", ""); err != nil {
-			return nil, err
-		}
-		recordWebsiteOperationAudit(snapshot.ID, "succeeded", "网站结构化配置已发布", userID, requestIP)
-		return gin.H{"operation": operation, "resourceId": id, "status": "succeeded", "snapshotId": snapshot.ID, "website": document}, nil
+		return gin.H{"operation": operation, "resourceId": id, "status": task.Status, "taskId": task.ID, "statusUrl": "/v1/website/tasks/" + task.ID}, nil
 	case "website.config.update":
 		var request websiteConfigUpdatePayload
 		if err := json.Unmarshal(payload, &request); err != nil {

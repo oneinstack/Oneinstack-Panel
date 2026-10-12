@@ -1179,6 +1179,13 @@ func renderExtraLocations(rootDir string, settings WebsiteSettings) (string, err
 			return "", fmt.Errorf("路径 %s 被重复配置", path)
 		}
 		seen[path] = struct{}{}
+		// A trailing slash controls Nginx prefix matching and proxy_pass URI
+		// replacement. Keep it in the rendered location while using the
+		// normalized path above to detect /api and /api/ collisions.
+		locationPath := path
+		if strings.HasSuffix(strings.TrimSpace(proxy.Path), "/") {
+			locationPath += "/"
+		}
 		target, err := validateProxyTarget(proxy.Target)
 		if err != nil {
 			return "", err
@@ -1194,7 +1201,7 @@ func renderExtraLocations(rootDir string, settings WebsiteSettings) (string, err
 		}
 		blocks = append(blocks, fmt.Sprintf(
 			"    location %s {\n        proxy_pass %s;\n        proxy_set_header Host %s;\n        proxy_set_header X-Real-IP $remote_addr;\n        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n        proxy_set_header X-Forwarded-Proto $scheme;\n    }",
-			path, target, host,
+			locationPath, target, host,
 		))
 	}
 	deniedPaths := splitSettingLines(settings.DeniedPaths)

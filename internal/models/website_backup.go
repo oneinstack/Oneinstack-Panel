@@ -3,9 +3,10 @@ package models
 import "time"
 
 const (
-	WebsiteTaskOperationBackup  = "backup"
-	WebsiteTaskOperationRestore = "restore"
-	WebsiteTaskOperationDelete  = "delete"
+	WebsiteTaskOperationBackup         = "backup"
+	WebsiteTaskOperationRestore        = "restore"
+	WebsiteTaskOperationDelete         = "delete"
+	WebsiteTaskOperationSettingsUpdate = "settings_update"
 )
 
 const (
@@ -24,32 +25,35 @@ const (
 	WebsiteBackupSourcePreDelete  = "pre_delete"
 )
 
-// WebsiteTask stores the durable state of website backup, restore, and safe
-// deletion. Server paths never leave the backend.
+// WebsiteTask stores durable website operations. Server paths and settings
+// payloads never leave the backend.
 type WebsiteTask struct {
-	ID              string     `json:"id" gorm:"primaryKey;size:36"`
-	Operation       string     `json:"operation" gorm:"size:16;not null"`
-	WebsiteID       int64      `json:"websiteId" gorm:"not null;index:idx_website_task_site_created"`
-	WebsiteName     string     `json:"websiteName" gorm:"size:253;not null"`
-	DatabaseID      int64      `json:"databaseId,omitempty" gorm:"index"`
-	DatabaseName    string     `json:"databaseName,omitempty" gorm:"size:64"`
-	SourceBackupID  string     `json:"sourceBackupId,omitempty" gorm:"size:36;index"`
-	ResultBackupID  string     `json:"resultBackupId,omitempty" gorm:"size:36;index"`
-	SafetyBackupID  string     `json:"safetyBackupId,omitempty" gorm:"size:36;index"`
-	DeleteFiles     bool       `json:"deleteFiles" gorm:"not null;default:false"`
-	Status          string     `json:"status" gorm:"size:32;not null;index:idx_website_task_status_created"`
-	Progress        int        `json:"progress" gorm:"not null;default:0"`
-	Message         string     `json:"message" gorm:"size:512"`
-	ErrorCode       string     `json:"errorCode,omitempty" gorm:"size:64"`
-	ErrorMessage    string     `json:"errorMessage,omitempty" gorm:"size:1024"`
-	RequestedBy     int64      `json:"requestedBy" gorm:"not null;index:idx_website_task_user_created"`
-	CancelRequested bool       `json:"cancelRequested" gorm:"not null;default:false"`
-	LogPath         string     `json:"-" gorm:"size:1024"`
-	StartedAt       *time.Time `json:"startedAt,omitempty"`
-	HeartbeatAt     *time.Time `json:"heartbeatAt,omitempty"`
-	FinishedAt      *time.Time `json:"finishedAt,omitempty"`
-	CreatedAt       time.Time  `json:"createdAt" gorm:"index:idx_website_task_site_created,priority:2;index:idx_website_task_status_created,priority:2;index:idx_website_task_user_created,priority:2"`
-	UpdatedAt       time.Time  `json:"updatedAt"`
+	ID               string     `json:"id" gorm:"primaryKey;size:36"`
+	Operation        string     `json:"operation" gorm:"size:16;not null"`
+	WebsiteID        int64      `json:"websiteId" gorm:"not null;index:idx_website_task_site_created"`
+	WebsiteName      string     `json:"websiteName" gorm:"size:253;not null"`
+	DatabaseID       int64      `json:"databaseId,omitempty" gorm:"index"`
+	DatabaseName     string     `json:"databaseName,omitempty" gorm:"size:64"`
+	SourceBackupID   string     `json:"sourceBackupId,omitempty" gorm:"size:36;index"`
+	ResultBackupID   string     `json:"resultBackupId,omitempty" gorm:"size:36;index"`
+	SafetyBackupID   string     `json:"safetyBackupId,omitempty" gorm:"size:36;index"`
+	SnapshotID       string     `json:"snapshotId,omitempty" gorm:"size:36"`
+	SettingsPayload  string     `json:"-" gorm:"type:text"`
+	ExpectedRevision string     `json:"-" gorm:"size:64"`
+	DeleteFiles      bool       `json:"deleteFiles" gorm:"not null;default:false"`
+	Status           string     `json:"status" gorm:"size:32;not null;index:idx_website_task_status_created"`
+	Progress         int        `json:"progress" gorm:"not null;default:0"`
+	Message          string     `json:"message" gorm:"size:512"`
+	ErrorCode        string     `json:"errorCode,omitempty" gorm:"size:64"`
+	ErrorMessage     string     `json:"errorMessage,omitempty" gorm:"size:1024"`
+	RequestedBy      int64      `json:"requestedBy" gorm:"not null;index:idx_website_task_user_created"`
+	CancelRequested  bool       `json:"cancelRequested" gorm:"not null;default:false"`
+	LogPath          string     `json:"-" gorm:"size:1024"`
+	StartedAt        *time.Time `json:"startedAt,omitempty"`
+	HeartbeatAt      *time.Time `json:"heartbeatAt,omitempty"`
+	FinishedAt       *time.Time `json:"finishedAt,omitempty"`
+	CreatedAt        time.Time  `json:"createdAt" gorm:"index:idx_website_task_site_created,priority:2;index:idx_website_task_status_created,priority:2;index:idx_website_task_user_created,priority:2"`
+	UpdatedAt        time.Time  `json:"updatedAt"`
 }
 
 func (WebsiteTask) TableName() string {

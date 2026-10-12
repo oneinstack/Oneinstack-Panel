@@ -2,6 +2,7 @@ package websitetask
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -16,6 +17,7 @@ import (
 	"oneinstack/internal/models"
 	approvalservice "oneinstack/internal/services/approval"
 	auditservice "oneinstack/internal/services/audit"
+	configsnapshot "oneinstack/internal/services/configsnapshot"
 	"oneinstack/internal/services/databasetask"
 	"oneinstack/internal/services/website"
 
@@ -49,12 +51,14 @@ type DatabaseOperator interface {
 }
 
 type Request struct {
-	Operation   string
-	WebsiteID   int64
-	BackupID    string
-	DatabaseID  int64
-	DeleteFiles bool
-	ConfirmName string
+	Operation        string
+	WebsiteID        int64
+	BackupID         string
+	DatabaseID       int64
+	DeleteFiles      bool
+	ConfirmName      string
+	SettingsPayload  string
+	ExpectedRevision string
 }
 
 type queuedTask struct {
@@ -186,6 +190,20 @@ func (m *Manager) SubmitDelete(
 	}, requestedBy)
 }
 
+func (m *Manager) SubmitSettingsUpdate(websiteID int64, settings website.WebsiteSettings, revision string, requestedBy int64) (*models.WebsiteTask, error) {
+	if websiteID <= 0 || strings.TrimSpace(revision) == "" {
+		return nil, errors.New("网站或配置版本无效")
+	}
+	payload, err := json.Marshal(settings)
+	if err != nil {
+		return nil, err
+	}
+	return m.submit(Request{
+		Operation: models.WebsiteTaskOperationSettingsUpdate,
+		WebsiteID: websiteID, SettingsPayload: string(payload), ExpectedRevision: revision,
+	}, requestedBy)
+}
+
 func (m *Manager) submit(request Request, requestedBy int64) (*models.WebsiteTask, error) {
 	if err := m.Start(); err != nil {
 		return nil, err
@@ -200,7 +218,7 @@ func (m *Manager) submit(request Request, requestedBy int64) (*models.WebsiteTas
 	var sourceBackup *models.WebsiteBackup
 	var err error
 	switch request.Operation {
-	case models.WebsiteTaskOperationBackup:
+	case models.WebsiteTaskOperationBackup, models.WebsiteTaskOperationSettingsUpdate:
 		site, err = m.sites.Get(request.WebsiteID)
 	case models.WebsiteTaskOperationDelete:
 		site, err = m.sites.Get(request.WebsiteID)
@@ -265,6 +283,7 @@ func (m *Manager) submit(request Request, requestedBy int64) (*models.WebsiteTas
 		WebsiteID: request.WebsiteID, WebsiteName: websiteName,
 		DatabaseID: request.DatabaseID, DatabaseName: databaseName,
 		SourceBackupID: request.BackupID, DeleteFiles: request.DeleteFiles,
+		SettingsPayload: request.SettingsPayload, ExpectedRevision: request.ExpectedRevision,
 		Status: models.WebsiteTaskStatusQueued, Progress: 0,
 		Message: "网站任务已进入队列", RequestedBy: requestedBy,
 		LogPath:   filepath.Join(m.logRoot, "task_"+taskID+".log"),
@@ -393,6 +412,8 @@ func (m *Manager) run(item queuedTask) {
 		err = m.runDelete(ctx, &task, logFile, report)
 	case models.WebsiteTaskOperationRestore:
 		err = m.runRestore(ctx, &task, logFile, report)
+	case models.WebsiteTaskOperationSettingsUpdate:
+		err = m.runSettingsUpdate(ctx, &task, report)
 	}
 	if err != nil {
 		status := models.WebsiteTaskStatusFailed
@@ -445,6 +466,67 @@ func appendWebsiteTaskAudit(task *models.WebsiteTask, status, message string) {
 		UserID:    task.RequestedBy,
 		Message:   fmt.Sprintf("website=%d task=%s status=%s %s", task.WebsiteID, task.ID, status, strings.TrimSpace(message)),
 	})
+}
+
+func (m *Manager) runSettingsUpdate(ctx context.Context, task *models.WebsiteTask, report databasetask.ProgressReporter) error {
+	var settings website.WebsiteSettings
+	if task.SettingsPayload == "" || json.Unmarshal([]byte(task.SettingsPayload), &settings) != nil {
+		return errors.New("网站设置任务参数无效")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	report(10, "正在检查网站配置版本和候选配置")
+	currentRevision, err := m.sites.RuntimeRevision(task.WebsiteID)
+	if err != nil {
+		return err
+	}
+	if currentRevision != task.ExpectedRevision {
+		return errors.New("网站配置在预览后发生变化，请重新预览并提交")
+	}
+	if _, err := m.sites.PreviewSettingsUpdate(task.WebsiteID, settings); err != nil {
+		return fmt.Errorf("网站候选配置校验失败: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	before, err := m.sites.GetSettings(task.WebsiteID)
+	if err != nil {
+		return err
+	}
+	beforeJSON, err := json.Marshal(before)
+	if err != nil {
+		return err
+	}
+	snapshots := configsnapshot.New(m.db)
+	snapshot, err := snapshots.Create(configsnapshot.CreateInput{
+		ResourceType: "website", ResourceID: strconv.FormatInt(task.WebsiteID, 10),
+		Operation: "settings.update", Before: before.Settings, After: settings,
+		RequestedBy: task.RequestedBy, TaskID: task.ID,
+		Artifact: beforeJSON, ArtifactName: "website-before.json",
+	})
+	if err != nil {
+		return err
+	}
+	if err := m.db.Model(&models.WebsiteTask{}).Where("id = ?", task.ID).Update("snapshot_id", snapshot.ID).Error; err != nil {
+		_ = snapshots.Mark(snapshot.ID, "failed", err.Error())
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		_ = snapshots.Mark(snapshot.ID, "failed", err.Error())
+		return err
+	}
+	report(70, "正在发布网站设置")
+	document, err := m.sites.UpdateSettings(ctx, task.WebsiteID, settings)
+	if err != nil {
+		_ = snapshots.Mark(snapshot.ID, "failed", err.Error())
+		return err
+	}
+	if err := snapshots.MarkWithAfter(snapshot.ID, document.Settings, "succeeded", ""); err != nil {
+		return fmt.Errorf("网站设置已发布，但快照状态更新失败: %w", err)
+	}
+	report(99, "网站设置已发布")
+	return nil
 }
 
 func (m *Manager) runDelete(
