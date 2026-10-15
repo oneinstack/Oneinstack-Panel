@@ -284,6 +284,9 @@ func createTables() error {
 	if err != nil {
 		return err
 	}
+	if err := db.AutoMigrate(&models.ArtifactCleanupTask{}); err != nil {
+		return err
+	}
 	err = db.AutoMigrate(&models.ConfigurationSnapshot{})
 	if err != nil {
 		return err

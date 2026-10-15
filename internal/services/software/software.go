@@ -8,6 +8,7 @@ import (
 	"oneinstack/internal/i18n"
 	"oneinstack/internal/models"
 	"oneinstack/internal/services"
+	"oneinstack/internal/services/artifactpolicy"
 	"oneinstack/internal/services/componentstate"
 	"oneinstack/internal/services/scriptregistry"
 	"oneinstack/router/input"
@@ -980,6 +981,11 @@ func normalizeSoftwareUpgrade(item *output.Software) {
 		return
 	}
 	installedPackageVersion := strings.TrimSpace(item.InstalledPackageVersion)
+	component := strings.TrimSpace(item.Component)
+	if component == "" {
+		component = item.Key
+	}
+	item.ArchiveRetentionSupported = artifactpolicy.SupportsArchiveRetention(component, installedPackageVersion)
 	latestPackageVersion := strings.TrimSpace(item.LatestPackageVersion)
 	packageUpdate := installedPackageVersion != "" && latestPackageVersion != "" &&
 		scriptregistry.ComparePackageVersions(latestPackageVersion, installedPackageVersion) > 0

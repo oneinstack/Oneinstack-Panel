@@ -688,6 +688,9 @@ func (installer *Installer) getUninstallScript(
 		installParams.Parameters["delete-data-confirm"] = "true"
 	}
 	installer.setScriptParams(scriptInfo, installParams)
+	if params.TaskID != "" {
+		scriptInfo.Params["ONEINSTACK_TASK_ID"] = params.TaskID
+	}
 	return scriptInfo, installParams, nil
 }
 

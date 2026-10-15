@@ -70,6 +70,7 @@ func getTaskManager() (*softwaretask.Manager, error) {
 							Version:         request.Version,
 							Parameters:      request.Parameters,
 							ResolvedPackage: request.ResolvedPackage,
+							TaskID:          request.TaskID,
 						},
 						logPath,
 						reporter,

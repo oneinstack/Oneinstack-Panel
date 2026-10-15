@@ -19,6 +19,7 @@ var operationPermissions = map[string]string{
 	"fail2ban.ban":                    PermissionSecurityWrite,
 	"fail2ban.unban":                  PermissionSecurityWrite,
 	"panel.network":                   PermissionSystemWrite,
+	"artifact.cleanup":                PermissionSystemWrite,
 	"container.create":                PermissionContainerWrite,
 	"container.start":                 PermissionContainerWrite,
 	"container.stop":                  PermissionContainerWrite,

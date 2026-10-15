@@ -1131,6 +1131,8 @@ var builtinActionLabels = map[string]builtinActionLabel{
 	"firewall.rule_change":               {Name: "修改防火墙规则", NameEn: "Change firewall rules"},
 	"firewall.toggle":                    {Name: "启用或停用防火墙", NameEn: "Enable or disable firewall"},
 	"panel.network":                      {Name: "修改面板网络配置", NameEn: "Change panel network settings"},
+	"artifact.cleanup":                   {Name: "清理 Panel 生成文件", NameEn: "Clean Panel generated files"},
+	"artifact.inventory.read":            {Name: "查看 Panel 生成文件占用", NameEn: "View Panel generated file usage"},
 	"software.configure":                 {Name: "配置软件", NameEn: "Configure software"},
 	"software.install":                   {Name: "安装软件", NameEn: "Install software"},
 	"software.service_action":            {Name: "控制软件服务", NameEn: "Control software service"},
@@ -1204,6 +1206,8 @@ func buttonParentKey(action string) string {
 		return "security"
 	case strings.HasPrefix(action, "panel."):
 		return "panelSettings"
+	case strings.HasPrefix(action, "artifact."):
+		return "systemManagement"
 	case strings.HasPrefix(action, "user."):
 		return "userManagement"
 	case strings.HasPrefix(action, "container."):

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	logservice "oneinstack/internal/services/log"
+	artifactcleanupHandler "oneinstack/router/handler/artifactcleanup"
 	auditHandler "oneinstack/router/handler/audit"
 	bastionHandler "oneinstack/router/handler/bastion"
 	certificateHandler "oneinstack/router/handler/certificate"
@@ -134,6 +135,8 @@ func SetupRouter() *gin.Engine {
 	protected.POST("/logout", user.LogoutHandler)
 	protected.POST("/operations/preview", operationpreviewHandler.Preview)
 	protected.POST("/operations/:previewId/execute", operationpreviewHandler.Execute)
+	protected.GET("/artifacts/inventory", middleware.RequirePermission(accessservice.PermissionSystemRead), artifactcleanupHandler.Inventory)
+	protected.GET("/artifacts/tasks", middleware.RequirePermission(accessservice.PermissionSystemRead), artifactcleanupHandler.Tasks)
 	clusterg := protected.Group("/cluster")
 	{
 		clusterg.GET("/agent/settings", middleware.RequirePermission(accessservice.PermissionClusterRead), clusterHandler.GetAgentSettings)

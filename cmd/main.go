@@ -11,6 +11,7 @@ import (
 	"oneinstack/internal/buildinfo"
 	"oneinstack/internal/i18n"
 	approvalservice "oneinstack/internal/services/approval"
+	"oneinstack/internal/services/artifactcleanup"
 	"oneinstack/internal/services/audit"
 	bastionservice "oneinstack/internal/services/bastion"
 	"oneinstack/internal/services/certificate"
@@ -69,6 +70,7 @@ func main() {
 	configureUpdateCommands()
 	configureNetworkCommands()
 	configureBackupCommands()
+	configureArtifactCommands()
 	rootCmd.PersistentFlags().String("lang", "", "Override the CLI output language")
 
 	// 绑定 --user 和 --password 参数到 init 命令
@@ -93,6 +95,7 @@ func main() {
 	rootCmd.AddCommand(panelEntryCmd)
 	rootCmd.AddCommand(networkCmd)
 	rootCmd.AddCommand(backupCmd)
+	rootCmd.AddCommand(artifactsCmd)
 	rootCmd.AddCommand(langCmd)
 	rootCmd.AddCommand(defaultCmd)
 	rootCmd.AddCommand(uninstallCmd)
@@ -529,6 +532,17 @@ func startServer() error {
 	if err != nil {
 		return fmt.Errorf("initialize software task manager: %w", err)
 	}
+	artifactManager, err := artifactcleanup.Default(app.DB())
+	if err != nil {
+		return fmt.Errorf("initialize artifact cleanup manager: %w", err)
+	}
+	defer func() {
+		stopContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if stopErr := artifactManager.Stop(stopContext); stopErr != nil {
+			log.Printf("stop artifact cleanup manager: %v", stopErr)
+		}
+	}()
 	reportCenterURL := ""
 	if app.ONE_CONFIG.ScriptCenter.Enabled {
 		reportCenterURL = strings.TrimSpace(app.ONE_CONFIG.ScriptCenter.URL)

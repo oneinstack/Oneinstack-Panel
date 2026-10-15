@@ -23,6 +23,8 @@ import (
 	"oneinstack/internal/i18n"
 	"oneinstack/internal/models"
 	accessservice "oneinstack/internal/services/access"
+	artifactcleanupservice "oneinstack/internal/services/artifactcleanup"
+	"oneinstack/internal/services/artifactpolicy"
 	auditservice "oneinstack/internal/services/audit"
 	configsnapshot "oneinstack/internal/services/configsnapshot"
 	fail2banservice "oneinstack/internal/services/fail2ban"
@@ -406,6 +408,9 @@ func Preview(c *gin.Context) {
 	}
 	document, resourceVersion, err := buildDocument(c.Request.Context(), operation, payload)
 	if err != nil {
+		if operation == "artifact.cleanup" && handleArtifactCleanupError(c, err) {
+			return
+		}
 		if writeFirewallCollisionError(c, err) {
 			return
 		}
@@ -497,7 +502,7 @@ func handleSoftwareInstallPreviewError(c *gin.Context, err error, payload json.R
 	if stableCode == "" {
 		return false
 	}
-	appErr := softwareStableAppError(stableCode)
+	appErr := softwareStableAppError(stableCode, middleware.RequestLocale(c))
 	var hostErr *softwareService.HostInstallationError
 	if errors.As(err, &hostErr) {
 		if hostErr.Info.RecommendedVersion != "" {
@@ -536,7 +541,7 @@ func handleSoftwareLifecyclePreviewError(c *gin.Context, err error) bool {
 	if stableCode == "" {
 		return false
 	}
-	core.HandleError(c, softwareStableAppError(stableCode))
+	core.HandleError(c, softwareStableAppError(stableCode, middleware.RequestLocale(c)))
 	return true
 }
 
@@ -617,7 +622,7 @@ func softwareStableErrorCode(err error) string {
 	}
 }
 
-func softwareStableAppError(code string) *core.AppError {
+func softwareStableAppError(code, locale string) *core.AppError {
 	type descriptor struct {
 		status     core.ErrorCode
 		message    string
@@ -626,6 +631,11 @@ func softwareStableAppError(code string) *core.AppError {
 		field      string
 	}
 	descriptors := map[string]descriptor{
+		"HOST_DISK_SPACE_LOW": {
+			status: core.ErrResourceStateInvalid, message: "根分区可用空间不足，暂不能执行大容量组件操作",
+			detail:     "Root filesystem has less than 5 GiB available space.",
+			suggestion: "请先到系统 / 存储清理查看安全候选，释放空间后重新预览。",
+		},
 		"CENTER_UNAVAILABLE": {
 			status: core.ErrServiceUnavailable, message: "Center 当前不可用",
 			detail:     "The Panel could not reach Center or Center is not ready.",
@@ -857,6 +867,10 @@ func softwareStableAppError(code string) *core.AppError {
 		},
 	}
 	selected, ok := descriptors[strings.ToUpper(strings.TrimSpace(code))]
+	if code == "HOST_DISK_SPACE_LOW" && strings.HasPrefix(strings.ToLower(locale), "en") {
+		selected.message = "Root filesystem space is too low for a large component operation"
+		selected.suggestion = "Review safe candidates in System / Storage cleanup, free space, then preview again."
+	}
 	if !ok {
 		selected = descriptor{
 			status: core.ErrOperationFailed, message: "firewalld 操作失败",
@@ -884,6 +898,9 @@ func normalizeSoftwareInstallPreviewPayload(ctx context.Context, payload json.Ra
 		return nil, err
 	}
 	softwareService.NormalizeInstallParams(&validationRequest)
+	if err := artifactcleanupservice.EnsureHighDemandSpace(validationRequest.Key); err != nil {
+		return nil, err
+	}
 	if err := validateSoftwareInstallExclusivity(validationRequest.Key); err != nil {
 		return nil, err
 	}
@@ -910,9 +927,34 @@ func normalizeSoftwareLifecyclePreviewPayload(ctx context.Context, operation str
 		if err := json.Unmarshal(payload, &request); err != nil {
 			return nil, err
 		}
+		if request.ArchiveRetentionDays != 0 && request.ArchiveRetentionDays != 30 {
+			return nil, errors.New("archiveRetentionDays must be 0 or 30")
+		}
+		for key := range request.Parameters {
+			normalized := strings.NewReplacer("-", "", "_", "").Replace(strings.ToLower(key))
+			if normalized == "artifactretentiondays" || normalized == "artifactretentionconfirmed" {
+				return nil, errors.New("archive retention parameters must use confirmed request fields")
+			}
+		}
+		if request.ArchiveRetentionDays == 30 {
+			component := strings.ToLower(strings.TrimSpace(request.Name))
+			if !request.ConfirmArchiveRetention || (component != "mysql" && component != "redis" && component != "db") {
+				return nil, errors.New("automatic archive retention requires confirmation and a supported component")
+			}
+			if request.Parameters == nil {
+				request.Parameters = make(map[string]string)
+			}
+			request.Parameters["artifact-retention-days"] = "30"
+			request.Parameters["artifact-retention-confirmed"] = "true"
+		}
 		preview, err := softwareService.PreviewUninstallLifecycle(ctx, &request)
 		if err != nil {
 			return nil, err
+		}
+		if request.ArchiveRetentionDays == 30 {
+			if preview.PackagePin == nil || !artifactpolicy.SupportsArchiveRetention(request.Name, preview.PackagePin.ResolvedVersion) {
+				return nil, errors.New("installed component package does not support archive retention")
+			}
 		}
 		request.ResolvedPackage = preview.PackagePin
 		encoded, err := json.Marshal(request)
@@ -1199,6 +1241,9 @@ func Execute(c *gin.Context) {
 		return
 	}
 	if err := validatePreviewTarget(c.Request.Context(), operation, resourceVersion); err != nil {
+		if operation == "artifact.cleanup" && handleArtifactCleanupError(c, err) {
+			return
+		}
 		writeConsumeError(c, err)
 		return
 	}
@@ -1470,6 +1515,17 @@ func softwareConfigurationTargetVersion(component, revision string) string {
 }
 
 func validatePreviewTarget(ctx context.Context, operation, resourceVersion string) error {
+	if operation == "artifact.cleanup" {
+		manager, err := artifactcleanupservice.Default(app.DB())
+		if err != nil {
+			return err
+		}
+		_, err = manager.Find(resourceVersion)
+		if err != nil {
+			return previewservice.ErrRequestChanged
+		}
+		return nil
+	}
 	if strings.HasPrefix(resourceVersion, "software-config|") {
 		if operation != "software.configure" {
 			return previewservice.ErrRequestChanged
@@ -1869,6 +1925,41 @@ func buildDocument(ctx context.Context, operation string, payload json.RawMessag
 		Rollback:  previewservice.Rollback{Supported: true, Summary: "执行失败时由对应业务事务或任务流程尝试恢复"},
 	}
 	switch operation {
+	case "artifact.cleanup":
+		var value struct {
+			CandidateID string `json:"candidateId"`
+		}
+		if err := json.Unmarshal(payload, &value); err != nil {
+			return previewservice.Document{}, "", err
+		}
+		manager, err := artifactcleanupservice.Default(app.DB())
+		if err != nil {
+			return previewservice.Document{}, "", err
+		}
+		candidate, err := manager.Find(value.CandidateID)
+		if err != nil {
+			return previewservice.Document{}, "", err
+		}
+		if !candidate.Eligible {
+			return previewservice.Document{}, "", artifactcleanupservice.ErrUnsafeCandidate
+		}
+		busy, err := manager.Busy()
+		if err != nil {
+			return previewservice.Document{}, "", err
+		}
+		if busy {
+			return previewservice.Document{}, "", artifactcleanupservice.ErrTaskActive
+		}
+		document.Review = previewservice.Review{Required: true, RiskLevel: "high", Reason: "永久删除此 Panel 生成文件；请核对路径与预计释放空间"}
+		document.Files = []previewservice.FileChange{{Path: candidate.Path, Action: "delete", Role: candidate.Kind,
+			ChangeSummary: fmt.Sprintf("预计释放 %d 字节；执行前重新核对文件身份与活动任务", candidate.Bytes)}}
+		document.Actions = []previewservice.Action{{Type: "artifact", Name: "清理 Panel 生成文件", DisplayCommand: "由固定清理任务执行"}}
+		document.Prechecks = []previewservice.Precheck{{Code: "candidate_identity", Name: "候选文件", Status: "passed", Message: candidate.Reason},
+			{Code: "execution_recheck", Name: "执行前复核", Status: "deferred", Message: "重新检查文件身份、挂载点、归属和活动任务"}}
+		document.Impact = previewservice.Impact{WriteFiles: true, ModifyDatabase: true}
+		document.Rollback = previewservice.Rollback{Supported: false, Summary: "删除后只能通过外部备份或重新安装恢复旧程序与配置",
+			Unrecoverable: []string{"卸载归档和下载缓存删除后无法由 Panel 自动恢复"}}
+		return document, candidate.ID, nil
 	case "website.create":
 		var value models.Website
 		if err := json.Unmarshal(payload, &value); err != nil {
@@ -2038,6 +2129,9 @@ func buildDocument(ctx context.Context, operation string, payload json.RawMessag
 			return previewservice.Document{}, "", err
 		}
 		softwareService.NormalizeInstallParams(&value)
+		if err := artifactcleanupservice.EnsureHighDemandSpace(value.Key); err != nil {
+			return previewservice.Document{}, "", err
+		}
 		if err := validateSoftwareInstallExclusivity(value.Key); err != nil {
 			return previewservice.Document{}, "", err
 		}
@@ -2137,6 +2231,11 @@ func buildDocument(ctx context.Context, operation string, payload json.RawMessag
 			return previewservice.Document{}, "", errors.New("confirmDataDeletion is required when dataPolicy is delete")
 		}
 		value.DataPolicy = dataPolicy
+		if value.ArchiveRetentionDays == 30 {
+			document.EffectiveValues = append(document.EffectiveValues, previewservice.EffectiveValue{
+				Key: "archiveRetentionDays", Value: "30", Source: "confirmed_request",
+			})
+		}
 		lifecycle, err := softwareService.PreviewUninstallLifecycle(ctx, &value)
 		if err != nil {
 			return previewservice.Document{}, "", err
@@ -2387,6 +2486,23 @@ func normalizeWebsiteCreatePayload(payload json.RawMessage) (json.RawMessage, er
 
 func executeOperation(ctx context.Context, operation string, payload json.RawMessage, userID int64, requestIP string) (gin.H, error) {
 	switch operation {
+	case "artifact.cleanup":
+		var value struct {
+			CandidateID string `json:"candidateId"`
+		}
+		if err := json.Unmarshal(payload, &value); err != nil {
+			return nil, err
+		}
+		manager, err := artifactcleanupservice.Default(app.DB())
+		if err != nil {
+			return nil, err
+		}
+		task, err := manager.Submit(value.CandidateID, userID, false)
+		if err != nil {
+			return nil, err
+		}
+		return gin.H{"taskId": task.ID, "operation": operation, "status": task.Status,
+			"statusUrl": "/v1/artifacts/tasks"}, nil
 	case "website.create":
 		var value models.Website
 		if err := json.Unmarshal(payload, &value); err != nil {
@@ -2959,6 +3075,9 @@ func writeFirewallCollisionError(c *gin.Context, err error) bool {
 }
 
 func writeExecutionError(c *gin.Context, err error) {
+	if handleArtifactCleanupError(c, err) {
+		return
+	}
 	if writeFirewallCollisionError(c, err) {
 		return
 	}
@@ -2967,7 +3086,7 @@ func writeExecutionError(c *gin.Context, err error) {
 		return
 	}
 	if stableCode := softwareStableErrorCode(err); stableCode != "" {
-		core.HandleError(c, softwareStableAppError(stableCode))
+		core.HandleError(c, softwareStableAppError(stableCode, middleware.RequestLocale(c)))
 		return
 	}
 	code, message := core.ErrConfigError, "执行已确认的操作预览失败"
@@ -3050,4 +3169,30 @@ func writeExecutionError(c *gin.Context, err error) {
 		return
 	}
 	core.HandleError(c, core.NewErrorWithDetail(code, message, detail))
+}
+
+func handleArtifactCleanupError(c *gin.Context, err error) bool {
+	if err == nil {
+		return false
+	}
+	code, zh, en := "", "", ""
+	switch {
+	case errors.Is(err, artifactcleanupservice.ErrCandidateChanged), errors.Is(err, previewservice.ErrRequestChanged):
+		code, zh, en = "ARTIFACT_CANDIDATE_CHANGED", "清理候选已变化，请刷新清单并重新预览", "Cleanup candidate changed; refresh the inventory and preview again"
+	case errors.Is(err, artifactcleanupservice.ErrUnsafeCandidate):
+		code, zh, en = "ARTIFACT_UNSAFE_CANDIDATE", "此文件含有不安全内容或未获清理授权", "This artifact is unsafe or not authorized for cleanup"
+	case errors.Is(err, artifactcleanupservice.ErrTaskActive):
+		code, zh, en = "ARTIFACT_TASK_ACTIVE", "有组件任务正在运行，清理已暂缓", "A component task is active; cleanup is deferred"
+	default:
+		return false
+	}
+	message := zh
+	if strings.HasPrefix(strings.ToLower(middleware.RequestLocale(c)), "en") {
+		message = en
+	}
+	appErr := core.NewErrorWithDetail(core.ErrConflict, message, message)
+	appErr.StableCode = code
+	appErr.PublicDetail = true
+	core.HandleErrorWithStatus(c, http.StatusConflict, appErr)
+	return true
 }

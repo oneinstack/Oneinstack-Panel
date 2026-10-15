@@ -311,6 +311,7 @@ func builtinFrontendButtonDefinitions() []builtinButtonDefinition {
 	)
 
 	add(PermissionSystemRead,
+		item("artifact.inventory.read", "存储清理-查看清单"),
 		item("user.user.read", "用户管理-查看列表"),
 		item("user.permission.read", "权限管理-查看角色列表"),
 		item("panel.appearance.read", "界面设置-查看"),
@@ -321,6 +322,7 @@ func builtinFrontendButtonDefinitions() []builtinButtonDefinition {
 		item("panel.update.read", "面板更新-查看更新状态"),
 	)
 	add(PermissionSystemWrite,
+		item("artifact.cleanup", "存储清理-执行清理"),
 		item("user.user.create", "用户管理-新建用户"),
 		item("user.user.role.assign", "用户管理-分配角色"),
 		item("user.user.password.reset", "用户管理-重置密码"),

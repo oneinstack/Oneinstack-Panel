@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"oneinstack/internal/models"
+	"oneinstack/internal/services/artifactcleanup"
 	safeservice "oneinstack/internal/services/safe"
 	"oneinstack/internal/services/scriptregistry"
 	softwareService "oneinstack/internal/services/software"
@@ -29,6 +30,7 @@ const (
 )
 
 type InstallRequest struct {
+	TaskID                string
 	Operation             string
 	Key                   string
 	Version               string
@@ -434,6 +436,11 @@ func (m *Manager) submit(request InstallRequest, requestedBy int64) (*models.Sof
 	request.Username = strings.TrimSpace(request.Username)
 	request.DatabaseUsername = strings.TrimSpace(request.DatabaseUsername)
 	request.Parameters = normalizeTaskInstallParameters(request.Parameters)
+	if request.Operation == "install" || request.Operation == "upgrade" {
+		if err := artifactcleanup.EnsureHighDemandSpace(request.Key); err != nil {
+			return nil, err
+		}
+	}
 	if request.Operation == "install" {
 		request.InstallMode = strings.ToLower(strings.TrimSpace(request.InstallMode))
 		if request.InstallMode == "" {
@@ -1051,6 +1058,7 @@ func (m *Manager) run(item queuedTask) {
 	if err := reporter.setPhase("resolving", nil, resolvingMessage, "package_resolving"); err != nil {
 		return
 	}
+	item.request.TaskID = task.ID
 	err := m.executor(ctx, item.request, task.LogPath, reporter)
 	// Stop and join the heartbeat writer before persisting the terminal event.
 	// Otherwise its periodic UPDATE can contend with the final task transaction

@@ -3,40 +3,41 @@ package output
 import "encoding/json"
 
 type Software struct {
-	Id                      int               `json:"id"`
-	Name                    string            `json:"name"`
-	Describe                string            `json:"describe"`
-	Key                     string            `json:"key"`
-	Component               string            `json:"component"`
-	Icon                    string            `json:"icon"`
-	Type                    string            `json:"type"`
-	Status                  int               `json:"status"` //0待安装,1安装中,2安装成功,3安装失败
-	Resource                string            `json:"resource"`
-	Log                     string            `json:"log"`
-	Installed               bool              `json:"installed"`
-	ResidueUnverified       bool              `json:"residueUnverified,omitempty"`
-	Versions                []string          `json:"versions"`
-	InstallVersion          string            `json:"install_version"`
-	VersionOptions          []VersionOption   `json:"versionOptions"`
-	VersionLines            []string          `json:"versionLines"`
-	Port                    string            `json:"port,omitempty"`
-	InstalledPackageVersion string            `json:"installedPackageVersion,omitempty"`
-	RuntimeVersion          string            `json:"runtimeVersion,omitempty"`
-	LatestPackageVersion    string            `json:"latestPackageVersion,omitempty"`
-	UpdateReason            string            `json:"updateReason,omitempty"`
-	RecommendedVersion      string            `json:"recommendedVersion,omitempty"`
-	HostInstallation        *HostInstallation `json:"hostInstallation,omitempty"`
-	Installable             bool              `json:"installable"`
-	CatalogManaged          bool              `json:"catalogManaged"`
-	IsUpdate                bool              `json:"isUpdate"`
-	Tags                    string            `json:"tags"`
-	ManageScopes            []string          `json:"manageScopes,omitempty"`
-	ServiceName             string            `json:"serviceName,omitempty"`
-	RuntimeGroup            string            `json:"runtimeGroup,omitempty"`
-	Params                  []*SoftParam      `json:"params"`
-	FailureMessage          string            `json:"failureMessage,omitempty"`
-	Runtime                 *SoftwareRuntime  `json:"runtime,omitempty"`
-	CredentialConfigured    bool              `json:"credentialConfigured,omitempty"`
+	Id                        int               `json:"id"`
+	Name                      string            `json:"name"`
+	Describe                  string            `json:"describe"`
+	Key                       string            `json:"key"`
+	Component                 string            `json:"component"`
+	Icon                      string            `json:"icon"`
+	Type                      string            `json:"type"`
+	Status                    int               `json:"status"` //0待安装,1安装中,2安装成功,3安装失败
+	Resource                  string            `json:"resource"`
+	Log                       string            `json:"log"`
+	Installed                 bool              `json:"installed"`
+	ResidueUnverified         bool              `json:"residueUnverified,omitempty"`
+	Versions                  []string          `json:"versions"`
+	InstallVersion            string            `json:"install_version"`
+	VersionOptions            []VersionOption   `json:"versionOptions"`
+	VersionLines              []string          `json:"versionLines"`
+	Port                      string            `json:"port,omitempty"`
+	InstalledPackageVersion   string            `json:"installedPackageVersion,omitempty"`
+	ArchiveRetentionSupported bool              `json:"archiveRetentionSupported"`
+	RuntimeVersion            string            `json:"runtimeVersion,omitempty"`
+	LatestPackageVersion      string            `json:"latestPackageVersion,omitempty"`
+	UpdateReason              string            `json:"updateReason,omitempty"`
+	RecommendedVersion        string            `json:"recommendedVersion,omitempty"`
+	HostInstallation          *HostInstallation `json:"hostInstallation,omitempty"`
+	Installable               bool              `json:"installable"`
+	CatalogManaged            bool              `json:"catalogManaged"`
+	IsUpdate                  bool              `json:"isUpdate"`
+	Tags                      string            `json:"tags"`
+	ManageScopes              []string          `json:"manageScopes,omitempty"`
+	ServiceName               string            `json:"serviceName,omitempty"`
+	RuntimeGroup              string            `json:"runtimeGroup,omitempty"`
+	Params                    []*SoftParam      `json:"params"`
+	FailureMessage            string            `json:"failureMessage,omitempty"`
+	Runtime                   *SoftwareRuntime  `json:"runtime,omitempty"`
+	CredentialConfigured      bool              `json:"credentialConfigured,omitempty"`
 }
 
 // HostInstallation describes the local package repository, independently of

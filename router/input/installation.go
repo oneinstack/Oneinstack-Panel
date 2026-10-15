@@ -117,10 +117,13 @@ func decodeInstallParameterValue(raw json.RawMessage) (string, error) {
 }
 
 type RemoveParams struct {
-	Name                string `json:"name" binding:"required"`    //安装的服务
-	Version             string `json:"version" binding:"required"` //安装的版本
-	DataPolicy          string `json:"dataPolicy,omitempty"`
-	ConfirmDataDeletion bool   `json:"confirmDataDeletion,omitempty"`
+	Name                    string `json:"name" binding:"required"`    //安装的服务
+	Version                 string `json:"version" binding:"required"` //安装的版本
+	DataPolicy              string `json:"dataPolicy,omitempty"`
+	ConfirmDataDeletion     bool   `json:"confirmDataDeletion,omitempty"`
+	ArchiveRetentionDays    int    `json:"archiveRetentionDays,omitempty"`
+	ConfirmArchiveRetention bool   `json:"confirmArchiveRetention,omitempty"`
+	TaskID                  string `json:"-"`
 	// Parameters contains only values declared by the signed component
 	// manifest, for example PRESERVE_DATA during uninstall.
 	Parameters map[string]string `json:"parameters,omitempty"`
