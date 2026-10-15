@@ -221,10 +221,11 @@ func (r *Reporter) OnRollbackStart() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	_ = r.publishLocked(taskUpdate{
-		status:         models.SoftwareTaskStatusRollback,
-		phase:          models.SoftwareTaskStatusRollback,
-		message:        "安装失败，正在回滚变更",
-		rollbackStatus: models.SoftwareTaskRollbackRunning,
+		status:          models.SoftwareTaskStatusRollback,
+		phase:           models.SoftwareTaskStatusRollback,
+		message:         "安装失败，正在回滚变更",
+		rollbackStatus:  models.SoftwareTaskRollbackRunning,
+		setFailurePhase: true,
 	}, eventData{
 		eventType: "phase",
 		level:     "warning",
@@ -429,7 +430,7 @@ func (r *Reporter) publishLocked(update taskUpdate, event eventData) error {
 		if update.finishedAt != nil {
 			task.FinishedAt = update.finishedAt
 		}
-		if update.setFailurePhase {
+		if update.setFailurePhase && task.FailurePhase == "" {
 			task.FailurePhase = previousPhase
 		}
 		if update.cancelRequested != nil {

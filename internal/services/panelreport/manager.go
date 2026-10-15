@@ -75,25 +75,50 @@ type componentReport struct {
 	LatestOperatedAt *time.Time `json:"latestOperatedAt,omitempty"`
 }
 type operationReport struct {
-	TaskID           string     `json:"taskId"`
-	Operation        string     `json:"operation"`
-	Component        string     `json:"component"`
-	SoftwareKey      string     `json:"softwareKey,omitempty"`
-	Name             string     `json:"name,omitempty"`
-	RequestedVersion string     `json:"requestedVersion,omitempty"`
-	ResolvedVersion  string     `json:"resolvedVersion,omitempty"`
-	RuntimeVersion   string     `json:"runtimeVersion,omitempty"`
-	PackageVersion   string     `json:"packageVersion,omitempty"`
-	Status           string     `json:"status"`
-	FailurePhase     string     `json:"failurePhase,omitempty"`
-	ErrorCode        string     `json:"errorCode,omitempty"`
-	ErrorMessage     string     `json:"errorMessage,omitempty"`
-	RollbackStatus   string     `json:"rollbackStatus,omitempty"`
-	StartedAt        *time.Time `json:"startedAt,omitempty"`
-	FinishedAt       *time.Time `json:"finishedAt,omitempty"`
-	CreatedAt        time.Time  `json:"createdAt"`
-	UpdatedAt        time.Time  `json:"updatedAt"`
-	LogStatus        string     `json:"logStatus,omitempty"`
+	TaskID           string           `json:"taskId"`
+	Operation        string           `json:"operation"`
+	Component        string           `json:"component"`
+	SoftwareKey      string           `json:"softwareKey,omitempty"`
+	Name             string           `json:"name,omitempty"`
+	RequestedVersion string           `json:"requestedVersion,omitempty"`
+	ResolvedVersion  string           `json:"resolvedVersion,omitempty"`
+	RuntimeVersion   string           `json:"runtimeVersion,omitempty"`
+	PackageVersion   string           `json:"packageVersion,omitempty"`
+	Details          operationDetails `json:"details"`
+	Status           string           `json:"status"`
+	FailurePhase     string           `json:"failurePhase,omitempty"`
+	ErrorCode        string           `json:"errorCode,omitempty"`
+	ErrorMessage     string           `json:"errorMessage,omitempty"`
+	RollbackStatus   string           `json:"rollbackStatus,omitempty"`
+	StartedAt        *time.Time       `json:"startedAt,omitempty"`
+	FinishedAt       *time.Time       `json:"finishedAt,omitempty"`
+	CreatedAt        time.Time        `json:"createdAt"`
+	UpdatedAt        time.Time        `json:"updatedAt"`
+	LogStatus        string           `json:"logStatus,omitempty"`
+}
+type operationDetails struct {
+	VersionLine          string            `json:"versionLine,omitempty"`
+	PackageSource        string            `json:"packageSource,omitempty"`
+	PackageSHA256        string            `json:"packageSha256,omitempty"`
+	TargetOS             string            `json:"targetOs,omitempty"`
+	TargetOSVersion      string            `json:"targetOsVersion,omitempty"`
+	TargetArch           string            `json:"targetArch,omitempty"`
+	ReleaseRevision      string            `json:"releaseRevision,omitempty"`
+	PublisherFingerprint string            `json:"publisherFingerprint,omitempty"`
+	Parameters           map[string]string `json:"parameters,omitempty"`
+	RecoveryStatus       string            `json:"recoveryStatus,omitempty"`
+	RecoveryMessage      string            `json:"recoveryMessage,omitempty"`
+	EventCount           int64             `json:"eventCount,omitempty"`
+	TimelineTruncated    bool              `json:"timelineTruncated,omitempty"`
+	Timeline             []operationEvent  `json:"timeline,omitempty"`
+}
+type operationEvent struct {
+	Seq       int64     `json:"seq"`
+	Type      string    `json:"type"`
+	Level     string    `json:"level"`
+	Phase     string    `json:"phase"`
+	Code      string    `json:"code,omitempty"`
+	CreatedAt time.Time `json:"createdAt"`
 }
 type syncReport struct {
 	SchemaVersion     int               `json:"schemaVersion"`
@@ -185,13 +210,14 @@ func (m *Manager) syncOnce(ctx context.Context, client *translation.SignedPanelC
 	}
 	software := m.loadSoftware()
 	names := softwareNames(software)
+	timelines, truncated := m.loadFailureTimelines(tasks)
 	report := syncReport{SchemaVersion: 1, InstanceID: client.InstanceID(), Server: collectServerSnapshot(ctx)}
 	if includeInventory {
 		report.InventoryComplete = true
 		report.Components = installedComponents(software)
 	}
 	for i := range tasks {
-		report.Operations = append(report.Operations, operationFromTask(tasks[i], names, m.logAvailable(tasks[i])))
+		report.Operations = append(report.Operations, operationFromTask(tasks[i], names, m.logAvailable(tasks[i]), timelines[tasks[i].ID], truncated[tasks[i].ID]))
 	}
 	body, err := json.Marshal(report)
 	if err != nil {
@@ -373,7 +399,7 @@ func installedComponents(rows []models.Software) []componentReport {
 	}
 	return result
 }
-func operationFromTask(task models.SoftwareTask, names map[string]softwareInfo, logAvailable bool) operationReport {
+func operationFromTask(task models.SoftwareTask, names map[string]softwareInfo, logAvailable bool, timeline []operationEvent, timelineTruncated bool) operationReport {
 	info := names[strings.ToLower(strings.TrimSpace(task.Component))]
 	status := ""
 	if task.Status == models.SoftwareTaskStatusFailed {
@@ -383,7 +409,79 @@ func operationFromTask(task models.SoftwareTask, names map[string]softwareInfo, 
 			status = "unavailable"
 		}
 	}
-	return operationReport{TaskID: task.ID, Operation: task.Operation, Component: task.Component, SoftwareKey: task.SoftwareKey, Name: info.Name, RequestedVersion: task.RequestedVersion, ResolvedVersion: task.ResolvedVersion, RuntimeVersion: task.RuntimeVersion, PackageVersion: info.PackageVersion, Status: task.Status, FailurePhase: task.FailurePhase, ErrorCode: task.ErrorCode, ErrorMessage: task.ErrorMessage, RollbackStatus: task.RollbackStatus, StartedAt: task.StartedAt, FinishedAt: task.FinishedAt, CreatedAt: task.CreatedAt, UpdatedAt: task.UpdatedAt, LogStatus: status}
+	var snapshot struct {
+		Port              string            `json:"port"`
+		Username          string            `json:"username"`
+		DatabaseUsername  string            `json:"databaseUsername"`
+		Switch            bool              `json:"switch"`
+		InstallParameters map[string]string `json:"installParameters"`
+	}
+	_ = json.Unmarshal([]byte(task.ParametersJSON), &snapshot)
+	parameters := make(map[string]string, len(snapshot.InstallParameters)+4)
+	for key, value := range snapshot.InstallParameters {
+		parameters[key] = value
+	}
+	for key, value := range map[string]string{"port": snapshot.Port, "username": snapshot.Username, "database-username": snapshot.DatabaseUsername} {
+		if value != "" {
+			parameters[key] = value
+		}
+	}
+	if snapshot.Switch {
+		parameters["switch"] = "true"
+	}
+	packageSource := task.PackageSource
+	if packageSource == "" {
+		packageSource = task.InstallMode
+	}
+	failurePhase := task.FailurePhase
+	if failurePhase == models.SoftwareTaskStatusRollback {
+		for index, event := range timeline {
+			if event.Code != "rollback_started" {
+				continue
+			}
+			for prior := index - 1; prior >= 0; prior-- {
+				if timeline[prior].Phase != "" && timeline[prior].Phase != models.SoftwareTaskStatusRollback {
+					failurePhase = timeline[prior].Phase
+					break
+				}
+			}
+			break
+		}
+	}
+	return operationReport{TaskID: task.ID, Operation: task.Operation, Component: task.Component, SoftwareKey: task.SoftwareKey, Name: info.Name, RequestedVersion: task.RequestedVersion, ResolvedVersion: task.ResolvedVersion, RuntimeVersion: task.RuntimeVersion, PackageVersion: info.PackageVersion, Details: operationDetails{VersionLine: task.VersionLine, PackageSource: packageSource, PackageSHA256: task.PackageSHA256, TargetOS: task.TargetOS, TargetOSVersion: task.TargetOSVersion, TargetArch: task.TargetArch, ReleaseRevision: task.ReleaseRevision, PublisherFingerprint: task.PublisherFingerprint, Parameters: parameters, RecoveryStatus: task.RecoveryStatus, RecoveryMessage: task.RecoveryMessage, EventCount: task.EventSeq, TimelineTruncated: timelineTruncated, Timeline: timeline}, Status: task.Status, FailurePhase: failurePhase, ErrorCode: task.ErrorCode, ErrorMessage: task.ErrorMessage, RollbackStatus: task.RollbackStatus, StartedAt: task.StartedAt, FinishedAt: task.FinishedAt, CreatedAt: task.CreatedAt, UpdatedAt: task.UpdatedAt, LogStatus: status}
+}
+
+func (m *Manager) loadFailureTimelines(tasks []models.SoftwareTask) (map[string][]operationEvent, map[string]bool) {
+	timelines := make(map[string][]operationEvent)
+	truncated := make(map[string]bool)
+	ids := make([]string, 0, len(tasks))
+	for _, task := range tasks {
+		if task.Status == models.SoftwareTaskStatusFailed {
+			ids = append(ids, task.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return timelines, truncated
+	}
+	var events []models.SoftwareTaskEvent
+	if err := m.db.Model(&models.SoftwareTaskEvent{}).
+		Select("task_id, seq, type, level, phase, code, created_at").
+		Where("task_id IN ? AND type IN ?", ids, []string{"phase", "package", "runtime", "warning", "terminal"}).
+		Order("task_id ASC, seq ASC").Find(&events).Error; err != nil {
+		return timelines, truncated
+	}
+	for _, event := range events {
+		entry := operationEvent{Seq: event.Seq, Type: event.Type, Level: event.Level, Phase: event.Phase, Code: event.Code, CreatedAt: event.CreatedAt}
+		items := timelines[event.TaskID]
+		if len(items) < 24 {
+			timelines[event.TaskID] = append(items, entry)
+			continue
+		}
+		copy(items, items[1:])
+		items[len(items)-1] = entry
+		truncated[event.TaskID] = true
+	}
+	return timelines, truncated
 }
 
 func (m *Manager) logAvailable(task models.SoftwareTask) bool {

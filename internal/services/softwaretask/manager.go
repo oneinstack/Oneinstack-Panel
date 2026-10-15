@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -15,6 +16,7 @@ import (
 
 	"oneinstack/internal/models"
 	"oneinstack/internal/services/artifactcleanup"
+	"oneinstack/internal/services/componentstate"
 	safeservice "oneinstack/internal/services/safe"
 	"oneinstack/internal/services/scriptregistry"
 	softwareService "oneinstack/internal/services/software"
@@ -211,7 +213,7 @@ func (m *Manager) Submit(request InstallRequest, requestedBy int64) (*models.Sof
 // RecordPreviewFailure persists a failure that happened while resolving an
 // installation package during the synchronous preview step. It deliberately
 // stores only the same safe fields used by the durable task reporter; no
-// installation parameters, secrets, package URLs, or log paths are retained.
+// secrets, package URLs, or log paths are retained.
 func (m *Manager) RecordPreviewFailure(
 	request InstallRequest,
 	requestedBy int64,
@@ -252,6 +254,9 @@ func (m *Manager) RecordPreviewFailure(
 		Component:        component,
 		SoftwareKey:      request.Key,
 		RequestedVersion: request.Version,
+		VersionLine:      request.VersionLine,
+		InstallMode:      request.InstallMode,
+		ParametersJSON:   safeTaskParametersJSON(request),
 		Status:           models.SoftwareTaskStatusFailed,
 		Phase:            models.SoftwareTaskStatusFailed,
 		Progress:         0,
@@ -623,6 +628,9 @@ func (m *Manager) submit(request InstallRequest, requestedBy int64) (*models.Sof
 		"databaseUsername": request.DatabaseUsername,
 		"switch":           request.SwitchRequested,
 	}
+	if parameters := safeReportedInstallParameters(request.Parameters); len(parameters) > 0 {
+		safeParameterValues["installParameters"] = parameters
+	}
 	if request.Operation == "uninstall" {
 		safeParameterValues["dataPolicy"] = uninstallDataPolicy(request.Parameters)
 	}
@@ -744,6 +752,55 @@ func (m *Manager) submit(request InstallRequest, requestedBy int64) (*models.Sof
 		)
 		return nil, errors.New("software task queue is full")
 	}
+}
+
+// Keep a bounded snapshot of submitted, non-secret choices for failure diagnosis.
+// Package defaults may be applied later, so this is not an effective-config dump.
+func safeReportedInstallParameters(parameters map[string]string) map[string]string {
+	result := make(map[string]string)
+	totalBytes := 0
+	keys := make([]string, 0, len(parameters))
+	for key := range parameters {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		value := parameters[key]
+		name := componentstate.NormalizeParameterName(key)
+		compact := strings.ReplaceAll(name, "-", "")
+		if name == "" || len(name) > 64 || componentstate.IsSensitiveParameter(name) ||
+			strings.HasPrefix(compact, "oneinstack") || strings.Contains(compact, "offlinepackage") ||
+			strings.Contains(compact, "bundle") ||
+			strings.Contains(compact, "key") || strings.Contains(compact, "auth") ||
+			strings.Contains(compact, "cookie") || strings.Contains(compact, "session") ||
+			strings.Contains(compact, "signature") || strings.Contains(compact, "dsn") ||
+			scriptregistry.IsServerOwnedInstallParameterName(name) || len(result) >= 64 {
+			continue
+		}
+		value = strings.TrimSpace(value)
+		if value == "" || len(value) > 512 || strings.ContainsAny(value, "\x00\r\n") ||
+			strings.Contains(value, "://") || strings.Contains(value, "Bearer ") {
+			continue
+		}
+		if totalBytes+len(name)+len(value) > 8192 {
+			continue
+		}
+		result[name] = value
+		totalBytes += len(name) + len(value)
+	}
+	return result
+}
+
+func safeTaskParametersJSON(request InstallRequest) string {
+	values := map[string]any{
+		"port": request.Port, "username": request.Username,
+		"databaseUsername": request.DatabaseUsername, "switch": request.SwitchRequested,
+	}
+	if parameters := safeReportedInstallParameters(request.Parameters); len(parameters) > 0 {
+		values["installParameters"] = parameters
+	}
+	data, _ := json.Marshal(values)
+	return string(data)
 }
 
 // advanceCatalogPackageVersion keeps the software list aligned with the
