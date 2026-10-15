@@ -649,6 +649,9 @@ func normalizeConfigurationValues(definition configurationDefinition, values map
 		result[field.Key] = value
 	}
 	if definition.Component == "php" {
+		if group, ok := result["socketGroup"]; ok && !systemAccountPattern.MatchString(group) {
+			return nil, errors.New("socketGroup must be a valid Linux group name")
+		}
 		upload, _ := strconv.Atoi(result["uploadMaxFilesize"])
 		post, _ := strconv.Atoi(result["postMaxSize"])
 		children, _ := strconv.Atoi(result["pmMaxChildren"])
@@ -1604,6 +1607,7 @@ func persistManagedPHPConfiguration(params *input.InstallParams, values map[stri
 	assign("pmStartServers", "php-pm-start-servers")
 	assign("pmMinSpareServers", "php-pm-min-spare-servers")
 	assign("pmMaxSpareServers", "php-pm-max-spare-servers")
+	assign("socketGroup", "socket-group")
 	encoded, err := json.Marshal(runtime)
 	if err != nil {
 		return fmt.Errorf("encode PHP runtime parameters: %w", err)
