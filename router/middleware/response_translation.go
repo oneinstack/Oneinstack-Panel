@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"log"
 	"mime"
 	"net"
 	"net/http"
@@ -22,10 +24,10 @@ import (
 const (
 	maxBufferedTranslationResponse = 512 << 10
 	defaultTranslationFields       = 0 // zero means all eligible fields
-	defaultTranslationTimeout      = 15 * time.Second
+	defaultTranslationTimeout      = 30 * time.Second
 )
 
-// ResponseTranslation adds a best-effort translation fallback for short,
+// ResponseTranslation adds a best-effort translation fallback for
 // user-visible JSON string values. It never changes the original response when
 // the provider is unavailable or the response is not JSON.
 func ResponseTranslation(service *translationservice.Service, maxFields, responseTimeoutSeconds int) gin.HandlerFunc {
@@ -168,8 +170,18 @@ func translateTexts(ctx context.Context, service *translationservice.Service, lo
 	if len(texts) == 0 {
 		return outcomes
 	}
+	started := time.Now()
+	ineligible, unavailable := 0, 0
 	for text, outcome := range service.TranslateBatch(ctx, "", locale, texts) {
 		outcomes[text] = translationOutcome{translated: outcome.Translated, err: outcome.Err}
+		if errors.Is(outcome.Err, translationservice.ErrTextNotEligible) {
+			ineligible++
+		} else if outcome.Err != nil {
+			unavailable++
+		}
+	}
+	if ineligible != 0 || unavailable != 0 {
+		log.Printf("response translation incomplete: count=%d ineligible=%d unavailable=%d elapsed=%s", len(texts), ineligible, unavailable, time.Since(started).Round(time.Millisecond))
 	}
 	return outcomes
 }
@@ -242,10 +254,10 @@ func isExcludedTranslationField(key string) bool {
 		"statuscode", "errorcode", "errcode", "type", "kind", "action", "method",
 		"path", "paths", "url", "urls", "uri", "href", "route", "routes",
 		"locale", "language", "version", "timestamp", "createdat", "updatedat",
-		"token", "tokens", "secret", "secrets", "password", "passwd",
+		"token", "tokens", "accesstoken", "refreshtoken", "secret", "secrets", "secretkey", "secretid", "clientsecret", "password", "passwd", "dbpassword", "apikey", "privatekey", "dsn",
 		"authorization", "cookie", "cookies", "headers", "credential", "credentials",
 		"query", "queries", "sql", "command", "commands", "args", "argv",
-		"env", "environment", "log", "logs", "output", "stdout", "stderr",
+		"env", "environment", "log", "logs", "tasklog", "runtimelog", "containerlog", "logcontent", "logtext", "logoutput", "output", "rawoutput", "taskoutput", "stdout", "stderr",
 		"raw", "payload", "body", "requestbody", "responsebody", "stack", "stacktrace", "content":
 		return true
 	default:

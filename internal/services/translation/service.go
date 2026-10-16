@@ -3,6 +3,10 @@ package translation
 import (
 	"context"
 	"errors"
+	"regexp"
+	"slices"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -17,7 +21,7 @@ import (
 
 const (
 	translationProvider = "center"
-	translationModel    = "hunyuan-translation-lite"
+	translationModel    = "center-dual-v2"
 	translationField    = "运维面板提示"
 	defaultCacheTTL     = 24 * time.Hour
 	defaultCacheEntries = 4096
@@ -27,6 +31,12 @@ const (
 )
 
 var ErrTextNotEligible = errors.New("translation text is not eligible")
+
+var (
+	protectedValuePattern = regexp.MustCompile("`[^`]+`|(?i:[a-z][a-z0-9+.-]*://[^\\s，。；;）)]+)|[A-Za-z]:\\\\[^\\s，。；;）)]+|[^\\s，。；;（）()]*[/\\\\][^\\s，。；;（）()]*|[A-Za-z0-9_.+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}|(?:[0-9]{1,3}\\.){3}[0-9]{1,3}|[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}|[A-Za-z0-9_+/=-]{24,}")
+	secretAssignment      = regexp.MustCompile(`(?i)(?:\b(?:password|passwd|token|secret|credential|api[_-]?key)|密码|密钥|令牌)\s*[:=]\s*\S+|--(?:password|token|secret)\s+\S+|Bearer\s+\S+`)
+	placeholderPattern    = regexp.MustCompile(`\[\[T[0-9]+\]\]`)
+)
 
 type Outcome struct {
 	Translated string
@@ -63,7 +73,7 @@ func New(cfg config.Translation, database *gorm.DB) (*Service, error) {
 	}
 	responseTimeout := time.Duration(cfg.ResponseTimeoutSeconds) * time.Second
 	if responseTimeout <= 0 {
-		responseTimeout = 15 * time.Second
+		responseTimeout = 30 * time.Second
 	}
 	maxText := cfg.MaxTextLength
 	if maxText <= 0 {
@@ -122,10 +132,11 @@ func (s *Service) TranslateBatch(ctx context.Context, sourceLocale, targetLocale
 	}
 	source := languageCode(sourceLocale)
 	pending := make([]pendingText, 0, len(texts))
+	segments := make(map[string]struct{})
 	for _, text := range texts {
-		value := strings.TrimSpace(text)
+		value := text
 		outcomes[text] = Outcome{Translated: text}
-		if value == "" || !containsNonEnglish(value) {
+		if strings.TrimSpace(value) == "" || !containsNonEnglish(value) {
 			continue
 		}
 		currentSource := source
@@ -135,50 +146,86 @@ func (s *Service) TranslateBatch(ctx context.Context, sourceLocale, targetLocale
 		if currentSource != "" && currentSource == target {
 			continue
 		}
-		if !isEligibleText(value, s.maxText) {
-			outcomes[text] = Outcome{Translated: text, Err: ErrTextNotEligible}
-			continue
-		}
 		key := cacheKey(currentSource, target, s.provider, s.model, s.field, value)
-		if translated, ok := s.cache.get(key); ok && isUsableTranslation(translated, value, target) {
+		if translated, ok := s.cache.get(key); ok && isValidCachedTranslation(translated, value) {
 			outcomes[text] = Outcome{Translated: translated}
 			continue
 		}
 		persistentKey := persistentCacheKey(key)
-		if translated, ok := s.persistent.get(persistentKey, currentSource, target); ok && isUsableTranslation(translated, value, target) {
+		if translated, ok := s.persistent.get(persistentKey, currentSource, target); ok && isValidCachedTranslation(translated, value) {
 			s.cache.set(key, translated)
 			outcomes[text] = Outcome{Translated: translated}
 			continue
 		}
-		pending = append(pending, pendingText{original: text, value: value, source: currentSource, target: target, key: key, persistentKey: persistentKey})
+		masked, protected, ok := protectTranslationText(value)
+		if !ok {
+			outcomes[text] = Outcome{Translated: text, Err: ErrTextNotEligible}
+			continue
+		}
+		parts := splitTranslationText(masked, s.maxText)
+		eligible := true
+		localSegments := make([]string, 0, len(parts))
+		for _, part := range parts {
+			core := strings.TrimSpace(part)
+			if !containsNonEnglish(core) {
+				continue
+			}
+			if !isEligibleText(core, s.maxText) {
+				eligible = false
+				break
+			}
+			localSegments = append(localSegments, core)
+		}
+		if !eligible {
+			outcomes[text] = Outcome{Translated: text, Err: ErrTextNotEligible}
+			continue
+		}
+		if len(localSegments) == 0 {
+			continue
+		}
+		for _, segment := range localSegments {
+			segments[segment] = struct{}{}
+		}
+		pending = append(pending, pendingText{original: text, value: value, masked: masked, protected: protected, parts: parts, source: currentSource, target: target, key: key, persistentKey: persistentKey})
 	}
 	if len(pending) == 0 {
 		return outcomes
 	}
-	if len(pending) > s.maxBatch {
-		for _, item := range pending[s.maxBatch:] {
-			outcomes[item.original] = Outcome{Translated: item.original, Err: ErrCenterUnavailable}
+	requested := make([]string, 0, len(segments))
+	for segment := range segments {
+		requested = append(requested, segment)
+	}
+	sort.Strings(requested)
+	segmentOutcomes := s.translateSegments(ctx, sourceLocale, targetLocale, requested)
+	for _, item := range pending {
+		var assembled strings.Builder
+		complete := true
+		for _, part := range item.parts {
+			core := strings.TrimSpace(part)
+			if !containsNonEnglish(core) {
+				assembled.WriteString(part)
+				continue
+			}
+			result, found := segmentOutcomes[core]
+			if !found || result.Err != nil || !isUsableTranslation(result.Translated, core, item.target) {
+				complete = false
+				break
+			}
+			leading := strings.TrimSuffix(part, strings.TrimLeftFunc(part, unicode.IsSpace))
+			trailing := strings.TrimPrefix(part, strings.TrimRightFunc(part, unicode.IsSpace))
+			assembled.WriteString(leading)
+			assembled.WriteString(strings.TrimSpace(result.Translated))
+			assembled.WriteString(trailing)
 		}
-		pending = pending[:s.maxBatch]
-	}
-	requestTexts := make([]string, len(pending))
-	for index, item := range pending {
-		requestTexts[index] = item.value
-	}
-	results, err := s.client.batch(ctx, sourceLocale, targetLocale, requestTexts)
-	if err != nil {
-		for _, item := range pending {
-			outcomes[item.original] = Outcome{Translated: item.original, Err: err}
-		}
-		return outcomes
-	}
-	for _, result := range results {
-		item := pending[result.Index]
-		if result.Status != statusTranslated || !isUsableTranslation(result.Translated, item.value, item.target) {
+		if !complete || !slices.Equal(placeholderPattern.FindAllString(item.masked, -1), placeholderPattern.FindAllString(assembled.String(), -1)) {
 			outcomes[item.original] = Outcome{Translated: item.original, Err: ErrCenterUnavailable}
 			continue
 		}
-		translated := strings.TrimSpace(result.Translated)
+		translated := restoreProtectedText(assembled.String(), item.protected)
+		if !isValidCachedTranslation(translated, item.value) {
+			outcomes[item.original] = Outcome{Translated: item.original, Err: ErrCenterUnavailable}
+			continue
+		}
 		s.cache.set(item.key, translated)
 		s.persistent.set(item.persistentKey, item.source, item.target, translated)
 		outcomes[item.original] = Outcome{Translated: translated}
@@ -189,10 +236,148 @@ func (s *Service) TranslateBatch(ctx context.Context, sourceLocale, targetLocale
 type pendingText struct {
 	original      string
 	value         string
+	masked        string
+	protected     []string
+	parts         []string
 	source        string
 	target        string
 	key           string
 	persistentKey string
+}
+
+func (s *Service) translateSegments(ctx context.Context, sourceLocale, targetLocale string, segments []string) map[string]Outcome {
+	results := make(map[string]Outcome, len(segments))
+	for _, segment := range segments {
+		results[segment] = Outcome{Translated: segment, Err: ErrCenterUnavailable}
+	}
+	if len(segments) == 0 {
+		return results
+	}
+	var mu sync.Mutex
+	jobs := make(chan []string)
+	var workers sync.WaitGroup
+	for range 2 {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for batch := range jobs {
+				if ctx.Err() != nil {
+					continue
+				}
+				response, err := s.client.batch(ctx, sourceLocale, targetLocale, batch)
+				if err != nil {
+					continue
+				}
+				mu.Lock()
+				for _, item := range response {
+					if item.Status == statusTranslated && item.Index >= 0 && item.Index < len(batch) {
+						results[batch[item.Index]] = Outcome{Translated: item.Translated}
+					}
+				}
+				mu.Unlock()
+			}
+		}()
+	}
+	for start := 0; start < len(segments); start += s.maxBatch {
+		end := min(start+s.maxBatch, len(segments))
+		select {
+		case jobs <- segments[start:end]:
+		case <-ctx.Done():
+			close(jobs)
+			workers.Wait()
+			return results
+		}
+	}
+	close(jobs)
+	workers.Wait()
+	return results
+}
+
+func protectTranslationText(value string) (string, []string, bool) {
+	if secretAssignment.MatchString(value) || placeholderPattern.MatchString(value) {
+		return "", nil, false
+	}
+	for _, character := range value {
+		if unicode.IsControl(character) && character != '\n' && character != '\r' && character != '\t' {
+			return "", nil, false
+		}
+	}
+	protected := make([]string, 0)
+	masked := protectedValuePattern.ReplaceAllStringFunc(value, func(found string) string {
+		placeholder := "[[T" + strconv.Itoa(len(protected)) + "]]"
+		protected = append(protected, found)
+		return placeholder
+	})
+	if strings.ContainsAny(masked, "/\\") || strings.Contains(masked, "://") {
+		return "", nil, false
+	}
+	return masked, protected, true
+}
+
+func restoreProtectedText(masked string, protected []string) string {
+	return placeholderPattern.ReplaceAllStringFunc(masked, func(marker string) string {
+		index, err := strconv.Atoi(marker[3 : len(marker)-2])
+		if err != nil || index < 0 || index >= len(protected) {
+			return marker
+		}
+		return protected[index]
+	})
+}
+
+func splitTranslationText(value string, maxRunes int) []string {
+	if maxRunes <= 0 {
+		return nil
+	}
+	runes := []rune(value)
+	parts := make([]string, 0, (len(runes)/maxRunes)+1)
+	for offset := 0; offset < len(runes); {
+		if runes[offset] == '\n' || runes[offset] == '\r' || runes[offset] == '\t' {
+			parts = append(parts, string(runes[offset]))
+			offset++
+			continue
+		}
+		lineEnd := offset
+		for lineEnd < len(runes) && runes[lineEnd] != '\n' && runes[lineEnd] != '\r' && runes[lineEnd] != '\t' {
+			lineEnd++
+		}
+		for offset < lineEnd {
+			cut := min(maxRunes, lineEnd-offset)
+			sentenceBoundary := false
+			for index := 0; index < cut; index++ {
+				if strings.ContainsRune("。！？!?；;", runes[offset+index]) {
+					cut = index + 1
+					sentenceBoundary = true
+					break
+				}
+			}
+			if !sentenceBoundary && cut < lineEnd-offset {
+				for index := cut - 1; index >= cut/2; index-- {
+					if unicode.IsSpace(runes[offset+index]) || strings.ContainsRune("，,：:.", runes[offset+index]) {
+						cut = index + 1
+						break
+					}
+				}
+			}
+			prefix := string(runes[offset : offset+cut])
+			if marker := strings.LastIndex(prefix, "[[T"); marker >= 0 && !strings.Contains(prefix[marker:], "]]") {
+				if before := utf8.RuneCountInString(prefix[:marker]); before > 0 {
+					cut = before
+				} else {
+					remaining := string(runes[offset:lineEnd])
+					if end := strings.Index(remaining, "]]"); end >= 0 {
+						cut = utf8.RuneCountInString(remaining[:end+2])
+					}
+				}
+			}
+			parts = append(parts, string(runes[offset:offset+cut]))
+			offset += cut
+		}
+	}
+	return parts
+}
+
+func isValidCachedTranslation(translated, source string) bool {
+	return strings.TrimSpace(translated) != "" && utf8.ValidString(translated) && translated != source
 }
 
 func cacheKey(source, target, provider, model, field, text string) string {
@@ -269,7 +454,15 @@ func isUsableTranslation(translated, source, target string) bool {
 	if translated == "" || !utf8.ValidString(translated) || translated == strings.TrimSpace(source) {
 		return false
 	}
-	return target != "en" || !containsNonEnglish(translated)
+	if !slices.Equal(placeholderPattern.FindAllString(source, -1), placeholderPattern.FindAllString(translated, -1)) {
+		return false
+	}
+	if target == "en" && containsScript(translated, unicode.Han) {
+		return false
+	}
+	sourceBody := placeholderPattern.ReplaceAllString(source, "")
+	translatedBody := placeholderPattern.ReplaceAllString(translated, "")
+	return utf8.RuneCountInString(sourceBody) < 40 || utf8.RuneCountInString(translatedBody)*2 >= utf8.RuneCountInString(sourceBody)
 }
 
 type cache struct {

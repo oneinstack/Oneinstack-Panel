@@ -105,7 +105,7 @@ translation:
   identityPath: "/usr/local/one/translation/panel-center.key"
   activationCodeFile: "/usr/local/one/translation/activation-code"
   provider: tencent-hunyuan
-  responseTimeoutSeconds: 15
+  responseTimeoutSeconds: 30
   cacheTTLMinutes: 1440
   cacheMaxEntries: 4096
   maxTextLength: 512
