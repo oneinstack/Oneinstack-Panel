@@ -73,7 +73,7 @@ func New(cfg config.Translation, database *gorm.DB) (*Service, error) {
 	}
 	responseTimeout := time.Duration(cfg.ResponseTimeoutSeconds) * time.Second
 	if responseTimeout <= 0 {
-		responseTimeout = 30 * time.Second
+		responseTimeout = 120 * time.Second
 	}
 	maxText := cfg.MaxTextLength
 	if maxText <= 0 {

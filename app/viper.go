@@ -134,7 +134,7 @@ translation:
     centerUrl: "https://center.oneinstack.com"
     identityPath: "/usr/local/one/translation/panel-center.key"
     activationCodeFile: "/usr/local/one/translation/activation-code"
-    responseTimeoutSeconds: 15
+    responseTimeoutSeconds: 120
     cacheTTLMinutes: 1440
     cacheMaxEntries: 4096
     maxTextLength: 512
@@ -262,7 +262,7 @@ func LoadConfig(path ...string) (*viper.Viper, error) {
 	v.SetDefault("translation.centerUrl", translationCenterURL)
 	v.SetDefault("translation.identityPath", filepath.Join(GetBasePath(), "translation", "panel-center.key"))
 	v.SetDefault("translation.activationCodeFile", filepath.Join(GetBasePath(), "translation", "activation-code"))
-	v.SetDefault("translation.responseTimeoutSeconds", 15)
+	v.SetDefault("translation.responseTimeoutSeconds", 120)
 	v.SetDefault("translation.cacheTTLMinutes", 1440)
 	v.SetDefault("translation.cacheMaxEntries", 4096)
 	v.SetDefault("translation.maxTextLength", 512)
@@ -986,8 +986,8 @@ func validateTranslationConfig() error {
 	if mode != "center" {
 		return fmt.Errorf("validate config: translation.mode must be center")
 	}
-	if translation.ResponseTimeoutSeconds < 1 || translation.ResponseTimeoutSeconds > 60 {
-		return fmt.Errorf("validate config: translation.responseTimeoutSeconds must be between 1 and 60")
+	if translation.ResponseTimeoutSeconds < 1 || translation.ResponseTimeoutSeconds > 300 {
+		return fmt.Errorf("validate config: translation.responseTimeoutSeconds must be between 1 and 300")
 	}
 	if translation.CacheTTLMinutes < 1 || translation.CacheTTLMinutes > 43200 {
 		return fmt.Errorf("validate config: translation.cacheTTLMinutes must be between 1 and 43200")

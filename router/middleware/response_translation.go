@@ -24,7 +24,7 @@ import (
 const (
 	maxBufferedTranslationResponse = 512 << 10
 	defaultTranslationFields       = 0 // zero means all eligible fields
-	defaultTranslationTimeout      = 30 * time.Second
+	defaultTranslationTimeout      = 120 * time.Second
 )
 
 // ResponseTranslation adds a best-effort translation fallback for
