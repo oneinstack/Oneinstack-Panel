@@ -1,6 +1,8 @@
 package middleware
 
 import (
+	"bytes"
+	"compress/gzip"
 	"fmt"
 	"io/fs"
 	"net/http"
@@ -11,12 +13,17 @@ import (
 	"oneinstack/utils/httpex"
 	"oneinstack/webui"
 	"path"
+	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/gin-gonic/gin"
 )
 
 const panelEntryHintStylesheetPath = "/__panel-entry_hint.css"
+
+// Only successfully read, immutable embedded JS/CSS paths reach this cache.
+var compressedUIAssets sync.Map
 
 // MidUiHandle serves the embedded SPA only for non-API routes that were not
 // matched by the router.
@@ -92,7 +99,110 @@ func MidUiHandle(c *gin.Context) {
 	if panelEntryEnabled && servedPath == "index.html" {
 		data = rewriteIndexBasePath(data, panelEntryPath)
 	}
+	if extension := strings.ToLower(path.Ext(servedPath)); extension == ".js" || extension == ".css" {
+		addUIEncodingVary(c.Writer.Header())
+		preferGzip, identityAllowed := negotiateUIEncoding(c.Request.Header.Values("Accept-Encoding"))
+		encoded := false
+		if preferGzip {
+			if compressed := compressedUIAsset(servedPath, data); len(compressed) > 0 {
+				data = compressed
+				c.Header("Content-Encoding", "gzip")
+				encoded = true
+			}
+		}
+		if !encoded && !identityAllowed {
+			c.Header("Cache-Control", "no-store")
+			c.Header("Content-Length", "0")
+			c.Status(http.StatusNotAcceptable)
+			c.Writer.WriteHeaderNow()
+			return
+		}
+	}
+	// Declare the final representation size so clients can detect incomplete assets.
+	c.Header("Content-Length", strconv.Itoa(len(data)))
 	c.Data(http.StatusOK, getContentType(servedPath), data)
+}
+
+func addUIEncodingVary(header http.Header) {
+	for _, line := range header.Values("Vary") {
+		for _, value := range strings.Split(line, ",") {
+			if value = strings.TrimSpace(value); value == "*" || strings.EqualFold(value, "Accept-Encoding") {
+				return
+			}
+		}
+	}
+	header.Add("Vary", "Accept-Encoding")
+}
+
+func negotiateUIEncoding(values []string) (preferGzip, identityAllowed bool) {
+	qualities := make(map[string]float64, 3)
+	for _, value := range values {
+		for _, item := range strings.Split(value, ",") {
+			parts := strings.Split(item, ";")
+			coding := strings.ToLower(strings.TrimSpace(parts[0]))
+			if coding != "gzip" && coding != "identity" && coding != "*" {
+				continue
+			}
+			quality := 1.0
+			for _, parameter := range parts[1:] {
+				name, raw, found := strings.Cut(strings.TrimSpace(parameter), "=")
+				if !strings.EqualFold(strings.TrimSpace(name), "q") {
+					continue
+				}
+				parsed, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+				if !found || err != nil || !(parsed >= 0 && parsed <= 1) {
+					quality = 0
+					break
+				}
+				if parsed < quality {
+					quality = parsed
+				}
+			}
+			// Explicit exclusions also win over contradictory duplicate entries.
+			if previous, exists := qualities[coding]; !exists || quality < previous {
+				qualities[coding] = quality
+			}
+		}
+	}
+	gzipQuality, explicitGzip := qualities["gzip"]
+	if !explicitGzip {
+		gzipQuality = qualities["*"]
+	}
+	identityQuality, explicitIdentity := qualities["identity"]
+	if !explicitIdentity {
+		identityQuality = 1
+		if wildcard, exists := qualities["*"]; exists && wildcard == 0 {
+			identityQuality = 0
+		}
+	}
+	return gzipQuality > 0 && (!explicitIdentity || gzipQuality >= identityQuality), identityQuality > 0
+}
+
+func compressedUIAsset(servedPath string, data []byte) []byte {
+	if len(data) < 1024 {
+		return nil
+	}
+	if cached, exists := compressedUIAssets.Load(servedPath); exists {
+		return cached.([]byte)
+	}
+	var buffer bytes.Buffer
+	writer, err := gzip.NewWriterLevel(&buffer, gzip.BestSpeed)
+	if err != nil {
+		return nil
+	}
+	if _, err := writer.Write(data); err != nil {
+		_ = writer.Close()
+		return nil
+	}
+	if err := writer.Close(); err != nil {
+		return nil
+	}
+	var compressed []byte
+	if buffer.Len() < len(data) {
+		compressed = buffer.Bytes()
+	}
+	cached, _ := compressedUIAssets.LoadOrStore(servedPath, compressed)
+	return cached.([]byte)
 }
 
 func PanelEntryGuard() gin.HandlerFunc {
