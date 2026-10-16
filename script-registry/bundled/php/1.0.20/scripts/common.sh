@@ -108,8 +108,8 @@ emit_progress() {
   message="${message//\\/\\\\}"
   message="${message//\"/\\\"}"
   message="${message//$'\n'/ }"
-  printf '{"type":"progress","percent":%s,"code":"%s","message":"%s"}\n' \
-    "${percent}" "${code}" "${message}" >&"${fd}" 2>/dev/null || true
+  { printf '{"type":"progress","percent":%s,"code":"%s","message":"%s"}\n' \
+      "${percent}" "${code}" "${message}" >&"${fd}"; } 2>/dev/null || true
 }
 
 require_root() {
@@ -166,9 +166,9 @@ select_source() {
 	source_archive="${source_url##*/}"
 	source_urls=("${source_url}")
   if is_legacy_php; then
-    build_id="php-${patch_version}-$(architecture_name)-legacy-oneinstack-1.0.19"
+    build_id="php-${patch_version}-$(architecture_name)-legacy-oneinstack-1.0.20"
   else
-    build_id="php-${patch_version}-$(architecture_name)-glibc-oneinstack-1.0.19"
+    build_id="php-${patch_version}-$(architecture_name)-glibc-oneinstack-1.0.20"
   fi
 }
 
@@ -538,8 +538,8 @@ validate_offline_bundle() {
     die_code PACKAGE_VERIFY_FAILED "Offline PHP Bundle checksum verification failed"
   grep -Eq '^[[:space:]]+id:[[:space:]]+php[[:space:]]*$' "${offline_package_path}/manifest.yaml" ||
     die_code PACKAGE_INVALID "Offline Bundle component is not PHP"
-  grep -Eq '^[[:space:]]+version:[[:space:]]+1\.0\.19[[:space:]]*$' "${offline_package_path}/manifest.yaml" ||
-    die_code PACKAGE_INVALID "Offline Bundle package version does not match PHP 1.0.19"
+  grep -Eq '^[[:space:]]+version:[[:space:]]+1\.0\.20[[:space:]]*$' "${offline_package_path}/manifest.yaml" ||
+    die_code PACKAGE_INVALID "Offline Bundle package version does not match PHP 1.0.20"
 }
 
 install_dependencies_offline() {

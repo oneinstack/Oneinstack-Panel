@@ -3,7 +3,7 @@ set -Eeuo pipefail
 umask 027
 
 component_id="nginx"
-package_version="1.0.20"
+package_version="1.0.21"
 software_version="${SOFTWARE_VERSION:-1.31.0}"
 nginx_port="${NGINX_PORT:-80}"
 install_dir="${INSTALL_DIR:-/usr/local/nginx}"
@@ -54,8 +54,8 @@ emit_progress() {
   local percent="$1" code="$2" message="$3" fd="${ONEINSTACK_PROGRESS_FD:-}"
   [[ "${fd}" =~ ^[0-9]+$ ]] || return 0
   message="${message//\\/\\\\}"; message="${message//\"/\\\"}"; message="${message//$'\n'/ }"
-  printf '{"type":"progress","percent":%s,"code":"%s","message":"%s"}\n' \
-    "${percent}" "${code}" "${message}" >&"${fd}" 2>/dev/null || true
+  { printf '{"type":"progress","percent":%s,"code":"%s","message":"%s"}\n' \
+      "${percent}" "${code}" "${message}" >&"${fd}"; } 2>/dev/null || true
 }
 require_root() { [[ "$(id -u)" -eq 0 ]] || die "This action must run as root."; }
 require_command() { command -v "$1" >/dev/null 2>&1 || die "Required command not found: $1"; }
