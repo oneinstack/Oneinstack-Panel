@@ -135,7 +135,7 @@ func RevealComposeConfig(c *gin.Context) {
 		return
 	}
 	if !verifyCurrentPanelPassword(c, request.PanelPassword) {
-		core.HandleError(c, core.NewError(core.ErrInvalidPassword, "当前面板密码错误"))
+		core.HandleError(c, core.NewError(core.ErrReauthenticationFailed, "当前面板密码错误"))
 		return
 	}
 	ctx, cancel := requestContext(c)

@@ -50,7 +50,7 @@ func CreateTicket(c *gin.Context) {
 	}
 	account, verified := userservice.CheckUserPassword(username, input.Password)
 	if !verified || account.ID != userID {
-		core.HandleError(c, core.NewError(core.ErrInvalidPassword, "二次认证失败"))
+		core.HandleError(c, core.NewError(core.ErrReauthenticationFailed, "二次认证失败"))
 		return
 	}
 	sourceSessionID, ok := middleware.AuthenticatedSessionID(c)

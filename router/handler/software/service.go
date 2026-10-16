@@ -299,8 +299,8 @@ func RevealComponentServiceCredentials(c *gin.Context) {
 			c.Header("Retry-After", strconv.FormatInt(int64(cooldown.Seconds()), 10))
 		}
 		auditservice.RecordAuthEvent(c, "software.credential_reveal", username, userID,
-			http.StatusUnauthorized, "failure", "", "component="+component)
-		core.HandleError(c, core.NewError(core.ErrInvalidPassword, "当前面板密码错误"))
+			http.StatusForbidden, "failure", "", "component="+component)
+		core.HandleError(c, core.NewError(core.ErrReauthenticationFailed, "当前面板密码错误"))
 		return
 	}
 	securityservice.ResetPasswordVerificationFailures(userID, remoteIP)

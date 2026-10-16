@@ -338,7 +338,7 @@ func RevealLibraryCredential(c *gin.Context) {
 		return
 	}
 	if !verifyCurrentPassword(c, req.PanelPassword) {
-		core.HandleError(c, core.NewError(core.ErrInvalidPassword, "当前面板密码错误"))
+		core.HandleError(c, core.NewError(core.ErrReauthenticationFailed, "当前面板密码错误"))
 		return
 	}
 	id, err := parseLibraryID(c)
@@ -370,7 +370,7 @@ func UpdateLibraryCredential(c *gin.Context) {
 		return
 	}
 	if !verifyCurrentPassword(c, req.PanelPassword) {
-		core.HandleError(c, core.NewError(core.ErrInvalidPassword, "当前面板密码错误"))
+		core.HandleError(c, core.NewError(core.ErrReauthenticationFailed, "当前面板密码错误"))
 		return
 	}
 	id, err := parseLibraryID(c)

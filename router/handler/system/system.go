@@ -151,8 +151,8 @@ func ResetPassword(c *gin.Context) {
 		if errors.As(err, &strengthErr) {
 			appErr = core.NewFieldError(core.ErrBadRequest, strengthErr.Error(), "password")
 		} else if errors.Is(err, system.ErrCurrentPasswordInvalid) {
-			auditservice.RecordAuthEvent(c, "auth.password_change", "", userID, 401, "failure", "", "当前密码错误")
-			appErr = core.NewError(core.ErrInvalidPassword, "当前密码错误")
+			auditservice.RecordAuthEvent(c, "auth.password_change", "", userID, 403, "failure", "", "当前密码错误")
+			appErr = core.NewError(core.ErrReauthenticationFailed, "当前密码错误")
 		}
 		core.HandleError(c, appErr)
 		return

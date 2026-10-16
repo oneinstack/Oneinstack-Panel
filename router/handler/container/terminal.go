@@ -52,8 +52,8 @@ func CreateTerminalTicket(c *gin.Context) {
 	account, verified := userservice.CheckUserPassword(username, request.Password)
 	if !verified || account == nil || account.ID != userID {
 		err = errors.New("容器终端二次认证失败")
-		recordAction(c, "container.terminal.ticket", http.StatusUnauthorized, err)
-		core.HandleError(c, core.NewError(core.ErrInvalidPassword, "二次认证失败"))
+		recordAction(c, "container.terminal.ticket", http.StatusForbidden, err)
+		core.HandleError(c, core.NewError(core.ErrReauthenticationFailed, "二次认证失败"))
 		return
 	}
 	sourceSessionID, ok := middleware.AuthenticatedSessionID(c)

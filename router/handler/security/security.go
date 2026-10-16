@@ -56,11 +56,11 @@ func VerifyPassword(c *gin.Context) {
 	if !verified || account.ID != userID {
 		locked, cooldown := securityservice.RecordPasswordVerificationFailure(userID, remoteIP)
 		auditservice.RecordAuthEvent(c, "auth.password_verify", username, userID,
-			http.StatusUnauthorized, "failure", "", "当前面板密码错误")
+			http.StatusForbidden, "failure", "", "当前面板密码错误")
 		if locked {
 			c.Header("Retry-After", strconv.FormatInt(int64(cooldown.Seconds()), 10))
 		}
-		core.HandleError(c, core.NewError(core.ErrInvalidPassword, "当前面板密码错误"))
+		core.HandleError(c, core.NewError(core.ErrReauthenticationFailed, "当前面板密码错误"))
 		return
 	}
 
@@ -279,9 +279,9 @@ func valueString(value interface{}) string {
 func handleSecurityError(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, securityservice.ErrInvalidPassword):
-		core.HandleError(c, core.NewError(core.ErrInvalidPassword, "当前密码错误"))
+		core.HandleError(c, core.NewError(core.ErrReauthenticationFailed, "当前密码错误"))
 	case errors.Is(err, securityservice.ErrInvalidSecondFactor):
-		core.HandleError(c, core.NewError(core.ErrInvalidPassword, "动态口令或恢复码无效"))
+		core.HandleError(c, core.NewError(core.ErrReauthenticationFailed, "动态口令或恢复码无效"))
 	case errors.Is(err, securityservice.ErrMFAAlreadyEnabled):
 		core.HandleErrorWithStatus(c, http.StatusConflict,
 			core.NewError(core.ErrBadRequest, "动态口令认证已经启用"))

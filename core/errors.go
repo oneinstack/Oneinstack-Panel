@@ -48,6 +48,8 @@ const (
 	ErrSessionUnavailable     ErrorCode = 1110
 	ErrInvalidTerminalTicket  ErrorCode = 1111
 	ErrPasswordChangeRequired ErrorCode = 1112
+	// ErrReauthenticationFailed rejects a sensitive operation without invalidating the login session.
+	ErrReauthenticationFailed ErrorCode = 1113
 
 	// 系统相关错误码
 	ErrPermissionDenied        ErrorCode = 1201
@@ -498,6 +500,8 @@ func containsSensitiveErrorDetail(detail string) bool {
 
 func defaultErrorDetail(code ErrorCode) string {
 	switch code {
+	case ErrReauthenticationFailed:
+		return "二次验证未通过，请检查当前密码、动态口令或恢复码后重试。"
 	case ErrBadRequest, ErrValidationFailed, ErrInvalidParameter, ErrRequiredField,
 		ErrInvalidID, ErrWeakPassword, ErrConfigValidateFailed, ErrConfigError:
 		return "请检查请求字段是否完整，并确认字段类型、格式和取值范围符合接口要求。"
@@ -593,6 +597,8 @@ func localizedErrorSuggestion(locale, suggestion string, code ErrorCode) string 
 
 func defaultEnglishErrorMessage(code ErrorCode) string {
 	switch code {
+	case ErrReauthenticationFailed:
+		return "Reauthentication failed"
 	case ErrBadRequest, ErrValidationFailed, ErrInvalidParameter, ErrRequiredField,
 		ErrInvalidID, ErrWeakPassword, ErrConfigValidateFailed, ErrConfigError:
 		return "The request parameters are invalid"
@@ -630,6 +636,8 @@ func defaultEnglishErrorMessage(code ErrorCode) string {
 
 func defaultEnglishErrorDetail(code ErrorCode) string {
 	switch code {
+	case ErrReauthenticationFailed:
+		return "Reauthentication failed. Check the current password, authenticator code, or recovery code and retry."
 	case ErrBadRequest, ErrValidationFailed, ErrInvalidParameter, ErrRequiredField,
 		ErrInvalidID, ErrWeakPassword, ErrConfigValidateFailed, ErrConfigError:
 		return "Check that all required fields are present and that their types, formats, and value ranges match the API contract."
@@ -724,7 +732,7 @@ func getHTTPStatusCode(code ErrorCode) int {
 		ErrSessionInvalidated, ErrInvalidTerminalTicket:
 		return http.StatusUnauthorized
 	case ErrForbidden, ErrPermissionDenied, ErrAdminRequired, ErrInsufficientPermissions,
-		ErrCSRFRejected, ErrPasswordChangeRequired, ErrApprovalSelfReview:
+		ErrCSRFRejected, ErrPasswordChangeRequired, ErrApprovalSelfReview, ErrReauthenticationFailed:
 		return http.StatusForbidden
 	case ErrNotFound, ErrUserNotFound, ErrSoftwareNotFound, ErrWebsiteNotFound, ErrFileNotFound:
 		return http.StatusNotFound
