@@ -6,11 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"oneinstack/app"
 	"oneinstack/internal/models"
@@ -112,6 +115,12 @@ func (e *InstallParameterError) InstallationMessage() string {
 		return "Web Server 状态不唯一或不是 OneinStack 受管服务，请先处理服务冲突"
 	case "PHPMA_DOCUMENT_ROOT_UNAVAILABLE":
 		return "无法确认 Web Server 默认站点的实际目录，请检查受管配置和目录是否存在"
+	case "PHPMA_PHP_MISSING":
+		return "未检测到可执行的 PHP，请先安装 PHP 后重试 phpMyAdmin"
+	case "PHPMA_PHP_RUNTIME_UNAVAILABLE":
+		return "PHP 命令无法报告运行版本，请检查 PHP 运行环境后重试"
+	case "PHPMA_PHP_VERSION_UNSUPPORTED":
+		return "当前 PHP 版本与所选 phpMyAdmin 版本不兼容，请选择兼容版本后重试"
 	case "Adminer publicPath must be one safe URL segment such as /adminer/":
 		return "Adminer 公开路径必须是单层安全 URL 路径，例如 /adminer/"
 	case "Adminer accessPolicy must be public, local, or allowlist":
@@ -221,6 +230,12 @@ func (e *InstallParameterError) PhpMyAdminWebRouteCode() string {
 func (e *InstallParameterError) InstallationMessageForLocale(locale string) string {
 	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(locale)), "en") {
 		switch strings.TrimSpace(e.Message) {
+		case "PHPMA_PHP_MISSING":
+			return "PHP is not installed. Install PHP before installing or upgrading phpMyAdmin."
+		case "PHPMA_PHP_RUNTIME_UNAVAILABLE":
+			return "PHP cannot report its runtime version. Check the PHP runtime before retrying."
+		case "PHPMA_PHP_VERSION_UNSUPPORTED":
+			return "The installed PHP version is incompatible with the selected phpMyAdmin version."
 		case "Apache installation directory is fixed":
 			return "Apache installs to /usr/local/apache. Use the default installation directory."
 		case "Apache website root is fixed":
@@ -395,6 +410,9 @@ func (installer *Installer) resolveInstallParams(ctx context.Context, params *in
 	if err := preparePhpMyAdminWebRoute(ctx, scriptInfo); err != nil {
 		return nil, err
 	}
+	if err := validatePhpMyAdminRuntimeForPreview(ctx, params, scriptInfo); err != nil {
+		return nil, err
+	}
 	if err := validateResolvedMySQLRootPasswordReset(params.Key, scriptInfo); err != nil {
 		return nil, err
 	}
@@ -405,6 +423,69 @@ func (installer *Installer) resolveInstallParams(ctx context.Context, params *in
 		return nil, scriptParameterError(err)
 	}
 	return scriptInfo, nil
+}
+
+// Match the component precheck's PHP candidate order without executing an
+// installation action. The component precheck remains authoritative if the
+// runtime changes after preview.
+func validatePhpMyAdminRuntimeForPreview(ctx context.Context, params *input.InstallParams, info *script.ScriptInfo) error {
+	if info == nil || info.Name != "phpmyadmin" || params == nil {
+		return nil
+	}
+	stateRoot := strings.TrimSpace(info.Params["ONEINSTACK_COMPONENT_STATE"])
+	if stateRoot == "" {
+		stateRoot = defaultComponentStateRoot
+	}
+	candidates := make([]string, 0, 3)
+	if data, err := os.ReadFile(filepath.Join(stateRoot, "php", "runtime-params")); err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			if !strings.HasPrefix(line, "install-dir=") {
+				continue
+			}
+			installDir := strings.TrimSpace(strings.TrimPrefix(line, "install-dir="))
+			if filepath.IsAbs(installDir) && filepath.Clean(installDir) == installDir {
+				candidates = append(candidates, filepath.Join(installDir, "bin", "php"))
+			}
+			break
+		}
+	}
+	candidates = append(candidates, "/usr/local/php/bin/php", "/usr/bin/php")
+	for _, candidate := range candidates {
+		stat, err := os.Stat(candidate)
+		if err != nil || !stat.Mode().IsRegular() || stat.Mode().Perm()&0111 == 0 {
+			continue
+		}
+		probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		output, err := exec.CommandContext(probeCtx, candidate, "-r", "echo PHP_VERSION;").Output()
+		cancel()
+		if err != nil || strings.TrimSpace(string(output)) == "" {
+			return &InstallParameterError{Field: "php", Message: "PHPMA_PHP_RUNTIME_UNAVAILABLE"}
+		}
+		version := strings.TrimSpace(string(output))
+		parts := strings.Split(version, ".")
+		if len(parts) < 2 {
+			return &InstallParameterError{Field: "php", Message: "PHPMA_PHP_RUNTIME_UNAVAILABLE"}
+		}
+		major, majorErr := strconv.Atoi(parts[0])
+		minor, minorErr := strconv.Atoi(parts[1])
+		if majorErr != nil || minorErr != nil {
+			return &InstallParameterError{Field: "php", Message: "PHPMA_PHP_RUNTIME_UNAVAILABLE"}
+		}
+		supported := false
+		switch params.Version {
+		case "4.4.15.10":
+			supported = major == 5 && minor >= 3 && minor <= 6 || major == 7 && minor == 0
+		case "5.2.3":
+			supported = major == 7 && minor >= 2 && minor <= 4 || major == 8 && minor <= 5
+		default:
+			return nil // The signed component manifest validates its own versions.
+		}
+		if !supported {
+			return &InstallParameterError{Field: "php", Message: "PHPMA_PHP_VERSION_UNSUPPORTED"}
+		}
+		return nil
+	}
+	return &InstallParameterError{Field: "php", Message: "PHPMA_PHP_MISSING"}
 }
 
 func validateApacheInstallPaths(params *input.InstallParams) error {
@@ -1038,6 +1119,14 @@ func PreviewInstallationPackage(ctx context.Context, params *input.InstallParams
 			source = versionSource
 		}
 		appendValue(spec.Name, value, source, sensitive)
+	}
+	// Server-owned paths are not editable, but a preview must still show the
+	// paths that the verified component package will write.
+	if strings.EqualFold(params.Key, "caddy") {
+		appendValue("install-dir", scriptInfo.Params["INSTALL_DIR"], "manifest_default", false)
+	}
+	if strings.EqualFold(params.Key, "adminer") || strings.EqualFold(params.Key, "caddy") || strings.EqualFold(params.Key, "firewalld") {
+		appendValue("component-state-dir", scriptInfo.Params["ONEINSTACK_COMPONENT_STATE"], "manifest_default", false)
 	}
 	var pin scriptregistry.PackagePin
 	if scriptInfo.PackagePin != nil {

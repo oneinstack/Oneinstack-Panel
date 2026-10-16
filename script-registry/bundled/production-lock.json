@@ -1,5 +1,5 @@
 {"schemaVersion":1,"centerCommit":"7937314dc89737b6039f87d4e9e2e18dd5a93158","packages":[
-  {"component":"adminer","version":"1.0.7","sha256":"53bc8009ab5a03cd477dd70356c1d71a2d08a987f6d29fee91e1091f68ca241d"},
+  {"component":"adminer","version":"1.0.8","sha256":"0e0886895afde07c9ea58fc698b3e4ad87640ec178b86498b70a7c0472860127","sourceCommit":"5e9a4e708c64369f1ed1076a7515ea1e4014a9c8"},
   {"component":"apache","version":"1.0.17","sha256":"e29b496f17be042b51f9069d1aaa16e70fa59f3fc52af8dd500f69538069004c"},
   {"component":"caddy","version":"1.0.18","sha256":"5b3091df8e58800456fbf047c0ba06289665ea3e5257a70808c94af25f1917d4"},
   {"component":"clamav","version":"1.0.26","sha256":"7488caf12db1b209c4061e31d652aa5ac570c9d9665f331d2635503308f82897"},

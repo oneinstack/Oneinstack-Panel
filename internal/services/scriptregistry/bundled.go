@@ -24,6 +24,8 @@ type BundledPackageRecord struct {
 	Component string `json:"component"`
 	Version   string `json:"version"`
 	SHA256    string `json:"sha256"`
+	// SourceCommit overrides the lock's CenterCommit for a selectively updated package.
+	SourceCommit string `json:"sourceCommit,omitempty"`
 }
 
 type BundledProductionLock struct {
@@ -64,8 +66,9 @@ func loadProductionLock(root string) (BundledProductionLock, error) {
 	if err := json.Unmarshal(contents, &lock); err != nil {
 		return BundledProductionLock{}, fmt.Errorf("parse bundled production lock: %w", err)
 	}
+	commitPattern := regexp.MustCompile(`^[0-9a-f]{40}$`)
 	if lock.SchemaVersion != 1 || len(lock.Packages) != len(productionComponents) ||
-		!regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(lock.CenterCommit) {
+		!commitPattern.MatchString(lock.CenterCommit) {
 		return BundledProductionLock{}, fmt.Errorf("invalid bundled production lock header")
 	}
 	seen := make(map[string]bool, len(lock.Packages))
@@ -78,6 +81,7 @@ func loadProductionLock(root string) (BundledProductionLock, error) {
 			}
 		}
 		if !allowed || seen[record.Component] || !versionPattern.MatchString(record.Version) ||
+			(record.SourceCommit != "" && !commitPattern.MatchString(record.SourceCommit)) ||
 			len(record.SHA256) != sha256.Size*2 || strings.ToLower(record.SHA256) != record.SHA256 {
 			return BundledProductionLock{}, fmt.Errorf("invalid bundled production package entry")
 		}

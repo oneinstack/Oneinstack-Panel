@@ -1706,6 +1706,37 @@ func softwarePreviewRuntimeFileChanges(runtimeValues map[string]string, uninstal
 	return files
 }
 
+func softwarePreviewComponentStatePath(runtimeValues map[string]string, component string) string {
+	root := strings.TrimSpace(runtimeValues["component-state-dir"])
+	if root == "" || !filepath.IsAbs(root) || filepath.Clean(root) != root {
+		return ""
+	}
+	return filepath.Join(root, component)
+}
+
+func adminerUpgradePreviewFiles(ctx context.Context, installedVersion, requestedPublicPath string) ([]previewservice.FileChange, error) {
+	files := []previewservice.FileChange{{Path: "/usr/local/adminer", Action: "replace", ChangeSummary: "替换受管 Adminer 程序并保留事务回滚副本"}}
+	configuration, err := softwareService.NewInstaller().InspectServiceConfiguration(ctx, "adminer", installedVersion)
+	if err != nil {
+		return files, fmt.Errorf("read installed Adminer paths for upgrade preview: %w", err)
+	}
+	runtime := configuration.Runtime
+	if runtime == nil || runtime.InstallDir != "/usr/local/adminer" ||
+		!filepath.IsAbs(runtime.DocumentRoot) || filepath.Clean(runtime.DocumentRoot) != runtime.DocumentRoot ||
+		strings.Trim(runtime.PublicPath, "/") == "" {
+		return files, errors.New("installed Adminer paths are unavailable for upgrade preview")
+	}
+	route := filepath.Join(runtime.DocumentRoot, strings.Trim(runtime.PublicPath, "/"))
+	if route == runtime.DocumentRoot || !strings.HasPrefix(route, runtime.DocumentRoot+string(filepath.Separator)) {
+		return files, errors.New("installed Adminer public route is outside the managed web root")
+	}
+	files = append(files, previewservice.FileChange{Path: route, Action: "replace", ChangeSummary: "重建受管 Adminer 公开访问入口"})
+	if requestedPublicPath != "" && requestedPublicPath != runtime.PublicPath {
+		return files[:1], errors.New("Adminer public route changes require execution-stage validation")
+	}
+	return files, nil
+}
+
 // Tomcat's managed paths are fixed by its component scripts rather than
 // exposed as editable installation parameters.
 func tomcatInstallPreviewFiles(stateRoot string) []previewservice.FileChange {
@@ -2123,6 +2154,15 @@ func buildDocument(ctx context.Context, operation string, payload json.RawMessag
 		if err := json.Unmarshal(payload, &value); err != nil {
 			return previewservice.Document{}, "", err
 		}
+		var installed models.Software
+		upgrade := false
+		if db := app.DB(); db != nil {
+			err := db.Where("`key` = ? AND installed = ?", value.Key, true).Order("id DESC").First(&installed).Error
+			if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+				return previewservice.Document{}, "", fmt.Errorf("read installed software for preview: %w", err)
+			}
+			upgrade = err == nil
+		}
 		explicit := softwareInstallExplicitParameters(value)
 		value.ExplicitParameters = explicit
 		if err := softwareService.RestoreInstalledParameters(&value, explicit); err != nil {
@@ -2185,12 +2225,62 @@ func buildDocument(ctx context.Context, operation string, payload json.RawMessag
 		installRuntimeValues := make(map[string]string)
 		for _, effectiveValue := range effectiveValues {
 			setSoftwarePreviewRuntimeValue(installRuntimeValues, effectiveValue.Key, effectiveValue.Value)
+			if effectiveValue.Key == "component-state-dir" {
+				installRuntimeValues["component-state-dir"] = effectiveValue.Value
+			} else if effectiveValue.Key == "adminer-public-path" {
+				installRuntimeValues["adminer-public-path"] = effectiveValue.Value
+			}
 		}
 		document.Files = append(document.Files, softwarePreviewRuntimeFileChanges(installRuntimeValues, false, "preserve")...)
-		document.Actions = []previewservice.Action{{Type: "component", Name: "执行受控软件安装动作", DisplayCommand: "由组件安装器按软件 key 和版本执行"}, {Type: "service", Name: "安装后验证服务状态", Service: "由组件探测器确定"}}
+		actionName := "执行受控软件安装动作"
+		verifyName := "安装后验证服务状态"
+		if upgrade {
+			actionName = "执行受控软件升级动作"
+			verifyName = "升级后验证服务状态"
+		}
+		document.Actions = []previewservice.Action{{Type: "component", Name: actionName, DisplayCommand: "由组件安装器按软件 key 和版本执行"}, {Type: "service", Name: verifyName, Service: "由组件探测器确定"}}
 		document.Impact = previewservice.Impact{WriteFiles: true, ModifyDatabase: true, RestartService: true}
+		component := strings.ToLower(strings.TrimSpace(value.Key))
+		if component == "adminer" {
+			if upgrade {
+				installedVersion := strings.TrimSpace(installed.InstallVersion)
+				if installedVersion == "" {
+					installedVersion = strings.TrimSpace(installed.Version)
+				}
+				files, err := adminerUpgradePreviewFiles(ctx, installedVersion, installRuntimeValues["adminer-public-path"])
+				document.Files = append(document.Files, files...)
+				if err != nil {
+					log.Printf("Adminer upgrade preview deferred public route probe: %v", err)
+					document.Prechecks = append(document.Prechecks, previewservice.Precheck{
+						Name: "Adminer 公开访问入口", Status: "deferred",
+						Message: "当前访问入口无法可靠探测；升级任务会按运行中的 Web 服务重新检查并验证入口",
+					})
+				}
+			} else {
+				document.Files = append(document.Files, previewservice.FileChange{Path: "/usr/local/adminer", Action: "create", ChangeSummary: "创建受管 Adminer 程序目录"})
+			}
+			if statePath := softwarePreviewComponentStatePath(installRuntimeValues, component); statePath != "" {
+				document.Files = append(document.Files, previewservice.FileChange{Path: statePath, Action: "create_or_update", ChangeSummary: "更新受管 Adminer 安装状态"})
+			}
+			document.Actions[1] = previewservice.Action{Type: "component", Name: "验证 Adminer Web 访问入口"}
+			document.Impact.RestartService = false
+		}
+		if component == "caddy" {
+			if statePath := softwarePreviewComponentStatePath(installRuntimeValues, component); statePath != "" {
+				document.Files = append(document.Files, previewservice.FileChange{Path: statePath, Action: "create_or_update", ChangeSummary: "更新受管 Caddy 安装状态"})
+			}
+		}
 		if strings.EqualFold(value.Key, "firewalld") {
 			document.Impact.RestartService = firewalldPreviewMayRestartService(ctx, migrateExternalFirewall)
+			document.Impact.NetworkRisk = migrateExternalFirewall
+			document.Files = append(document.Files, previewservice.FileChange{Path: "/etc/firewalld", Action: "create_or_update", ChangeSummary: "更新 firewalld 受管配置及防火墙规则"})
+			if statePath := softwarePreviewComponentStatePath(installRuntimeValues, component); statePath != "" {
+				document.Files = append(document.Files, previewservice.FileChange{Path: statePath, Action: "create_or_update", ChangeSummary: "保存规则及回滚状态"})
+			}
+			document.Actions[1] = previewservice.Action{Type: "service", Name: "按现有服务状态重载或启动 firewalld", Service: "firewalld.service"}
+			if migrateExternalFirewall {
+				document.Actions = append(document.Actions, previewservice.Action{Type: "component", Name: "迁移当前活动的 UFW 或 nftables 后端", DisplayCommand: "先保护面板端口，再切换防火墙后端"})
+			}
 		}
 		document.Rollback = previewservice.Rollback{Supported: true, Summary: "任务失败时由软件任务执行器按组件策略回滚或保留失败现场"}
 		if strings.EqualFold(value.Key, "mysql") || strings.EqualFold(value.Key, "db") {
