@@ -339,6 +339,9 @@ func createTables() error {
 	if err := migrateClusterSchema(); err != nil {
 		return err
 	}
+	if err := initFailureOutbox(db); err != nil {
+		return err
+	}
 	if err := accessservice.SeedBuiltin(db); err != nil {
 		return err
 	}

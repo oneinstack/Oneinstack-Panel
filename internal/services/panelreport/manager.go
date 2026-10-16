@@ -173,10 +173,7 @@ func (m *Manager) Stop(ctx context.Context) error {
 
 func (m *Manager) run(ctx context.Context) {
 	defer close(m.done)
-	client, err := translation.NewSignedPanelClient(ctx, translation.SignedPanelClientConfig{BaseURL: m.config.BaseURL, InstallDir: m.config.InstallDir, IdentityPath: m.config.IdentityPath, ActivationCodeFile: m.config.ActivationCodeFile, Timeout: m.config.Timeout})
-	if err != nil {
-		return
-	}
+	var client *translation.SignedPanelClient
 	timer := time.NewTimer(time.Second)
 	defer timer.Stop()
 	for {
@@ -184,6 +181,15 @@ func (m *Manager) run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-timer.C:
+			if client == nil {
+				created, err := translation.NewSignedPanelClient(ctx, translation.SignedPanelClientConfig{BaseURL: m.config.BaseURL, InstallDir: m.config.InstallDir, IdentityPath: m.config.IdentityPath, ActivationCodeFile: m.config.ActivationCodeFile, Timeout: m.config.Timeout})
+				if err != nil {
+					timer.Reset(30 * time.Second)
+					continue
+				}
+				client = created
+			}
+			m.syncFailures(ctx, client)
 			m.syncOnce(ctx, client)
 			timer.Reset(30 * time.Second)
 		}
