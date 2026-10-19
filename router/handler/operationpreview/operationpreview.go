@@ -546,6 +546,10 @@ func handleSoftwareLifecyclePreviewError(c *gin.Context, err error) bool {
 }
 
 func handleSoftwareInstallParameterError(c *gin.Context, err error) bool {
+	if appErr, ok := software.InstallationDependencyAppError(err, middleware.RequestLocale(c)); ok {
+		core.HandleError(c, appErr)
+		return true
+	}
 	if errors.Is(err, softwareService.ErrInstallCredentialsCorrupt) {
 		appErr := core.NewErrorWithDetail(core.ErrInvalidParameter, "无法恢复上次安装凭据", "托管凭据已损坏或实例密钥不匹配，请重新输入密码后再升级。")
 		appErr.StableCode = "SOFTWARE_CREDENTIAL_DECRYPT_FAILED"
@@ -3165,6 +3169,10 @@ func writeFirewallCollisionError(c *gin.Context, err error) bool {
 }
 
 func writeExecutionError(c *gin.Context, err error) {
+	if appErr, ok := software.InstallationDependencyAppError(err, middleware.RequestLocale(c)); ok {
+		core.HandleError(c, appErr)
+		return
+	}
 	if handleArtifactCleanupError(c, err) {
 		return
 	}

@@ -689,6 +689,27 @@ func (installer *Installer) inspectService(
 	if err != nil {
 		return ComponentServiceProbe{}, fmt.Errorf("resolve %s status package: %w", definition.Component, err)
 	}
+	return installer.inspectPreparedService(ctx, definition, version, componentPackage)
+}
+
+// InspectServiceWithPackage probes with the exact signed package used by a retest task.
+func (installer *Installer) InspectServiceWithPackage(ctx context.Context, component, version string, pin scriptregistry.PackagePin) (ComponentServiceProbe, error) {
+	definition, err := ResolveServiceComponent(app.DB(), component)
+	if err != nil {
+		return ComponentServiceProbe{}, err
+	}
+	registry, err := scriptregistry.New(app.ONE_CONFIG.ScriptCenter)
+	if err != nil {
+		return ComponentServiceProbe{}, err
+	}
+	pkg, err := registry.ResolveFixed(component, version, pin)
+	if err != nil {
+		return ComponentServiceProbe{}, err
+	}
+	return installer.inspectPreparedService(ctx, definition, version, pkg)
+}
+
+func (installer *Installer) inspectPreparedService(ctx context.Context, definition ComponentServiceDefinition, version string, componentPackage scriptregistry.Package) (ComponentServiceProbe, error) {
 	scriptInfo, err := scriptInfoFromPackage(componentPackage, "status")
 	if err != nil {
 		return ComponentServiceProbe{}, err

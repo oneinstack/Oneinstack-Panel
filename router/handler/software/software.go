@@ -161,6 +161,10 @@ func RunOfflineInstallation(c *gin.Context) {
 }
 
 func handleInstallationParameterError(c *gin.Context, err error) bool {
+	if appErr, ok := InstallationDependencyAppError(err, middleware.RequestLocale(c)); ok {
+		core.HandleError(c, appErr)
+		return true
+	}
 	if errors.Is(err, softwareService.ErrInstallCredentialsCorrupt) {
 		appErr := core.NewErrorWithDetail(core.ErrInvalidParameter, "无法恢复上次安装凭据", "托管凭据已损坏或实例密钥不匹配，请重新输入密码后再升级。")
 		appErr.StableCode = "SOFTWARE_CREDENTIAL_DECRYPT_FAILED"
@@ -179,6 +183,28 @@ func handleInstallationParameterError(c *gin.Context, err error) bool {
 	appErr.StableCode = parameterErr.PhpMyAdminWebRouteCode()
 	core.HandleSimpleError(c, appErr)
 	return true
+}
+
+// InstallationDependencyAppError shares dependency errors across preview,
+// confirmed execution, and direct online/offline installation endpoints.
+func InstallationDependencyAppError(err error, locale string) (*core.AppError, bool) {
+	var dependencyErr *softwareService.InstallDependencyError
+	if !errors.As(err, &dependencyErr) {
+		return nil, false
+	}
+	code := core.ErrContainerRuntimeUnavailable
+	switch dependencyErr.Code {
+	case "DOCKER_ENGINE_VERSION_MISMATCH":
+		code = core.ErrResourceStateInvalid
+	case "DOCKER_ENGINE_PROBE_TIMEOUT":
+		code = core.ErrTaskTimeout
+	}
+	message := dependencyErr.UserMessage(locale)
+	// The UI reads error.detail before its generic numeric-code fallback.
+	appErr := core.NewErrorWithDetail(code, message, message)
+	appErr.StableCode = dependencyErr.ErrorCode()
+	appErr.Field = "docker"
+	return appErr, true
 }
 
 func taskInstallSource(task *models.SoftwareTask) string {
@@ -201,12 +227,20 @@ func GetSoftware(c *gin.Context) {
 		core.HandleError(c, appErr)
 		return
 	}
+	locale := middleware.RequestLocale(c)
 	for index := range data.Data {
 		data.Data[index].Describe = i18n.LocalizeSoftwareDescription(
-			middleware.RequestLocale(c),
+			locale,
 			data.Data[index].Key,
 			data.Data[index].Describe,
 		)
+		for _, parameter := range data.Data[index].Params {
+			if parameter != nil {
+				parameter.Value = i18n.LocalizeComponentInstallParameterLabel(
+					locale, data.Data[index].Component, parameter.Key, parameter.Value,
+				)
+			}
+		}
 	}
 	core.HandleSuccess(c, data)
 }

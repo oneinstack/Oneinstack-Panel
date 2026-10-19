@@ -27,10 +27,11 @@ import (
 )
 
 type Registry struct {
-	config  config.ScriptCenter
-	client  *http.Client
-	baseURL *url.URL
-	host    Host
+	config              config.ScriptCenter
+	client              *http.Client
+	baseURL             *url.URL
+	host                Host
+	automationRequester AutomationRequester
 }
 
 type registryError struct {
@@ -289,7 +290,11 @@ func (r *Registry) resolveFixed(ctx context.Context, component, softwareVersion 
 	if _, err := hex.DecodeString(pin.PackageSHA256); err != nil {
 		return Package{}, newRegistryError("PACKAGE_CHECKSUM_MISMATCH", "fixed package digest is invalid", err)
 	}
-	root := filepath.Join(r.config.CachePath, "components", component, pin.ResolvedVersion, strings.ToLower(pin.PackageSHA256))
+	cacheRoot, cacheErr := r.automationCacheRoot(pin.PackageURL)
+	if cacheErr != nil {
+		return Package{}, newRegistryError("PACKAGE_RESOLVE_FAILED", "fixed package endpoint is invalid", cacheErr)
+	}
+	root := filepath.Join(cacheRoot, "components", component, pin.ResolvedVersion, strings.ToLower(pin.PackageSHA256))
 	if strings.EqualFold(strings.TrimSpace(pin.PackageSource), "offline") {
 		root = filepath.Join(r.config.CachePath, "components", component, "offline", strings.ToLower(pin.PackageSHA256))
 	} else if pin.PackageSource == "bundled" {
@@ -1005,7 +1010,15 @@ func (r *Registry) downloadAndPrepare(ctx context.Context, metadata Metadata) (P
 		archive.Close()
 		return Package{}, err
 	}
-	response, err := r.client.Do(request)
+	var response *http.Response
+	if r.automationRequester != nil {
+		request, err = r.automationRequester.NewRequest(ctx, http.MethodGet, request.URL.Path, AutomationSignatureDomain, nil)
+		if err == nil {
+			response, err = r.automationRequester.Do(request)
+		}
+	} else {
+		response, err = r.client.Do(request)
+	}
 	if err != nil {
 		archive.Close()
 		if errors.Is(err, context.Canceled) {

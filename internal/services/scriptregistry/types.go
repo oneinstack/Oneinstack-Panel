@@ -222,6 +222,7 @@ type Host struct {
 }
 
 type ResolveRequest struct {
+	Version         string `json:"version,omitempty"`
 	Component       string `json:"component"`
 	SoftwareVersion string `json:"softwareVersion,omitempty"`
 	Channel         string `json:"channel"`

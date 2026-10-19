@@ -9,11 +9,12 @@ import (
 )
 
 type InstallParams struct {
-	Key      string `json:"key"`      //安装的服务
-	Version  string `json:"version"`  //安装的版本
-	Port     string `json:"port"`     //端口
-	Username string `json:"username"` //账号
-	Pwd      string `json:"pwd"`      //密码
+	IdempotencyKey string `json:"-"`
+	Key            string `json:"key"`      //安装的服务
+	Version        string `json:"version"`  //安装的版本
+	Port           string `json:"port"`     //端口
+	Username       string `json:"username"` //账号
+	Pwd            string `json:"pwd"`      //密码
 	// Parameters contains component-specific values declared by the signed
 	// package manifest. It is intentionally not persisted with task metadata.
 	Parameters map[string]string `json:"parameters,omitempty"`

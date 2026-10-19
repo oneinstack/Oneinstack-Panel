@@ -1,7 +1,9 @@
 package i18n
 
 import (
+	"fmt"
 	"reflect"
+	"regexp"
 	"strings"
 )
 
@@ -22,6 +24,12 @@ func LocalizeBusinessText(locale, value string) string {
 		return translated
 	}
 	if translated := translateWebsiteRuntimePreviewText(value); translated != "" {
+		return translated
+	}
+	if translated := translateTomcatUpgradePreviewText(value); translated != "" {
+		return translated
+	}
+	if translated := translateSoftwareLifecyclePreviewText(value); translated != "" {
 		return translated
 	}
 	if strings.HasPrefix(value, "计划任务：") {
@@ -99,6 +107,11 @@ func LocalizeComponentConfigurationText(locale, component, key, value string) st
 // LocalizeComponentInstallParameterLabel gives install parameters a human
 // readable label without changing their stable machine key.
 func LocalizeComponentInstallParameterLabel(locale, component, key, fallback string) string {
+	if Canonical(locale) != LocaleEnUS {
+		if translated, ok := softwareInstallParameterChineseLabels[fallback]; ok {
+			return translated
+		}
+	}
 	if strings.EqualFold(strings.TrimSpace(component), "redis") {
 		if translated, ok := redisInstallParameterChineseLabels[strings.ToUpper(strings.TrimSpace(key))]; ok &&
 			Canonical(locale) != LocaleEnUS {
@@ -112,6 +125,14 @@ func LocalizeComponentInstallParameterLabel(locale, component, key, fallback str
 		}
 	}
 	return LocalizeComponentConfigurationText(locale, component, key, fallback)
+}
+
+var softwareInstallParameterChineseLabels = map[string]string{
+	"Endpoint":   "服务端点",
+	"Bucket":     "存储桶",
+	"Region":     "区域",
+	"Access key": "访问密钥 ID",
+	"Secret key": "访问密钥",
 }
 
 var adminerConfigurationChineseText = map[string]string{
@@ -238,6 +259,56 @@ func translateWebsiteRuntimePreviewText(value string) string {
 	name := body[:openIndex]
 	domain := body[openIndex+len(open) : domainEnd]
 	return "Website " + name + " (" + domain + ") will modify the runtime configuration or traffic path. Confirmation is required before execution"
+}
+
+var (
+	tomcatMajorUpgradePreviewPattern    = regexp.MustCompile(`^Tomcat (.+?) → (.+?) 为跨大版本升级；服务启动成功不代表应用兼容，请先备份应用并验证业务功能$`)
+	tomcatRecordedUpgradePreviewPattern = regexp.MustCompile(`^安装记录显示 Tomcat (.+?) → (.+?) 可能跨大版本，但未能回读实际运行版本；请核对版本、备份应用并验证兼容性$`)
+	tomcatRollbackPreviewPattern        = regexp.MustCompile(`^失败时脚本尝试从 (.+?) 恢复；旧程序：(.+?)；配置快照：(.+?)。/data/tomcat/webapps 不在此快照中，请升级前单独备份应用与数据；下次安装或升级会覆盖快照$`)
+)
+
+// Match complete backend templates so versions and configured snapshot paths
+// are preserved without translating arbitrary content embedded in them.
+func translateTomcatUpgradePreviewText(value string) string {
+	if match := tomcatMajorUpgradePreviewPattern.FindStringSubmatch(value); match != nil {
+		return fmt.Sprintf("Tomcat %s → %s is a major-version upgrade. A successful service start does not guarantee application compatibility. Back up applications and verify their functionality first", match[1], match[2])
+	}
+	if match := tomcatRecordedUpgradePreviewPattern.FindStringSubmatch(value); match != nil {
+		return fmt.Sprintf("Installation records indicate that Tomcat %s → %s may cross major versions, but the running version could not be read. Check the actual version, back up applications, and verify compatibility", match[1], match[2])
+	}
+	if match := tomcatRollbackPreviewPattern.FindStringSubmatch(value); match != nil {
+		return fmt.Sprintf("On failure, the script attempts to restore from %s; previous program: %s; configuration snapshot: %s. /data/tomcat/webapps is excluded from this snapshot. Back up applications and data separately before upgrading; the next installation or upgrade overwrites the snapshot", match[1], match[2], match[3])
+	}
+	return ""
+}
+
+var softwareLifecyclePreviewTemplates = []struct {
+	pattern *regexp.Regexp
+	format  string
+}{
+	{regexp.MustCompile(`^组件包 (.+?) 与 SHA-256 已固定，执行阶段使用 ResolveFixed$`), "Component package %s and its SHA-256 are fixed; execution uses ResolveFixed"},
+	{regexp.MustCompile(`^卸载 (.+?) (.+?) 将按目标主机执行已列出的服务、软件包和目录变更$`), "Uninstalling %s %s will apply the listed service, package, and directory changes on the target host"},
+	{regexp.MustCompile(`^卸载 (.+?) (.+?) 会执行旧版组件包声明的卸载动作并移除受管程序文件，执行前需要确认$`), "Uninstalling %s %s will run the uninstall action declared by the legacy component package and remove managed program files. Confirmation is required before execution"},
+	{regexp.MustCompile(`^将对 (.+?) 执行 (start|stop|restart|reload)，目标服务和组件包已固定$`), "%s: run service action %s using the fixed target services and component package"},
+	{regexp.MustCompile(`^已确认组件 (.+?)，软件版本 (.+?)，数据策略 (preserve|delete)$`), "Confirmed component %s, software version %s, data policy %s"},
+	{regexp.MustCompile(`^对 (.+?) 执行 (start|stop|restart|reload)$`), "Run service action on %s: %s"},
+	{regexp.MustCompile(`^停止并禁用 (.+)$`), "Stop and disable %s"},
+	{regexp.MustCompile(`^卸载 (.+) ([0-9A-Za-z][0-9A-Za-z._+-]*)$`), "Uninstall %s %s"},
+}
+
+func translateSoftwareLifecyclePreviewText(value string) string {
+	for _, template := range softwareLifecyclePreviewTemplates {
+		match := template.pattern.FindStringSubmatch(value)
+		if match == nil {
+			continue
+		}
+		arguments := make([]any, len(match)-1)
+		for index := 1; index < len(match); index++ {
+			arguments[index-1] = match[index]
+		}
+		return fmt.Sprintf(template.format, arguments...)
+	}
+	return ""
 }
 
 func LocalizeStatusText(locale, value string, failed bool) string {
@@ -701,7 +772,100 @@ var englishBusinessTexts = map[string]string{
 	"磁盘使用率":   "Disk usage",
 	"磁盘读取":    "Disk read",
 	"磁盘写入":    "Disk write",
-	"工作进程数":   "Worker processes",
+
+	"软件版本":                  "Software version",
+	"安装目录":                  "Installation directory",
+	"数据目录":                  "Data directory",
+	"日志目录":                  "Log directory",
+	"运行账号":                  "Running account",
+	"运行用户组":                 "Running user group",
+	"监听端口":                  "Listener port",
+	"绑定地址":                  "Bind address",
+	"MySQL 端口":              "MySQL port",
+	"MySQL端口":               "MySQL port",
+	"MySQL 登录用户":            "MySQL login user",
+	"MySQL 管理密码":            "MySQL administrator password",
+	"接管外部 MySQL":            "Take over external MySQL",
+	"确认接管外部 MySQL":          "Confirm takeover of external MySQL",
+	"重置已有 MySQL root 密码":    "Reset the existing MySQL root password",
+	"确认重置已有 MySQL root 密码":  "Confirm resetting the existing MySQL root password",
+	"Tomcat HTTP 端口":        "Tomcat HTTP port",
+	"Tomcat 绑定地址":           "Tomcat bind address",
+	"JVM 初始堆（MB）":           "JVM initial heap (MB)",
+	"JVM 最大堆（MB）":           "JVM maximum heap (MB)",
+	"最大线程数":                 "Maximum threads",
+	"等待队列长度":                "Accept queue length",
+	"连接超时（毫秒）":              "Connection timeout (milliseconds)",
+	"URI 编码":                "URI encoding",
+	"网站根目录":                 "Website root directory",
+	"虚拟主机目录":                "Virtual host directory",
+	"管理员密码":                 "Administrator password",
+	"管理员用户名":                "Administrator username",
+	"发现冲突时备份并接管":            "Back up and take over conflicting resources",
+	"Docker Engine 版本":      "Docker Engine version",
+	"组件状态目录":                "Component state directory",
+	"Docker Compose 版本":     "Docker Compose version",
+	"Fail2ban 版本":           "Fail2ban version",
+	"默认最大重试次数":              "Default maximum retries",
+	"默认统计窗口（秒）":             "Default observation window (seconds)",
+	"默认封禁时间（秒）":             "Default ban duration (seconds)",
+	"忽略 IP":                 "Ignored IP addresses",
+	"Redis 版本":              "Redis version",
+	"监听地址":                  "Listener addresses",
+	"Redis 登录用户":            "Redis login user",
+	"Redis 密码":              "Redis password",
+	"Halo 版本":               "Halo version",
+	"HTTP 监听端口":             "HTTP listener port",
+	"外部访问地址":                "External access URL",
+	"配置目录":                  "Configuration directory",
+	"运行用户":                  "Runtime user",
+	"JVM 初始堆内存（MB）":         "JVM initial heap (MB)",
+	"JVM 最大堆内存（MB）":         "JVM maximum heap (MB)",
+	"数据库类型":                 "Database type",
+	"数据库主机":                 "Database host",
+	"数据库端口":                 "Database port",
+	"数据库名称":                 "Database name",
+	"数据库用户名":                "Database username",
+	"数据库密码":                 "Database password",
+	"自动迁移 /root/.halo2 旧站点": "Automatically migrate the legacy site from /root/.halo2",
+	"Adminer 版本":            "Adminer version",
+	"公开访问路径":                "Public access path",
+	"访问策略":                  "Access policy",
+	"允许访问的 CIDR":            "Allowed CIDRs",
+	"默认数据库驱动":               "Default database driver",
+	"默认数据库服务器":              "Default database server",
+	"MongoDB 连接地址":          "MongoDB connection URL",
+	"MinIO 版本":              "MinIO version",
+	"Root 用户名":              "Root username",
+	"Root 密码":               "Root password",
+	"API 监听地址":              "API bind address",
+	"API 端口":                "API port",
+	"Console 监听地址":          "Console bind address",
+	"Console 端口":            "Console port",
+	"Console 外部跳转 URL":      "Console external redirect URL",
+	"WebDAV 版本":             "WebDAV version",
+	"登录账号":                  "Login account",
+	"登录密码":                  "Login password",
+	"ClamAV 版本":             "ClamAV version",
+	"病毒库目录":                 "Virus database directory",
+	"OpenSearch 初始管理员密码":    "OpenSearch initial administrator password",
+	"HTTPS 监听端口":            "HTTPS listener port",
+	"集群名称":                  "Cluster name",
+	"节点名称":                  "Node name",
+	"JVM 堆大小（MB）":           "JVM heap size (MB)",
+	"接管外部MySQL":             "Take over external MySQL",
+	"确认接管外部MySQL":           "Confirm takeover of external MySQL",
+	"状态探测范围":                "Status probe scope",
+	"Panel端口":               "Panel port",
+	"迁移外部防火墙后端":             "Migrate the external firewall backend",
+	"卸载数据策略":                "Uninstall data policy",
+	"确认删除数据":                "Confirm data deletion",
+	"PHP 内存限制":              "PHP memory limit",
+	"迁移外部 PHP-FPM":          "Migrate external PHP-FPM",
+	"确认迁移外部 PHP-FPM":        "Confirm migration of external PHP-FPM",
+	"确认删除 PHP 组件数据":         "Confirm deletion of PHP component data",
+
+	"工作进程数": "Worker processes",
 	"建议保持 auto；手动设置范围为 1–99。": "Keep auto unless manual tuning is required; valid range: 1-99.",
 	"单进程连接数":                  "Connections per worker",
 	"每个工作进程允许的最大连接数。":         "Maximum connections allowed per worker process.",
@@ -768,8 +932,10 @@ var englishBusinessTexts = map[string]string{
 	"重新加载 Caddy":                  "Reload Caddy",
 	"启用或停用网站虚拟主机配置":               "Enable or disable the website virtual-host configuration",
 	"执行受控软件安装动作":                  "Run the controlled software installation action",
+	"执行受控软件升级动作":                  "Run the controlled software upgrade action",
 	"由组件安装器按软件 key 和版本执行":         "Executed by the component installer using the software key and version",
 	"安装后验证服务状态":                   "Verify service status after installation",
+	"升级后验证服务状态":                   "Verify service status after upgrade",
 	"由组件探测器确定":                    "Determined by the component probe",
 	"任务失败时由软件任务执行器按组件策略回滚或保留失败现场": "On failure, the software task runner rolls back according to component policy or preserves the failure state",
 	"执行受控软件卸载动作":                   "Run the controlled software uninstall action",
@@ -811,7 +977,59 @@ var englishBusinessTexts = map[string]string{
 }
 
 var englishOperationPreviewBusinessTexts = map[string]string{
-	"创建或复用规范化后的网站根目录":               "Create or reuse the normalized website root directory",
+	"卸载后保留":    "Preserve after uninstall",
+	"移除受管程序文件": "Remove managed program files",
+	"按删除策略移除":  "Remove according to the deletion policy",
+	"替换受管 Adminer 程序并保留事务回滚副本": "Replace the managed Adminer program and keep a transaction rollback copy",
+	"重建受管 Adminer 公开访问入口":      "Rebuild the managed Adminer public access route",
+	"Adminer 公开访问入口":           "Adminer public access route",
+	"当前访问入口无法可靠探测；升级任务会按运行中的 Web 服务重新检查并验证入口": "The current access route cannot be reliably detected. The upgrade task will recheck and verify it using the running Web service",
+	"创建受管 Adminer 程序目录":         "Create the managed Adminer program directory",
+	"更新受管 Adminer 安装状态":         "Update the managed Adminer installation state",
+	"验证 Adminer Web 访问入口":       "Verify the Adminer Web access route",
+	"更新受管 Caddy 安装状态":           "Update the managed Caddy installation state",
+	"更新 firewalld 受管配置及防火墙规则":   "Update managed firewalld configuration and firewall rules",
+	"保存规则及回滚状态":                 "Save rules and rollback state",
+	"按现有服务状态重载或启动 firewalld":    "Reload or start firewalld according to its current service state",
+	"迁移当前活动的 UFW 或 nftables 后端": "Migrate the currently active UFW or nftables backend",
+	"先保护面板端口，再切换防火墙后端":          "Protect the Panel port before switching the firewall backend",
+	"失败时尝试恢复受管程序与配置；数据库内容不在回滚快照中，新初始化的数据会保留为失败现场":                           "On failure, attempt to restore managed programs and configuration. Database contents are excluded from the rollback snapshot; newly initialized data is retained for failure diagnosis",
+	"仅当已有 MySQL 数据目录认证失败时，通过隔离本地实例重置 root 密码":                               "Reset the root password through an isolated local instance only if authentication fails for the existing MySQL data directory",
+	"若执行中已变更 root 密码，失败回滚会尝试恢复受管程序和配置并保留数据目录，但不会撤销密码变更或自动恢复旧密码；新密码按一次性凭据交付": "If execution changes the root password, failure rollback attempts to restore managed programs and configuration and preserves the data directory, but does not undo the password change or automatically restore the old password. The new password is delivered as a one-time credential",
+	"移除系统软件包":                   "Remove system packages",
+	"卸载后保留目录":                   "Preserve the directory after uninstall",
+	"移除受管目录":                    "Remove the managed directory",
+	"按删除策略移除目录":                 "Remove the directory according to the deletion policy",
+	"移除组件状态内容":                  "Remove component state contents",
+	"仅移除组件管理的目录内容":              "Remove only directory contents managed by the component",
+	"组件预览契约":                    "Component preview contract",
+	"服务、软件包和目录来自已签名组件 Manifest": "Services, packages, and directories come from the signed component manifest",
+	"固定组件包":                     "Fixed component package",
+	"执行阶段将重新检查服务和受管资源状态":        "Execution will recheck service and managed resource state",
+	"由已验证的受管组件包执行卸载":            "Run uninstall through the verified managed component package",
+	"删除组件数据":                    "Delete component data",
+	"仅在删除策略和确认字段同时有效时执行":        "Run only when both the deletion policy and confirmation are valid",
+	"数据删除不可自动恢复":                "Deleted data cannot be restored automatically",
+	"数据目录和日志目录删除后不可由卸载任务恢复":     "The uninstall task cannot restore deleted data and log directories",
+	"保留组件数据和配置":                 "Preserve component data and configuration",
+	"卸载程序文件，保留受管数据与配置":          "Uninstall program files and preserve managed data and configuration",
+	"卸载完成后不自动恢复已移除的程序文件；保留的数据和配置可供重新安装后接管": "Removed program files are not automatically restored after uninstall. Preserved data and configuration can be adopted after reinstallation",
+	"卸载目标":    "Uninstall target",
+	"服务与文件状态": "Service and file state",
+	"执行阶段将重新检查服务、受管目录和已固定卸载包": "Execution will recheck services, managed directories, and the fixed uninstall package",
+	"恢复历史组件配置并保存历史":           "Restore historical component configuration and save history",
+	"创建或更新受管程序文件":             "Create or update managed program files",
+	"安装参数":                    "Installation parameters",
+	"版本、端口及组件清单参数校验通过":        "Parameter validation for version, port, and component manifest passed",
+	"Web 应用兼容性":               "Web application compatibility",
+	"Panel 无法验证应用兼容性；Tomcat 9 及更早版本到 10+ 需迁移 javax.* 到 jakarta.*，Tomcat 11 需 Java 17，并检查新版配置与应用功能": "Panel cannot verify application compatibility. Upgrading from Tomcat 9 or earlier to 10+ requires migrating javax.* to jakarta.*. Tomcat 11 requires Java 17. Check the new configuration and application functionality",
+	"无法回读当前 Tomcat 运行版本；升级前请核对实际版本、备份应用并验证兼容性":                                                     "The current running Tomcat version could not be read. Check the actual version, back up applications, and verify compatibility before upgrading",
+	"替换 Tomcat 程序目录；旧目录移至组件回滚快照":                                                                   "Replace the Tomcat program directory and move the previous directory to the component rollback snapshot",
+	"更新受管 Connector 配置": "Update the managed Connector configuration",
+	"更新受管 JVM 启动参数":     "Update the managed JVM startup parameters",
+	"更新并重启 Tomcat 服务":   "Update and restart the Tomcat service",
+	"保存本次升级的程序、配置及服务回滚快照；下次安装或升级会覆盖": "Save a rollback snapshot of the program, configuration, and service for this upgrade; the next installation or upgrade overwrites it",
+	"创建或复用规范化后的网站根目录":                "Create or reuse the normalized website root directory",
 	"按需放行网站端口":                      "Allow website ports as needed",
 	"更新 Web 服务器受管配置":                "Update the managed Web Server configuration",
 	"更新网站受管虚拟主机配置":                  "Update the managed website virtual-host configuration",

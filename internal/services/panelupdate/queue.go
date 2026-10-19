@@ -15,6 +15,8 @@ const pendingUpdateFile = "pending-update.json"
 
 type pendingUpdate struct {
 	ExpectedVersion string    `json:"expectedVersion"`
+	Channel         string    `json:"channel,omitempty"`
+	ExpectedSHA256  string    `json:"expectedSHA256,omitempty"`
 	CreatedAt       time.Time `json:"createdAt"`
 }
 
@@ -72,13 +74,14 @@ func (m *Manager) pendingUpdatePath() string {
 }
 
 func (m *Manager) writePendingUpdate(expectedVersion string) error {
+	return m.writePinnedPendingUpdate(pendingUpdate{ExpectedVersion: expectedVersion, CreatedAt: m.now().UTC()})
+}
+
+func (m *Manager) writePinnedPendingUpdate(value pendingUpdate) error {
 	if err := os.MkdirAll(m.updateRoot(), 0700); err != nil {
 		return err
 	}
-	content, err := json.Marshal(pendingUpdate{
-		ExpectedVersion: expectedVersion,
-		CreatedAt:       m.now().UTC(),
-	})
+	content, err := json.Marshal(value)
 	if err != nil {
 		return err
 	}

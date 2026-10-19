@@ -125,6 +125,13 @@ func SetupRouter() *gin.Engine {
 	}
 
 	// 除上述白名单外，所有 API 默认要求认证、限流并记录审计日志。
+	// Optional retest control plane uses its own protected token and HTTPS/loopback transport.
+	automation := api.Group("/automation", middleware.AuditLog(), middleware.APIRateLimitMiddleware(), software.AutomationAuth())
+	automation.GET("/facts", software.AutomationFacts)
+	automation.POST("/retests/:jobID/:step", software.AutomationRetest)
+	automation.GET("/retests/:jobID/:step", software.AutomationRetest)
+	automation.POST("/panel-updates/:jobID", software.AutomationPanelUpdate)
+	automation.GET("/panel-updates/:jobID", software.AutomationPanelUpdate)
 	protected := api.Group("")
 	protected.Use(middleware.AuditLog())
 	protected.Use(middleware.APIRateLimitMiddleware())

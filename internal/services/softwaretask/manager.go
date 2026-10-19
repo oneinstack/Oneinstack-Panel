@@ -32,6 +32,8 @@ const (
 )
 
 type InstallRequest struct {
+	// Only trusted orchestration supplies a digest; public request structs do not expose it.
+	IdempotencyKey        string
 	TaskID                string
 	Operation             string
 	Key                   string
@@ -357,6 +359,7 @@ func (m *Manager) SubmitServiceActionWithResolvedPackage(
 	confirmation string,
 	pin *scriptregistry.PackagePin,
 	requestedBy int64,
+	idempotencyKey ...string,
 ) (*models.SoftwareTask, error) {
 	key, err := m.softwareKeyForService(component)
 	if err != nil {
@@ -376,8 +379,14 @@ func (m *Manager) SubmitServiceActionWithResolvedPackage(
 			return nil, &RuntimeDependencyBusyError{OwnerService: owners[0].ServiceName}
 		}
 	}
+	version := ""
+	if len(idempotencyKey) > 0 && pin != nil {
+		version = pin.SoftwareVersion
+	}
 	return m.submit(InstallRequest{
+		IdempotencyKey:  firstIdempotencyKey(idempotencyKey),
 		Operation:       action,
+		Version:         version,
 		Key:             key,
 		SwitchRequested: switchRequested,
 		Confirmation:    strings.TrimSpace(confirmation),
@@ -430,6 +439,9 @@ func (m *Manager) submit(request InstallRequest, requestedBy int64) (*models.Sof
 	}
 	if m.stopping.Load() {
 		return nil, errors.New("software task manager is stopping")
+	}
+	if task, err := m.findIdempotentTask(request, requestedBy); task != nil || err != nil {
+		return task, err
 	}
 	request.Key = strings.TrimSpace(request.Key)
 	request.Operation = strings.ToLower(strings.TrimSpace(request.Operation))
@@ -560,6 +572,9 @@ func (m *Manager) submit(request InstallRequest, requestedBy int64) (*models.Sof
 
 	m.submitMu.Lock()
 	defer m.submitMu.Unlock()
+	if task, err := m.findIdempotentTask(request, requestedBy); task != nil || err != nil {
+		return task, err
+	}
 
 	var active int64
 	if err := m.db.Model(&models.SoftwareTask{}).
@@ -656,6 +671,9 @@ func (m *Manager) submit(request InstallRequest, requestedBy int64) (*models.Sof
 		}
 	}
 	taskID := uuid.NewString()
+	if request.IdempotencyKey != "" {
+		taskID = uuid.NewSHA1(uuid.NameSpaceURL, []byte("oneinstack-retest:"+request.IdempotencyKey)).String()
+	}
 	now := time.Now()
 	queuedMessage := "任务已进入" + operationLabel(operation) + "队列"
 	task := &models.SoftwareTask{
@@ -1418,6 +1436,23 @@ func (m *Manager) validateCatalogInstall(key, version string) error {
 	}
 	if strings.EqualFold(strings.TrimSpace(key), "db") || strings.EqualFold(strings.TrimSpace(key), "mysql") {
 		return softwareService.ValidateManagedMySQLVersion(m.db, key, version)
+	}
+	if strings.EqualFold(strings.TrimSpace(key), "firewalld") {
+		// The signed host-repository probe supplies the exact runtime version.
+		// Authorize its current Center component anchor here, rather than an old
+		// hidden exact-version row. The install validator still rechecks the
+		// requested version and fixed package against the host repository.
+		var anchor models.Software
+		result := m.db.Where("`key` = ? AND catalog_channel = ? AND catalog_managed = ? AND catalog_visible = ?",
+			"firewalld", state.Channel, true, true).
+			Order("recommended DESC, version_order ASC, id DESC").First(&anchor)
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("software %s is not published by Center", key)
+		}
+		if result.Error != nil {
+			return fmt.Errorf("read Center host-repository policy: %w", result.Error)
+		}
+		return nil
 	}
 	var catalogRow models.Software
 	result := m.db.Where("`key` = ? AND version = ?", key, version).First(&catalogRow)

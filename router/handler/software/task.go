@@ -462,6 +462,7 @@ func submitInstallationTask(
 		return nil, err
 	}
 	return manager.Submit(softwaretask.InstallRequest{
+		IdempotencyKey:     req.IdempotencyKey,
 		Key:                req.Key,
 		Version:            req.Version,
 		Port:               req.Port,

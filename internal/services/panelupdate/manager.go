@@ -137,6 +137,14 @@ func (m *Manager) Apply(ctx context.Context) (finalStatus Status, finalErr error
 	}
 	if hasPending {
 		defer func() { _ = m.clearPendingUpdate() }()
+		if pending.Channel != "" {
+			if (pending.Channel != "development" && pending.Channel != "stable") || len(pending.ExpectedSHA256) != 64 {
+				return Status{}, ErrInvalidManifest
+			}
+			previousChannel := m.config.Channel
+			m.config.Channel = pending.Channel
+			defer func() { m.config.Channel = previousChannel }()
+		}
 	}
 	if _, err := os.Stat(m.journalPath()); err == nil {
 		return Status{}, ErrRecoveryNeeded
@@ -161,6 +169,9 @@ func (m *Manager) Apply(ctx context.Context) (finalStatus Status, finalErr error
 		return m.fail(&status, err)
 	}
 	status.TargetVersion = manifest.Version
+	if hasPending && pending.ExpectedSHA256 != "" && pending.ExpectedSHA256 != artifact.SHA256 {
+		return m.fail(&status, fmt.Errorf("%w: pinned automation artifact changed", ErrTargetChanged))
+	}
 	if !result.UpdateAvailable {
 		return m.fail(&status, ErrNoUpdate)
 	}

@@ -15,6 +15,9 @@ concurrency:
 jobs:
   tag-and-dispatch:
     name: Create release tag and dispatch Release
+    # The approved worker publishes immutable Center artifacts itself. Keep the
+    # separate CI quality workflow active while avoiding a second release race.
+    if: ${{ !contains(github.event.head_commit.message, '[oneinstack-worker-release]') }}
     runs-on: ubuntu-latest
     steps:
       - name: Check out source

@@ -422,7 +422,74 @@ func (installer *Installer) resolveInstallParams(ctx context.Context, params *in
 	if err := script.ValidateParameters(scriptInfo); err != nil {
 		return nil, scriptParameterError(err)
 	}
+	if err := validateComposeEngineDependency(ctx, params); err != nil {
+		return nil, err
+	}
 	return scriptInfo, nil
+}
+
+// InstallDependencyError exposes only a stable dependency failure, never Docker
+// stderr, socket paths, remote endpoints, or credentials from the host.
+type InstallDependencyError struct {
+	Code string
+}
+
+func (e *InstallDependencyError) Error() string     { return e.Code }
+func (e *InstallDependencyError) ErrorCode() string { return e.Code }
+
+func (e *InstallDependencyError) UserMessage(locale string) string {
+	english := strings.HasPrefix(strings.ToLower(strings.TrimSpace(locale)), "en")
+	switch e.Code {
+	case "DOCKER_ENGINE_MISSING":
+		if english {
+			return "Docker is not installed or is not in the Panel process PATH. Install Docker before installing Docker Compose."
+		}
+		return "未找到 Docker 命令，请先安装 Docker，并确认 docker 已加入面板进程的 PATH，再安装 Docker Compose"
+	case "DOCKER_ENGINE_UNAVAILABLE":
+		if english {
+			return "Cannot connect to Docker. Start the Docker service and check the Panel user's Docker socket permissions before retrying."
+		}
+		return "无法连接 Docker，请先启动 Docker 服务，并检查面板运行用户的 Docker socket 访问权限后重试"
+	case "DOCKER_ENGINE_VERSION_MISMATCH":
+		if english {
+			return "Docker Compose 5.5.1 requires Docker Engine 29.8.0. Install or upgrade Docker to the required version before retrying."
+		}
+		return "Docker Compose 5.5.1 需要 Docker Engine 29.8.0，请先安装或升级 Docker 到所需版本后重试"
+	default:
+		if english {
+			return "The Docker status check timed out or was canceled. Check the Docker service and retry."
+		}
+		return "Docker 状态检查超时或已取消，请检查 Docker 服务后重试"
+	}
+}
+
+func validateComposeEngineDependency(ctx context.Context, params *input.InstallParams) error {
+	if params == nil || !strings.EqualFold(strings.TrimSpace(params.Key), "docker-compose") {
+		return nil
+	}
+	docker, err := exec.LookPath("docker")
+	if err != nil {
+		return &InstallDependencyError{Code: "DOCKER_ENGINE_MISSING"}
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	// Use the component's read-only server-version command. The container
+	// service also probes Compose itself, which is optional at this stage.
+	command := exec.CommandContext(probeCtx, docker, "version", "--format", "{{.Server.Version}}")
+	command.WaitDelay = time.Second
+	version, err := command.Output()
+	if probeCtx.Err() != nil {
+		return &InstallDependencyError{Code: "DOCKER_ENGINE_PROBE_TIMEOUT"}
+	}
+	if err != nil || strings.TrimSpace(string(version)) == "" {
+		return &InstallDependencyError{Code: "DOCKER_ENGINE_UNAVAILABLE"}
+	}
+	// Mirror the current fixed-version component's check_engine contract. New
+	// Compose versions retain their signed script precheck as the final authority.
+	if params.Version == "5.5.1" && strings.TrimSpace(string(version)) != "29.8.0" {
+		return &InstallDependencyError{Code: "DOCKER_ENGINE_VERSION_MISMATCH"}
+	}
+	return nil
 }
 
 // Match the component precheck's PHP candidate order without executing an
