@@ -1,6 +1,6 @@
 # Caddy 组件
 
-- 组件包版本：1.0.18
+- 组件包版本：1.0.22
 - 软件版本：2.10.2
 - 安装目录：/usr/local/caddy
 - 主配置：/usr/local/caddy/conf/Caddyfile

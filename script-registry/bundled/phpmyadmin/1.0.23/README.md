@@ -1,6 +1,6 @@
 # phpMyAdmin stable package
 
-Package version: 1.0.16. Supported software versions: 4.4.15.10, 5.2.3.
+Package version: 1.0.23. Supported software versions: 4.4.15.10, 5.2.3.
 The compatibility baseline is pinned to OneinStack commit 42d59b33765ad57c455b83bc3d4eb09ed367754a, and its archive
 is verified with SHA-256 65a9164f7d9b6037e0771b28cbd04baec0207c28f556dd78b773853898b53dfa.
 
@@ -34,15 +34,18 @@ rewritten automatically.
   files.sha256, and artifacts/phpmyadmin/<version>/*.tar.gz or *.tgz.
   Every artifact is checked against files.sha256 before extraction, and the
   install path does not access the network.
-- Common inputs are SOFTWARE_VERSION and ONEINSTACK_COMPONENT_STATE.
+- Common inputs are SOFTWARE_VERSION and ONEINSTACK_COMPONENT_STATE. Panel also
+  supplies server-owned ONEINSTACK_WEB_SERVER_KIND and
+  ONEINSTACK_WEB_DOCUMENT_ROOT after reading the active managed default site.
 
 ## Managed installation
 
-The managed directory is /data/wwwroot/phpMyAdmin. Compatible route aliases
-include /data/wwwroot/phpmyadmin and /data/wwwroot/default/phpMyAdmin.
-The scripts derive the document root, listen address, and port from the active
-web-server configuration. They persist the PHP-FPM socket and service, web
-server type and configuration path, and final URL in
+The managed directory remains /data/wwwroot/phpMyAdmin. The script verifies
+Panel's default-site document root against the active Web Server configuration
+and creates /phpMyAdmin/ links in that root, including custom roots. It records
+only links it creates (or links owned by a prior managed installation) for
+rollback and uninstall. It persists the PHP-FPM socket and service, web server
+type, document root, and final URL in
 <ONEINSTACK_COMPONENT_STATE>/phpmyadmin/installed.json.
 
 ## Validation boundary

@@ -1,6 +1,6 @@
 # OpenResty 稳定组件包
 
-组件包版本：1.0.13。支持 OpenResty 1.27.1.2、1.31.1.1，推荐版本为 1.31.1.1。
+组件包版本：1.0.17。支持 OpenResty 1.27.1.2、1.31.1.1，推荐版本为 1.31.1.1。
 
 组件直接构建官方源码，原生二进制位于 /usr/local/openresty/nginx/sbin/nginx，主配置位于
 /usr/local/openresty/nginx/conf/nginx.conf。源码归档、分离签名、SHA-256 与发布密钥完整指纹

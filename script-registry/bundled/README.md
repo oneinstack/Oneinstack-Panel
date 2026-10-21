@@ -5,8 +5,8 @@ Adminer, Apache, Caddy, ClamAV, Docker, Docker Compose, Fail2ban, firewalld,
 Halo, MariaDB, MongoDB, MySQL, Nginx, Node.js, OpenResty, OpenSearch, PHP,
 phpMyAdmin, Redis, Tengine, Tomcat, and WebDAV. Grafana, Loki, and MinIO are
 excluded. It records the committed Center source revision, package
-versions, and deterministic content digests. Older package directories remain
-available for installed component lifecycle actions.
+versions, and deterministic content digests. Only the locked version of each
+component is retained; synchronization removes older directories after validation.
 `production-catalog.json` contains the 22 matching software-store products
 from the same committed Center source, including versions, parameters, and
 icons. A fresh Panel can display this local catalog before Center sync.
