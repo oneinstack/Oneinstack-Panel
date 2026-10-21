@@ -134,4 +134,29 @@ catalog_candidate="${bundled_root}/production-catalog.json.new"
 cp -- "${temporary_dir}/production-catalog.json" "${catalog_candidate}"
 mv -f -- "${catalog_candidate}" "${bundled_root}/production-catalog.json"
 (cd -- "${panel_root}" && go run ./cmd/bundled-package verify "${bundled_root}")
+python3 - "${bundled_root}" <<'PY'
+import json
+import pathlib
+import re
+import shutil
+import sys
+
+root = pathlib.Path(sys.argv[1])
+lock = json.loads((root / "production-lock.json").read_text())
+obsolete = []
+for record in lock["packages"]:
+    component_root = root / record["component"]
+    selected = component_root / record["version"]
+    if selected.is_symlink() or not selected.is_dir():
+        raise SystemExit("Invalid locked package directory: " + str(selected))
+    for path in component_root.iterdir():
+        if path.name == record["version"] or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", path.name):
+            continue
+        if path.is_symlink() or not path.is_dir():
+            raise SystemExit("Invalid obsolete package directory: " + str(path))
+        obsolete.append(path)
+for path in obsolete:
+    shutil.rmtree(path)
+print("Removed " + str(len(obsolete)) + " obsolete bundled package directories")
+PY
 echo "Synchronized ${#components[@]} committed Center packages from ${center_commit}"
