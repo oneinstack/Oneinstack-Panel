@@ -107,6 +107,10 @@ func LocalizeComponentConfigurationText(locale, component, key, value string) st
 // LocalizeComponentInstallParameterLabel gives install parameters a human
 // readable label without changing their stable machine key.
 func LocalizeComponentInstallParameterLabel(locale, component, key, fallback string) string {
+	normalized := strings.ToUpper(strings.NewReplacer("-", "_", ".", "_").Replace(strings.TrimSpace(key)))
+	if label, ok := softwareInstallParameterLabels[normalized]; ok {
+		return LocalizeBusinessText(locale, label)
+	}
 	if Canonical(locale) != LocaleEnUS {
 		if translated, ok := softwareInstallParameterChineseLabels[fallback]; ok {
 			return translated
@@ -125,6 +129,44 @@ func LocalizeComponentInstallParameterLabel(locale, component, key, fallback str
 		}
 	}
 	return LocalizeComponentConfigurationText(locale, component, key, fallback)
+}
+
+// Labels are selected by stable parameter keys. Manifest defaults and user
+// values must never be translated along with their display labels.
+var softwareInstallParameterLabels = map[string]string{
+	"SOFTWARE_VERSION":                     "软件版本",
+	"INSTALL_DIR":                          "安装目录",
+	"DATA_DIR":                             "数据目录",
+	"LOG_DIR":                              "日志目录",
+	"CONFIG_FILE":                          "配置文件",
+	"CONFIG_DIR":                           "配置目录",
+	"RUN_USER":                             "运行账号",
+	"RUN_GROUP":                            "运行用户组",
+	"PORT":                                 "监听端口",
+	"WEB_ROOT":                             "网站根目录",
+	"WEB_VHOST_ROOT":                       "虚拟主机目录",
+	"SOCKET_PATH":                          "PHP-FPM Socket",
+	"PHP_FPM_SOCKET":                       "PHP-FPM Socket",
+	"SOCKET_GROUP":                         "Socket 访问组",
+	"PHP_MEMORY_LIMIT":                     "PHP 内存上限",
+	"MIGRATE_EXTERNAL_PHP":                 "接管外部 PHP-FPM",
+	"MIGRATE_EXTERNAL_MYSQL":               "接管外部 MySQL",
+	"MIGRATE_EXTERNAL_FIREWALL":            "迁移外部防火墙后端",
+	"MIGRATE_EXTERNAL_CONFIRM":             "确认接管外部服务",
+	"MYSQL_PORT":                           "MySQL 端口",
+	"MYSQL_BIND_ADDRESS":                   "绑定地址",
+	"MYSQL_USERNAME":                       "MySQL 登录用户",
+	"MYSQL_PASSWORD":                       "MySQL 管理密码",
+	"RESET_EXISTING_ROOT_PASSWORD":         "重置已有 MySQL root 密码",
+	"RESET_EXISTING_ROOT_PASSWORD_CONFIRM": "确认重置已有 MySQL root 密码",
+	"TOMCAT_PORT":                          "Tomcat HTTP 端口",
+	"TOMCAT_BIND_ADDRESS":                  "Tomcat 绑定地址",
+	"TOMCAT_JVM_XMS_MB":                    "JVM 初始堆（MB）",
+	"TOMCAT_JVM_XMX_MB":                    "JVM 最大堆（MB）",
+	"TOMCAT_MAX_THREADS":                   "最大线程数",
+	"TOMCAT_ACCEPT_COUNT":                  "等待队列长度",
+	"TOMCAT_CONNECTION_TIMEOUT_MS":         "连接超时（毫秒）",
+	"TOMCAT_URI_ENCODING":                  "URI 编码",
 }
 
 var softwareInstallParameterChineseLabels = map[string]string{
@@ -774,6 +816,11 @@ var englishBusinessTexts = map[string]string{
 	"磁盘写入":    "Disk write",
 
 	"软件版本":                  "Software version",
+	"配置文件":                  "Configuration file",
+	"PHP 内存上限":              "PHP memory limit",
+	"Socket 访问组":            "Socket access group",
+	"接管外部 PHP-FPM":          "Take over external PHP-FPM",
+	"确认接管外部服务":              "Confirm takeover of the external service",
 	"安装目录":                  "Installation directory",
 	"数据目录":                  "Data directory",
 	"日志目录":                  "Log directory",
@@ -1016,12 +1063,22 @@ var englishOperationPreviewBusinessTexts = map[string]string{
 	"卸载完成后不自动恢复已移除的程序文件；保留的数据和配置可供重新安装后接管": "Removed program files are not automatically restored after uninstall. Preserved data and configuration can be adopted after reinstallation",
 	"卸载目标":    "Uninstall target",
 	"服务与文件状态": "Service and file state",
-	"执行阶段将重新检查服务、受管目录和已固定卸载包": "Execution will recheck services, managed directories, and the fixed uninstall package",
-	"恢复历史组件配置并保存历史":           "Restore historical component configuration and save history",
-	"创建或更新受管程序文件":             "Create or update managed program files",
-	"安装参数":                    "Installation parameters",
-	"版本、端口及组件清单参数校验通过":        "Parameter validation for version, port, and component manifest passed",
-	"Web 应用兼容性":               "Web application compatibility",
+	"执行阶段将重新检查服务、受管目录和已固定卸载包":       "Execution will recheck services, managed directories, and the fixed uninstall package",
+	"恢复历史组件配置并保存历史":                 "Restore historical component configuration and save history",
+	"创建或更新受管程序文件":                   "Create or update managed program files",
+	"创建或更新 phpMyAdmin 公开访问入口":       "Create or update the public phpMyAdmin route",
+	"保存 phpMyAdmin 安装及入口状态":         "Save phpMyAdmin installation and route state",
+	"验证 phpMyAdmin Web 访问入口":        "Verify the phpMyAdmin web route",
+	"移除 Adminer 受管程序或公开访问入口":        "Remove managed Adminer program files or the public route",
+	"移除 Adminer 生成的程序文件，保留用户插件文件":   "Remove generated Adminer program files and preserve user plugin files",
+	"移除 Adminer 受管安装状态":             "Remove managed Adminer installation state",
+	"保留 Adminer 用户插件文件":             "Preserve user Adminer plugin files",
+	"移除公开入口和生成程序文件，保留用户插件文件":        "Remove the public route and generated program files while preserving user plugin files",
+	"当前入口无法可靠探测；卸载任务会按组件运行状态移除受管入口": "The current route cannot be reliably detected; the uninstall task will remove the managed route using the component runtime state",
+	"auto 自动匹配使用同一 Socket 的受管 Nginx 工作组；未检测到时使用 PHP 工作组。也可指定现有 Linux 用户组。": "auto matches the worker group of managed Nginx using the same socket, or uses the PHP worker group when none is detected. An existing Linux group can also be specified.",
+	"安装参数": "Installation parameters",
+	"版本、端口及组件清单参数校验通过": "Parameter validation for version, port, and component manifest passed",
+	"Web 应用兼容性":        "Web application compatibility",
 	"Panel 无法验证应用兼容性；Tomcat 9 及更早版本到 10+ 需迁移 javax.* 到 jakarta.*，Tomcat 11 需 Java 17，并检查新版配置与应用功能": "Panel cannot verify application compatibility. Upgrading from Tomcat 9 or earlier to 10+ requires migrating javax.* to jakarta.*. Tomcat 11 requires Java 17. Check the new configuration and application functionality",
 	"无法回读当前 Tomcat 运行版本；升级前请核对实际版本、备份应用并验证兼容性":                                                     "The current running Tomcat version could not be read. Check the actual version, back up applications, and verify compatibility before upgrading",
 	"替换 Tomcat 程序目录；旧目录移至组件回滚快照":                                                                   "Replace the Tomcat program directory and move the previous directory to the component rollback snapshot",

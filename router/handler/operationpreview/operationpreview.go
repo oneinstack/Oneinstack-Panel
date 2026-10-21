@@ -1675,6 +1675,8 @@ func setSoftwarePreviewRuntimeValue(values map[string]string, key, value string)
 		values["log-dir"] = strings.TrimSpace(value)
 	case "statedir":
 		values["state-dir"] = strings.TrimSpace(value)
+	case "componentstatedir", "oneinstackcomponentstate":
+		values["component-state-dir"] = strings.TrimSpace(value)
 	}
 }
 
@@ -2269,6 +2271,25 @@ func buildDocument(ctx context.Context, operation string, payload json.RawMessag
 			document.Actions[1] = previewservice.Action{Type: "component", Name: "验证 Adminer Web 访问入口"}
 			document.Impact.RestartService = false
 		}
+		if component == "phpmyadmin" {
+			for _, effectiveValue := range effectiveValues {
+				if effectiveValue.Key != "web-document-root" || effectiveValue.Value == "" {
+					continue
+				}
+				root := effectiveValue.Value
+				for _, name := range []string{"phpMyAdmin", "phpmyadmin"} {
+					path := filepath.Join(root, name)
+					if path != "/data/wwwroot/phpMyAdmin" {
+						document.Files = append(document.Files, previewservice.FileChange{Path: path, Action: "create_or_update", ChangeSummary: "创建或更新 phpMyAdmin 公开访问入口"})
+					}
+				}
+			}
+			if statePath := softwarePreviewComponentStatePath(installRuntimeValues, component); statePath != "" {
+				document.Files = append(document.Files, previewservice.FileChange{Path: statePath, Action: "create_or_update", ChangeSummary: "保存 phpMyAdmin 安装及入口状态"})
+			}
+			document.Actions[1] = previewservice.Action{Type: "component", Name: "验证 phpMyAdmin Web 访问入口"}
+			document.Impact.RestartService = false
+		}
 		if component == "caddy" {
 			if statePath := softwarePreviewComponentStatePath(installRuntimeValues, component); statePath != "" {
 				document.Files = append(document.Files, previewservice.FileChange{Path: statePath, Action: "create_or_update", ChangeSummary: "更新受管 Caddy 安装状态"})
@@ -2357,6 +2378,34 @@ func buildDocument(ctx context.Context, operation string, payload json.RawMessag
 			document.EffectiveValues = append(document.EffectiveValues, previewservice.EffectiveValue{Key: "serviceName", Value: serviceName, Source: "installed_state"})
 		}
 		document.Files = append(document.Files, softwarePreviewRuntimeFileChanges(runtimeValues, true, dataPolicy)...)
+		if component == "adminer" {
+			files, probeErr := adminerUpgradePreviewFiles(ctx, version, "")
+			for index := range files {
+				files[index].Action = "remove"
+				files[index].ChangeSummary = "移除 Adminer 受管程序或公开访问入口"
+			}
+			// Preserve keeps user plugin files, while the entrypoint and generated
+			// program files are removed by the component in either data policy.
+			if dataPolicy == "preserve" {
+				files[0].Action = "remove_managed"
+				files[0].ChangeSummary = "移除 Adminer 生成的程序文件，保留用户插件文件"
+			} else {
+				files[0].Action = "delete"
+			}
+			document.Files = files
+			if runtimeValues["component-state-dir"] == "" {
+				runtimeValues["component-state-dir"] = strings.TrimSpace(os.Getenv("ONEINSTACK_COMPONENT_STATE"))
+				if runtimeValues["component-state-dir"] == "" {
+					runtimeValues["component-state-dir"] = "/var/lib/oneinstack/components"
+				}
+			}
+			if statePath := softwarePreviewComponentStatePath(runtimeValues, component); statePath != "" {
+				document.Files = append(document.Files, previewservice.FileChange{Path: statePath, Action: "remove", ChangeSummary: "移除 Adminer 受管安装状态"})
+			}
+			if probeErr != nil {
+				document.Prechecks = append(document.Prechecks, previewservice.Precheck{Name: "Adminer 公开访问入口", Status: "deferred", Message: "当前入口无法可靠探测；卸载任务会按组件运行状态移除受管入口"})
+			}
+		}
 		document.Actions = []previewservice.Action{
 			{Type: "component", Name: "卸载 " + displayName + " " + version, DisplayCommand: "由已验证的受管组件包执行卸载"},
 		}
@@ -2365,12 +2414,15 @@ func buildDocument(ctx context.Context, operation string, payload json.RawMessag
 			document.Rollback = previewservice.Rollback{Supported: false, Summary: "数据删除不可自动恢复", Unrecoverable: []string{"数据目录和日志目录删除后不可由卸载任务恢复"}}
 		} else {
 			document.Actions = append(document.Actions, previewservice.Action{Type: "component", Name: "保留组件数据和配置", DisplayCommand: "卸载程序文件，保留受管数据与配置"})
+			if component == "adminer" {
+				document.Actions[len(document.Actions)-1] = previewservice.Action{Type: "component", Name: "保留 Adminer 用户插件文件", DisplayCommand: "移除公开入口和生成程序文件，保留用户插件文件"}
+			}
 			document.Rollback = previewservice.Rollback{Supported: false, Summary: "卸载完成后不自动恢复已移除的程序文件；保留的数据和配置可供重新安装后接管"}
 		}
-		document.Prechecks = []previewservice.Precheck{
+		document.Prechecks = append(document.Prechecks, []previewservice.Precheck{
 			{Name: "卸载目标", Status: "passed", Message: fmt.Sprintf("已确认组件 %s，软件版本 %s，数据策略 %s", component, version, dataPolicy)},
 			{Name: "服务与文件状态", Status: "deferred", Message: "执行阶段将重新检查服务、受管目录和已固定卸载包"},
-		}
+		}...)
 		document.Impact = previewservice.Impact{WriteFiles: true, ModifyDatabase: true}
 	case "software.service_action":
 		var value softwareServiceActionPayload

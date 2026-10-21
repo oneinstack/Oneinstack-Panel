@@ -1192,7 +1192,11 @@ func PreviewInstallationPackage(ctx context.Context, params *input.InstallParams
 	if strings.EqualFold(params.Key, "caddy") {
 		appendValue("install-dir", scriptInfo.Params["INSTALL_DIR"], "manifest_default", false)
 	}
-	if strings.EqualFold(params.Key, "adminer") || strings.EqualFold(params.Key, "caddy") || strings.EqualFold(params.Key, "firewalld") {
+	if strings.EqualFold(params.Key, "phpmyadmin") {
+		appendValue("install-dir", "/data/wwwroot/phpMyAdmin", "component_contract", false)
+		appendValue("web-document-root", scriptInfo.Params["ONEINSTACK_WEB_DOCUMENT_ROOT"], "runtime_probe", false)
+	}
+	if strings.EqualFold(params.Key, "adminer") || strings.EqualFold(params.Key, "caddy") || strings.EqualFold(params.Key, "firewalld") || strings.EqualFold(params.Key, "phpmyadmin") {
 		appendValue("component-state-dir", scriptInfo.Params["ONEINSTACK_COMPONENT_STATE"], "manifest_default", false)
 	}
 	var pin scriptregistry.PackagePin
