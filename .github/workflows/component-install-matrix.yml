@@ -34,13 +34,16 @@ jobs:
           set -Eeuo pipefail
           case "${COMPONENT}" in
             nginx) software_version="1.28.2" ;;
-            mysql) software_version="8.0" ;;
-            php) software_version="8.3" ;;
+            mysql) software_version="8.0.45" ;;
+            php) software_version="8.3.30" ;;
             redis) software_version="7.4.8" ;;
             *) echo "Unsupported matrix component: ${COMPONENT}" >&2; exit 1 ;;
           esac
 
-          package_root="script-registry/bundled/${COMPONENT}/1.0.0"
+          package_version="$(jq -er --arg component "${COMPONENT}" \
+            '.packages[] | select(.component == $component) | .version' \
+            script-registry/bundled/production-lock.json)"
+          package_root="script-registry/bundled/${COMPONENT}/${package_version}"
           progress_file="${RUNNER_TEMP}/${COMPONENT}-progress.jsonl"
           lifecycle_log="${RUNNER_TEMP}/${COMPONENT}-lifecycle.log"
           mysql_password="Ci$(openssl rand -hex 12)!A"

@@ -133,7 +133,17 @@ jobs:
         run: bats tests/install.bats
 
       - name: Run component fault and progress contracts
-        run: sudo --preserve-env=GITHUB_ACTIONS,CI bats tests/component-scripts.bats
+        shell: bash
+        env:
+          RUNNER_OS_LABEL: ${{ matrix.os }}
+        run: |
+          # Hosted runners include unrelated database/PHP installations. Exercise
+          # component contracts on a clean host without taking over runner services.
+          docker run --rm \
+            --volume "${GITHUB_WORKSPACE}:/workspace:ro" --workdir /workspace \
+            --env CI=true --env GITHUB_ACTIONS=true \
+            "ubuntu:${RUNNER_OS_LABEL#ubuntu-}" \
+            bash -euc 'apt-get update; apt-get install --yes bats jq curl procps; bats tests/component-scripts.bats'
 
       - name: Build and package Linux amd64
         run: |

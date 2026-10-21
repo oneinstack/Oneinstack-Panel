@@ -5,6 +5,7 @@ setup() {
   REGISTRY_ROOT="${PROJECT_DIR}/script-registry/bundled"
   TEST_TMPDIR="${BATS_TEST_TMPDIR:-${TMPDIR:-/tmp}}"
   TEST_WORK="$(mktemp -d "${TEST_TMPDIR}/one-components.XXXXXX")"
+  export ONEINSTACK_COMPONENT_STATE="${TEST_WORK}/state"
   COMPONENTS=(nginx mysql php redis)
   REQUIRED_BIN="${TEST_WORK}/required-bin"
   mkdir -p "${REQUIRED_BIN}"
@@ -23,15 +24,19 @@ teardown() {
 component_version() {
   case "$1" in
     nginx) printf '%s' "1.28.2" ;;
-    mysql) printf '%s' "8.0" ;;
-    php) printf '%s' "8.3" ;;
+    mysql) printf '%s' "8.0.45" ;;
+    php) printf '%s' "8.3.30" ;;
     redis) printf '%s' "7.4.8" ;;
     *) return 1 ;;
   esac
 }
 
 component_root() {
-  printf '%s/%s/1.0.0' "${REGISTRY_ROOT}" "$1"
+  local version
+  version="$(jq -er --arg component "$1" \
+    '.packages[] | select(.component == $component) | .version' \
+    "${REGISTRY_ROOT}/production-lock.json")" || return 1
+  printf '%s/%s/%s' "${REGISTRY_ROOT}" "$1" "${version}"
 }
 
 run_validated_common() {
@@ -42,7 +47,7 @@ run_validated_common() {
     SOFTWARE_VERSION="$(component_version "${component}")" \
     MYSQL_PASSWORD="ComponentCi!2026" \
     REDIS_PASSWORD="RedisCi!2026" \
-    bash -c 'source "$1"; validate_inputs' _ "${common}"
+    bash -euc 'source "$1"; validate_inputs' _ "${common}"
 }
 
 @test "component packages are checksum-complete and actions are executable shell" {
@@ -77,15 +82,15 @@ run_validated_common() {
   local component common
   for component in "${COMPONENTS[@]}"; do
     common="$(component_root "${component}")/scripts/common.sh"
-    run env SOFTWARE_VERSION="0.0-invalid" bash -c 'source "$1"; validate_inputs' _ "${common}"
+    run env SOFTWARE_VERSION="0.0-invalid" bash -euc 'source "$1"; validate_inputs' _ "${common}"
     [ "$status" -ne 0 ]
-    [[ "$output" == *"Unsupported"* ]]
+    [[ "$output" == *"Unsupported"* || "$output" == *"VERSION_UNSUPPORTED"* ]]
 
     run env \
       SOFTWARE_VERSION="$(component_version "${component}")" \
       INSTALL_DIR="/usr/local" \
       MYSQL_PASSWORD="ComponentCi!2026" \
-      bash -c 'source "$1"; validate_inputs' _ "${common}"
+      bash -euc 'source "$1"; validate_inputs' _ "${common}"
     [ "$status" -ne 0 ]
     [[ "$output" == *"too broad"* ]]
   done
@@ -96,23 +101,23 @@ run_validated_common() {
   mysql_common="$(component_root mysql)/scripts/common.sh"
   redis_common="$(component_root redis)/scripts/common.sh"
 
-  run env SOFTWARE_VERSION="8.0" MYSQL_PORT="70000" MYSQL_PASSWORD="ComponentCi!2026" \
-    bash -c 'source "$1"; validate_inputs' _ "${mysql_common}"
+  run env SOFTWARE_VERSION="$(component_version mysql)" MYSQL_PORT="70000" MYSQL_PASSWORD="ComponentCi!2026" \
+    bash -euc 'source "$1"; validate_inputs' _ "${mysql_common}"
   [ "$status" -ne 0 ]
   [[ "$output" == *"Invalid MYSQL_PORT"* ]]
 
-  run env SOFTWARE_VERSION="8.0" MYSQL_PASSWORD='bad password;rm' \
-    bash -c 'source "$1"; validate_inputs' _ "${mysql_common}"
+  run env SOFTWARE_VERSION="$(component_version mysql)" MYSQL_PASSWORD='bad password;rm' \
+    bash -euc 'source "$1"; validate_inputs' _ "${mysql_common}"
   [ "$status" -ne 0 ]
   [[ "$output" == *"MYSQL_PASSWORD"* ]]
 
   run env SOFTWARE_VERSION="7.4.8" REDIS_PORT="0" \
-    bash -c 'source "$1"; validate_inputs' _ "${redis_common}"
+    bash -euc 'source "$1"; validate_inputs' _ "${redis_common}"
   [ "$status" -ne 0 ]
   [[ "$output" == *"Invalid REDIS_PORT"* ]]
 
   run env SOFTWARE_VERSION="7.4.8" REDIS_PASSWORD='bad password;rm' \
-    bash -c 'source "$1"; validate_inputs' _ "${redis_common}"
+    bash -euc 'source "$1"; validate_inputs' _ "${redis_common}"
   [ "$status" -ne 0 ]
   [[ "$output" == *"REDIS_PASSWORD"* ]]
 }
@@ -170,16 +175,26 @@ done
 printf '%s\n' "corrupted component archive" >"${destination}"
 SCRIPT
   chmod 0755 "${fake_bin}/curl"
+  printf '%s\n' '#!/usr/bin/env bash' 'exit 64' >"${fake_bin}/gpg"
+  chmod 0755 "${fake_bin}/gpg"
 
   for component in "${COMPONENTS[@]}"; do
     common="$(component_root "${component}")/scripts/common.sh"
     run env \
       PATH="${fake_bin}:${PATH}" \
       SOFTWARE_VERSION="$(component_version "${component}")" \
-      bash -c 'source "$1"; download_verified "$2"' \
-      _ "${common}" "${TEST_WORK}/${component}.archive"
+      bash -euc '
+        source "$1"
+        validate_inputs
+        if [[ "$3" == redis ]]; then
+          work_dir="$(dirname -- "$2")"
+          resolve_source
+        else
+          download_verified "$2"
+        fi
+      ' _ "${common}" "${TEST_WORK}/${component}.archive" "${component}"
     [ "$status" -ne 0 ]
-    [[ "$output" == *"checksum"* ]]
+    [[ "$output" == *"checksum"* || "$output" == *"SHA-256 mismatch"* ]]
   done
 
   cat >"${fake_bin}/curl" <<'SCRIPT'
@@ -189,7 +204,7 @@ SCRIPT
   chmod 0755 "${fake_bin}/curl"
   common="$(component_root nginx)/scripts/common.sh"
   run env PATH="${fake_bin}:${PATH}" SOFTWARE_VERSION="1.28.2" \
-    bash -c 'source "$1"; download_verified "$2"' \
+    bash -euc 'source "$1"; validate_inputs; download_verified "$2"' \
     _ "${common}" "${TEST_WORK}/network-failure.archive"
   [ "$status" -ne 0 ]
 }
@@ -200,10 +215,10 @@ SCRIPT
   mkdir -p "${fake_bin}"
   cat >"${fake_bin}/systemctl" <<'SCRIPT'
 #!/usr/bin/env bash
-if [[ "${1:-}" == "is-active" ]]; then
-  exit 1
-fi
-exit 0
+case "${1:-}" in
+  is-active|is-enabled|show-environment) exit 1 ;;
+  *) exit 0 ;;
+esac
 SCRIPT
   chmod 0755 "${fake_bin}/systemctl"
 
@@ -213,28 +228,41 @@ SCRIPT
     run env \
       PATH="${fake_bin}:${PATH}" \
       SOFTWARE_VERSION="$(component_version "${component}")" \
-      bash -c '
+      INSTALL_DIR="${root}/install" \
+      DATA_DIR="${root}/data" \
+      LOG_DIR="${root}/logs" \
+      ONEINSTACK_COMPONENT_STATE="${root}/state" \
+      bash -euc '
         source "$1"
         component="$2"
         root="$3"
-        install_dir="${root}/install"
-        state_root="${root}/state"
-        state_dir="${state_root}/${component}"
-        rollback_dir="${state_dir}/rollback"
         unit_file="${root}/${component}.service"
-        data_dir="${root}/data"
         config_file="${root}/my.cnf"
+        # External host services are outside this isolated file rollback contract.
+        case "${component}" in
+          nginx) snapshot_external_nginx() { :; } ;;
+          mysql) snapshot_external_mysql() { :; } ;;
+          php)
+            snapshot_external_php() { :; }
+            stop_external_php() { :; }
+            managed_control_unit() { return 1; }
+            mkdir -p "${state_dir}"
+            : >"${state_dir}/managed"
+            printf ci-rollback >"${active_operation_file}"
+            ;;
+          redis) snapshot_external_redis() { :; } ;;
+        esac
         mkdir -p "${install_dir}"
         printf old >"${install_dir}/marker"
-        printf old-unit >"${unit_file}"
+        [[ "${component}" == php ]] || printf old-unit >"${unit_file}"
         [[ "${component}" != mysql ]] || printf old-config >"${config_file}"
         prepare_rollback
         mkdir -p "${install_dir}"
         printf new >"${install_dir}/marker"
-        printf new-unit >"${unit_file}"
+        [[ "${component}" == php ]] || printf new-unit >"${unit_file}"
         restore_rollback
         [[ "$(cat "${install_dir}/marker")" == old ]]
-        [[ "$(cat "${unit_file}")" == old-unit ]]
+        [[ "${component}" == php ]] || [[ "$(cat "${unit_file}")" == old-unit ]]
         [[ "${component}" != mysql ]] || [[ "$(cat "${config_file}")" == old-config ]]
       ' _ "${common}" "${component}" "${root}"
     if [ "$status" -ne 0 ]; then
