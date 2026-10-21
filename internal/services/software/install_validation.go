@@ -22,6 +22,7 @@ import (
 	"oneinstack/internal/services/softwarecatalog"
 	"oneinstack/router/input"
 
+	"github.com/shirou/gopsutil/v4/mem"
 	"gorm.io/gorm"
 )
 
@@ -402,6 +403,9 @@ func (installer *Installer) resolveInstallParams(ctx context.Context, params *in
 	if err := validateClosedLoopCatalogVersion(params); err != nil {
 		return nil, err
 	}
+	if err := validatePHPBuildResources(ctx, params); err != nil {
+		return nil, err
+	}
 	scriptInfo, err := installer.getInstallScriptForPreview(ctx, params, "install")
 	if err != nil {
 		return nil, err
@@ -428,10 +432,12 @@ func (installer *Installer) resolveInstallParams(ctx context.Context, params *in
 	return scriptInfo, nil
 }
 
-// InstallDependencyError exposes only a stable dependency failure, never Docker
-// stderr, socket paths, remote endpoints, or credentials from the host.
+// InstallDependencyError exposes safe dependency and host-resource failures,
+// never stderr, internal paths, remote endpoints, or credentials from the host.
 type InstallDependencyError struct {
-	Code string
+	Code               string
+	AvailableMemoryMiB uint64
+	FreeSwapMiB        uint64
 }
 
 func (e *InstallDependencyError) Error() string     { return e.Code }
@@ -440,6 +446,16 @@ func (e *InstallDependencyError) ErrorCode() string { return e.Code }
 func (e *InstallDependencyError) UserMessage(locale string) string {
 	english := strings.HasPrefix(strings.ToLower(strings.TrimSpace(locale)), "en")
 	switch e.Code {
+	case "HOST_RESOURCE_INSUFFICIENT":
+		if english {
+			return fmt.Sprintf("PHP installation requires at least 1536 MiB of available memory plus free swap. Currently available: %d MiB memory and %d MiB swap. Free memory or add swap, then preview again.", e.AvailableMemoryMiB, e.FreeSwapMiB)
+		}
+		return fmt.Sprintf("安装 PHP 需要可用内存与空闲 swap 合计至少 1536 MiB；当前可用内存 %d MiB，空闲 swap %d MiB。请释放内存或增加 swap 后重新预览。", e.AvailableMemoryMiB, e.FreeSwapMiB)
+	case "HOST_RESOURCE_PROBE_FAILED":
+		if english {
+			return "Cannot determine available memory and free swap. Check that the host resource information is readable, then preview again."
+		}
+		return "无法确认主机可用内存和空闲 swap，请检查系统资源信息是否可读取后重新预览"
 	case "DOCKER_ENGINE_MISSING":
 		if english {
 			return "Docker is not installed or is not in the Panel process PATH. Install Docker before installing Docker Compose."
@@ -461,6 +477,35 @@ func (e *InstallDependencyError) UserMessage(locale string) string {
 		}
 		return "Docker 状态检查超时或已取消，请检查 Docker 服务后重试"
 	}
+}
+
+// Match the PHP component's check_build_memory contract (1572864 KiB).
+// Preview and direct/confirmed installation share this read-only check before
+// a task is created. The component still rechecks before installation/building
+// because the host's available memory can change after preview.
+func validatePHPBuildResources(ctx context.Context, params *input.InstallParams) error {
+	if params == nil || !strings.EqualFold(strings.TrimSpace(params.Key), "php") {
+		return nil
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	memory, err := mem.VirtualMemoryWithContext(probeCtx)
+	if err != nil || memory == nil {
+		return &InstallDependencyError{Code: "HOST_RESOURCE_PROBE_FAILED"}
+	}
+	swap, err := mem.SwapMemoryWithContext(probeCtx)
+	if err != nil || swap == nil || probeCtx.Err() != nil {
+		return &InstallDependencyError{Code: "HOST_RESOURCE_PROBE_FAILED"}
+	}
+	const minimumBytes = uint64(1536 * 1024 * 1024)
+	if memory.Available < minimumBytes && swap.Free < minimumBytes-memory.Available {
+		return &InstallDependencyError{
+			Code:               "HOST_RESOURCE_INSUFFICIENT",
+			AvailableMemoryMiB: memory.Available / (1024 * 1024),
+			FreeSwapMiB:        swap.Free / (1024 * 1024),
+		}
+	}
+	return nil
 }
 
 func validateComposeEngineDependency(ctx context.Context, params *input.InstallParams) error {

@@ -198,12 +198,17 @@ func InstallationDependencyAppError(err error, locale string) (*core.AppError, b
 		code = core.ErrResourceStateInvalid
 	case "DOCKER_ENGINE_PROBE_TIMEOUT":
 		code = core.ErrTaskTimeout
+	case "HOST_RESOURCE_INSUFFICIENT", "HOST_RESOURCE_PROBE_FAILED":
+		code = core.ErrResourceStateInvalid
 	}
 	message := dependencyErr.UserMessage(locale)
 	// The UI reads error.detail before its generic numeric-code fallback.
 	appErr := core.NewErrorWithDetail(code, message, message)
 	appErr.StableCode = dependencyErr.ErrorCode()
 	appErr.Field = "docker"
+	if dependencyErr.Code == "HOST_RESOURCE_INSUFFICIENT" || dependencyErr.Code == "HOST_RESOURCE_PROBE_FAILED" {
+		appErr.Field = "memory"
+	}
 	return appErr, true
 }
 

@@ -7,16 +7,24 @@ import (
 
 func TestProductionBundledPackagesValidate(t *testing.T) {
 	root := filepath.Join("..", "..", "..", "script-registry", "bundled")
+	lock, err := VerifyBundledProduction(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	packageVersions := make(map[string]string, len(lock.Packages))
+	for _, record := range lock.Packages {
+		packageVersions[record.Component] = record.Version
+	}
 	expected := map[string][]string{
-		"firewalld": {"1.0.0"},
+		"firewalld": {"2.1.1"},
 		"nginx":     {"1.26.2", "1.28.2", "1.31.0"},
-		"mysql":     {"8.0"},
-		"php":       {"8.1", "8.2", "8.3"},
+		"mysql":     {"8.0.45"},
+		"php":       {"8.1.34", "8.2.30", "8.3.30"},
 		"redis":     {"7.4.8"},
 	}
 	for component, softwareVersions := range expected {
 		t.Run(component, func(t *testing.T) {
-			manifest, err := validateDirectory(filepath.Join(root, component, "1.0.0"))
+			manifest, err := validateDirectory(filepath.Join(root, component, packageVersions[component]))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -27,15 +35,6 @@ func TestProductionBundledPackagesValidate(t *testing.T) {
 				if !manifest.supportsSoftwareVersion(version) {
 					t.Fatalf("package does not support %s", version)
 				}
-			}
-			if component == "firewalld" {
-				if manifest.Actions.Status != "" ||
-					manifest.Actions.Start != "" ||
-					manifest.Actions.Stop != "" ||
-					manifest.Actions.Restart != "" {
-					t.Fatalf("firewalld lifecycle is managed by the safe service: %#v", manifest.Actions)
-				}
-				return
 			}
 			if manifest.Actions.Status == "" ||
 				manifest.Actions.Start == "" ||
