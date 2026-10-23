@@ -492,6 +492,9 @@ func (m *Manager) submit(request InstallRequest, requestedBy int64) (*models.Sof
 		if request.Version == "" {
 			return nil, errors.New("VERSION_UNSUPPORTED: PHP version line cannot be resolved")
 		}
+		if err := softwareService.ValidatePHPInstallationVersion(request.Version); err != nil {
+			return nil, err
+		}
 	}
 	if request.Operation != "install" && request.Operation != "uninstall" &&
 		!isRuntimeOperation(request.Operation) {
@@ -1064,6 +1067,14 @@ func (m *Manager) run(item queuedTask) {
 		m.finishCanceledBeforeExecution(&task)
 		return
 	}
+	if (task.Operation == "install" || task.Operation == "upgrade") && strings.EqualFold(task.Component, "php") {
+		// ResolvedVersion identifies the component package, not the PHP runtime.
+		if err := softwareService.ValidatePHPInstallationVersion(task.RequestedVersion); err != nil {
+			reporter := newReporter(m, task.ID)
+			_ = reporter.finish(models.SoftwareTaskStatusFailed, "PHP_SECURITY_UPDATE_REQUIRED", safeMessageForErrorCode("PHP_SECURITY_UPDATE_REQUIRED"))
+			return
+		}
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	m.cancelMu.Lock()
@@ -1175,7 +1186,11 @@ func (m *Manager) run(item queuedTask) {
 		return
 	}
 	code := classifyExecutionError(err)
-	_ = reporter.finish(models.SoftwareTaskStatusFailed, code, safeErrorMessage(err))
+	message := safeErrorMessage(err)
+	if task.Component == "php" && (task.Operation == "install" || task.Operation == "upgrade") {
+		message += "；PHP 安全升级未完成，原版本可能仍受 CVE-2026-109618 / CVE-2026-109619 影响"
+	}
+	_ = reporter.finish(models.SoftwareTaskStatusFailed, code, message)
 }
 
 func isStateRepairRequired(err error) bool {
@@ -1951,6 +1966,10 @@ func stableExecutionErrorCode(code string) string {
 
 func safeMessageForErrorCode(code string) string {
 	switch strings.TrimSpace(code) {
+	case "PHP_SECURITY_UPDATE_REQUIRED":
+		return "PHP 安全升级未完成，当前版本可能仍受 CVE-2026-109618 / CVE-2026-109619 影响；请选择已发布的 PHP 8.2.35+、8.3.36+、8.4.27+ 或 8.5.12+，旧分支迁移需显式选择目标版本"
+	case "PHP_EXTENSION_MIGRATION_REQUIRED":
+		return "检测到需要迁移的 PHP 扩展，请先准备与目标 PHP ABI 兼容的扩展；原配置和服务未替换"
 	case "CENTER_UNAVAILABLE":
 		return "Center 当前不可用，Panel 未使用旧缓存或本地包替代"
 	case "CENTER_TIMEOUT":

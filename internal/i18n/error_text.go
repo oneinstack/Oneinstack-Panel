@@ -59,9 +59,14 @@ var (
 // LocalizeText translates API response text that predates message keys.
 // It intentionally targets response messages only; persisted task, audit, and
 // runtime logs keep their original text for historical consistency.
+const phpSecurityFailureSuffix = "；PHP 安全升级未完成，原版本可能仍受 CVE-2026-109618 / CVE-2026-109619 影响"
+
 func LocalizeText(locale, text string) string {
 	if Canonical(locale) != LocaleEnUS || strings.TrimSpace(text) == "" {
 		return text
+	}
+	if strings.HasSuffix(text, phpSecurityFailureSuffix) {
+		return LocalizeText(locale, strings.TrimSuffix(text, phpSecurityFailureSuffix)) + ". PHP security remediation is incomplete; the previous runtime may still be affected by CVE-2026-109618 / CVE-2026-109619."
 	}
 	if translated, ok := englishErrorTexts[text]; ok {
 		return translated
@@ -926,7 +931,9 @@ var englishTerms = map[string]string{
 }
 
 var englishErrorTexts = map[string]string{
-	"历史快照未保存可恢复的结构化正文，不能执行回滚":                     "The historical snapshot does not contain restorable structured content and cannot be rolled back.",
+	"检测到需要迁移的 PHP 扩展，请先准备与目标 PHP ABI 兼容的扩展；原配置和服务未替换":                                                                        "PHP extensions require migration. Prepare extensions compatible with the target PHP ABI before upgrading; the existing configuration and service were preserved.",
+	"PHP 安全升级未完成，当前版本可能仍受 CVE-2026-109618 / CVE-2026-109619 影响；请选择已发布的 PHP 8.2.35+、8.3.36+、8.4.27+ 或 8.5.12+，旧分支迁移需显式选择目标版本": "PHP security remediation is incomplete. The runtime may still be affected by CVE-2026-109618 / CVE-2026-109619. Select a published PHP 8.2.35+, 8.3.36+, 8.4.27+ or 8.5.12+ release; migration from an older branch requires an explicit target.",
+	"历史快照未保存可恢复的结构化正文，不能执行回滚":                                                                                                "The historical snapshot does not contain restorable structured content and cannot be rolled back.",
 	"任务 ID 必须是正整数":                                "Task ID must be a positive integer",
 	"节点任务不存在":                                     "The cluster node task does not exist",
 	"读取节点任务详情失败":                                  "Failed to read the cluster node task details",

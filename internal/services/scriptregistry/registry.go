@@ -1133,6 +1133,8 @@ func stableCenterErrorCode(code string, status int) string {
 	if status >= http.StatusBadRequest && status < http.StatusInternalServerError &&
 		status != http.StatusRequestTimeout {
 		switch code {
+		case "php_security_update_required":
+			return "PHP_SECURITY_UPDATE_REQUIRED"
 		case "host_platform_unsupported":
 			return "HOST_PLATFORM_UNSUPPORTED"
 		case "package_unpublished", "not_found":

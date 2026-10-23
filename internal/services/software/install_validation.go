@@ -900,7 +900,7 @@ func resolvePHPInstallVersion(params *input.InstallParams) error {
 	if !phpExactVersionPattern.MatchString(requested) {
 		return &InstallParameterError{Field: "version", Message: "PHP 版本必须是 x.y.z 精确版本，并且属于 Center 已发布的版本"}
 	}
-	return nil
+	return ValidatePHPInstallationVersion(requested)
 }
 
 func phpVersionLineForExact(version string) string {
@@ -928,6 +928,9 @@ func ResolvePHPVersionLine(db *gorm.DB, version string) (string, error) {
 			"php", version, true, true, true,
 		).Order("recommended DESC, version_order ASC, id ASC").First(&row)
 		if result.Error == nil && strings.TrimSpace(row.Version) != "" {
+			if err := ValidatePHPInstallationVersion(row.Version); err != nil {
+				return "", err
+			}
 			return strings.TrimSpace(row.Version), nil
 		}
 		if result.Error != nil && !errors.Is(result.Error, gorm.ErrRecordNotFound) {
@@ -935,18 +938,13 @@ func ResolvePHPVersionLine(db *gorm.DB, version string) (string, error) {
 		}
 	}
 	resolved := map[string]string{
-		"5.3.x": "5.3.29",
-		"5.4.x": "5.4.45",
-		"7.0.x": "7.0.33",
-		"8.1.x": "8.1.34",
-		"8.2.x": "8.2.30",
-		"8.3.x": "8.3.30",
+		"8.2.x": "8.2.35",
+		"8.3.x": "8.3.36",
+		"8.4.x": "8.4.27",
+		"8.5.x": "8.5.12",
 	}[version]
 	if resolved == "" {
-		return "", &InstallParameterError{
-			Field:   "version",
-			Message: fmt.Sprintf("PHP 版本线 %s 尚未由 Center 发布", version),
-		}
+		return "", &PHPSecurityUpdateError{Version: version}
 	}
 	return resolved, nil
 }

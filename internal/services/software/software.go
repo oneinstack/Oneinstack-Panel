@@ -887,6 +887,9 @@ func normalizeExactVersionPresentation(item *output.Software) {
 		if version == "" || !versionPattern.MatchString(version) || !option.Enabled || !option.Installable {
 			continue
 		}
+		if (key == "php" || component == "php") && ValidatePHPInstallationVersion(version) != nil {
+			continue
+		}
 		option.Line = ""
 		option.AllowCustomVersion = false
 		if recommended == "" && option.Recommended {
@@ -989,6 +992,32 @@ func normalizeSoftwareUpgrade(item *output.Software) {
 	latestPackageVersion := strings.TrimSpace(item.LatestPackageVersion)
 	packageUpdate := installedPackageVersion != "" && latestPackageVersion != "" &&
 		scriptregistry.ComparePackageVersions(latestPackageVersion, installedPackageVersion) > 0
+	if strings.EqualFold(component, "php") {
+		if ValidatePHPInstallationVersion(installedVersion) != nil {
+			item.SecurityWarning = phpSecurityMessage
+		}
+		target := phpSecurityUpgradeTarget(installedVersion)
+		versionPrefix := ""
+		if target != "" {
+			versionPrefix = target[:strings.LastIndex(target, ".")+1]
+		}
+		item.RecommendedVersion = ""
+		for _, option := range item.VersionOptions {
+			if versionPrefix != "" && strings.HasPrefix(option.Version, versionPrefix) &&
+				ValidatePHPInstallationVersion(option.Version) == nil && option.Enabled && option.Installable &&
+				(item.RecommendedVersion == "" || scriptregistry.ComparePackageVersions(option.Version, item.RecommendedVersion) > 0) {
+				item.RecommendedVersion = option.Version
+			}
+		}
+		if ValidatePHPInstallationVersion(installedVersion) != nil && item.RecommendedVersion == "" {
+			item.IsUpdate = false
+			item.UpdateReason = ""
+			if item.HostInstallation != nil {
+				item.HostInstallation.RecommendedVersion = ""
+			}
+			return
+		}
+	}
 	recommendedVersion := strings.TrimSpace(item.RecommendedVersion)
 	softwareComparison := 0
 	if recommendedVersion != "" {

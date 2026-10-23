@@ -188,6 +188,14 @@ func handleInstallationParameterError(c *gin.Context, err error) bool {
 // InstallationDependencyAppError shares dependency errors across preview,
 // confirmed execution, and direct online/offline installation endpoints.
 func InstallationDependencyAppError(err error, locale string) (*core.AppError, bool) {
+	var phpErr *softwareService.PHPSecurityUpdateError
+	if errors.As(err, &phpErr) {
+		message := phpErr.UserMessage(locale)
+		appErr := core.NewErrorWithDetail(core.ErrResourceStateInvalid, message, message)
+		appErr.StableCode = phpErr.ErrorCode()
+		appErr.Field = "version"
+		return appErr, true
+	}
 	var dependencyErr *softwareService.InstallDependencyError
 	if !errors.As(err, &dependencyErr) {
 		return nil, false
@@ -234,6 +242,7 @@ func GetSoftware(c *gin.Context) {
 	}
 	locale := middleware.RequestLocale(c)
 	for index := range data.Data {
+		data.Data[index].SecurityWarning = i18n.LocalizeBusinessText(locale, data.Data[index].SecurityWarning)
 		data.Data[index].Describe = i18n.LocalizeSoftwareDescription(
 			locale,
 			data.Data[index].Key,

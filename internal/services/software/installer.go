@@ -738,6 +738,11 @@ func (installer *Installer) getInstallScriptForPreview(ctx context.Context, para
 }
 
 func (installer *Installer) getInstallScriptWithMode(ctx context.Context, params *input.InstallParams, actionName string, preview bool) (*script.ScriptInfo, error) {
+	if params != nil && strings.EqualFold(params.Key, "php") {
+		if err := ValidatePHPInstallationVersion(params.Version); err != nil {
+			return nil, err
+		}
+	}
 	if params == nil {
 		return nil, &InstallParameterError{Field: "install", Message: "installation parameters are required"}
 	}
@@ -912,35 +917,10 @@ func (installer *Installer) getInstallScriptWithMode(ctx context.Context, params
 		}
 		registryErr = resolveErr
 
-		// PHP was historically represented by its minor line in the bundled
-		// and early Center packages (for example, 8.3), while the catalog now
-		// records the exact patch selected for that line (8.3.30). Retry the
-		// package lookup with the line only for this compatibility boundary.
-		// If the returned manifest already supports the exact patch, retain the
-		// exact value for the action; otherwise tell the legacy script to use the
-		// line while keeping params.Version exact for task and install state.
-		if line := phpVersionLineForExact(params.Version); strings.EqualFold(params.Key, "php") && line != "" {
-			linePackage, lineErr := registry.ResolveChannel(ctx, componentName, line, catalogChannel)
-			if lineErr == nil {
-				if actionName == "upgrade" && linePackage.Manifest.Actions.Upgrade == "" {
-					actionName = "install"
-				}
-				lineInfo, infoErr := scriptInfoFromPackage(linePackage, actionName, line)
-				if infoErr != nil {
-					return nil, infoErr
-				}
-				if !scriptregistry.SupportsSoftwareVersion(linePackage.Manifest.Component.SoftwareVersions, params.Version) {
-					lineInfo.ScriptSoftwareVersion = line
-				}
-				return lineInfo, nil
-			}
-			registryErr = fmt.Errorf(
-				"exact version resolution failed: %v; version line %s resolution failed: %w",
-				resolveErr,
-				line,
-				lineErr,
-			)
-		}
+	}
+
+	if strings.EqualFold(params.Key, "php") {
+		return nil, fmt.Errorf("resolve exact PHP security release: %w", registryErr)
 	}
 
 	// A Center catalog entry is a promise that the matching signed component
@@ -1023,6 +1003,23 @@ func scriptInfoFromPackage(componentPackage scriptregistry.Package, actionName s
 	}
 	if softwareVersion == "" && len(manifest.Component.SoftwareVersions) == 1 {
 		softwareVersion = strings.TrimSpace(manifest.Component.SoftwareVersions[0])
+	}
+	if manifest.Component.ID == "php" && (actionName == "install" || actionName == "upgrade") {
+		if err := ValidatePHPInstallationVersion(softwareVersion); err != nil {
+			return nil, err
+		}
+		pinnedSource := false
+		if manifest.Sources != nil {
+			for _, source := range manifest.Sources.Releases {
+				if source.SoftwareVersion == softwareVersion && source.BuildID != "" && source.SHA256 != "" {
+					pinnedSource = true
+					break
+				}
+			}
+		}
+		if !pinnedSource {
+			return nil, errors.New("PACKAGE_RESOLVE_FAILED: PHP security upgrade requires a pinned exact-release source; legacy version-line packages are not accepted")
+		}
 	}
 	if metadata := componentPackage.Metadata; metadata.SHA256 != "" && softwareVersion != "" {
 		result.PackagePin = &scriptregistry.PackagePin{

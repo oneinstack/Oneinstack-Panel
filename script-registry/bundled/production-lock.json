@@ -15,7 +15,7 @@
   {"component":"nodejs","version":"1.0.8","sha256":"bd44d3bd4cbcbf08ad81ae2032e13adc5f3f6245d8f8f84895817c7d56cc5172"},
   {"component":"openresty","version":"1.0.17","sha256":"fede12cbea37c181890a44a0776992bdc064f8ada4b9c04a0d9fc32cca408df7"},
   {"component":"opensearch","version":"1.0.7","sha256":"7c1cd87a105915c99f34a273c4129a12bc1b1038103a7aa111bcebacfc063311"},
-  {"component":"php","version":"1.0.21","sha256":"c9327ae0058deac7378a0adddfac0196d2aebd7f7bc713e7450e34ca42928427"},
+  {"component":"php","version":"1.0.26","sha256":"7b7b561807dfde8a5f887dcc94729718e56fe8610a90c0f0f52f491b9e3d762d"},
   {"component":"phpmyadmin","version":"1.0.23","sha256":"cbe9d36ed9bf345c88f17910a81aa6e41c875cd99f39395dc144854af6fa36f9"},
   {"component":"redis","version":"1.0.22","sha256":"a8e45676fcdb4822c9bb14da540fd05391675878705a35888a119355347302f3"},
   {"component":"tengine","version":"1.0.15","sha256":"05cc8931d6a5f3e7ccb6a43d04212688ff9b99e3dc0138c84635f86fb8978e73"},

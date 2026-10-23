@@ -25,6 +25,7 @@ type Software struct {
 	RuntimeVersion            string            `json:"runtimeVersion,omitempty"`
 	LatestPackageVersion      string            `json:"latestPackageVersion,omitempty"`
 	UpdateReason              string            `json:"updateReason,omitempty"`
+	SecurityWarning           string            `json:"securityWarning,omitempty"`
 	RecommendedVersion        string            `json:"recommendedVersion,omitempty"`
 	HostInstallation          *HostInstallation `json:"hostInstallation,omitempty"`
 	Installable               bool              `json:"installable"`

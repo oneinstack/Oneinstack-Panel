@@ -14,6 +14,9 @@ func LocalizeBusinessText(locale, value string) string {
 	if Canonical(locale) != LocaleEnUS || strings.TrimSpace(value) == "" {
 		return value
 	}
+	if strings.HasSuffix(value, phpSecurityFailureSuffix) || strings.HasPrefix(value, "PHP 安全升级未完成，") || strings.HasPrefix(value, "检测到需要迁移的 PHP 扩展") {
+		return LocalizeText(locale, value)
+	}
 	if translated, ok := englishBusinessTexts[value]; ok {
 		return translated
 	}
