@@ -25,7 +25,7 @@ component_version() {
   case "$1" in
     nginx) printf '%s' "1.28.2" ;;
     mysql) printf '%s' "8.0.45" ;;
-    php) printf '%s' "8.3.30" ;;
+    php) printf '%s' "8.3.36" ;;
     redis) printf '%s' "7.4.8" ;;
     *) return 1 ;;
   esac
