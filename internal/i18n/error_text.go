@@ -931,6 +931,8 @@ var englishTerms = map[string]string{
 }
 
 var englishErrorTexts = map[string]string{
+	"运行组操作锁已被占用，请等待相关任务结束后重试；若持续占用，请核对任务和锁记录，勿直接删除锁":                                                                         "The runtime group operation lock is held. Wait for the related task to finish before retrying. If it remains held, inspect the task and lock records; do not delete the lock directly.",
+	"无法获取运行组操作锁，组件操作尚未执行；请检查 Panel 服务日志、数据库写入权限和磁盘空间后重试":                                                                     "The runtime group operation lock could not be acquired. The component operation has not started. Check the Panel service logs, database write permissions, and disk space before retrying.",
 	"检测到需要迁移的 PHP 扩展，请先准备与目标 PHP ABI 兼容的扩展；原配置和服务未替换":                                                                        "PHP extensions require migration. Prepare extensions compatible with the target PHP ABI before upgrading; the existing configuration and service were preserved.",
 	"PHP 安全升级未完成，当前版本可能仍受 CVE-2026-109618 / CVE-2026-109619 影响；请选择已发布的 PHP 8.2.35+、8.3.36+、8.4.27+ 或 8.5.12+，旧分支迁移需显式选择目标版本": "PHP security remediation is incomplete. The runtime may still be affected by CVE-2026-109618 / CVE-2026-109619. Select a published PHP 8.2.35+, 8.3.36+, 8.4.27+ or 8.5.12+ release; migration from an older branch requires an explicit target.",
 	"历史快照未保存可恢复的结构化正文，不能执行回滚":                                                                                                "The historical snapshot does not contain restorable structured content and cannot be rolled back.",

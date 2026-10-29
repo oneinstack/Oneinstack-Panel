@@ -64,6 +64,7 @@ type InstallRequest struct {
 var (
 	ErrTaskSecretConsumed    = errors.New("TASK_SECRET_CONSUMED")
 	ErrTaskSecretUnavailable = errors.New("TASK_SECRET_UNAVAILABLE")
+	errRuntimeGroupBusy      = errors.New("runtime group operation lock conflict")
 )
 
 type RuntimeDependencyBusyError struct {
@@ -1101,8 +1102,17 @@ func (m *Manager) run(item queuedTask) {
 	defer m.releaseComponentLock(task.Component, task.ID)
 	if runtimeGroup := m.runtimeGroupForComponent(task.Component); runtimeGroup != "" {
 		if err := m.acquireRuntimeGroupLock(&task, runtimeGroup); err != nil {
+			code := "RUNTIME_GROUP_LOCK_FAILED"
+			if errors.Is(err, errRuntimeGroupBusy) {
+				code = "RUNTIME_GROUP_BUSY"
+			}
+			// Keep database diagnostics in the Panel service log, not the API
+			// or task events, which must not expose database internals.
+			fmt.Printf("Acquire runtime group lock for software task %s failed: %v\n", task.ID, err)
 			reporter := newReporter(m, task.ID)
-			_ = reporter.finish(models.SoftwareTaskStatusFailed, "RUNTIME_GROUP_BUSY", err.Error())
+			if finishErr := reporter.finish(models.SoftwareTaskStatusFailed, code, safeMessageForErrorCode(code)); finishErr != nil {
+				fmt.Printf("Finalize software task %s after runtime group lock failure failed: %v\n", task.ID, finishErr)
+			}
 			return
 		}
 		defer m.releaseRuntimeGroupLock(runtimeGroup, task.ID)
@@ -1271,7 +1281,16 @@ func (m *Manager) acquireRuntimeGroupLock(task *models.SoftwareTask, runtimeGrou
 		HeartbeatAt:  now,
 	}
 	if err := m.db.Create(lock).Error; err != nil {
-		return fmt.Errorf("runtime group %s already has an operation in progress", runtimeGroup)
+		// The application does not enable GORM's global TranslateError.
+		// Translate only for classification and retain the original cause.
+		translated := err
+		if translator, ok := m.db.Dialector.(gorm.ErrorTranslator); ok {
+			translated = translator.Translate(err)
+		}
+		if errors.Is(translated, gorm.ErrDuplicatedKey) {
+			return fmt.Errorf("runtime group %s: %w: %w", runtimeGroup, errRuntimeGroupBusy, err)
+		}
+		return fmt.Errorf("acquire runtime group %s operation lock: %w", runtimeGroup, err)
 	}
 	return nil
 }
@@ -1966,6 +1985,10 @@ func stableExecutionErrorCode(code string) string {
 
 func safeMessageForErrorCode(code string) string {
 	switch strings.TrimSpace(code) {
+	case "RUNTIME_GROUP_BUSY":
+		return "运行组操作锁已被占用，请等待相关任务结束后重试；若持续占用，请核对任务和锁记录，勿直接删除锁"
+	case "RUNTIME_GROUP_LOCK_FAILED":
+		return "无法获取运行组操作锁，组件操作尚未执行；请检查 Panel 服务日志、数据库写入权限和磁盘空间后重试"
 	case "PHP_SECURITY_UPDATE_REQUIRED":
 		return "PHP 安全升级未完成，当前版本可能仍受 CVE-2026-109618 / CVE-2026-109619 影响；请选择已发布的 PHP 8.2.35+、8.3.36+、8.4.27+ 或 8.5.12+，旧分支迁移需显式选择目标版本"
 	case "PHP_EXTENSION_MIGRATION_REQUIRED":

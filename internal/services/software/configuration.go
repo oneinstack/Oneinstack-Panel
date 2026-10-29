@@ -2031,7 +2031,7 @@ func parseComponentConfiguration(
 			if parseErr != nil || port < 1 || port > 65535 || runtime.BindAddress == "" ||
 				runtime.SocketPath == "" || !strings.HasPrefix(runtime.SocketPath, "/") || filepath.Clean(runtime.SocketPath) != runtime.SocketPath ||
 				runtime.InstallDir != "/usr/local/adminer" || runtime.ConfigFile == "" || !strings.HasPrefix(runtime.ConfigFile, "/") || filepath.Clean(runtime.ConfigFile) != runtime.ConfigFile ||
-				runtime.ServiceName == "" || runtime.Version != "6.1.0" || (runtime.PackageVersion != "1.0.1" && runtime.PackageVersion != "1.0.2" && runtime.PackageVersion != "1.0.3" && runtime.PackageVersion != "1.0.4" && runtime.PackageVersion != "1.0.5" && runtime.PackageVersion != "1.0.6" && runtime.PackageVersion != "1.0.7" && runtime.PackageVersion != "1.0.8") ||
+				runtime.ServiceName == "" || runtime.Version != "6.1.0" || (runtime.PackageVersion != "1.0.1" && runtime.PackageVersion != "1.0.2" && runtime.PackageVersion != "1.0.3" && runtime.PackageVersion != "1.0.4" && runtime.PackageVersion != "1.0.5" && runtime.PackageVersion != "1.0.6" && runtime.PackageVersion != "1.0.7" && runtime.PackageVersion != "1.0.8" && runtime.PackageVersion != "1.0.9" && runtime.PackageVersion != "1.0.10") ||
 				!configurationHashPattern.MatchString(runtime.ArtifactSHA256) || validateAdminerPublicPath(runtime.PublicPath) != nil ||
 				runtime.AccessURL == "" || (runtime.WebServer != "nginx" && runtime.WebServer != "openresty" && runtime.WebServer != "tengine" && runtime.WebServer != "apache" && runtime.WebServer != "caddy") ||
 				runtime.DocumentRoot == "" || !strings.HasPrefix(runtime.DocumentRoot, "/") || filepath.Clean(runtime.DocumentRoot) != runtime.DocumentRoot ||
