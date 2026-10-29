@@ -142,6 +142,7 @@ jobs:
           docker run --rm \
             --volume "${GITHUB_WORKSPACE}:/workspace:ro" --workdir /workspace \
             --env CI=true --env GITHUB_ACTIONS=true \
+            --env RUNNER_OS_LABEL="${RUNNER_OS_LABEL}" \
             "ubuntu:${RUNNER_OS_LABEL#ubuntu-}" \
             bash -euc 'apt-get update; apt-get install --yes bats jq curl procps; bats tests/component-scripts.bats'
 
