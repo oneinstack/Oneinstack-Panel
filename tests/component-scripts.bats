@@ -126,6 +126,10 @@ run_validated_common() {
   command -v jq >/dev/null
   local component precheck progress previous percent event_count
   for component in "${COMPONENTS[@]}"; do
+    if [[ "${component}" == php && "${RUNNER_OS_LABEL:-}" == ubuntu-24.04 ]]; then
+      echo "ok - ${component} precheck is skipped on ${RUNNER_OS_LABEL} because PHP 8.3.36 is not validated there # SKIP"
+      continue
+    fi
     precheck="$(component_root "${component}")/scripts/precheck.sh"
     progress="${TEST_WORK}/${component}-progress.jsonl"
     run env \
