@@ -980,7 +980,10 @@ func renderWebsiteSettings(
 	if err != nil {
 		return renderedWebsiteSettings{}, err
 	}
-	rendered.RewriteDirectives = rewrite
+	if site != nil && strings.EqualFold(site.Type, "proxy") && (rewrite.directives != "" || rewrite.locations != "") {
+		return renderedWebsiteSettings{}, errors.New("反向代理网站不支持伪静态规则，请使用反向代理或重定向设置")
+	}
+	rendered.RewriteDirectives = rewrite.directives
 	serverDirectives, err := renderServerDirectives(settings)
 	if err != nil {
 		return renderedWebsiteSettings{}, err
@@ -990,7 +993,7 @@ func renderWebsiteSettings(
 	if err != nil {
 		return renderedWebsiteSettings{}, err
 	}
-	rendered.ExtraLocations = extraLocations
+	rendered.ExtraLocations = strings.Trim(extraLocations+"\n"+rewrite.locations, "\n")
 	return rendered, nil
 }
 
@@ -1040,45 +1043,6 @@ func validatePHPBackend(value string) error {
 		return errors.New("PHP 后端端口无效")
 	}
 	return nil
-}
-
-func renderRewriteRules(value string) (string, error) {
-	type rewriteLine struct {
-		value  string
-		number int
-	}
-
-	var lines []rewriteLine
-	seen := make(map[string]struct{})
-	normalizedValue := strings.ReplaceAll(value, "\r\n", "\n")
-	normalizedValue = strings.ReplaceAll(normalizedValue, "\r", "\n")
-	for number, physicalLine := range strings.Split(normalizedValue, "\n") {
-		for _, item := range strings.Split(physicalLine, ",") {
-			item = strings.TrimSpace(item)
-			if item == "" {
-				continue
-			}
-			if _, exists := seen[item]; exists {
-				continue
-			}
-			seen[item] = struct{}{}
-			lines = append(lines, rewriteLine{value: item, number: number + 1})
-		}
-	}
-	if len(lines) > 100 {
-		return "", errors.New("伪静态规则不能超过 100 行")
-	}
-	var result strings.Builder
-	for _, line := range lines {
-		if strings.ContainsAny(line.value, "{}\x00`") || !strings.HasSuffix(line.value, ";") ||
-			!strings.HasPrefix(line.value, "rewrite ") {
-			return "", fmt.Errorf("第 %d 行不支持的伪静态规则 %q，仅允许 rewrite 指令", line.number, line.value)
-		}
-		result.WriteString("        ")
-		result.WriteString(line.value)
-		result.WriteByte('\n')
-	}
-	return strings.TrimSuffix(result.String(), "\n"), nil
 }
 
 func renderServerDirectives(settings WebsiteSettings) (string, error) {

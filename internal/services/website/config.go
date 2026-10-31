@@ -140,8 +140,11 @@ var siteTemplates = template.Must(template.New("nginx-sites").Parse(`
     autoindex {{.AutoIndex}};
 
     location / {
-        try_files $uri $uri/ =404;
+{{if .RewriteDirectives}}
 {{.RewriteDirectives}}
+{{else}}
+        try_files $uri $uri/ =404;
+{{end}}
     }
 
     location ~ \.php$ {
@@ -169,8 +172,11 @@ var siteTemplates = template.Must(template.New("nginx-sites").Parse(`
     autoindex {{.AutoIndex}};
 
     location / {
-        try_files $uri $uri/ =404;
+{{if .RewriteDirectives}}
 {{.RewriteDirectives}}
+{{else}}
+        try_files $uri $uri/ =404;
+{{end}}
     }
 {{end}}
 {{define "php"}}# Managed by OneinStack Panel - {{.Name}}
