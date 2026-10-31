@@ -105,6 +105,12 @@ func (e *InstallParameterError) InstallationMessage() string {
 		return message
 	case "MariaDB 版本必须是 10.11.19 或 11.4.13":
 		return message
+	case "Redis password must contain 8-128 characters":
+		return "Redis 密码必须为 8-128 个字符，请修改密码后重试"
+	case "Redis password contains unsupported characters":
+		return "Redis 密码仅允许英文字母、数字及 _ @ % + = : , . ! # ? -，请勿使用空格、引号、反斜杠或其他符号"
+	case "Redis password is required for a non-default user":
+		return "使用非 default 的 Redis 登录用户时必须设置密码"
 	case "OpenSearch 版本必须选择 Center 发布的精确版本 3.7.0",
 		"OpenSearch 管理员密码必须为 12-128 个字符，并同时包含大写字母、小写字母、数字和符号":
 		return message
@@ -231,6 +237,12 @@ func (e *InstallParameterError) PhpMyAdminWebRouteCode() string {
 func (e *InstallParameterError) InstallationMessageForLocale(locale string) string {
 	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(locale)), "en") {
 		switch strings.TrimSpace(e.Message) {
+		case "Redis password must contain 8-128 characters":
+			return "Redis password must contain 8-128 characters. Update the password and retry."
+		case "Redis password contains unsupported characters":
+			return "Redis password may contain only English letters, digits and _ @ % + = : , . ! # ? -. Spaces, quotes, backslashes and other symbols are not supported."
+		case "Redis password is required for a non-default user":
+			return "A password is required when the Redis login user is not default."
 		case "PHPMA_PHP_MISSING":
 			return "PHP is not installed. Install PHP before installing or upgrading phpMyAdmin."
 		case "PHPMA_PHP_RUNTIME_UNAVAILABLE":
@@ -298,6 +310,7 @@ var (
 	managedMySQLUsernamePattern         = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
 	managedMySQLDatabaseUsernamePattern = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
 	managedMySQLPasswordPattern         = regexp.MustCompile(`^[A-Za-z0-9_@%+=:,.!#?-]{12,128}$`)
+	managedRedisPasswordPattern         = regexp.MustCompile(`^[A-Za-z0-9_@%+=:,.!#?-]+$`)
 	managedOpenSearchPasswordPattern    = regexp.MustCompile(`^[A-Za-z0-9_@%+=:,.!#?-]{12,128}$`)
 	uppercasePasswordPattern            = regexp.MustCompile(`[A-Z]`)
 	lowercasePasswordPattern            = regexp.MustCompile(`[a-z]`)
@@ -425,6 +438,9 @@ func (installer *Installer) resolveInstallParams(ctx context.Context, params *in
 	}
 	if err := script.ValidateParameters(scriptInfo); err != nil {
 		return nil, scriptParameterError(err)
+	}
+	if err := validateResolvedRedisPassword(scriptInfo); err != nil {
+		return nil, err
 	}
 	if err := validateComposeEngineDependency(ctx, params); err != nil {
 		return nil, err
@@ -635,6 +651,29 @@ func scriptParameterError(err error) *InstallParameterError {
 		}
 	}
 	return &InstallParameterError{Field: field, Message: message}
+}
+
+// Match the Redis component's precheck using the final environment values,
+// including manifest defaults and both flat and catalog parameter aliases.
+func validateResolvedRedisPassword(scriptInfo *script.ScriptInfo) error {
+	if scriptInfo == nil || scriptInfo.Name != "redis" {
+		return nil
+	}
+	password := scriptInfo.Params["REDIS_PASSWORD"]
+	username := scriptInfo.Params["REDIS_USERNAME"]
+	if password == "" {
+		if username != "" && username != "default" {
+			return &InstallParameterError{Field: "redis-password", Message: "Redis password is required for a non-default user"}
+		}
+		return nil
+	}
+	if len(password) < 8 || len(password) > 128 {
+		return &InstallParameterError{Field: "redis-password", Message: "Redis password must contain 8-128 characters"}
+	}
+	if !managedRedisPasswordPattern.MatchString(password) {
+		return &InstallParameterError{Field: "redis-password", Message: "Redis password contains unsupported characters"}
+	}
+	return nil
 }
 
 func validateMongoDBInstallParams(params *input.InstallParams) error {
