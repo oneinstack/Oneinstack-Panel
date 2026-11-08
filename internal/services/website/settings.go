@@ -90,6 +90,7 @@ type renderedWebsiteSettings struct {
 	AutoIndex         string
 	PHPBackend        string
 	RewriteDirectives string
+	DenyLocations     string
 	ServerDirectives  string
 	ExtraLocations    string
 	AccessLogEnabled  bool
@@ -111,6 +112,7 @@ func ClusterSettingsIncompatibility(site models.Website, settings WebsiteSetting
 	}
 	_, err = renderWebsiteEngineConfig(targetEngine, site.Type, siteTemplateData{
 		RewriteDirectives: rendered.RewriteDirectives,
+		DenyLocations:     rendered.DenyLocations,
 		ServerDirectives:  rendered.ServerDirectives,
 		ExtraLocations:    rendered.ExtraLocations,
 	})
@@ -121,7 +123,7 @@ func ClusterSettingsIncompatibility(site models.Website, settings WebsiteSetting
 		return nil, err
 	}
 	features := make([]string, 0, 3)
-	if strings.TrimSpace(rendered.RewriteDirectives) != "" {
+	if strings.TrimSpace(rendered.RewriteDirectives) != "" || strings.TrimSpace(rendered.DenyLocations) != "" {
 		features = append(features, "rewrite_rules")
 	}
 	if strings.TrimSpace(rendered.ServerDirectives) != "" {
@@ -984,6 +986,11 @@ func renderWebsiteSettings(
 		return renderedWebsiteSettings{}, errors.New("反向代理网站不支持伪静态规则，请使用反向代理或重定向设置")
 	}
 	rendered.RewriteDirectives = rewrite.directives
+	locations := rewrite.locations
+	if site != nil && strings.EqualFold(site.Type, "php") {
+		rendered.DenyLocations = rewrite.denyLocations
+		locations = rewrite.phpLocations
+	}
 	serverDirectives, err := renderServerDirectives(settings)
 	if err != nil {
 		return renderedWebsiteSettings{}, err
@@ -993,7 +1000,10 @@ func renderWebsiteSettings(
 	if err != nil {
 		return renderedWebsiteSettings{}, err
 	}
-	rendered.ExtraLocations = strings.Trim(extraLocations+"\n"+rewrite.locations, "\n")
+	if err := validateWebsiteRewriteLocationConflicts(rewrite, extraLocations); err != nil {
+		return renderedWebsiteSettings{}, err
+	}
+	rendered.ExtraLocations = strings.Trim(extraLocations+"\n"+locations, "\n")
 	return rendered, nil
 }
 

@@ -95,6 +95,7 @@ type siteTemplateData struct {
 	AutoIndex         string
 	PHPBackend        string
 	RewriteDirectives string
+	DenyLocations     string
 	ServerDirectives  string
 	ExtraLocations    string
 	AccessLogEnabled  bool
@@ -147,6 +148,7 @@ var siteTemplates = template.Must(template.New("nginx-sites").Parse(`
 {{end}}
     }
 
+{{.DenyLocations}}
     location ~ \.php$ {
         try_files $uri =404;
         fastcgi_pass {{.PHPBackend}};
@@ -429,6 +431,7 @@ func prepareWebsiteWithTLSAndSettings(
 		AutoIndex:         runtimeSettings.AutoIndex,
 		PHPBackend:        runtimeSettings.PHPBackend,
 		RewriteDirectives: runtimeSettings.RewriteDirectives,
+		DenyLocations:     runtimeSettings.DenyLocations,
 		ServerDirectives:  runtimeSettings.ServerDirectives,
 		ExtraLocations:    runtimeSettings.ExtraLocations,
 		AccessLogEnabled:  runtimeSettings.AccessLogEnabled,
@@ -531,6 +534,7 @@ func (TengineAdapter) Reload(ctx context.Context, publisher *Publisher) error {
 
 func (ApacheAdapter) Render(siteType string, data siteTemplateData) (string, error) {
 	if strings.TrimSpace(data.RewriteDirectives) != "" ||
+		strings.TrimSpace(data.DenyLocations) != "" ||
 		strings.TrimSpace(data.ServerDirectives) != "" ||
 		strings.TrimSpace(data.ExtraLocations) != "" {
 		return "", errors.New("UNSUPPORTED_ENGINE_DIRECTIVE: Nginx-specific website directives cannot be rendered for Apache")
@@ -540,6 +544,7 @@ func (ApacheAdapter) Render(siteType string, data siteTemplateData) (string, err
 
 func (CaddyAdapter) Render(siteType string, data siteTemplateData) (string, error) {
 	if strings.TrimSpace(data.RewriteDirectives) != "" ||
+		strings.TrimSpace(data.DenyLocations) != "" ||
 		strings.TrimSpace(data.ExtraLocations) != "" {
 		return "", errors.New("UNSUPPORTED_ENGINE_DIRECTIVE: Nginx-specific website directives cannot be rendered for Caddy")
 	}
