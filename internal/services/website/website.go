@@ -627,10 +627,14 @@ func (service *Service) add(ctx context.Context, param *models.Website, allowMan
 	if err := normalizeWebsiteExpiration(param, time.Now()); err != nil {
 		return err
 	}
+	owner, err := service.websiteRootOwner(ctx, strings.ToLower(strings.TrimSpace(param.Type)))
+	if err != nil {
+		return err
+	}
 	if !strings.EqualFold(strings.TrimSpace(param.Type), "proxy") {
 		// prepareCreate validates the normalized managed path before the child
 		// directory is created, so initialize the trusted base for fresh setups.
-		if err := os.MkdirAll(filepath.Clean(service.WebRoot), 0755); err != nil {
+		if err := ensureWebsiteBase(service.WebRoot, owner); err != nil {
 			return fmt.Errorf("create managed website root: %w", err)
 		}
 	}
@@ -642,12 +646,16 @@ func (service *Service) add(ctx context.Context, param *models.Website, allowMan
 	if err != nil {
 		return err
 	}
-	createdRoot, err := service.ensureWebsiteRoot(prepared.model.Type, prepared.model.RootDir)
+	createdRoot, err := service.ensureWebsiteRoot(ctx, prepared.model.Type, prepared.model.RootDir, owner)
 	if err != nil {
 		return err
 	}
-	defaultPagePath, createdDefaultPage, err := ensureDefaultWebsitePage(&prepared.model)
+	defaultPagePath, createdDefaultPage, err := ensureDefaultWebsitePage(&prepared.model, owner)
 	if err != nil {
+		cleanupWebsiteAddFiles(prepared.model.RootDir, defaultPagePath, createdRoot, createdDefaultPage)
+		return err
+	}
+	if err := owner.checkAccess(ctx, defaultPagePath, "-r"); err != nil {
 		cleanupWebsiteAddFiles(prepared.model.RootDir, defaultPagePath, createdRoot, createdDefaultPage)
 		return err
 	}
@@ -820,7 +828,11 @@ func (service *Service) Update(ctx context.Context, param *models.Website) error
 			return err
 		}
 	}
-	createdRoot, err := service.ensureWebsiteRoot(prepared.model.Type, prepared.model.RootDir)
+	owner, err := service.websiteRootOwner(ctx, prepared.model.Type)
+	if err != nil {
+		return err
+	}
+	createdRoot, err := service.ensureWebsiteRoot(ctx, prepared.model.Type, prepared.model.RootDir, owner)
 	if err != nil {
 		return err
 	}
@@ -1379,23 +1391,36 @@ func (service *Service) validateTLSFiles(options TLSOptions) error {
 	return nil
 }
 
-func (service *Service) ensureWebsiteRoot(siteType, root string) (bool, error) {
+func (service *Service) ensureWebsiteRoot(ctx context.Context, siteType, root string, owner *websiteRootOwner) (bool, error) {
 	if siteType == "proxy" {
 		return false, nil
 	}
 	// The configured web root may be absent on a fresh installation. Create
 	// only that trusted base before the descriptor-relative child validation;
 	// validateManagedPath still rejects a symlink or non-directory base.
-	if err := os.MkdirAll(filepath.Clean(service.WebRoot), 0755); err != nil {
+	if err := ensureWebsiteBase(service.WebRoot, owner); err != nil {
 		return false, fmt.Errorf("create managed website root: %w", err)
 	}
 	if _, err := validateManagedPath(service.WebRoot, root); err != nil {
 		return false, fmt.Errorf("%w: %v", ErrWebsiteRootInvalid, err)
 	}
-	return ensureManagedDirectory(service.WebRoot, root)
+	if err := owner.checkAccess(ctx, filepath.Clean(service.WebRoot), "-x"); err != nil {
+		return false, err
+	}
+	created, err := ensureManagedDirectory(service.WebRoot, root, owner)
+	if err != nil {
+		return false, err
+	}
+	if err := owner.checkAccess(ctx, root, "-x"); err != nil {
+		if created {
+			_ = os.Remove(root)
+		}
+		return false, err
+	}
+	return created, nil
 }
 
-func ensureDefaultWebsitePage(site *models.Website) (string, bool, error) {
+func ensureDefaultWebsitePage(site *models.Website, owner *websiteRootOwner) (string, bool, error) {
 	if site == nil || site.Type == "proxy" || strings.TrimSpace(site.RootDir) == "" {
 		return "", false, nil
 	}
@@ -1406,6 +1431,11 @@ func ensureDefaultWebsitePage(site *models.Website) (string, bool, error) {
 	}
 	if err != nil {
 		return indexPath, false, fmt.Errorf("create default website page: %w", err)
+	}
+	if err := owner.prepareFile(file); err != nil {
+		_ = file.Close()
+		_ = os.Remove(indexPath)
+		return indexPath, false, err
 	}
 	page := defaultWebsitePage(site.Name, site.Domain)
 	if _, err := file.WriteString(page); err != nil {

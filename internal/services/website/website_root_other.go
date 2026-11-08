@@ -3,14 +3,16 @@
 package website
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 )
 
 // Non-Linux builds retain the existing Lstat-before-MkdirAll behavior. Panel
 // production deployments are Linux and use the descriptor-relative helper.
-func ensureManagedDirectory(base, target string) (bool, error) {
+func ensureManagedDirectory(base, target string, owner *websiteRootOwner) (bool, error) {
 	if _, err := validateManagedPath(base, target); err != nil {
 		return false, err
 	}
@@ -28,4 +30,13 @@ func ensureManagedDirectory(base, target string) (bool, error) {
 		return false, fmt.Errorf("create website root: %w", err)
 	}
 	return true, nil
+}
+
+func ensureWebsiteBase(base string, owner *websiteRootOwner) error {
+	return os.MkdirAll(filepath.Clean(base), 0755)
+}
+
+func (owner *websiteRootOwner) checkAccess(context.Context, string, string) error {
+	// Production deployments use Linux and verify the actual runtime identity.
+	return nil
 }
