@@ -15,13 +15,24 @@
 ```yaml
 clusterAgent:
   enabled: true
-  controllerUrl: "https://controller.example.com:8089/v1"
+  controllerUrl: "https://controller.example.com:8089"
   token: "控制端生成的节点令牌"
   intervalSeconds: 30
   requestTimeoutSeconds: 10
 ```
 
-`controllerUrl` 必须包含控制端 API 前缀 `/v1`。Agent 会自动注册，之后按间隔发送 CPU、内存、磁盘、网络和运行时长指标。
+**注意：`controllerUrl` 填写控制端基础地址，不要包含 `/v1` 后缀。** Agent 端点路径为 `/cluster/agent/*`，不在 `/v1` 路由组下。如果填写了 `/v1` 后缀，系统会自动移除。
+
+Agent 会自动注册，之后按间隔发送 CPU、内存、磁盘、网络和运行时长指标。
+
+### 云主机端点地址配置
+
+在公有云环境中，节点可能通过 NAT 暴露公网 IP，但本机网卡绑定的是私有 IP。这会导致控制端配置的节点端点 IP（公网）与节点上报的 IP（私网）不一致。
+
+**建议做法：**
+- 端点地址使用控制端能够访问的地址（通常是节点的公网 IP 或域名）
+- 如果节点心跳正常，IP 不一致只是提示信息，不影响功能
+- 如果节点离线，请检查安全组、防火墙规则是否放行控制端到节点的 8089 端口
 
 ## 3. 网站配置下发
 
@@ -53,5 +64,6 @@ clusterAgent:
 
 - `pending`：节点尚未使用令牌成功注册；
 - `offline`：超过两分钟没有心跳；
-- 任务长期 `queued`：检查 Agent 是否启用、控制端地址是否包含 `/v1`、防火墙是否放行 8089；
+- 任务长期 `queued`：检查 Agent 是否启用、控制端地址是否正确（不含 `/v1`）、防火墙是否放行 8089；
 - 任务 `failed`：在节点详情的“指标/任务”中查看错误信息，修复目标节点 Web Server 配置后可重新下发。
+- 端点 IP 不一致：云主机常见情况，若节点在线则表示 NAT 配置正常；若节点离线请检查安全组和防火墙。
