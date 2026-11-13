@@ -175,7 +175,8 @@ func ListCategories(param *input.SoftwareCategoryParam) ([]Category, error) {
 	if err := app.DB().Model(&models.Software{}).
 		Where("(catalog_visible = ? OR installed = ?)", true, true).
 		Select(
-			"`key`, tags," +
+			"MAX(CASE WHEN installed = 1 THEN origin ELSE '' END) as origin," +
+				"`key`, tags," +
 				"MAX(CASE WHEN installed = 1 THEN 1 ELSE 0 END) as installed," +
 				"MAX(CASE WHEN is_update = 1 THEN 1 ELSE 0 END) as is_update",
 		).
@@ -497,7 +498,7 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 				"COALESCE(MAX(CASE WHEN installed = 1 THEN credential_params_ciphertext END), '') as credential_params_ciphertext," +
 				"MAX(CASE WHEN catalog_managed = 1 THEN 1 ELSE 0 END) as catalog_managed," +
 				"MAX(manage_scopes) as manage_scopes," +
-				"MAX(service_name) as service_name," +
+				"COALESCE(MAX(CASE WHEN installed = 1 THEN NULLIF(service_name, '') END), MAX(service_name)) as service_name," +
 				"MAX(params) as params," +
 				"MAX(log) as log," +
 				"MAX(tags) as tags").
@@ -676,6 +677,7 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 			Status:                  item.Status,
 			Resource:                item.Resource,
 			InstallVersion:          item.InstallVersion,
+			Origin:                  item.Origin,
 			VersionLines:            versionLines[item.Key],
 			Port:                    port,
 			InstalledPackageVersion: item.InstalledPackageVersion,
@@ -758,6 +760,14 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 			}
 		}
 		groupedResults[i].Runtime = mysqlRuntimeInfo(item)
+		if item.Origin == models.SoftwareOriginOneinstackScript {
+			groupedResults[i].IsUpdate = false
+			groupedResults[i].Installable = false
+			groupedResults[i].UpdateReason = ""
+			for j := range groupedResults[i].VersionOptions {
+				groupedResults[i].VersionOptions[j].Installable = false
+			}
+		}
 		if groupedResults[i].Runtime == nil {
 			groupedResults[i].Runtime = apacheRuntimeInfo(item)
 		}

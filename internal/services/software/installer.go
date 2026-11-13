@@ -14,6 +14,7 @@ import (
 	"oneinstack/app"
 	"oneinstack/internal/models"
 	"oneinstack/internal/services/componentstate"
+	"oneinstack/internal/services/legacyoneinstack"
 	safeservice "oneinstack/internal/services/safe"
 	"oneinstack/internal/services/script"
 	"oneinstack/internal/services/scriptregistry"
@@ -458,6 +459,11 @@ func (installer *Installer) ServiceActionTaskWithPackage(
 	logPath string,
 	observer script.ExecutionObserver,
 ) (string, error) {
+	if IsServiceAction(action) {
+		if name, legacy, err := installer.legacyServiceAction(ctx, component, version, action, logPath, observer); legacy || err != nil {
+			return name, err
+		}
+	}
 	definition, err := ResolveServiceComponent(app.DB(), component)
 	if err != nil {
 		return "", err
@@ -645,6 +651,12 @@ func (installer *Installer) getUninstallScript(
 	ctx context.Context,
 	params *input.RemoveParams,
 ) (*script.ScriptInfo, *input.InstallParams, error) {
+	if params == nil {
+		return nil, nil, errors.New("uninstall parameters are required")
+	}
+	if err := legacyoneinstack.ProtectMutation(app.DB(), params.Name); err != nil {
+		return nil, nil, err
+	}
 	componentName, softwareKey, err := componentForRemove(params.Name)
 	if err != nil {
 		return nil, nil, err

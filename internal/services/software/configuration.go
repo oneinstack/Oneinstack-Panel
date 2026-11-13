@@ -18,6 +18,7 @@ import (
 
 	"oneinstack/app"
 	"oneinstack/internal/models"
+	"oneinstack/internal/services/legacyoneinstack"
 	"oneinstack/internal/services/script"
 	"oneinstack/internal/services/scriptregistry"
 	storageService "oneinstack/internal/services/storage"
@@ -787,6 +788,9 @@ func (installer *Installer) inspectServiceConfiguration(
 	component string,
 	version string,
 ) (ComponentConfiguration, error) {
+	if err := legacyoneinstack.ProtectMutation(app.DB(), component); err != nil {
+		return ComponentConfiguration{}, err
+	}
 	definition, err := componentConfigurationDefinition(component)
 	if err != nil {
 		return ComponentConfiguration{}, err
@@ -1057,6 +1061,9 @@ func (installer *Installer) ApplyServiceConfigurationTask(
 	logPath string,
 	observer script.ExecutionObserver,
 ) (string, error) {
+	if err := legacyoneinstack.ProtectMutation(app.DB(), component); err != nil {
+		return "", err
+	}
 	definition, err := componentConfigurationDefinition(component)
 	if err != nil {
 		return "", err

@@ -10,6 +10,7 @@ import (
 
 	"oneinstack/app"
 	"oneinstack/internal/models"
+	"oneinstack/internal/services/legacyoneinstack"
 	"oneinstack/internal/services/script"
 	"oneinstack/internal/services/scriptregistry"
 	"oneinstack/router/input"
@@ -18,6 +19,7 @@ import (
 // LifecyclePreview is resolved exclusively from a verified component package
 // and installed-state parameters. It contains no executable client input.
 type LifecyclePreview struct {
+	LegacyRevision  string
 	Contract        bool
 	Component       string
 	DisplayName     string
@@ -42,6 +44,9 @@ type LifecyclePreviewPath struct {
 func PreviewUninstallLifecycle(ctx context.Context, params *input.RemoveParams) (LifecyclePreview, error) {
 	if params == nil {
 		return LifecyclePreview{}, errors.New("uninstall parameters are required")
+	}
+	if err := legacyoneinstack.ProtectMutation(app.DB(), params.Name); err != nil {
+		return LifecyclePreview{}, err
 	}
 	component, softwareKey, err := componentForRemove(params.Name)
 	if err != nil {
@@ -106,6 +111,19 @@ func PreviewServiceLifecycle(
 		return LifecyclePreview{}, fmt.Errorf("read installed %s state: %w", definition.Component, err)
 	}
 	version := strings.TrimSpace(row.InstallVersion)
+	if row.Origin == legacyoneinstack.Origin {
+		c, err := legacyoneinstack.DecodeComponent(row.LegacyMetadata)
+		if err != nil {
+			return LifecyclePreview{}, err
+		}
+		if _, err := legacyoneinstack.VerifyService(ctx, c); err != nil {
+			return LifecyclePreview{}, err
+		}
+		if action == "reload" && !c.CanReload {
+			return LifecyclePreview{}, errors.New("service does not support reload")
+		}
+		return LifecyclePreview{Component: c.ID, DisplayName: c.Name, SoftwareVersion: c.Version, Services: []string{c.Service}, LegacyRevision: c.UnitIdentity}, nil
+	}
 	if version == "" {
 		version = strings.TrimSpace(row.Version)
 	}

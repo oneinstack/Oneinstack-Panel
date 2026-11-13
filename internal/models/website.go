@@ -7,6 +7,9 @@ import (
 )
 
 type Website struct {
+	Origin               string     `json:"origin,omitempty" gorm:"size:32;index"`
+	LegacyMetadata       string     `json:"-" gorm:"type:text"`
+	PreservedConfig      string     `json:"-" gorm:"type:text"`
 	ID                   int64      `json:"id"`
 	Name                 string     `json:"name"`
 	Domain               string     `json:"domain"`

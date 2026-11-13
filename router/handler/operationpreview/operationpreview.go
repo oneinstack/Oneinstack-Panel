@@ -1828,6 +1828,9 @@ func previewSystemdUnit(service string) string {
 }
 
 func lifecycleTargetVersion(preview softwareService.LifecyclePreview) string {
+	if preview.LegacyRevision != "" {
+		return strings.Join([]string{preview.Component, preview.SoftwareVersion, preview.LegacyRevision}, "|")
+	}
 	if preview.PackagePin == nil {
 		return ""
 	}

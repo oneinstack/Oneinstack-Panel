@@ -15,6 +15,7 @@ import (
 	"oneinstack/app"
 	"oneinstack/internal/models"
 	"oneinstack/internal/services"
+	"oneinstack/internal/services/legacyoneinstack"
 	safeservice "oneinstack/internal/services/safe"
 	"oneinstack/router/input"
 
@@ -46,18 +47,38 @@ func defaultService() (*Service, error) {
 	if vhostRoot == "" {
 		vhostRoot = filepath.Join(app.GetBasePath(), "vhost")
 	}
-	if err := ensureManagedVhostLayout(app.DB(), server, vhostRoot); err != nil {
+	legacy, err := legacyWebServer(server)
+	if err != nil {
+		return nil, err
+	}
+	if legacy == nil && filepath.Clean(server.SiteConfigDir) == filepath.Join(server.ConfigRoot, "vhost") {
+		var managed models.Software
+		result := app.DB().Where("installed = ? AND component = ?", true, server.Component).Order("install_time DESC").First(&managed)
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) || (result.Error == nil && managed.InstalledPackageVersion == "") {
+			return nil, fmt.Errorf("%w: 检测到原有 OneinStack 站点目录，自动接管尚未完成；请查看接管任务后刷新，原配置保持不变", ErrWebServerUnavailable)
+		}
+		if result.Error != nil {
+			return nil, result.Error
+		}
+	}
+	configDir := filepath.Join(vhostRoot, server.Component)
+	webRoot, logRoot := app.ONE_CONFIG.System.WebPath, app.ONE_CONFIG.System.LogPath
+	if legacy != nil {
+		// The script already includes its vhost directory. Do not move files,
+		// add include directives or rewrite the main config on a read/startup.
+		vhostRoot, configDir, webRoot, logRoot = "", legacy.VhostDir, legacy.WebRoot, legacy.LogRoot
+	} else if err := ensureManagedVhostLayout(app.DB(), server, vhostRoot); err != nil {
 		return nil, fmt.Errorf("prepare Web server vhost layout: %w", err)
 	}
 	return &Service{
 		DB:              app.DB(),
-		WebRoot:         app.ONE_CONFIG.System.WebPath,
-		LogRoot:         app.ONE_CONFIG.System.LogPath,
+		WebRoot:         webRoot,
+		LogRoot:         logRoot,
 		ChallengeRoot:   app.ONE_CONFIG.System.ACMEChallengePath,
 		CertificateRoot: app.ONE_CONFIG.System.CertificatePath,
 		VhostRoot:       vhostRoot,
 		Publisher: &Publisher{
-			ConfigDir:      filepath.Join(vhostRoot, server.Component),
+			ConfigDir:      configDir,
 			NginxBinary:    server.BinaryPath,
 			Engine:         server.Component,
 			ServiceName:    server.ServiceName,
@@ -177,7 +198,7 @@ func migrateManagedVhostFiles(database *gorm.DB, server WebServerInfo, engineRoo
 		return nil
 	}
 	var sites []models.Website
-	if err := database.Select("name, engine").Find(&sites).Error; err != nil {
+	if err := database.Where("origin <> ? OR origin IS NULL", legacyoneinstack.Origin).Select("name, engine").Find(&sites).Error; err != nil {
 		return err
 	}
 	vhostRoot := filepath.Dir(engineRoot)
@@ -281,7 +302,13 @@ func (service *Service) Get(id int64) (*models.Website, error) {
 	// checks/creation as needed; keep the managed-path and symlink boundaries
 	// while allowing a missing configured root here so operation previews and
 	// repair-oriented reads stay consistent with the lifecycle executor.
-	if !strings.EqualFold(strings.TrimSpace(site.Type), "proxy") {
+	if site.Origin == legacyoneinstack.Origin {
+		if site.RootDir != "" {
+			if err := legacyoneinstack.ValidatePath(site.RootDir); err != nil {
+				return nil, err
+			}
+		}
+	} else if !strings.EqualFold(strings.TrimSpace(site.Type), "proxy") {
 		if _, err := validateManagedPathWithOptions(service.WebRoot, site.RootDir, true); err != nil {
 			return nil, err
 		}
@@ -296,6 +323,9 @@ func (service *Service) ConfigFile(site *models.Website) (string, error) {
 	if site == nil {
 		return "", errors.New("website is required")
 	}
+	if site.Origin == legacyoneinstack.Origin {
+		return legacyWebsiteConfigPath(site)
+	}
 	name := strings.TrimSpace(site.Name) + ".conf"
 	if !configNamePattern.MatchString(name) {
 		return "", errors.New("stored website has an unsafe Web server config name")
@@ -308,6 +338,13 @@ func (service *Service) ConfigFile(site *models.Website) (string, error) {
 }
 
 func (service *Service) websiteConfigRoot(site *models.Website) (string, error) {
+	if site != nil && site.Origin == legacyoneinstack.Origin {
+		path, err := legacyWebsiteConfigPath(site)
+		if err != nil {
+			return "", err
+		}
+		return filepath.Dir(path), nil
+	}
 	if service == nil || service.Publisher == nil {
 		return "", errors.New("Web server publisher is not configured")
 	}
@@ -341,6 +378,9 @@ func (service *Service) ensureWebsiteOwnerActive(site *models.Website) error {
 		return err
 	}
 	if owner == current {
+		return nil
+	}
+	if site.Origin == legacyoneinstack.Origin && legacyoneinstack.IsProxyPair(service.DB, owner, current) {
 		return nil
 	}
 	return fmt.Errorf(
@@ -391,11 +431,31 @@ func (service *Service) publisherForSite(site *models.Website) (*Publisher, erro
 		return nil, err
 	}
 	publisher.ConfigDir = configRoot
+	if site.Origin == legacyoneinstack.Origin {
+		if err := preserveLegacyPublisherMetadata(&publisher, site); err != nil {
+			return nil, err
+		}
+	}
 	if engine == "caddy" {
 		publisher.CaddyLogPath = websiteAccessLogPath(service.LogRoot, *site)
 	}
 	currentEngine, _ := normalizeWebsiteEngine(service.Publisher.Engine)
 	if currentEngine != engine {
+		if site.Origin == legacyoneinstack.Origin {
+			row, err := legacyoneinstack.Installed(service.DB, engine)
+			if err != nil {
+				return nil, err
+			}
+			if row == nil {
+				return nil, ErrWebsiteConfigUnavailable
+			}
+			component, err := legacyoneinstack.DecodeComponent(row.LegacyMetadata)
+			if err != nil {
+				return nil, err
+			}
+			publisher.NginxBinary, publisher.ServiceName, publisher.MainConfigPath = component.Binary, component.Service, component.Config
+			return &publisher, nil
+		}
 		publisher.NginxBinary = webEngineBinary(engine)
 		publisher.ServiceName = webServiceName(engine)
 		publisher.MainConfigPath = webEngineMainConfig(engine)
@@ -404,6 +464,9 @@ func (service *Service) publisherForSite(site *models.Website) (*Publisher, erro
 }
 
 func websiteAccessLogPath(logRoot string, site models.Website) string {
+	if path := legacyLogPath(site, "access"); path != "" {
+		return path
+	}
 	logName := strings.ReplaceAll(strings.TrimSpace(site.Name), ".", "_") + "_access.log"
 	return filepath.Join(filepath.Clean(logRoot), logName)
 }
@@ -469,6 +532,7 @@ func (service *Service) prepareCreate(param *models.Website, allowManagedAbsolut
 	if param == nil {
 		return nil, errors.New("website parameters are required")
 	}
+	param.Origin, param.LegacyMetadata, param.PreservedConfig = "", "", ""
 	if service.Publisher == nil {
 		return nil, errors.New("website Web server publisher is not configured")
 	}
@@ -549,6 +613,7 @@ func List(param *input.WebsiteQueryParam) (*services.PaginatedResult[models.Webs
 	}
 	websiteIDs := make([]int64, 0, len(result.Data))
 	for i := range result.Data {
+		enrichLegacyCertificate(&result.Data[i])
 		websiteIDs = append(websiteIDs, result.Data[i].ID)
 	}
 	var certificates []models.Certificate
@@ -623,6 +688,7 @@ func (service *Service) add(ctx context.Context, param *models.Website, allowMan
 		return errors.New("website parameters are required")
 	}
 	param.Enabled = true
+	param.Origin, param.LegacyMetadata, param.PreservedConfig = "", "", ""
 	param.DisabledReason = ""
 	if err := normalizeWebsiteExpiration(param, time.Now()); err != nil {
 		return err
@@ -741,6 +807,10 @@ func (service *Service) Update(ctx context.Context, param *models.Website) error
 	if err := service.DB.First(&existing, "id = ?", param.ID).Error; err != nil {
 		return err
 	}
+	if err := protectLegacyTemplate(&existing); err != nil {
+		return err
+	}
+	param.Origin, param.LegacyMetadata, param.PreservedConfig = existing.Origin, existing.LegacyMetadata, existing.PreservedConfig
 	if err := service.ensureWebsiteOwnerActive(&existing); err != nil {
 		return err
 	}
@@ -1227,6 +1297,9 @@ func (deployer *CertificateDeployer) EnsureChallenge(ctx context.Context, websit
 	if err := deployer.service.DB.First(&site, "id = ?", websiteID).Error; err != nil {
 		return err
 	}
+	if err := protectLegacyTemplate(&site); err != nil {
+		return err
+	}
 	if err := deployer.service.ensureWebsiteOwnerActive(&site); err != nil {
 		return err
 	}
@@ -1295,6 +1368,9 @@ func (deployer *CertificateDeployer) publish(
 	}
 	var site models.Website
 	if err := deployer.service.DB.First(&site, "id = ?", websiteID).Error; err != nil {
+		return nil, err
+	}
+	if err := protectLegacyTemplate(&site); err != nil {
 		return nil, err
 	}
 	if err := deployer.service.ensureWebsiteOwnerActive(&site); err != nil {

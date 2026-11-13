@@ -482,6 +482,11 @@ func prepareManagedComponentPurge(ctx context.Context) ([]managedPurgeComponent,
 	failures := make([]managedPurgeFailure, 0)
 	seen := make(map[string]bool, len(rows))
 	for _, row := range rows {
+		// Adopted script resources remain owned by the original installation,
+		// including when Panel itself is removed with --purge.
+		if row.Origin == models.SoftwareOriginOneinstackScript {
+			continue
+		}
 		key := strings.ToLower(strings.TrimSpace(row.Key))
 		component := strings.ToLower(strings.TrimSpace(row.Component))
 		if component == "" {

@@ -17,6 +17,7 @@ import (
 	"oneinstack/internal/models"
 	"oneinstack/internal/services/artifactcleanup"
 	"oneinstack/internal/services/componentstate"
+	"oneinstack/internal/services/legacyoneinstack"
 	safeservice "oneinstack/internal/services/safe"
 	"oneinstack/internal/services/scriptregistry"
 	softwareService "oneinstack/internal/services/software"
@@ -497,7 +498,7 @@ func (m *Manager) submit(request InstallRequest, requestedBy int64) (*models.Sof
 			return nil, err
 		}
 	}
-	if request.Operation != "install" && request.Operation != "uninstall" &&
+	if request.Operation != "install" && request.Operation != "uninstall" && request.Operation != "adopt" &&
 		!isRuntimeOperation(request.Operation) {
 		return nil, fmt.Errorf("unsupported software task operation: %s", request.Operation)
 	}
@@ -530,6 +531,14 @@ func (m *Manager) submit(request InstallRequest, requestedBy int64) (*models.Sof
 	if request.Key == "" {
 		return nil, errors.New("software key and version are required")
 	}
+	if request.Operation == "adopt" && request.Key != legacyoneinstack.TaskComponent {
+		return nil, errors.New("invalid adoption target")
+	}
+	if request.Operation != "adopt" && !isServiceOperation(request.Operation) {
+		if err := legacyoneinstack.ProtectMutation(m.db, request.Key); err != nil {
+			return nil, err
+		}
+	}
 	if requestedBy <= 0 {
 		return nil, errors.New("authenticated user is required")
 	}
@@ -544,6 +553,13 @@ func (m *Manager) submit(request InstallRequest, requestedBy int64) (*models.Sof
 		}
 	}
 	runtimeGroup := m.runtimeGroupForComponent(component)
+	if request.SwitchRequested {
+		if row, err := legacyoneinstack.Installed(m.db, request.Key); err != nil {
+			return nil, err
+		} else if row != nil {
+			return nil, errors.New("SWITCH_UNSUPPORTED: 原有 OneinStack 服务不自动切换到其他组件")
+		}
+	}
 	if request.SwitchRequested && runtimeGroup == "" {
 		return nil, errors.New("SWITCH_UNSUPPORTED: component does not belong to a runtime group")
 	}
@@ -552,7 +568,7 @@ func (m *Manager) submit(request InstallRequest, requestedBy int64) (*models.Sof
 	}
 	if isRuntimeOperation(request.Operation) && runtimeGroup != "" &&
 		(request.Operation == "start" || request.Operation == "restart") && !request.SwitchRequested {
-		owners := activeRuntimeGroupOwners(context.Background(), runtimeGroup, component)
+		owners := m.activeRuntimeGroupOwners(context.Background(), runtimeGroup, component)
 		if len(owners) > 0 {
 			return nil, fmt.Errorf("RUNTIME_GROUP_BUSY: %s is already active", owners[0].ServiceName)
 		}
@@ -620,7 +636,7 @@ func (m *Manager) submit(request InstallRequest, requestedBy int64) (*models.Sof
 				request.Version,
 			)
 		}
-	} else {
+	} else if request.Operation != "adopt" {
 		if request.Version == "" {
 			return nil, errors.New("software key and version are required")
 		}
@@ -705,6 +721,9 @@ func (m *Manager) submit(request InstallRequest, requestedBy int64) (*models.Sof
 		UpdatedAt:          now,
 	}
 	applyPackagePinToTask(task, request.ResolvedPackage)
+	if request.Operation == "adopt" {
+		task.ReleaseRevision = request.Parameters["source-revision"]
+	}
 	event := &models.SoftwareTaskEvent{
 		TaskID:    task.ID,
 		Seq:       1,
@@ -1117,7 +1136,7 @@ func (m *Manager) run(item queuedTask) {
 		}
 		defer m.releaseRuntimeGroupLock(runtimeGroup, task.ID)
 		if (task.Operation == "start" || task.Operation == "restart") && !task.SwitchRequested {
-			if owners := activeRuntimeGroupOwners(context.Background(), runtimeGroup, task.Component); len(owners) > 0 {
+			if owners := m.activeRuntimeGroupOwners(context.Background(), runtimeGroup, task.Component); len(owners) > 0 {
 				reporter := newReporter(m, task.ID)
 				_ = reporter.finish(models.SoftwareTaskStatusFailed, "RUNTIME_GROUP_BUSY", fmt.Sprintf("%s is already active", owners[0].ServiceName))
 				return
@@ -1416,6 +1435,8 @@ func (m *Manager) componentForKey(key string) (string, error) {
 		return "", fmt.Errorf("look up software component: %w", err)
 	}
 	switch normalized {
+	case legacyoneinstack.TaskComponent:
+		return legacyoneinstack.TaskComponent, nil
 	case "webserver":
 		return "nginx", nil
 	case "db":
@@ -1830,6 +1851,8 @@ func validateConfigurationTaskPayload(revision string, values map[string]string)
 
 func operationLabel(operation string) string {
 	switch operation {
+	case "adopt":
+		return "接管"
 	case "upgrade":
 		return "升级"
 	case "uninstall":
@@ -1851,6 +1874,8 @@ func operationLabel(operation string) string {
 
 func operationSuccessMessage(operation string) string {
 	switch operation {
+	case "adopt":
+		return "OneinStack 环境同步完成，程序、配置和数据保持原位"
 	case "uninstall":
 		return "卸载完成，软件数据按组件策略保留"
 	case "start":

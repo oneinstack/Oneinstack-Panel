@@ -403,6 +403,8 @@ func SetupRouter() *gin.Engine {
 		softg.GET("/categories", middleware.RequirePermission(accessservice.PermissionSoftwareRead), software.ListSoftwareCategories)
 		softg.GET("/catalog/status", middleware.RequirePermission(accessservice.PermissionSoftwareRead), software.GetSoftwareCatalogStatus)
 		softg.POST("/catalog/sync", middleware.RequirePermission(accessservice.PermissionSoftwareWrite), software.SyncSoftwareCatalog)
+		softg.GET("/compat/oneinstack", middleware.RequirePermission(accessservice.PermissionSoftwareRead), software.ScanLegacyEnvironment)
+		softg.POST("/compat/oneinstack/import", middleware.RequirePermission(accessservice.PermissionSoftwareWrite), middleware.RequirePermission(accessservice.PermissionWebsiteWrite), middleware.RequirePermission("database.write"), software.ImportLegacyEnvironment)
 		softg.GET("/getlog", middleware.RequirePermission(accessservice.PermissionSoftwareRead), software.GetLogContent)
 		softg.POST("/install", middleware.RequirePermission(accessservice.PermissionSoftwareWrite), software.RunInstallation)
 		softg.POST("/install/offline", middleware.RequirePermission(accessservice.PermissionSoftwareWrite), software.RunOfflineInstallation)

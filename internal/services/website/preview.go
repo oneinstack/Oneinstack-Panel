@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"oneinstack/internal/models"
+	"oneinstack/internal/services/legacyoneinstack"
 )
 
 // WebsiteRuntimePreview is the effective virtual-host change that will be
@@ -110,6 +111,9 @@ func (service *Service) PreviewWebsiteUpdate(param *models.Website) (WebsiteRunt
 	}
 	var existing models.Website
 	if err := service.DB.First(&existing, "id = ?", param.ID).Error; err != nil {
+		return WebsiteRuntimePreview{}, err
+	}
+	if err := protectLegacyTemplate(&existing); err != nil {
 		return WebsiteRuntimePreview{}, err
 	}
 	if err := service.ensureWebsiteOwnerActive(&existing); err != nil {
@@ -229,6 +233,9 @@ func (service *Service) PreviewSettingsUpdate(id int64, settings WebsiteSettings
 	if err != nil {
 		return WebsiteRuntimePreview{}, err
 	}
+	if err := protectLegacyTemplate(site); err != nil {
+		return WebsiteRuntimePreview{}, err
+	}
 	if err := service.ensureWebsiteOwnerActive(site); err != nil {
 		return WebsiteRuntimePreview{}, err
 	}
@@ -312,6 +319,9 @@ func (service *Service) PreviewManagedConfig(ctx context.Context, id int64, cont
 	if err != nil {
 		return WebsiteRuntimePreview{}, err
 	}
+	if site.Origin == legacyoneinstack.Origin {
+		validationManager = manager
+	}
 	configPath, err := service.ConfigFile(site)
 	if err != nil {
 		return WebsiteRuntimePreview{}, err
@@ -359,7 +369,17 @@ func (service *Service) PreviewToggle(id int64, enabled bool) (WebsiteRuntimePre
 		return WebsiteRuntimePreview{}, readErr
 	}
 	after := ""
-	if enabled {
+	if site.Origin == legacyoneinstack.Origin {
+		after, err = legacyToggleConfig(site, enabled)
+		if err != nil {
+			return WebsiteRuntimePreview{}, err
+		}
+		if enabled {
+			if err := service.validateRuntimeCandidate(site, path, after); err != nil {
+				return WebsiteRuntimePreview{}, err
+			}
+		}
+	} else if enabled {
 		_, record, loadErr := service.loadSettings(id)
 		if loadErr != nil {
 			return WebsiteRuntimePreview{}, loadErr
@@ -395,6 +415,9 @@ func (service *Service) PreviewToggle(id int64, enabled bool) (WebsiteRuntimePre
 
 func (service *Service) validateRuntimeCandidate(site *models.Website, path, content string) error {
 	manager, err := service.managedConfigManager()
+	if site != nil && site.Origin == legacyoneinstack.Origin {
+		manager, err = service.managedConfigManagerForSite(site)
+	}
 	if err != nil {
 		return err
 	}

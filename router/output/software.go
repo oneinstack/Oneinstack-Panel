@@ -3,6 +3,7 @@ package output
 import "encoding/json"
 
 type Software struct {
+	Origin                    string            `json:"origin,omitempty"`
 	Id                        int               `json:"id"`
 	Name                      string            `json:"name"`
 	Describe                  string            `json:"describe"`

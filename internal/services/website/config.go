@@ -957,20 +957,24 @@ func (OSCommandRunner) Run(ctx context.Context, command string, args ...string) 
 }
 
 type Publisher struct {
-	ConfigDir      string
-	NginxBinary    string
-	Engine         string
-	ServiceName    string
-	MainConfigPath string
-	CaddyLogPath   string
-	Runner         CommandRunner
+	ConfigDir            string
+	NginxBinary          string
+	Engine               string
+	ServiceName          string
+	MainConfigPath       string
+	CaddyLogPath         string
+	Runner               CommandRunner
+	preserveFileMetadata bool
+	restoredFileMetadata map[string]configSnapshot
 }
 
 type configSnapshot struct {
-	name   string
-	exists bool
-	data   []byte
-	mode   os.FileMode
+	name       string
+	exists     bool
+	data       []byte
+	mode       os.FileMode
+	uid, gid   int
+	ownerKnown bool
 }
 
 type Publication struct {
@@ -1031,6 +1035,17 @@ func (p *Publisher) Publish(ctx context.Context, changes map[string]*string) (*P
 			if err := atomicWriteConfig(configDir, path, []byte(*content)); err != nil {
 				_ = restorePublication(publication)
 				return nil, err
+			}
+			if p.preserveFileMetadata {
+				metadata := snapshot
+				if !snapshot.exists {
+					if restored, ok := p.restoredFileMetadata[name]; ok {
+						metadata = restored
+					}
+				}
+				if err := applyConfigFileMetadata(path, metadata); err != nil {
+					return nil, errors.Join(err, restorePublication(publication))
+				}
 			}
 		} else if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			_ = restorePublication(publication)
@@ -1123,6 +1138,11 @@ func (publication *Publication) restore(ctx context.Context) error {
 			if err := os.Chmod(path, snapshot.mode.Perm()); err != nil {
 				return fmt.Errorf("restore Web server config permissions: %w", err)
 			}
+			if publication.publisher.preserveFileMetadata {
+				if err := applyConfigFileMetadata(path, snapshot); err != nil {
+					return err
+				}
+			}
 		} else if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("remove newly published Web server config: %w", err)
 		}
@@ -1163,7 +1183,22 @@ func snapshotConfig(name, path string) (configSnapshot, error) {
 	snapshot.exists = true
 	snapshot.data = data
 	snapshot.mode = info.Mode()
+	if owner, ok := info.Sys().(*syscall.Stat_t); ok {
+		snapshot.uid, snapshot.gid, snapshot.ownerKnown = int(owner.Uid), int(owner.Gid), true
+	}
 	return snapshot, nil
+}
+
+func applyConfigFileMetadata(path string, metadata configSnapshot) error {
+	if metadata.ownerKnown {
+		if err := os.Chown(path, metadata.uid, metadata.gid); err != nil {
+			return fmt.Errorf("restore original Web server config owner: %w", err)
+		}
+	}
+	if err := os.Chmod(path, metadata.mode.Perm()); err != nil {
+		return fmt.Errorf("restore original Web server config permissions: %w", err)
+	}
+	return nil
 }
 
 func atomicWriteConfig(directory, target string, data []byte) error {
