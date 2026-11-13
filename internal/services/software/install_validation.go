@@ -17,6 +17,7 @@ import (
 
 	"oneinstack/app"
 	"oneinstack/internal/models"
+	"oneinstack/internal/services/legacyoneinstack"
 	"oneinstack/internal/services/script"
 	"oneinstack/internal/services/scriptregistry"
 	"oneinstack/internal/services/softwarecatalog"
@@ -329,6 +330,9 @@ var (
 func (installer *Installer) resolveInstallParams(ctx context.Context, params *input.InstallParams) (*script.ScriptInfo, error) {
 	if params == nil {
 		return nil, &InstallParameterError{Field: "install", Message: "installation parameters are required"}
+	}
+	if err := legacyoneinstack.ProtectMutation(app.DB(), params.Key); err != nil {
+		return nil, err
 	}
 	if ctx == nil {
 		ctx = context.Background()

@@ -806,6 +806,10 @@ func componentServiceStatusesFor(
 		}
 		status.Installed = true
 		status.CanConfigure = softwareService.SupportsManagedConfiguration(runtimeDefinition.Component)
+		if installed.Origin == models.SoftwareOriginOneinstackScript {
+			status.CanConfigure = false
+			status.SwitchAvailable = false
+		}
 		status.RecordedVersion = strings.TrimSpace(installed.InstallVersion)
 		if status.RecordedVersion == "" {
 			status.RecordedVersion = strings.TrimSpace(installed.Version)

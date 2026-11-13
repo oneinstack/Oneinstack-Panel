@@ -21,6 +21,7 @@ import (
 	"oneinstack/internal/i18n"
 	"oneinstack/internal/models"
 	accessservice "oneinstack/internal/services/access"
+	"oneinstack/internal/services/legacyoneinstack"
 	"oneinstack/internal/services/scriptregistry"
 	softwareService "oneinstack/internal/services/software"
 	"oneinstack/internal/services/softwaretask"
@@ -61,6 +62,30 @@ func getTaskManager() (*softwaretask.Manager, error) {
 				logPath string,
 				reporter *softwaretask.Reporter,
 			) error {
+				if request.Operation == "adopt" {
+					ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
+					defer cancel()
+					reporter.OnActionStart("precheck")
+					report, err := legacyoneinstack.Scan(ctx, request.Parameters["source-dir"])
+					if err != nil {
+						return err
+					}
+					if report.Revision != request.Parameters["source-revision"] {
+						return errors.New("CONFIG_REVISION_CONFLICT: OneinStack environment changed after discovery; retry import")
+					}
+					reporter.OnActionComplete("precheck")
+					if err := legacyoneinstack.Import(ctx, db, report, request.TaskID); err != nil {
+						return err
+					}
+					warnings := append(report.Warnings, legacyoneinstack.ImportConnections(ctx, db, report)...)
+					data, _ := json.Marshal(map[string]any{"components": report.ImportedComponents, "websites": report.ImportedSites, "warnings": warnings})
+					if err := os.WriteFile(logPath, append(data, '\n'), 0600); err != nil {
+						return err
+					}
+					reporter.OnActionStart("verify")
+					reporter.OnActionComplete("verify")
+					return nil
+				}
 				installer := softwareService.NewInstaller()
 				if request.Operation == "uninstall" {
 					_, err := installer.UninstallTask(

@@ -7,6 +7,8 @@ import (
 	"gorm.io/gorm"
 )
 
+const SoftwareOriginOneinstackScript = "oneinstack-script"
+
 // DatabaseSoftwareKeys are the catalog keys that provide the panel's
 // relational-database capability. Keep capability checks independent from the
 // selected database implementation.
@@ -53,6 +55,8 @@ func DefaultSoftwarePort(key, component string) string {
 }
 
 type Software struct {
+	Origin                  string    `json:"origin,omitempty" gorm:"size:32;index"`
+	LegacyMetadata          string    `json:"-" gorm:"type:text"`
 	Id                      int       `json:"id" gorm:"primaryKey;autoIncrement"`
 	Name                    string    `json:"name" gorm:"index:idx_name_installed_type"`
 	Type                    string    `json:"type" gorm:"index:idx_name_installed_type"`

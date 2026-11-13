@@ -344,6 +344,7 @@ func (m *Manager) apply(document Document, packageVersions, publishedPackageVers
 		}
 		if err := tx.Session(&gorm.Session{AllowGlobalUpdate: true}).
 			Model(&models.Software{}).
+			Where("COALESCE(origin, '') <> ?", models.SoftwareOriginOneinstackScript).
 			Updates(map[string]any{
 				"catalog_managed":        true,
 				"catalog_visible":        false,
@@ -398,7 +399,7 @@ func (m *Manager) apply(document Document, packageVersions, publishedPackageVers
 					productHasInstallableVersion = true
 				}
 				var row models.Software
-				result := tx.Where("`key` = ? AND version = ?", product.Key, version.Version).First(&row)
+				result := tx.Where("`key` = ? AND version = ? AND COALESCE(origin, '') <> ?", product.Key, version.Version, models.SoftwareOriginOneinstackScript).First(&row)
 				if result.Error != nil && !errors.Is(result.Error, gorm.ErrRecordNotFound) {
 					return result.Error
 				}
@@ -452,7 +453,7 @@ func (m *Manager) apply(document Document, packageVersions, publishedPackageVers
 			}
 			if recommendedVersion != "" {
 				var installed models.Software
-				if err := tx.Where("`key` = ? AND installed = ?", product.Key, true).
+				if err := tx.Where("`key` = ? AND installed = ? AND COALESCE(origin, '') <> ?", product.Key, true, models.SoftwareOriginOneinstackScript).
 					First(&installed).Error; err == nil {
 					installedVersion := strings.TrimSpace(installed.InstallVersion)
 					if installedVersion == "" {
@@ -468,7 +469,7 @@ func (m *Manager) apply(document Document, packageVersions, publishedPackageVers
 						scriptregistry.ComparePackageVersions(latestPackageVersion, installedPackageVersion) > 0
 					if softwareUpdate || packageUpdate {
 						if err := tx.Model(&models.Software{}).
-							Where("`key` = ?", product.Key).
+							Where("`key` = ? AND COALESCE(origin, '') <> ?", product.Key, models.SoftwareOriginOneinstackScript).
 							Update("is_update", true).Error; err != nil {
 							return err
 						}
@@ -505,8 +506,8 @@ func backfillInstalledPackageVersions(tx *gorm.DB) error {
 	}
 	var installedRows []models.Software
 	if err := tx.Where(
-		"installed = ? AND COALESCE(installed_package_version, '') = ''",
-		true,
+		"installed = ? AND COALESCE(installed_package_version, '') = '' AND COALESCE(origin, '') <> ?",
+		true, models.SoftwareOriginOneinstackScript,
 	).Find(&installedRows).Error; err != nil {
 		return err
 	}
@@ -758,8 +759,8 @@ func dedupePackageBatchRequests(requests []scriptregistry.PackageBatchRequest) [
 func (m *Manager) refreshPackageVersions(ctx context.Context) error {
 	var installedRows []models.Software
 	if err := m.db.Where(
-		"installed = ?",
-		true,
+		"installed = ? AND COALESCE(origin, '') <> ?",
+		true, models.SoftwareOriginOneinstackScript,
 	).Find(&installedRows).Error; err != nil {
 		return err
 	}
@@ -849,7 +850,7 @@ func (m *Manager) refreshPackageVersions(ctx context.Context) error {
 			return err
 		}
 		installedRows = nil
-		if err := tx.Where("installed = ?", true).Find(&installedRows).Error; err != nil {
+		if err := tx.Where("installed = ? AND COALESCE(origin, '') <> ?", true, models.SoftwareOriginOneinstackScript).Find(&installedRows).Error; err != nil {
 			return err
 		}
 		for _, installed := range installedRows {
@@ -869,7 +870,7 @@ func (m *Manager) refreshPackageVersions(ctx context.Context) error {
 				) > 0
 			if scriptregistry.ComparePackageVersions(recommended.Version, installedVersion) > 0 || packageUpdate {
 				if err := tx.Model(&models.Software{}).
-					Where("`key` = ?", installed.Key).
+					Where("`key` = ? AND COALESCE(origin, '') <> ?", installed.Key, models.SoftwareOriginOneinstackScript).
 					Update("is_update", true).Error; err != nil {
 					return err
 				}

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"oneinstack/internal/models"
+	"oneinstack/internal/services/legacyoneinstack"
 
 	"gorm.io/gorm"
 )
@@ -183,6 +184,9 @@ func (service *Service) UpdateSettings(
 	}
 	site, err := service.Get(id)
 	if err != nil {
+		return nil, err
+	}
+	if err := protectLegacyTemplate(site); err != nil {
 		return nil, err
 	}
 	if err := service.ensureWebsiteOwnerActive(site); err != nil {
@@ -519,6 +523,13 @@ func (service *Service) ReadLog(id int64, logType string, lineLimit int) (*Websi
 	logRoot := filepath.Clean(strings.TrimSpace(service.LogRoot))
 	logName := strings.ReplaceAll(site.Name, ".", "_") + "_" + logType + ".log"
 	logPath := filepath.Join(logRoot, logName)
+	if site.Origin == legacyoneinstack.Origin {
+		logPath = legacyLogPath(*site, logType)
+		if logPath == "" {
+			return &WebsiteLogDocument{Type: logType}, nil
+		}
+		logRoot = filepath.Dir(logPath)
+	}
 	relative, err := filepath.Rel(logRoot, logPath)
 	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
 		return nil, errors.New("网站日志路径不安全")
@@ -635,6 +646,9 @@ func (service *Service) RestoreMissingManagedConfigs(ctx context.Context) (int, 
 	batches := make(map[string]*restoreBatch)
 	for i := range sites {
 		site := &sites[i]
+		if site.Origin == legacyoneinstack.Origin {
+			continue
+		}
 		if err := service.ensureWebsiteOwnerActive(site); err != nil {
 			if errors.Is(err, ErrWebsiteWebServerMismatch) {
 				continue
@@ -760,7 +774,10 @@ func (service *Service) managedConfigManagerForSite(site *models.Website) (*WebS
 		return nil, err
 	}
 	copy := *manager
-	if strings.TrimSpace(service.VhostRoot) != "" {
+	if site.Origin == legacyoneinstack.Origin {
+		copy.Server.ConfigRoot = filepath.Dir(publisher.MainConfigPath)
+		copy.Server.SiteConfigDir = publisher.ConfigDir
+	} else if strings.TrimSpace(service.VhostRoot) != "" {
 		copy.Server.ConfigRoot = publisher.ConfigDir
 		copy.Server.SiteConfigDir = publisher.ConfigDir
 	}
@@ -813,6 +830,9 @@ func (service *Service) managedConfigRelativePath(
 // restoreManagedConfig repairs a missing configuration only for the active
 // Web Server owner. Cross-owner reads never call this function.
 func (service *Service) restoreManagedConfig(ctx context.Context, site *models.Website) error {
+	if err := protectLegacyTemplate(site); err != nil {
+		return err
+	}
 	settings, record, err := service.loadSettings(site.ID)
 	if err != nil {
 		return err

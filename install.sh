@@ -30,7 +30,9 @@ admin_password_file=""
 cli_language="en-US"
 cli_language_flag=""
 health_url="http://127.0.0.1:8089/health/ready"
-health_timeout=30
+# Existing script environments are discovered before the Panel becomes ready.
+# Leave time for the bounded adoption task on hosts with slow systemd probes.
+health_timeout=90
 force=false
 replace_config=false
 skip_init=false
@@ -67,7 +69,7 @@ OneinStack Panel 安装与卸载工具
   --no-start                 不启动服务
   --no-health-check          不检查 /health/ready
   --health-url URL           自定义就绪检查地址
-  --health-timeout SECONDS   就绪检查超时，默认 30 秒
+  --health-timeout SECONDS   就绪检查超时，默认 90 秒
   --allow-unsupported        允许在未验证的 Linux 发行版安装
 
 卸载选项:
@@ -106,7 +108,7 @@ Install options:
   --no-start                 Do not start the service
   --no-health-check          Skip the /health/ready check
   --health-url URL           Custom readiness-check URL
-  --health-timeout SECONDS   Readiness-check timeout, default 30 seconds
+  --health-timeout SECONDS   Readiness-check timeout, default 90 seconds
   --allow-unsupported        Allow installation on an unverified Linux distribution
 
 Uninstall options:

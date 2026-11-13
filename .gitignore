@@ -65,6 +65,7 @@ mysql*
 !/docker/entrypoint.sh
 !/script-registry/
 !/script-registry/**
+!/internal/services/legacyoneinstack/service.sh
 
 /.gocache/
 /.run/

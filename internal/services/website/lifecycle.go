@@ -16,7 +16,9 @@ import (
 	"time"
 
 	"oneinstack/internal/models"
+	"oneinstack/internal/services/legacyoneinstack"
 	runtimelog "oneinstack/internal/services/log"
+	"oneinstack/utils"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -61,7 +63,34 @@ func (service *Service) SetEnabled(ctx context.Context, id int64, enabled bool) 
 		return nil, errors.New("stored website has an unsafe Nginx config name")
 	}
 	changes := map[string]*string{configName: nil}
-	if enabled {
+	preserved := site.PreservedConfig
+	var preserveErr error
+	if site.Origin == legacyoneinstack.Origin {
+		if !enabled {
+			path, pathErr := service.ConfigFile(&site)
+			if pathErr != nil {
+				return nil, pathErr
+			}
+			data, readErr := legacyoneinstack.ReadFile(path)
+			if readErr != nil {
+				return nil, readErr
+			}
+			if err := rememberLegacyFileMetadata(&site, path); err != nil {
+				return nil, err
+			}
+			preserved, preserveErr = utils.EncryptCredential(string(data), legacyConfigPurpose)
+			if preserveErr != nil {
+				return nil, preserveErr
+			}
+		} else {
+			content, restoreErr := legacyToggleConfig(&site, true)
+			if restoreErr != nil {
+				return nil, restoreErr
+			}
+			changes[configName] = &content
+			preserved = ""
+		}
+	} else if enabled {
 		_, settings, err := service.loadSettings(site.ID)
 		if err != nil {
 			return nil, err
@@ -101,14 +130,14 @@ func (service *Service) SetEnabled(ctx context.Context, id int64, enabled bool) 
 	if !enabled {
 		reason = WebsiteDisabledManual
 	}
+	updates := map[string]any{"enabled": enabled, "disabled_reason": reason, "update_time": now, "preserved_config": preserved}
+	if site.Origin == legacyoneinstack.Origin {
+		updates["legacy_metadata"] = site.LegacyMetadata
+	}
 	err := service.DB.Transaction(func(tx *gorm.DB) error {
 		if updateErr := tx.Model(&models.Website{}).
 			Where("id = ?", id).
-			Updates(map[string]any{
-				"enabled":         enabled,
-				"disabled_reason": reason,
-				"update_time":     now,
-			}).Error; updateErr != nil {
+			Updates(updates).Error; updateErr != nil {
 			return updateErr
 		}
 		return nil

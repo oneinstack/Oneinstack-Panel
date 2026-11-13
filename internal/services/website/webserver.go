@@ -195,6 +195,14 @@ func DetectWebServer() (WebServerInfo, error) {
 	// treating a stale process from the previous Web server as the current
 	// owner after a component switch. If systemd does not provide an active
 	// unit, fall back to the executable scan.
+	if len(active) > 1 && isLegacyProxyChain(active) {
+		for _, c := range active {
+			if c.Component != "apache" {
+				active = []webServerCandidate{c}
+				break
+			}
+		}
+	}
 	if len(active) > 1 {
 		return WebServerInfo{}, fmt.Errorf(
 			"%w: multiple active managed Web servers were detected; select a single managed instance",
@@ -204,6 +212,14 @@ func DetectWebServer() (WebServerInfo, error) {
 	if len(active) == 1 {
 		selected = active[0]
 	} else {
+		if len(running) > 1 && isLegacyProxyChain(running) {
+			for _, c := range running {
+				if c.Component != "apache" {
+					running = []webServerCandidate{c}
+					break
+				}
+			}
+		}
 		if len(running) > 1 {
 			return WebServerInfo{}, fmt.Errorf(
 				"%w: multiple running web servers were detected; select a single managed instance",
@@ -1069,6 +1085,9 @@ func (manager *WebServerConfigManager) runCommand(ctx context.Context, command s
 
 func webServerCandidates() []webServerCandidate {
 	var candidates []webServerCandidate
+	if legacy := legacyWebServerCandidates(); len(legacy) > 0 {
+		candidates = append(candidates, legacy...)
+	}
 	candidates = append(candidates, managedWebServerCandidates()...)
 	if binary := strings.TrimSpace(os.Getenv("ONEINSTACK_WEB_SERVER_BIN")); binary != "" {
 		component := strings.ToLower(strings.TrimSpace(os.Getenv("ONEINSTACK_WEB_SERVER")))

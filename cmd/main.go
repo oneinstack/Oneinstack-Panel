@@ -71,6 +71,7 @@ func main() {
 	configureNetworkCommands()
 	configureBackupCommands()
 	configureArtifactCommands()
+	configureLegacyCommands()
 	rootCmd.PersistentFlags().String("lang", "", "Override the CLI output language")
 
 	// 绑定 --user 和 --password 参数到 init 命令
@@ -137,7 +138,7 @@ var rootCmd = &cobra.Command{
 		if cmd == cmd.Root() || cmd == langCmd || cmd == uninstallCmd {
 			return nil
 		}
-		if cmd == versionCmd || isUpdateCommand(cmd) || isNetworkTransactionCommand(cmd) ||
+		if cmd == versionCmd || cmd == legacyScanCmd || isUpdateCommand(cmd) || isNetworkTransactionCommand(cmd) ||
 			isPanelBackupCommand(cmd) {
 			return nil
 		}
@@ -196,7 +197,7 @@ func cliCommandRequiresRoot(cmd *cobra.Command, args []string) bool {
 	case install, initCmd, resetPwdCmd, resetUserCmd, serverCmd, changePortCmd,
 		updateApplyCmd, updateRollbackCmd, updatePreflightCmd,
 		networkApplyCmd, networkRecoverCmd, backupRestoreCmd, backupRecoverCmd,
-		defaultCmd, panelEntryCmd, uninstallCmd:
+		defaultCmd, panelEntryCmd, uninstallCmd, legacyImportCmd:
 		return true
 	case langCmd:
 		return len(args) > 0
@@ -532,6 +533,11 @@ func startServer() error {
 	if err != nil {
 		return fmt.Errorf("initialize software task manager: %w", err)
 	}
+	legacyContext, cancelLegacyImport := context.WithTimeout(context.Background(), 45*time.Second)
+	if err := softwareHandler.AutoImportLegacy(legacyContext, taskManager); err != nil {
+		log.Printf("OneinStack automatic adoption incomplete: %v", err)
+	}
+	cancelLegacyImport()
 	artifactManager, err := artifactcleanup.Default(app.DB())
 	if err != nil {
 		return fmt.Errorf("initialize artifact cleanup manager: %w", err)

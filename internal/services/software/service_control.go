@@ -663,6 +663,9 @@ func (installer *Installer) inspectService(
 	version string,
 	localOnly bool,
 ) (ComponentServiceProbe, error) {
+	if probe, legacy, err := inspectLegacyService(ctx, component); legacy || err != nil {
+		return probe, err
+	}
 	definition, err := ResolveServiceComponent(app.DB(), component)
 	if err != nil {
 		return ComponentServiceProbe{}, err
