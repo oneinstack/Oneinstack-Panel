@@ -17,6 +17,7 @@ output_dir="${2:-packages}"
 requested_target="${3:-}"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 project_dir="$(cd "${script_dir}/.." && pwd)"
+binary_dir="${ONEINSTACK_BUILD_DIR:-${project_dir}/dist}"
 
 if [[ ! "$version" =~ ^[0-9A-Za-z._+-]+$ ]]; then
   echo "Invalid release version: $version" >&2
@@ -54,7 +55,7 @@ for target in "${targets[@]}"; do
       ;;
   esac
 
-  binary="${project_dir}/dist/one-${target}"
+  binary="${binary_dir}/one-${target}"
   if [[ ! -x "$binary" ]]; then
     echo "Missing executable: $binary (run make build-all first)" >&2
     exit 1
