@@ -287,7 +287,7 @@ func lifecyclePackageManager(systemID, systemVersion string) string {
 			return "yum"
 		}
 		return "dnf"
-	case "rhel", "rocky", "almalinux", "ol", "fedora", "amzn", "opencloudos", "anolis", "alinux", "euleros", "openeuler":
+	case "centos-stream", "rhel", "rocky", "almalinux", "ol", "fedora", "amzn", "opencloudos", "anolis", "alinux", "euleros", "openeuler":
 		return "dnf"
 	case "sles", "opensuse", "opensuse-leap", "opensuse-tumbleweed":
 		return "zypper"
