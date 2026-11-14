@@ -680,8 +680,8 @@ func validateMongoDBInstallParams(params *input.InstallParams) error {
 	if params == nil || !strings.EqualFold(strings.TrimSpace(params.Key), "mongodb") {
 		return nil
 	}
-	if params.Version != "8.0.17" && params.Version != "8.0.32" {
-		return &InstallParameterError{Field: "version", Message: "MongoDB 版本必须是 8.0.17 或 8.0.32"}
+	if params.Version != "8.0.17" && params.Version != "8.0.32" && params.Version != "9.0.8" {
+		return &InstallParameterError{Field: "version", Message: "MongoDB 版本必须是 8.0.17、8.0.32 或 9.0.8"}
 	}
 	if len(params.Pwd) < 12 || len(params.Pwd) > 128 || strings.ContainsAny(params.Pwd, "\x00\r\n") {
 		return &InstallParameterError{Field: "mongodb-admin-password", Message: "MongoDB 管理员密码必须为 12-128 个字符且不能包含换行"}

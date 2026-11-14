@@ -871,8 +871,8 @@ func normalizeExactVersionPresentation(item *output.Software) {
 	}
 	key := strings.ToLower(strings.TrimSpace(item.Key))
 	component := strings.ToLower(strings.TrimSpace(item.Component))
-	if key != "mariadb" && key != "php" && key != "webserver" && key != "nginx" && key != "openresty" && key != "caddy" && key != "apache" &&
-		component != "mariadb" && component != "php" && component != "nginx" && component != "openresty" && component != "caddy" && component != "apache" {
+	if key != "mongodb" && key != "mariadb" && key != "php" && key != "webserver" && key != "nginx" && key != "openresty" && key != "caddy" && key != "apache" &&
+		component != "mongodb" && component != "mariadb" && component != "php" && component != "nginx" && component != "openresty" && component != "caddy" && component != "apache" {
 		return
 	}
 	options := make([]output.VersionOption, 0, len(item.VersionOptions))
