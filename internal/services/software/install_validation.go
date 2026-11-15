@@ -159,6 +159,7 @@ func (e *InstallParameterError) InstallationMessage() string {
 		"数据库运行账户必须以小写字母或下划线开头，仅允许小写字母、数字、下划线和连字符，长度为 1-32 个字符",
 		"MySQL 登录用户必须以小写字母或下划线开头，仅允许小写字母、数字、下划线和连字符，长度为 1-32 个字符",
 		"数据库登录用户必须以小写字母或下划线开头，仅允许小写字母、数字、下划线和连字符，长度为 1-32 个字符",
+		"MongoDB 版本必须是 8.0.17、8.0.32 或 9.0.8",
 		"MySQL 密码必须为 12-128 个字符，仅允许字母、数字及 _ @ % + = : , . ! # ? -",
 		"数据库密码必须为 12-128 个字符，仅允许字母、数字及 _ @ % + = : , . ! # ? -",
 		"MySQL 绑定地址必须是合法 IPv4 或 IPv6 地址",
@@ -684,8 +685,8 @@ func validateMongoDBInstallParams(params *input.InstallParams) error {
 	if params == nil || !strings.EqualFold(strings.TrimSpace(params.Key), "mongodb") {
 		return nil
 	}
-	if params.Version != "8.0.17" && params.Version != "8.0.32" {
-		return &InstallParameterError{Field: "version", Message: "MongoDB 版本必须是 8.0.17 或 8.0.32"}
+	if params.Version != "8.0.17" && params.Version != "8.0.32" && params.Version != "9.0.8" {
+		return &InstallParameterError{Field: "version", Message: "MongoDB 版本必须是 8.0.17、8.0.32 或 9.0.8"}
 	}
 	if len(params.Pwd) < 12 || len(params.Pwd) > 128 || strings.ContainsAny(params.Pwd, "\x00\r\n") {
 		return &InstallParameterError{Field: "mongodb-admin-password", Message: "MongoDB 管理员密码必须为 12-128 个字符且不能包含换行"}

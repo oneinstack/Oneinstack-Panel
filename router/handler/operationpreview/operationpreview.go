@@ -503,6 +503,16 @@ func handleSoftwareInstallPreviewError(c *gin.Context, err error, payload json.R
 		return false
 	}
 	appErr := softwareStableAppError(stableCode, middleware.RequestLocale(c))
+	var lowSpaceErr *artifactcleanupservice.LowSpaceError
+	if errors.As(err, &lowSpaceErr) {
+		available := lowSpaceErr.Space.AvailableBytes
+		availableGiB := float64(available) / (1 << 30)
+		appErr.Message = fmt.Sprintf("根分区可用空间不足：当前 %.2f GiB（%d 字节），至少需要 5 GiB", availableGiB, available)
+		if strings.HasPrefix(strings.ToLower(middleware.RequestLocale(c)), "en") {
+			appErr.Message = fmt.Sprintf("Root filesystem space is too low: %.2f GiB (%d bytes) available; at least 5 GiB required", availableGiB, available)
+		}
+		appErr.Detail = fmt.Sprintf("Root filesystem available space: %d bytes; required: %d bytes.", available, uint64(5<<30))
+	}
 	var hostErr *softwareService.HostInstallationError
 	if errors.As(err, &hostErr) {
 		if hostErr.Info.RecommendedVersion != "" {

@@ -960,6 +960,7 @@ var englishErrorTexts = map[string]string{
 	"MySQL 登录用户必须以小写字母或下划线开头，仅允许小写字母、数字、下划线和连字符，长度为 1-32 个字符":  "The MySQL login user must start with a lowercase letter or underscore, contain only lowercase letters, digits, underscores, and hyphens, and be 1-32 characters long.",
 	"MySQL 密码必须为 12-128 个字符，仅允许字母、数字及 _ @ % + = : , . ! # ? -": "The MySQL password must be 12-128 characters and contain only letters, digits, and _ @ % + = : , . ! # ? -.",
 	"组件安装参数无效，请检查字段类型、格式和取值范围后重试":                              "The component installation parameters are invalid. Check their types, formats, and allowed ranges, then retry.",
+	"MongoDB 版本必须是 8.0.17、8.0.32 或 9.0.8":                      "MongoDB version must be 8.0.17, 8.0.32, or 9.0.8.",
 	"安装参数必须是规范化的绝对路径，请修正后重试":                                   "The installation parameter must be a normalized absolute path. Correct it and retry.",
 	"安装参数不能使用过于宽泛的系统目录，请指定更具体的目录后重试":                           "The installation parameter cannot use an overly broad system directory. Specify a more specific directory and retry.",
 	"角色、菜单或用户不存在":      "The role, menu, or user does not exist",
