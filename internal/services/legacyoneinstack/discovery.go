@@ -17,7 +17,6 @@ import (
 	"runtime"
 	"sort"
 	"strings"
-	"syscall"
 	"time"
 
 	"oneinstack/internal/models"
@@ -156,22 +155,14 @@ func readOptions(path string) (map[string]string, error) {
 			continue
 		}
 		key := match[1]
-		if !(strings.HasSuffix(key, "_install_dir") || strings.HasSuffix(key, "_data_dir") || key == "wwwroot_dir" || key == "wwwlogs_dir" || key == "dbrootpwd") {
+		if !(strings.HasSuffix(key, "_install_dir") || strings.HasSuffix(key, "_data_dir") || key == "wwwroot_dir" || key == "wwwlogs_dir") {
 			continue
 		}
 		if value, ok := staticValue(match[2]); ok {
 			values[key] = value
 		}
 	}
-	// Old script releases store the root password here. Only accept it from
-	// a root-owned file that cannot be changed by other users. Historical
-	// script releases used mode 0644; reading it does not relax its permissions.
-	info, err := os.Stat(path)
-	if err != nil || info.Mode().Perm()&0022 != 0 {
-		delete(values, "dbrootpwd")
-	} else if owner, ok := info.Sys().(*syscall.Stat_t); !ok || owner.Uid != 0 {
-		delete(values, "dbrootpwd")
-	}
+
 	return values, nil
 }
 

@@ -3,6 +3,7 @@ package software
 import (
 	"context"
 	"fmt"
+	"log"
 	"net/http"
 	"time"
 
@@ -72,6 +73,26 @@ func AutoImportLegacy(ctx context.Context, m *softwaretask.Manager) error {
 			task, err = m.Get(task.ID)
 			if err != nil {
 				return err
+			}
+		}
+	}
+}
+
+// WatchLegacy discovers components installed outside Panel after startup.
+// Imports remain metadata-only, idempotent and serialized by the task engine.
+func WatchLegacy(ctx context.Context, m *softwaretask.Manager) {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			scanCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+			err := AutoImportLegacy(scanCtx, m)
+			cancel()
+			if err != nil && ctx.Err() == nil {
+				log.Printf("OneinStack automatic adoption incomplete: %v", err)
 			}
 		}
 	}

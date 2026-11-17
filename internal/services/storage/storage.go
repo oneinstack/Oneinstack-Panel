@@ -1014,6 +1014,9 @@ func ensureRecordedLocalMySQLConnection() (*models.Storage, error) {
 		}
 		return nil, err
 	}
+	if installed.Origin == models.SoftwareOriginOneinstackScript {
+		return nil, nil
+	}
 	password := strings.TrimSpace(installed.RootPwd)
 	if password == "" {
 		password = installedSoftwareCredential(installed.CredentialCiphertext, "mysql-password")
@@ -1043,6 +1046,9 @@ func ensureRecordedLocalRedisConnection() (*models.Storage, error) {
 			return nil, nil
 		}
 		return nil, err
+	}
+	if installed.Origin == models.SoftwareOriginOneinstackScript {
+		return nil, nil
 	}
 	port := strings.TrimSpace(installed.HttpPort)
 	if port == "" {

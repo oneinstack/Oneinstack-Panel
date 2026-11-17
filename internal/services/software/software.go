@@ -473,6 +473,7 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 		Where("(catalog_visible = ? OR installed = ?)", true, true).
 		Select(
 			"MAX(id) as id," +
+				"MAX(CASE WHEN installed = 1 THEN origin ELSE '' END) as origin," +
 				"`key`," +
 				"MAX(component) as component," +
 				"MAX(describe) as describe," +
@@ -761,6 +762,10 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 		}
 		groupedResults[i].Runtime = mysqlRuntimeInfo(item)
 		if item.Origin == models.SoftwareOriginOneinstackScript {
+			switch item.Component {
+			case "mysql", "mariadb", "percona", "postgresql", "mongodb", "redis":
+				groupedResults[i].ManagementNotice = "已接管原数据库服务。请前往数据库页面，使用原有账号和密码添加连接；Panel 不会修改原账号或密码。"
+			}
 			groupedResults[i].IsUpdate = false
 			groupedResults[i].Installable = false
 			groupedResults[i].UpdateReason = ""

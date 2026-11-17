@@ -538,6 +538,9 @@ func startServer() error {
 		log.Printf("OneinStack automatic adoption incomplete: %v", err)
 	}
 	cancelLegacyImport()
+	legacyWatchContext, cancelLegacyWatch := context.WithCancel(context.Background())
+	defer cancelLegacyWatch()
+	go softwareHandler.WatchLegacy(legacyWatchContext, taskManager)
 	artifactManager, err := artifactcleanup.Default(app.DB())
 	if err != nil {
 		return fmt.Errorf("initialize artifact cleanup manager: %w", err)

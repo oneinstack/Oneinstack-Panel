@@ -5,13 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"oneinstack/internal/models"
-	"oneinstack/internal/services/storage"
-	"oneinstack/router/input"
-	"oneinstack/utils"
 
 	"gorm.io/gorm"
 )
@@ -124,85 +120,20 @@ func Import(ctx context.Context, db *gorm.DB, report *Report, taskID string) err
 	})
 }
 
-// ImportConnections verifies the saved credential against the existing local
-// instance and uses the normal encrypted connection store. It never changes a
-// database password or creates database users. Failure is reported separately
-// from successful environment discovery, without credential-bearing errors.
+// ImportConnections never reads or tests existing database credentials.
+// Users connect adopted databases explicitly through the normal connection UI.
 func ImportConnections(ctx context.Context, db *gorm.DB, report *Report) []string {
 	warnings := []string{}
 	if report == nil {
 		return warnings
 	}
 	for _, c := range report.Components {
-		if c.ID == "redis" {
-			data, err := ReadFile(c.Config)
-			if err != nil {
-				continue
-			}
-			password, port := "", "6379"
-			for _, line := range strings.Split(string(data), "\n") {
-				fields := strings.Fields(line)
-				if len(fields) < 2 {
-					continue
-				}
-				if fields[0] == "port" && regexpPort(fields[1]) {
-					port = fields[1]
-				}
-				if fields[0] == "requirepass" {
-					if value, ok := staticValue(strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "requirepass"))); ok {
-						password = value
-					}
-				}
-			}
-			request := &input.AddParam{Addr: "127.0.0.1", Port: port, Password: password, Type: "redis", Remark: "OneinStack existing Redis"}
-			if err := storage.AddContext(ctx, request); err != nil && !errors.Is(err, storage.ErrConnectionAlreadyExists) {
-				warnings = append(warnings, "REDIS_CREDENTIAL_UNVERIFIED: existing Redis is unchanged; connection could not be verified")
-			}
-			continue
-		}
-		if c.ID != "mysql" && c.ID != "mariadb" && c.ID != "percona" {
-			continue
-		}
-		if report.options["dbrootpwd"] == "" {
-			warnings = append(warnings, "DATABASE_CREDENTIAL_MISSING: existing database credential was not available from a trusted options.conf")
-			continue
-		}
-		port := c.Port
-		if port == "" {
-			port = "3306"
-		}
-		request := &input.AddParam{Addr: "127.0.0.1", Port: port, Root: "root", Password: report.options["dbrootpwd"], Type: "mysql", Remark: "OneinStack existing " + c.Name}
-		err := storage.AddContext(ctx, request)
-		if err != nil && !errors.Is(err, storage.ErrConnectionAlreadyExists) {
-			warnings = append(warnings, "DATABASE_CREDENTIAL_UNVERIFIED: existing database remains unchanged; connection could not be verified")
-			continue
-		}
-		var saved models.Storage
-		if err := db.Where("addr = ? AND port = ? AND type = ?", request.Addr, request.Port, "mysql").First(&saved).Error; err != nil {
-			continue
-		}
-		// Reuse the normal metadata synchronization so existing databases
-		// appear immediately. This does not create users or change grants.
-		if err := syncExistingMySQL(ctx, saved); err != nil {
-			warnings = append(warnings, "DATABASE_SYNC_INCOMPLETE: connection was preserved; database metadata synchronization needs retry")
+		switch c.ID {
+		case "mysql", "mariadb", "percona", "postgresql", "mongodb", "redis":
+			warnings = append(warnings, "DATABASE_CONNECTION_REQUIRED: "+c.Name+" 已接管；请使用原有账号和密码在数据库页面添加连接。")
 		}
 	}
 	return warnings
-}
-
-func syncExistingMySQL(ctx context.Context, saved models.Storage) error {
-	password, err := utils.DecryptCredential(saved.Password, utils.CredentialPurposeStoragePassword)
-	if err != nil {
-		return err
-	}
-	saved.Password = password
-	op := storage.NewMysqlOP(&saved, "information_schema")
-	if err := op.ConnectContext(ctx); err != nil {
-		return err
-	}
-	defer op.Close()
-	op.DB = op.DB.WithContext(ctx)
-	return op.Sync()
 }
 
 func regexpPort(value string) bool {
