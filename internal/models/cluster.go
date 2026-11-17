@@ -73,6 +73,7 @@ type ClusterNode struct {
 	ConnectionStatus         string                           `gorm:"-" json:"connectionStatus"`
 	EffectiveStatus          string                           `gorm:"-" json:"effectiveStatus"`
 	EndpointAddressMismatch  bool                             `gorm:"-" json:"endpointAddressMismatch"`
+	EndpointAddressNote      string                           `gorm:"-" json:"endpointAddressNote,omitempty"`
 	EndpointAddressRelation  ClusterNodeAddressRelation       `gorm:"-" json:"endpointAddressRelation"`
 	IdentityPublicKey        string                           `gorm:"size:64" json:"-"`
 	AddressIdentityStatus    string                           `gorm:"size:24" json:"addressIdentityStatus"`

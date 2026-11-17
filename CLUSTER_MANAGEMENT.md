@@ -48,15 +48,30 @@ Agent 接口不依赖 Panel 登录会话，只接受节点令牌。令牌可放�
 ```yaml
 clusterAgent:
   enabled: true
-  controllerUrl: "https://主控Panel.example.com/v1"
+  controllerUrl: "https://主控Panel.example.com:8089"
   token: "创建节点时返回的令牌"
   intervalSeconds: 30
   requestTimeoutSeconds: 10
 ```
 
+**重要：`controllerUrl` 只填写控制端基础地址，不要包含 `/v1` 后缀。** Agent 端点（`/cluster/agent/*`）不在 `/v1` 路由组下。系统会自动移除错误添加的 `/v1` 后缀。
+
 通过 Web 保存后，运行中的 Agent Supervisor 会自动启动、停止或重载代理；不需要手动重启服务。也可以直接编辑配置文件，适用于无人值守部署。
 
 Agent 会自动注册并按配置周期上报资源指标。令牌轮换后，在节点端页面更新令牌即可。
+
+## 云主机端点地址配置
+
+在公有云环境中，节点通常通过 NAT 暴露公网 IP，而本机网卡绑定的是私有 IP（如 `10.x.x.x` 或 `172.16.x.x`）。此时控制端配置的节点端点 IP（公网）与节点上报的 IP（私网）会不一致。
+
+**此行为是正常的**：
+- 如果节点心跳正常（状态为 `online`），IP 不一致只是提示信息，表明 NAT 配置有效
+- 如果节点离线，请检查：
+  - 安全组是否放行控制端到节点的 8089 端口
+  - 节点防火墙规则
+  - NAT 网关配置
+
+端点地址填写时，应使用控制端能够访问的地址（通常是节点的公网 IP 或域名）。
 
 ## 任务执行与限制
 
