@@ -2,9 +2,11 @@ package software
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"oneinstack/app"
@@ -16,6 +18,24 @@ import (
 
 	"github.com/gin-gonic/gin"
 )
+
+func HandleAdoptedMigrationUnavailable(c *gin.Context, err error) bool {
+	var unavailable legacyoneinstack.MigrationUnavailableError
+	if !errors.As(err, &unavailable) {
+		return false
+	}
+	message := unavailable.Notice()
+	if strings.HasPrefix(strings.ToLower(middleware.RequestLocale(c)), "en") {
+		message = "Panel cannot yet migrate script-adopted components. Upgrade, uninstall, and template configuration are unavailable."
+		if unavailable.Component == "redis" {
+			message = "Complete the explicit Redis migration in the software store first."
+		}
+	}
+	appErr := core.NewError(core.ErrConflict, message)
+	appErr.StableCode = unavailable.ErrorCode()
+	core.HandleErrorWithStatus(c, http.StatusConflict, appErr)
+	return true
+}
 
 func ScanLegacyEnvironment(c *gin.Context) {
 	report, err := legacyoneinstack.Scan(c.Request.Context(), "")

@@ -197,7 +197,7 @@ func unit(ctx context.Context, name string) (map[string]string, error) {
 	args := []string{"show", name + ".service"}
 	// Repeated property flags also work on the older systemd releases used
 	// by historical OneinStack hosts; no --value or comma-list support needed.
-	for _, property := range []string{"Id", "LoadState", "ActiveState", "SubState", "UnitFileState", "CanReload", "ExecStart", "FragmentPath", "SourcePath"} {
+	for _, property := range []string{"Id", "LoadState", "ActiveState", "SubState", "UnitFileState", "CanReload", "ExecStart", "FragmentPath", "SourcePath", "MainPID", "User", "Group", "DropInPaths"} {
 		args = append(args, "--property="+property)
 	}
 	data, err := command(ctx, "systemctl", args...)

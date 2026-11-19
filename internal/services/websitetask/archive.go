@@ -56,6 +56,8 @@ type archiveManifest struct {
 	Website         models.Website                  `json:"website"`
 	WebsiteSettings *websiteservice.WebsiteSettings `json:"websiteSettings,omitempty"`
 	NginxConfig     string                          `json:"nginxConfig"`
+	LegacyMetadata  string                          `json:"legacyMetadata,omitempty"`
+	PreservedConfig string                          `json:"preservedConfig,omitempty"`
 	Files           []archiveFile                   `json:"files"`
 	Database        *archiveDatabase                `json:"database,omitempty"`
 }
@@ -109,6 +111,7 @@ func buildArchive(
 	manifest := &archiveManifest{
 		Schema: archiveSchema, CreatedAt: time.Now().UTC(),
 		Website: *site, WebsiteSettings: settings, NginxConfig: string(config),
+		LegacyMetadata: site.LegacyMetadata, PreservedConfig: site.PreservedConfig,
 	}
 	var totalBytes int64
 	fileCount := 0

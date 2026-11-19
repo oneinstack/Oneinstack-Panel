@@ -130,9 +130,10 @@ type webServerCandidate struct {
 type systemdShowLookup func(unit string, properties ...string) (map[string]string, error)
 
 type WebServerConfigManager struct {
-	Server     WebServerInfo
-	Runner     CommandRunner
-	BackupRoot string
+	Server            WebServerInfo
+	Runner            CommandRunner
+	BackupRoot        string
+	preserveFileOwner bool
 }
 
 func DetectWebServer() (WebServerInfo, error) {
@@ -819,27 +820,36 @@ func (manager *WebServerConfigManager) Update(
 		return WebServerConfigUpdateResult{}, err
 	}
 	original := []byte(current.Content)
-	fileInfo, err := os.Stat(target)
+	metadata, err := snapshotConfig(filepath.Base(target), target)
 	if err != nil {
 		return WebServerConfigUpdateResult{}, fmt.Errorf("stat configuration before update: %w", err)
+	}
+	if !metadata.exists {
+		return WebServerConfigUpdateResult{}, fmt.Errorf("%w: configuration no longer exists", ErrWebServerConfigConflict)
+	}
+	metadata.ownerKnown = metadata.ownerKnown && manager.preserveFileOwner
+	restore := func() error {
+		if err := atomicWriteConfig(filepath.Dir(target), target, original); err != nil {
+			return err
+		}
+		return applyConfigFileMetadata(target, metadata)
 	}
 	if err := atomicWriteConfig(filepath.Dir(target), target, []byte(request.Content)); err != nil {
 		return WebServerConfigUpdateResult{}, err
 	}
-	if err := os.Chmod(target, fileInfo.Mode().Perm()); err != nil {
-		_ = atomicWriteConfig(filepath.Dir(target), target, original)
-		return WebServerConfigUpdateResult{}, fmt.Errorf("restore configuration permissions: %w", err)
+	if err := applyConfigFileMetadata(target, metadata); err != nil {
+		return WebServerConfigUpdateResult{}, errors.Join(err, restore())
 	}
 	if strings.EqualFold(manager.Server.Component, "caddy") {
 		if err := ensureCaddyManagedConfigAccess(manager.Server.ConfigRoot, manager.Server.MainConfigPath, target); err != nil {
-			_ = restoreWebServerConfig(target, original, fileInfo.Mode())
+			_ = restore()
 			return WebServerConfigUpdateResult{}, fmt.Errorf("prepare Caddy runtime config access: %w", err)
 		}
 	}
 
 	if err := manager.testConfiguration(ctx, request.Path); err != nil {
 		validationErr := fmt.Errorf("%w: %w", ErrWebServerConfigValidate, err)
-		restoreErr := restoreWebServerConfig(target, original, fileInfo.Mode())
+		restoreErr := restore()
 		if restoreErr == nil && strings.EqualFold(manager.Server.Component, "caddy") {
 			restoreErr = ensureCaddyManagedConfigAccess(manager.Server.ConfigRoot, manager.Server.MainConfigPath, target)
 		}
@@ -859,7 +869,7 @@ func (manager *WebServerConfigManager) Update(
 	reloaded := false
 	if manager.Server.Running {
 		if err := manager.reload(ctx); err != nil {
-			restoreErr := restoreWebServerConfig(target, original, fileInfo.Mode())
+			restoreErr := restore()
 			if restoreErr == nil && strings.EqualFold(manager.Server.Component, "caddy") {
 				restoreErr = ensureCaddyManagedConfigAccess(manager.Server.ConfigRoot, manager.Server.MainConfigPath, target)
 			}
@@ -1708,13 +1718,6 @@ func copyRegularFile(source, target string) error {
 		return err
 	}
 	return output.Close()
-}
-
-func restoreWebServerConfig(target string, content []byte, mode os.FileMode) error {
-	if err := atomicWriteConfig(filepath.Dir(target), target, content); err != nil {
-		return err
-	}
-	return os.Chmod(target, mode.Perm())
 }
 
 func canonicalPath(path string) string {

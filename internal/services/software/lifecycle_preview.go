@@ -68,6 +68,9 @@ func PreviewUninstallLifecycle(ctx context.Context, params *input.RemoveParams) 
 	if err != nil {
 		return LifecyclePreview{}, err
 	}
+	if err := requireMigratedRedisPackage(scriptInfo.Name, scriptInfo.PackageVersion); err != nil {
+		return LifecyclePreview{}, err
+	}
 	installParams := &input.InstallParams{
 		Key:        softwareKey,
 		Version:    version,

@@ -47,6 +47,13 @@ func (service *Service) SetEnabled(ctx context.Context, id int64, enabled bool) 
 	if err := service.DB.First(&site, "id = ?", id).Error; err != nil {
 		return nil, err
 	}
+	if site.Origin == legacyoneinstack.Origin {
+		webServerConfigMu.Lock()
+		defer webServerConfigMu.Unlock()
+		if err := service.DB.First(&site, "id = ?", id).Error; err != nil {
+			return nil, err
+		}
+	}
 	if err := service.ensureWebsiteOwnerActive(&site); err != nil {
 		return nil, err
 	}

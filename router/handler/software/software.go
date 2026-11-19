@@ -31,6 +31,9 @@ func RunInstallation(c *gin.Context) {
 	}
 	task, err := SubmitInstallationTask(req, userID)
 	if err != nil {
+		if HandleAdoptedMigrationUnavailable(c, err) {
+			return
+		}
 		if handleInstallationParameterError(c, err) {
 			return
 		}
@@ -138,6 +141,9 @@ func RunOfflineInstallation(c *gin.Context) {
 	}
 	task, err := SubmitOfflineInstallationTask(req, bundle, userID)
 	if err != nil {
+		if HandleAdoptedMigrationUnavailable(c, err) {
+			return
+		}
 		if handleInstallationParameterError(c, err) {
 			return
 		}
@@ -347,6 +353,9 @@ func RemoveSoftware(c *gin.Context) {
 	}
 	task, err := manager.SubmitUninstallWithParameters(req.Name, req.Version, parameters, userID)
 	if err != nil {
+		if HandleAdoptedMigrationUnavailable(c, err) {
+			return
+		}
 		appErr := core.WrapError(err, core.ErrBadRequest, "创建卸载任务失败")
 		core.HandleError(c, appErr)
 		return

@@ -28,6 +28,7 @@ import (
 	auditservice "oneinstack/internal/services/audit"
 	configsnapshot "oneinstack/internal/services/configsnapshot"
 	fail2banservice "oneinstack/internal/services/fail2ban"
+	"oneinstack/internal/services/legacyoneinstack"
 	previewservice "oneinstack/internal/services/operationpreview"
 	safeservice "oneinstack/internal/services/safe"
 	"oneinstack/internal/services/scriptregistry"
@@ -338,6 +339,18 @@ func Preview(c *gin.Context) {
 	}
 	payload := request.Payload
 	installPreviewPayload := request.Payload
+	if operation == "software.redis_migrate" {
+		plan, err := softwareService.PreviewRedisMigration(c.Request.Context())
+		if err != nil {
+			writeExecutionError(c, err)
+			return
+		}
+		payload, err = json.Marshal(plan)
+		if err != nil {
+			core.HandleError(c, core.NewError(core.ErrInternalError, "无法保存 Redis 迁移预检"))
+			return
+		}
+	}
 	if operation == "software.install" {
 		var err error
 		payload, err = normalizeSoftwareInstallPreviewPayload(c.Request.Context(), payload)
@@ -477,6 +490,9 @@ func handleSoftwareInstallPreviewError(c *gin.Context, err error, payload json.R
 	if err == nil {
 		return false
 	}
+	if software.HandleAdoptedMigrationUnavailable(c, err) {
+		return true
+	}
 	var exclusivityErr *softwaretask.InstallExclusivityError
 	if errors.As(err, &exclusivityErr) {
 		labels := map[string]string{
@@ -539,6 +555,9 @@ func handleSoftwareInstallPreviewError(c *gin.Context, err error, payload json.R
 func handleSoftwareLifecyclePreviewError(c *gin.Context, err error) bool {
 	if err == nil {
 		return false
+	}
+	if software.HandleAdoptedMigrationUnavailable(c, err) {
+		return true
 	}
 	stableCode := softwareStableErrorCode(err)
 	if stableCode == "" {
@@ -610,7 +629,7 @@ func softwareStableErrorCode(err error) string {
 		"HOST_PLATFORM_UNSUPPORTED", "HOST_DEPENDENCY_UNAVAILABLE", "SCRIPT_EXECUTION_FAILED",
 		"HOST_PACKAGE_VERSION_UNAVAILABLE", "HOST_REPOSITORY_UNAVAILABLE", "HOST_VERSION_PROBE_UNAVAILABLE", "HOST_VERSION_PROBE_FAILED",
 		"ROLLBACK_FAILED", "RECOVERY_REQUIRED", "PANEL_PORT_NOT_PROTECTED",
-		"EXTERNAL_SERVICE_CONFLICT", "FIREWALL_BACKEND_CONFLICT", "EXTERNAL_MIGRATION_FAILED", "EXTERNAL_MIGRATION_UNSUPPORTED", "FIREWALL_CONFIRMATION_REQUIRED", "SERVICE_START_FAILED",
+		"EXTERNAL_SERVICE_CONFLICT", "FIREWALL_BACKEND_CONFLICT", "EXTERNAL_MIGRATION_FAILED", "EXTERNAL_MIGRATION_UNSUPPORTED", "REDIS_MIGRATION_UNSUPPORTED", "FIREWALL_CONFIRMATION_REQUIRED", "SERVICE_START_FAILED",
 		"SERVICE_STOP_FAILED", "SERVICE_RESTART_FAILED", "SERVICE_RELOAD_FAILED", "PRECHECK_FAILED",
 		"CONFIGURE_FAILED", "VERIFY_FAILED", "UNINSTALL_FAILED", "ACTION_TIMEOUT", "ACTION_CANCELED",
 		"CONFIG_REVISION_CONFLICT", "CONFIG_APPLY_FAILED", "CONFIG_INVALID", "VERSION_MISMATCH",
@@ -786,6 +805,10 @@ func softwareStableAppError(code, locale string) *core.AppError {
 			status: core.ErrConflict, message: "当前外部防火墙不支持自动切换",
 			detail:     "The detected external firewall backend does not have a safe automatic migration path.",
 			suggestion: "请先人工迁移或停止当前防火墙后，再重新安装 firewalld。",
+		},
+		"REDIS_MIGRATION_UNSUPPORTED": {
+			status: core.ErrConflict, message: "当前 Redis 不满足原地迁移条件",
+			detail: "The adopted Redis instance did not pass migration preflight.",
 		},
 		"FIREWALL_CONFIRMATION_REQUIRED": {
 			status: core.ErrOperationNotConfirmed, message: "高风险防火墙操作需要二次确认",
@@ -1324,6 +1347,9 @@ func normalizeSoftwareConfigurePayload(ctx context.Context, payload json.RawMess
 	if request.Component == "" {
 		return nil, errSoftwareConfigurationComponentRequired
 	}
+	if err := legacyoneinstack.ProtectMutation(app.DB(), request.Component); err != nil {
+		return nil, err
+	}
 	restoreFromID := strings.TrimSpace(request.RestoreFromID)
 	restoreFromHistoryID := strings.TrimSpace(request.RestoreFromHistory)
 	if restoreFromID != "" && restoreFromHistoryID != "" && restoreFromID != restoreFromHistoryID {
@@ -1388,6 +1414,9 @@ func normalizeSoftwareConfigurePayload(ctx context.Context, payload json.RawMess
 }
 
 func handleSoftwareConfigurationPreviewError(c *gin.Context, err error) {
+	if software.HandleAdoptedMigrationUnavailable(c, err) {
+		return
+	}
 	var parameterErr *softwareService.InstallParameterError
 	if errors.As(err, &parameterErr) {
 		message := softwareConfigurationParameterMessage(parameterErr)
@@ -1529,6 +1558,12 @@ func softwareConfigurationTargetVersion(component, revision string) string {
 }
 
 func validatePreviewTarget(ctx context.Context, operation, resourceVersion string) error {
+	if operation == "software.redis_migrate" {
+		if err := softwareService.ValidateRedisMigrationRevision(ctx, resourceVersion); err != nil {
+			return previewservice.ErrRequestChanged
+		}
+		return nil
+	}
 	if operation == "artifact.cleanup" {
 		manager, err := artifactcleanupservice.Default(app.DB())
 		if err != nil {
@@ -2168,6 +2203,23 @@ func buildDocument(ctx context.Context, operation string, payload json.RawMessag
 		}
 		document, version := websiteRuntimeDocument(operation, change)
 		return document, version, nil
+	case "software.redis_migrate":
+		var plan softwareService.RedisMigrationPlan
+		if err := json.Unmarshal(payload, &plan); err != nil {
+			return document, "", err
+		}
+		document.Review = previewservice.Review{Required: true, RiskLevel: "high", Reason: "迁移后 Panel 可以升级和卸载该 Redis"}
+		document.Target = &previewservice.Target{Component: "redis", DisplayName: "Redis", SoftwareVersion: plan.Version,
+			ComponentPackageVersion: plan.Package.ResolvedVersion, PackageSHA256: plan.Package.PackageSHA256, Action: "migrate"}
+		document.Files = []previewservice.FileChange{
+			{Path: plan.Config, Action: "preserve", ChangeSummary: "保留并备份原 Redis 配置"},
+			{Path: plan.DataDir, Action: "preserve", ChangeSummary: "保留原 Redis 数据目录"},
+			{Path: plan.StateDir, Action: "create", ChangeSummary: "写入受管组件状态"},
+		}
+		document.Impact = previewservice.Impact{WriteFiles: true, ModifyDatabase: true}
+		document.Rollback = previewservice.Rollback{Supported: true, Summary: "归属写入失败时撤销新状态，Redis 服务继续运行"}
+		document.Actions = []previewservice.Action{{Type: "migration", Name: "复核 Redis 进程、服务身份和配置；备份配置；写入组件归属"}}
+		return document, plan.Revision, nil
 	case "software.install":
 		var value input.InstallParams
 		if err := json.Unmarshal(payload, &value); err != nil {
@@ -2833,6 +2885,20 @@ func executeOperation(ctx context.Context, operation string, payload json.RawMes
 		}
 		recordWebsiteOperationAudit(snapshot.ID, "succeeded", "网站状态已发布", userID, requestIP)
 		return gin.H{"operation": operation, "resourceId": site.ID, "status": "succeeded", "snapshotId": snapshot.ID}, nil
+	case "software.redis_migrate":
+		var plan softwareService.RedisMigrationPlan
+		if err := json.Unmarshal(payload, &plan); err != nil {
+			return nil, err
+		}
+		manager, err := software.DefaultTaskManager()
+		if err != nil {
+			return nil, err
+		}
+		task, err := manager.SubmitRedisMigration(plan.Revision, plan.Version, plan.Package, userID)
+		if err != nil {
+			return nil, err
+		}
+		return softwareTaskResult(task), nil
 	case "software.install":
 		var value input.InstallParams
 		if err := json.Unmarshal(payload, &value); err != nil {
@@ -3234,6 +3300,15 @@ func writeFirewallCollisionError(c *gin.Context, err error) bool {
 }
 
 func writeExecutionError(c *gin.Context, err error) {
+	if strings.HasPrefix(err.Error(), "REDIS_MIGRATION_UNSUPPORTED: ") {
+		appErr := core.NewError(core.ErrConflict, strings.TrimPrefix(err.Error(), "REDIS_MIGRATION_UNSUPPORTED: "))
+		appErr.StableCode = "REDIS_MIGRATION_UNSUPPORTED"
+		core.HandleErrorWithStatus(c, http.StatusConflict, appErr)
+		return
+	}
+	if software.HandleAdoptedMigrationUnavailable(c, err) {
+		return
+	}
 	if appErr, ok := software.InstallationDependencyAppError(err, middleware.RequestLocale(c)); ok {
 		core.HandleError(c, appErr)
 		return

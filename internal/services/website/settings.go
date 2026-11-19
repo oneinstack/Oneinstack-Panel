@@ -777,6 +777,7 @@ func (service *Service) managedConfigManagerForSite(site *models.Website) (*WebS
 	if site.Origin == legacyoneinstack.Origin {
 		copy.Server.ConfigRoot = filepath.Dir(publisher.MainConfigPath)
 		copy.Server.SiteConfigDir = publisher.ConfigDir
+		copy.preserveFileOwner = true
 	} else if strings.TrimSpace(service.VhostRoot) != "" {
 		copy.Server.ConfigRoot = publisher.ConfigDir
 		copy.Server.SiteConfigDir = publisher.ConfigDir

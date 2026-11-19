@@ -10,6 +10,7 @@ import (
 	"oneinstack/internal/services"
 	"oneinstack/internal/services/artifactpolicy"
 	"oneinstack/internal/services/componentstate"
+	"oneinstack/internal/services/legacyoneinstack"
 	"oneinstack/internal/services/scriptregistry"
 	"oneinstack/router/input"
 	"oneinstack/router/output"
@@ -777,9 +778,12 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 		}
 		groupedResults[i].Runtime = mysqlRuntimeInfo(item)
 		if item.Origin == models.SoftwareOriginOneinstackScript {
+			groupedResults[i].ManagementNotice = legacyoneinstack.MigrationUnavailableNotice
 			switch item.Component {
-			case "mysql", "mariadb", "percona", "postgresql", "mongodb", "redis":
-				groupedResults[i].ManagementNotice = "已接管原数据库服务。请前往数据库页面，使用原有账号和密码添加连接；Panel 不会修改原账号或密码。"
+			case "redis":
+				groupedResults[i].ManagementNotice = "Redis 已接管。可通过显式迁移预检核对原地迁移条件；迁移前不可直接升级或卸载。"
+			case "mysql", "mariadb", "percona", "postgresql", "mongodb":
+				groupedResults[i].ManagementNotice += " 如需管理数据库，请在数据库页面使用原有账号和密码添加连接。"
 			}
 			groupedResults[i].IsUpdate = false
 			groupedResults[i].Installable = false

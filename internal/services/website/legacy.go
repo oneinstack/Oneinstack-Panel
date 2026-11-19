@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -16,6 +17,8 @@ import (
 	"oneinstack/internal/models"
 	"oneinstack/internal/services/legacyoneinstack"
 	"oneinstack/utils"
+
+	"gorm.io/gorm"
 )
 
 const legacyConfigPurpose = "website.legacy-disabled-config"
@@ -189,6 +192,117 @@ func legacyWebsiteConfigPath(site *models.Website) (string, error) {
 		return "", errors.New("legacy site ownership mismatch")
 	}
 	return s.Config, nil
+}
+
+// LegacyDeleteSnapshot captures the existing vhost metadata needed to restore
+// a configuration-only deletion without rebuilding it from a Panel template.
+func (service *Service) LegacyDeleteSnapshot(site *models.Website, deleteFiles bool) error {
+	if site.Origin != legacyoneinstack.Origin {
+		return nil
+	}
+	if deleteFiles {
+		return fmt.Errorf("%w: 接管站点只支持删除配置并保留网站文件，原目录可能与其他站点共用", ErrWebsiteConfigUnavailable)
+	}
+	path, err := service.ConfigFile(site)
+	if err != nil {
+		return err
+	}
+	if !site.Enabled {
+		if _, err := os.Lstat(path); err == nil {
+			return fmt.Errorf("%w: 已停用站点的原配置路径重新出现，请检查后再删除", ErrWebsiteConflict)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		_, err := legacyToggleConfig(site, true)
+		return err
+	}
+	return rememberLegacyFileMetadata(site, path)
+}
+
+// RestoreLegacyDeletion republishes the original vhost for a deleted site.
+// Its document root and external certificate files are left in place.
+func (service *Service) RestoreLegacyDeletion(ctx context.Context, site *models.Website, content string) error {
+	webServerConfigMu.Lock()
+	defer webServerConfigMu.Unlock()
+
+	if err := service.validate(); err != nil {
+		return err
+	}
+	if site == nil || site.ID <= 0 || site.Origin != legacyoneinstack.Origin || site.LegacyMetadata == "" {
+		return fmt.Errorf("%w: 备份缺少接管站点的原始配置归属", ErrWebsiteConfigUnavailable)
+	}
+	if err := service.ensureWebsiteOwnerActive(site); err != nil {
+		return err
+	}
+	owner, err := legacyoneinstack.Installed(service.DB, site.Engine)
+	if err != nil {
+		return err
+	}
+	if owner == nil {
+		return fmt.Errorf("%w: 原接管组件已不可用", ErrWebsiteConfigUnavailable)
+	}
+	component, err := legacyoneinstack.DecodeComponent(owner.LegacyMetadata)
+	if err != nil {
+		return err
+	}
+	path, err := service.ConfigFile(site)
+	if err != nil {
+		return err
+	}
+	if component.VhostDir != filepath.Dir(path) {
+		return fmt.Errorf("%w: 原配置路径与当前接管组件不匹配", ErrWebsiteConfigUnavailable)
+	}
+	if _, err := os.Lstat(path); err == nil {
+		return fmt.Errorf("%w: 原网站配置路径已被占用", ErrWebsiteConflict)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	var count int64
+	if err := service.DB.Model(&models.Website{}).Where("id = ? OR name = ? OR domain = ?", site.ID, site.Name, site.Domain).Count(&count).Error; err != nil {
+		return err
+	}
+	if count > 0 {
+		return fmt.Errorf("%w: 网站记录已存在", ErrWebsiteConflict)
+	}
+	root, err := service.ManagedRoot(site)
+	if err != nil {
+		return err
+	}
+	if root != "" {
+		if info, err := os.Lstat(root); err != nil || !info.IsDir() {
+			return fmt.Errorf("%w: 原网站根目录不可用，请先从快照恢复网站文件", ErrWebsiteConfigUnavailable)
+		}
+	}
+	if !site.Enabled {
+		if _, err := legacyToggleConfig(site, true); err != nil {
+			return err
+		}
+		return service.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			if err := tx.Create(site).Error; err != nil {
+				return err
+			}
+			return tx.Model(site).UpdateColumn("enabled", false).Error
+		})
+	}
+	if strings.TrimSpace(content) == "" {
+		return fmt.Errorf("%w: 备份缺少原始站点配置", ErrWebsiteConfigUnavailable)
+	}
+	if err := service.validateRuntimeCandidate(site, path, content); err != nil {
+		return err
+	}
+	publisher, err := service.publisherForSite(site)
+	if err != nil {
+		return err
+	}
+	publisher.requireMissingConfig = true
+	publication, err := publisher.Publish(ctx, map[string]*string{filepath.Base(path): &content})
+	if err != nil {
+		return err
+	}
+	if err := service.DB.WithContext(ctx).Create(site).Error; err != nil {
+		return errors.Join(err, publication.Rollback(context.Background()))
+	}
+	return nil
 }
 
 func isLegacyProxyChain(candidates []webServerCandidate) bool {

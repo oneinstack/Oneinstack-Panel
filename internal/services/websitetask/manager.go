@@ -225,6 +225,9 @@ func (m *Manager) submit(request Request, requestedBy int64) (*models.WebsiteTas
 		if err == nil && request.ConfirmName != site.Name {
 			err = errors.New("网站确认名称不匹配")
 		}
+		if err == nil {
+			err = m.sites.LegacyDeleteSnapshot(site, request.DeleteFiles)
+		}
 	case models.WebsiteTaskOperationRestore:
 		if request.BackupID == "" {
 			return nil, errors.New("website backup is required")
@@ -535,6 +538,17 @@ func (m *Manager) runDelete(
 	log io.Writer,
 	report databasetask.ProgressReporter,
 ) error {
+	site, err := m.sites.Get(task.WebsiteID)
+	if err != nil {
+		return err
+	}
+	var revision string
+	if site.Origin == models.SoftwareOriginOneinstackScript {
+		revision, err = m.sites.RuntimeRevision(site.ID)
+		if err != nil {
+			return err
+		}
+	}
 	report(5, "正在创建删除前强制快照")
 	backup, err := m.createAndRegisterBackup(
 		ctx, task, models.WebsiteBackupSourcePreDelete, log,
@@ -553,7 +567,7 @@ func (m *Manager) runDelete(
 		return err
 	}
 	report(85, "快照已验证，正在删除网站配置")
-	if err := m.sites.DeleteWithOptions(ctx, task.WebsiteID, task.DeleteFiles); err != nil {
+	if err := m.sites.DeleteFromSnapshot(ctx, task.WebsiteID, task.DeleteFiles, revision); err != nil {
 		return err
 	}
 	report(99, "网站已安全删除，恢复快照已保留")
@@ -593,6 +607,19 @@ func (m *Manager) runRestore(
 	if extracted.Manifest.Website.ID != source.WebsiteID ||
 		extracted.Manifest.Website.Name != source.WebsiteName {
 		return errors.New("website archive manifest does not match backup metadata")
+	}
+	if extracted.Manifest.Website.Origin == models.SoftwareOriginOneinstackScript {
+		if source.Source != models.WebsiteBackupSourcePreDelete {
+			return errors.New("接管站点仅支持用删除前快照恢复原站点配置")
+		}
+		site := extracted.Manifest.Website
+		site.LegacyMetadata = extracted.Manifest.LegacyMetadata
+		site.PreservedConfig = extracted.Manifest.PreservedConfig
+		if err := m.sites.RestoreLegacyDeletion(ctx, &site, extracted.Manifest.NginxConfig); err != nil {
+			return err
+		}
+		report(99, "接管站点原配置已恢复，网站文件和关联数据库保持原状")
+		return nil
 	}
 	var previous *models.Website
 	var previousSettings *website.WebsiteSettings
@@ -751,6 +778,11 @@ func (m *Manager) createAndRegisterBackup(
 	site, err := m.sites.Get(task.WebsiteID)
 	if err != nil {
 		return nil, err
+	}
+	if source == models.WebsiteBackupSourcePreDelete {
+		if err := m.sites.LegacyDeleteSnapshot(site, task.DeleteFiles); err != nil {
+			return nil, err
+		}
 	}
 	rootPath, err := m.sites.ManagedRoot(site)
 	if err != nil {

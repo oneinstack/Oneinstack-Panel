@@ -12,6 +12,25 @@ import (
 	"gorm.io/gorm"
 )
 
+const MigrationUnavailableNotice = "Panel 暂不支持将脚本接管的组件迁移为受管组件。升级、卸载和模板配置不可用。"
+
+type MigrationUnavailableError struct {
+	Component string
+}
+
+func (MigrationUnavailableError) ErrorCode() string { return "EXTERNAL_MIGRATION_REQUIRED" }
+
+func (e MigrationUnavailableError) Error() string {
+	return e.ErrorCode() + ": " + e.Notice()
+}
+
+func (e MigrationUnavailableError) Notice() string {
+	if e.Component == "redis" {
+		return "请先在软件商店完成接管 Redis 的显式迁移。"
+	}
+	return MigrationUnavailableNotice
+}
+
 // Import only writes Panel metadata. Existing programs, units, configurations,
 // certificates, cron jobs and data directories are never moved or rewritten.
 func Import(ctx context.Context, db *gorm.DB, report *Report, taskID string) error {
@@ -163,7 +182,7 @@ func ProtectMutation(db *gorm.DB, value string) error {
 		return err
 	}
 	if row != nil {
-		return errors.New("EXTERNAL_MIGRATION_REQUIRED: 已接管原有 OneinStack 环境；安装、升级、卸载和模板配置需要先完成对应组件的显式迁移，原有服务和配置保持可用")
+		return MigrationUnavailableError{Component: row.Component}
 	}
 	return nil
 }

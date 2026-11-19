@@ -431,6 +431,9 @@ func (installer *Installer) resolveInstallParams(ctx context.Context, params *in
 	if err != nil {
 		return nil, err
 	}
+	if err := requireMigratedRedisPackage(scriptInfo.Name, scriptInfo.PackageVersion); err != nil {
+		return nil, err
+	}
 	installer.setScriptParams(scriptInfo, params)
 	if err := preparePhpMyAdminWebRoute(ctx, scriptInfo); err != nil {
 		return nil, err

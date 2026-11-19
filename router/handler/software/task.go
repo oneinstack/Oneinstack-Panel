@@ -62,6 +62,18 @@ func getTaskManager() (*softwaretask.Manager, error) {
 				logPath string,
 				reporter *softwaretask.Reporter,
 			) error {
+				if request.Operation == "redis_migrate" {
+					plan := softwareService.RedisMigrationPlan{Revision: request.Revision, Version: request.Version, Package: request.ResolvedPackage}
+					if err := os.WriteFile(logPath, []byte("Redis migration: verifying adopted instance and retained data paths\n"), 0600); err != nil {
+						return err
+					}
+					reporter.OnActionStart("verify")
+					if err := softwareService.ApplyRedisMigration(ctx, plan, request.TaskID); err != nil {
+						return err
+					}
+					reporter.OnActionComplete("verify")
+					return nil
+				}
 				if request.Operation == "adopt" {
 					ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 					defer cancel()
@@ -230,6 +242,10 @@ func getTaskManager() (*softwaretask.Manager, error) {
 			ctx context.Context,
 			task *models.SoftwareTask,
 		) softwaretask.RecoveryInspection {
+			if task.Operation == "redis_migrate" {
+				status, message := softwareService.RecoverRedisMigration(ctx, db, task.ID)
+				return softwaretask.RecoveryInspection{Status: status, Message: message}
+			}
 			status, message := softwareService.InspectTaskRecovery(
 				ctx,
 				task.Operation,
@@ -371,6 +387,9 @@ func SubmitOfflineInstallationTask(
 	requestedBy int64,
 ) (*models.SoftwareTask, error) {
 	softwareService.NormalizeInstallParams(&req)
+	if err := legacyoneinstack.ProtectMutation(app.DB(), req.Key); err != nil {
+		return nil, err
+	}
 	registry, err := scriptregistry.New(app.ONE_CONFIG.ScriptCenter)
 	if err != nil {
 		return nil, err
@@ -397,6 +416,9 @@ func submitInstallationTask(
 	req input.InstallParams,
 	requestedBy int64,
 ) (*models.SoftwareTask, error) {
+	if err := legacyoneinstack.ProtectMutation(app.DB(), strings.TrimSpace(req.Key)); err != nil {
+		return nil, err
+	}
 	explicitParameters := explicitInstallParameters(req)
 	req.ExplicitParameters = explicitParameters
 	if err := softwareService.RestoreInstalledParameters(&req, explicitParameters); err != nil {

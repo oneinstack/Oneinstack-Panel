@@ -681,6 +681,9 @@ func (installer *Installer) getUninstallScript(
 	if err != nil {
 		return nil, nil, err
 	}
+	if err := requireMigratedRedisPackage(scriptInfo.Name, scriptInfo.PackageVersion); err != nil {
+		return nil, nil, err
+	}
 	installParameters := persistedUninstallParameters(softwareKey, params)
 	installParams := &input.InstallParams{
 		Key:        softwareKey,

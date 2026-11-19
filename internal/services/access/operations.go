@@ -8,6 +8,7 @@ var operationPermissions = map[string]string{
 	"website.webserver.config.update": PermissionWebsiteWrite,
 	"website.toggle":                  PermissionWebsiteWrite,
 	"software.install":                PermissionSoftwareWrite,
+	"software.redis_migrate":          PermissionSoftwareWrite,
 	"software.uninstall":              PermissionSoftwareWrite,
 	"software.service_action":         PermissionServiceWrite,
 	"software.configure":              PermissionSoftwareWrite,

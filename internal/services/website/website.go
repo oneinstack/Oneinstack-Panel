@@ -990,6 +990,11 @@ func (service *Service) Delete(ctx context.Context, id int64) error {
 // to private tombstones so a failed database/Nginx transaction can restore
 // them atomically.
 func (service *Service) DeleteWithOptions(ctx context.Context, id int64, deleteFiles bool) error {
+	return service.DeleteFromSnapshot(ctx, id, deleteFiles, "")
+}
+
+// DeleteFromSnapshot checks an adopted site's revision before removing its vhost.
+func (service *Service) DeleteFromSnapshot(ctx context.Context, id int64, deleteFiles bool, revision string) error {
 	if err := service.validate(); err != nil {
 		return err
 	}
@@ -1000,10 +1005,26 @@ func (service *Service) DeleteWithOptions(ctx context.Context, id int64, deleteF
 	if err := service.DB.First(&existing, "id = ?", id).Error; err != nil {
 		return err
 	}
+	if existing.Origin == legacyoneinstack.Origin {
+		webServerConfigMu.Lock()
+		defer webServerConfigMu.Unlock()
+		if revision != "" {
+			current, err := service.RuntimeRevision(id)
+			if err != nil {
+				return err
+			}
+			if current != revision {
+				return fmt.Errorf("%w: 创建快照期间站点配置已变更，请重试删除", ErrWebServerConfigConflict)
+			}
+		}
+	}
 	if err := service.ensureWebsiteOwnerActive(&existing); err != nil {
 		return err
 	}
 	configName := existing.Name + ".conf"
+	if err := service.LegacyDeleteSnapshot(&existing, deleteFiles); err != nil {
+		return err
+	}
 	if !configNamePattern.MatchString(configName) {
 		return errors.New("stored website has an unsafe Nginx config name")
 	}

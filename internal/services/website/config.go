@@ -966,6 +966,7 @@ type Publisher struct {
 	Runner               CommandRunner
 	preserveFileMetadata bool
 	restoredFileMetadata map[string]configSnapshot
+	requireMissingConfig bool
 }
 
 type configSnapshot struct {
@@ -1029,6 +1030,9 @@ func (p *Publisher) Publish(ctx context.Context, changes map[string]*string) (*P
 				_ = restorePublication(publication)
 			}
 			return nil, err
+		}
+		if p.requireMissingConfig && snapshot.exists {
+			return nil, fmt.Errorf("%w: 原网站配置路径已被占用", ErrWebsiteConflict)
 		}
 		publication.snapshots = append(publication.snapshots, snapshot)
 		if content := changes[name]; content != nil {
