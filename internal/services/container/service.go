@@ -23,6 +23,7 @@ import (
 
 	"oneinstack/app"
 	"oneinstack/internal/models"
+	"oneinstack/internal/services/dockerruntime"
 	"oneinstack/utils"
 )
 
@@ -386,28 +387,18 @@ type RegistrySummary struct {
 }
 
 func (s *Service) Runtime(ctx context.Context) RuntimeStatus {
-	status := RuntimeStatus{}
-	if _, err := exec.LookPath(s.binary); err != nil {
+	probe := dockerruntime.Probe(ctx, s.binary, s.run)
+	status := RuntimeStatus{
+		Installed: probe.Installed, DockerVersion: probe.ClientVersion,
+		ServerVersion: probe.ServerVersion, ComposeVersion: probe.ComposeVersion,
+	}
+	switch {
+	case !probe.Installed:
 		status.Message = "Docker 未安装或不在 PATH 中"
-		return withCapabilities(status)
-	}
-	status.Installed = true
-	status.Available = true
-	if out, err := s.run(ctx, "version", "--format", "{{.Client.Version}}|{{.Server.Version}}"); err == nil {
-		parts := strings.SplitN(strings.TrimSpace(out), "|", 2)
-		status.DockerVersion = parts[0]
-		if len(parts) == 2 {
-			status.ServerVersion = parts[1]
-		}
-	} else {
-		status.Available = false
-		status.Running = false
-		status.Message = cleanError(err)
-		return withCapabilities(status)
-	}
-	status.Running = true
-	if out, err := s.run(ctx, "compose", "version", "--short"); err == nil {
-		status.ComposeVersion = strings.TrimSpace(out)
+	case probe.DaemonError != nil:
+		status.Message = cleanError(probe.DaemonError)
+	default:
+		status.Available, status.Running = true, true
 	}
 	return withCapabilities(status)
 }

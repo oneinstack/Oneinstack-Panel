@@ -202,7 +202,7 @@ func InstallationDependencyAppError(err error, locale string) (*core.AppError, b
 	}
 	code := core.ErrContainerRuntimeUnavailable
 	switch dependencyErr.Code {
-	case "DOCKER_ENGINE_VERSION_MISMATCH":
+	case "DOCKER_ENGINE_VERSION_MISMATCH", "DOCKER_EXTERNAL_INSTALLATION":
 		code = core.ErrResourceStateInvalid
 	case "DOCKER_ENGINE_PROBE_TIMEOUT":
 		code = core.ErrTaskTimeout

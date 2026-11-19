@@ -11,10 +11,73 @@ import (
 
 	"oneinstack/app"
 	"oneinstack/internal/models"
+	"oneinstack/internal/services/dockerruntime"
 	"oneinstack/internal/services/scriptregistry"
 	"oneinstack/router/input"
 	"oneinstack/router/output"
 )
+
+const dockerExternalInstallCode = "DOCKER_EXTERNAL_INSTALLATION"
+
+func dockerInstallKey(key string) bool {
+	return key == "docker" || key == "docker-engine" || key == "docker-compose"
+}
+
+func dockerHostInstallation(runtime dockerruntime.ProbeResult, key string) *output.HostInstallation {
+	version := strings.TrimSpace(runtime.ServerVersion)
+	if key == "docker-compose" {
+		version = strings.TrimSpace(runtime.ComposeVersion)
+		if version == "" {
+			return nil
+		}
+	} else if !runtime.Installed {
+		return nil
+	}
+	if !softwareVersionPattern.MatchString(version) {
+		version = ""
+	}
+	return &output.HostInstallation{
+		Source: "external", InstalledVersion: version, BlockedCode: dockerExternalInstallCode,
+	}
+}
+
+func dockerHostInstallations() map[string]*output.HostInstallation {
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	runtime := dockerruntime.Probe(ctx, "docker", nil)
+	result := make(map[string]*output.HostInstallation)
+	for _, key := range []string{"docker", "docker-engine", "docker-compose"} {
+		if info := dockerHostInstallation(runtime, key); info != nil {
+			result[key] = info
+		}
+	}
+	return result
+}
+
+func validateDockerHostInstallation(ctx context.Context, key string) error {
+	if !dockerInstallKey(key) || app.DB() == nil {
+		return nil
+	}
+	keys := []string{key}
+	if key != "docker-compose" {
+		keys = []string{"docker", "docker-engine"}
+	}
+	var managed int64
+	if err := app.DB().WithContext(ctx).Model(&models.Software{}).
+		Where("`key` IN ? AND installed = ?", keys, true).Count(&managed).Error; err != nil || managed != 0 {
+		return err
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
+	defer cancel()
+	runtime := dockerruntime.Probe(probeCtx, "docker", nil)
+	if dockerHostInstallation(runtime, key) != nil {
+		return &InstallDependencyError{Code: dockerExternalInstallCode}
+	}
+	if probeCtx.Err() != nil {
+		return &InstallDependencyError{Code: "DOCKER_ENGINE_PROBE_TIMEOUT"}
+	}
+	return nil
+}
 
 // HostInstallationError contains only validated versions and stable codes.
 // Package-manager stderr, repository URLs and credentials never enter the API.

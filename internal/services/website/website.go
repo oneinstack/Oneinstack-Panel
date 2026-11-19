@@ -36,6 +36,10 @@ type Service struct {
 }
 
 func defaultService() (*Service, error) {
+	return resolveWebsiteService(true)
+}
+
+func resolveWebsiteService(prepareLayout bool) (*Service, error) {
 	if app.DB() == nil {
 		return nil, errors.New("database is not initialized")
 	}
@@ -67,8 +71,10 @@ func defaultService() (*Service, error) {
 		// The script already includes its vhost directory. Do not move files,
 		// add include directives or rewrite the main config on a read/startup.
 		vhostRoot, configDir, webRoot, logRoot = "", legacy.VhostDir, legacy.WebRoot, legacy.LogRoot
-	} else if err := ensureManagedVhostLayout(app.DB(), server, vhostRoot); err != nil {
-		return nil, fmt.Errorf("prepare Web server vhost layout: %w", err)
+	} else if prepareLayout {
+		if err := ensureManagedVhostLayout(app.DB(), server, vhostRoot); err != nil {
+			return nil, fmt.Errorf("prepare Web server vhost layout: %w", err)
+		}
 	}
 	return &Service{
 		DB:              app.DB(),

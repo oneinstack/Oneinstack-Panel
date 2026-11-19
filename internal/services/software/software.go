@@ -202,6 +202,14 @@ func ListCategories(param *input.SoftwareCategoryParam) ([]Category, error) {
 		}
 		productStates[row.Key] = state
 	}
+	if param != nil && (param.Installed != nil || param.IsUpdate != nil) {
+		for key := range dockerHostInstallations() {
+			if state, exists := productStates[key]; exists && state.installed == 0 {
+				state.installed, state.isUpdate = 1, 0
+				productStates[key] = state
+			}
+		}
+	}
 	for _, row := range rows {
 		state := productStates[row.Key]
 		if param != nil && param.Installed != nil && state.installed != boolToInt(*param.Installed) {
@@ -469,6 +477,7 @@ func apachePort(sf *models.Software) int {
 
 func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software], error) {
 	filterByUpdate := param.IsUpdate != nil
+	var dockerInstallations map[string]*output.HostInstallation
 	tx := app.DB().
 		Where("(catalog_visible = ? OR installed = ?)", true, true).
 		Select(
@@ -534,10 +543,16 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 		if *param.Installed {
 			isi = 1
 		}
-		tx = tx.Having(
-			"MAX(CASE WHEN installed = 1 THEN 1 ELSE 0 END) = ?",
-			isi,
-		)
+		dockerInstallations = dockerHostInstallations()
+		if len(dockerInstallations) == 0 {
+			tx = tx.Having("MAX(CASE WHEN installed = 1 THEN 1 ELSE 0 END) = ?", isi)
+		} else {
+			detectedKeys := make([]string, 0, len(dockerInstallations))
+			for key := range dockerInstallations {
+				detectedKeys = append(detectedKeys, key)
+			}
+			tx = tx.Having("MAX(CASE WHEN installed = 1 OR `key` IN ? THEN 1 ELSE 0 END) = ?", detectedKeys, isi)
+		}
 	}
 
 	tag := i18n.NormalizeSoftwareCategory(param.Tags)
@@ -771,6 +786,21 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 			groupedResults[i].UpdateReason = ""
 			for j := range groupedResults[i].VersionOptions {
 				groupedResults[i].VersionOptions[j].Installable = false
+			}
+		}
+		if !item.Installed && dockerInstallKey(item.Key) {
+			if dockerInstallations == nil {
+				dockerInstallations = dockerHostInstallations()
+			}
+			if info := dockerInstallations[item.Key]; info != nil {
+				groupedResults[i].HostInstallation = info
+				groupedResults[i].RuntimeVersion = info.InstalledVersion
+				groupedResults[i].Installable = false
+				groupedResults[i].IsUpdate = false
+				groupedResults[i].UpdateReason = ""
+				for j := range groupedResults[i].VersionOptions {
+					groupedResults[i].VersionOptions[j].Installable = false
+				}
 			}
 		}
 		if groupedResults[i].Runtime == nil {

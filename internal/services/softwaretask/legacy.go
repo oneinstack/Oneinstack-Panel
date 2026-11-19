@@ -21,11 +21,16 @@ func (m *Manager) SubmitLegacyImport(ctx context.Context, sourceDir string, acto
 		return nil, nil
 	}
 	var previous models.SoftwareTask
-	err = m.db.Where("operation = ? AND component = ? AND release_revision = ? AND status = ?", "adopt", legacyoneinstack.TaskComponent, report.Revision, models.SoftwareTaskStatusSucceeded).Order("created_at DESC").First(&previous).Error
+	// A revision can recur after a different snapshot was imported. Only the
+	// most recent successful import describes the metadata currently in use.
+	err = m.db.WithContext(ctx).
+		Where("operation = ? AND component = ? AND status = ?", "adopt", legacyoneinstack.TaskComponent, models.SoftwareTaskStatusSucceeded).
+		Order("created_at DESC").First(&previous).Error
 	if err == nil {
-		return &previous, nil
-	}
-	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		if previous.ReleaseRevision == report.Revision {
+			return &previous, nil
+		}
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, err
 	}
 	return m.submit(InstallRequest{Operation: "adopt", Key: legacyoneinstack.TaskComponent, Version: "existing", Parameters: map[string]string{"source-dir": report.SourceDir, "source-revision": report.Revision}}, actor)

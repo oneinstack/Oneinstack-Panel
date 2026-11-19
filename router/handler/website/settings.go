@@ -149,6 +149,19 @@ func GetWebsiteManagedConfig(c *gin.Context) {
 	core.HandleSuccess(c, document)
 }
 
+func ProbeWebsiteHTTP(c *gin.Context) {
+	id, ok := websiteIDParam(c)
+	if !ok {
+		return
+	}
+	result, err := websiteService.ProbeHTTP(c.Request.Context(), id)
+	if err != nil {
+		core.HandleError(c, core.WrapError(err, core.ErrConfigError, "网站 HTTP 探测失败"))
+		return
+	}
+	core.HandleSuccess(c, result)
+}
+
 func UpdateWebsiteManagedConfig(c *gin.Context) {
 	if !rejectDirectMutation(c, "website.config.update") {
 		return

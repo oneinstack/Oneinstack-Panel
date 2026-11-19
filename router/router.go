@@ -472,6 +472,7 @@ func SetupRouter() *gin.Engine {
 		websiteg.PUT("/:id/settings", middleware.RequirePermission("website.write"), website.UpdateWebsiteSettings)
 		websiteg.GET("/:id/log", middleware.RequirePermission("website.read"), website.GetWebsiteLog)
 		websiteg.GET("/:id/config", middleware.RequirePermission("website.read"), website.GetWebsiteManagedConfig)
+		websiteg.GET("/:id/http-probe", middleware.RequirePermission("website.read"), website.ProbeWebsiteHTTP)
 		websiteg.PUT("/:id/config", middleware.RequirePermission("website.write"), website.UpdateWebsiteManagedConfig)
 		websiteg.POST("/info", middleware.RequirePermission("website.read"), website.Info)
 		websiteg.GET("/web-server", middleware.RequirePermission("website.read"), website.GetWebServerStatus)

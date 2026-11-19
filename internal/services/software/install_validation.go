@@ -338,6 +338,9 @@ func (installer *Installer) resolveInstallParams(ctx context.Context, params *in
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if err := validateDockerHostInstallation(ctx, strings.ToLower(strings.TrimSpace(params.Key))); err != nil {
+		return nil, err
+	}
 
 	flatVersion := strings.TrimSpace(params.Version)
 	parameterVersion := installParameterValue(params.Parameters, "software-version", "version")
@@ -467,6 +470,11 @@ func (e *InstallDependencyError) ErrorCode() string { return e.Code }
 func (e *InstallDependencyError) UserMessage(locale string) string {
 	english := strings.HasPrefix(strings.ToLower(strings.TrimSpace(locale)), "en")
 	switch e.Code {
+	case dockerExternalInstallCode:
+		if english {
+			return "An existing Docker or Compose installation would be overwritten. Manage the current runtime from Containers, or migrate it explicitly before installing."
+		}
+		return "检测到已有 Docker 或 Compose，直接安装可能覆盖现有环境。请通过容器管理使用原有运行时，或先完成显式迁移。"
 	case "HOST_RESOURCE_INSUFFICIENT":
 		if english {
 			return fmt.Sprintf("PHP installation requires at least 1536 MiB of available memory plus free swap. Currently available: %d MiB memory and %d MiB swap. Free memory or add swap, then preview again.", e.AvailableMemoryMiB, e.FreeSwapMiB)
