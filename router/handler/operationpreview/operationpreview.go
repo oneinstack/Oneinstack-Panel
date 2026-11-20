@@ -339,6 +339,25 @@ func Preview(c *gin.Context) {
 	}
 	payload := request.Payload
 	installPreviewPayload := request.Payload
+	if operation == "software.nginx_migrate" {
+		var request struct {
+			Version string `json:"version"`
+		}
+		if err := json.Unmarshal(payload, &request); err != nil {
+			writeExecutionError(c, err)
+			return
+		}
+		plan, err := softwareService.PreviewNginxMigration(c.Request.Context(), request.Version)
+		if err != nil {
+			writeExecutionError(c, err)
+			return
+		}
+		payload, err = json.Marshal(plan)
+		if err != nil {
+			writeExecutionError(c, err)
+			return
+		}
+	}
 	if operation == "software.redis_migrate" {
 		plan, err := softwareService.PreviewRedisMigration(c.Request.Context())
 		if err != nil {
@@ -1558,6 +1577,12 @@ func softwareConfigurationTargetVersion(component, revision string) string {
 }
 
 func validatePreviewTarget(ctx context.Context, operation, resourceVersion string) error {
+	if operation == "software.nginx_migrate" {
+		if err := softwareService.ValidateNginxMigrationRevision(ctx, resourceVersion); err != nil {
+			return previewservice.ErrRequestChanged
+		}
+		return nil
+	}
 	if operation == "software.redis_migrate" {
 		if err := softwareService.ValidateRedisMigrationRevision(ctx, resourceVersion); err != nil {
 			return previewservice.ErrRequestChanged
@@ -2203,6 +2228,20 @@ func buildDocument(ctx context.Context, operation string, payload json.RawMessag
 		}
 		document, version := websiteRuntimeDocument(operation, change)
 		return document, version, nil
+	case "software.nginx_migrate":
+		var plan softwareService.NginxMigrationPlan
+		if err := json.Unmarshal(payload, &plan); err != nil {
+			return document, "", err
+		}
+		if plan.Package == nil {
+			return document, "", errors.New("missing Nginx migration package")
+		}
+		document.Review = previewservice.Review{Required: true, RiskLevel: "high", Reason: "将旧脚本 Nginx 原地迁移并升级，保留原配置、证书及可支持模块"}
+		document.Target = &previewservice.Target{Component: "nginx", DisplayName: "Nginx", SoftwareVersion: plan.Version, ComponentPackageVersion: plan.Package.ResolvedVersion, PackageSHA256: plan.Package.PackageSHA256, Action: "migrate"}
+		document.Files = []previewservice.FileChange{{Path: plan.Config, Action: "preserve", ChangeSummary: "候选程序先校验原配置，保留站点与证书"}, {Path: plan.InstallDir, Action: "update", ChangeSummary: "保留受支持模块，备份原程序后切换"}}
+		document.Impact = previewservice.Impact{WriteFiles: true, ModifyDatabase: true, RestartService: true}
+		document.Rollback = previewservice.Rollback{Supported: true, Summary: "切换前校验，失败恢复原程序和服务；保留迁移恢复点"}
+		return document, plan.Revision, nil
 	case "software.redis_migrate":
 		var plan softwareService.RedisMigrationPlan
 		if err := json.Unmarshal(payload, &plan); err != nil {
@@ -2885,6 +2924,20 @@ func executeOperation(ctx context.Context, operation string, payload json.RawMes
 		}
 		recordWebsiteOperationAudit(snapshot.ID, "succeeded", "网站状态已发布", userID, requestIP)
 		return gin.H{"operation": operation, "resourceId": site.ID, "status": "succeeded", "snapshotId": snapshot.ID}, nil
+	case "software.nginx_migrate":
+		var plan softwareService.NginxMigrationPlan
+		if err := json.Unmarshal(payload, &plan); err != nil {
+			return nil, err
+		}
+		manager, err := software.DefaultTaskManager()
+		if err != nil {
+			return nil, err
+		}
+		task, err := manager.SubmitNginxMigration(plan.Revision, plan.Version, plan.Package, userID)
+		if err != nil {
+			return nil, err
+		}
+		return softwareTaskResult(task), nil
 	case "software.redis_migrate":
 		var plan softwareService.RedisMigrationPlan
 		if err := json.Unmarshal(payload, &plan); err != nil {
@@ -3300,6 +3353,12 @@ func writeFirewallCollisionError(c *gin.Context, err error) bool {
 }
 
 func writeExecutionError(c *gin.Context, err error) {
+	if strings.HasPrefix(err.Error(), "NGINX_MIGRATION_UNSUPPORTED: ") {
+		appErr := core.NewError(core.ErrConflict, strings.TrimPrefix(err.Error(), "NGINX_MIGRATION_UNSUPPORTED: "))
+		appErr.StableCode = "NGINX_MIGRATION_UNSUPPORTED"
+		core.HandleErrorWithStatus(c, http.StatusConflict, appErr)
+		return
+	}
 	if strings.HasPrefix(err.Error(), "REDIS_MIGRATION_UNSUPPORTED: ") {
 		appErr := core.NewError(core.ErrConflict, strings.TrimPrefix(err.Error(), "REDIS_MIGRATION_UNSUPPORTED: "))
 		appErr.StableCode = "REDIS_MIGRATION_UNSUPPORTED"

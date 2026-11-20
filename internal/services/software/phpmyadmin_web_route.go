@@ -53,7 +53,12 @@ func managedDefaultDocumentRoot(kind string) (string, error) {
 	var pattern *regexp.Regexp
 	switch kind {
 	case "nginx":
-		path = filepath.Join(detectNginxInstallParameters()["install-dir"], "conf/conf.d/default.conf")
+		installDir := detectNginxInstallParameters()["install-dir"]
+		path = filepath.Join(installDir, "conf/conf.d/default.conf")
+		main := filepath.Join(installDir, "conf/nginx.conf")
+		if config, err := os.ReadFile(main); err == nil && nginxSingleInlineSite(config) {
+			path = main
+		}
 		pattern = phpMyAdminNginxRoot
 	case "tengine":
 		path = filepath.Join(detectTengineInstallParameters()["install-dir"], "conf/conf.d/default.conf")

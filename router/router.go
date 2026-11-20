@@ -128,6 +128,9 @@ func SetupRouter() *gin.Engine {
 	// Optional retest control plane uses its own protected token and HTTPS/loopback transport.
 	automation := api.Group("/automation", middleware.AuditLog(), middleware.APIRateLimitMiddleware(), software.AutomationAuth())
 	automation.GET("/facts", software.AutomationFacts)
+	automation.GET("/nginx-migration", software.AutomationNginxMigration)
+	automation.POST("/nginx-migration", software.AutomationNginxMigration)
+	automation.GET("/nginx-migration/tasks/:taskID", software.AutomationNginxMigrationTask)
 	automation.POST("/retests/:jobID/:step", software.AutomationRetest)
 	automation.GET("/retests/:jobID/:step", software.AutomationRetest)
 	automation.POST("/panel-updates/:jobID", software.AutomationPanelUpdate)

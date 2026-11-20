@@ -62,6 +62,9 @@ func getTaskManager() (*softwaretask.Manager, error) {
 				logPath string,
 				reporter *softwaretask.Reporter,
 			) error {
+				if request.Operation == "nginx_migrate" {
+					return softwareService.ApplyNginxMigration(ctx, request.Revision, request.Version, request.ResolvedPackage, logPath, reporter)
+				}
 				if request.Operation == "redis_migrate" {
 					plan := softwareService.RedisMigrationPlan{Revision: request.Revision, Version: request.Version, Package: request.ResolvedPackage}
 					if err := os.WriteFile(logPath, []byte("Redis migration: verifying adopted instance and retained data paths\n"), 0600); err != nil {
@@ -246,9 +249,13 @@ func getTaskManager() (*softwaretask.Manager, error) {
 				status, message := softwareService.RecoverRedisMigration(ctx, db, task.ID)
 				return softwaretask.RecoveryInspection{Status: status, Message: message}
 			}
+			recoveryOperation := task.Operation
+			if recoveryOperation == "nginx_migrate" {
+				recoveryOperation = "upgrade"
+			}
 			status, message := softwareService.InspectTaskRecovery(
 				ctx,
-				task.Operation,
+				recoveryOperation,
 				task.SoftwareKey,
 				task.Component,
 				task.RequestedVersion,

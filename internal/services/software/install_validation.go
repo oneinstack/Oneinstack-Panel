@@ -332,8 +332,10 @@ func (installer *Installer) resolveInstallParams(ctx context.Context, params *in
 	if params == nil {
 		return nil, &InstallParameterError{Field: "install", Message: "installation parameters are required"}
 	}
-	if err := legacyoneinstack.ProtectMutation(app.DB(), params.Key); err != nil {
-		return nil, err
+	if !params.MigrateExistingNginx || (params.Key != "webserver" && params.Key != "nginx") {
+		if err := legacyoneinstack.ProtectMutation(app.DB(), params.Key); err != nil {
+			return nil, err
+		}
 	}
 	if ctx == nil {
 		ctx = context.Background()

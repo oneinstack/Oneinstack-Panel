@@ -144,6 +144,10 @@ func (installer *Installer) InstallTask(
 	}
 	reportPackageResolution(observer, scriptInfo)
 	installer.setScriptParams(scriptInfo, params)
+	if params.MigrateExistingNginx {
+		scriptInfo.Params["ONEINSTACK_NGINX_MIGRATION"] = "true"
+	}
+
 	if err := preparePhpMyAdminWebRoute(ctx, scriptInfo); err != nil {
 		return "", err
 	}

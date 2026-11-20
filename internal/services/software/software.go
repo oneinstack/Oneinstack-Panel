@@ -780,6 +780,8 @@ func List(param *input.SoftwareParam) (*services.PaginatedResult[output.Software
 		if item.Origin == models.SoftwareOriginOneinstackScript {
 			groupedResults[i].ManagementNotice = legacyoneinstack.MigrationUnavailableNotice
 			switch item.Component {
+			case "nginx":
+				groupedResults[i].ManagementNotice = "Nginx 已接管。可通过显式迁移预检核对模块、配置、证书和服务身份；迁移前不可直接升级或卸载。"
 			case "redis":
 				groupedResults[i].ManagementNotice = "Redis 已接管。可通过显式迁移预检核对原地迁移条件；迁移前不可直接升级或卸载。"
 			case "mysql", "mariadb", "percona", "postgresql", "mongodb":

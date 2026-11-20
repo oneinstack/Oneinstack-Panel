@@ -33,7 +33,7 @@ var (
 func IsServerOwnedInstallParameterName(value string) bool {
 	compact := strings.NewReplacer("-", "", "_", "", ".", "", " ", "").Replace(strings.ToLower(strings.TrimSpace(value)))
 	switch compact {
-	case "installmode", "oneinstackinstallmode",
+	case "oneinstacknginxmigration", "migrateexistingnginx", "installmode", "oneinstackinstallmode",
 		"offlinepackageid", "oneinstackofflinepackageid",
 		"offlinepackagepath", "oneinstackofflinepackagepath",
 		"componentstate", "componentstatedir", "oneinstackcomponentstate",

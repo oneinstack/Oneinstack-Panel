@@ -214,6 +214,13 @@ func (m *Manager) Submit(request InstallRequest, requestedBy int64) (*models.Sof
 	return m.submit(request, requestedBy)
 }
 
+func (m *Manager) SubmitNginxMigration(revision, version string, pin *scriptregistry.PackagePin, requestedBy int64) (*models.SoftwareTask, error) {
+	if err := softwareService.ValidateNginxMigrationRevision(context.Background(), revision); err != nil {
+		return nil, err
+	}
+	return m.submit(InstallRequest{Operation: "nginx_migrate", Key: "webserver", Version: version, Revision: revision, ResolvedPackage: pin, InstallMode: "center"}, requestedBy)
+}
+
 func (m *Manager) SubmitRedisMigration(revision, version string, pin *scriptregistry.PackagePin, requestedBy int64) (*models.SoftwareTask, error) {
 	return m.submit(InstallRequest{Operation: "redis_migrate", Key: "redis", Version: version, Revision: revision, ResolvedPackage: pin}, requestedBy)
 }
@@ -502,7 +509,7 @@ func (m *Manager) submit(request InstallRequest, requestedBy int64) (*models.Sof
 			return nil, err
 		}
 	}
-	if request.Operation != "install" && request.Operation != "uninstall" && request.Operation != "adopt" && request.Operation != "redis_migrate" &&
+	if request.Operation != "install" && request.Operation != "uninstall" && request.Operation != "adopt" && request.Operation != "redis_migrate" && request.Operation != "nginx_migrate" &&
 		!isRuntimeOperation(request.Operation) {
 		return nil, fmt.Errorf("unsupported software task operation: %s", request.Operation)
 	}
@@ -521,7 +528,7 @@ func (m *Manager) submit(request InstallRequest, requestedBy int64) (*models.Sof
 				return nil, errors.New("restore source ID is invalid")
 			}
 		}
-	} else if (request.Revision != "" && request.Operation != "redis_migrate") ||
+	} else if (request.Revision != "" && request.Operation != "redis_migrate" && request.Operation != "nginx_migrate") ||
 		len(request.PreviousConfiguration) != 0 ||
 		len(request.Configuration) != 0 ||
 		request.RestoreFromID != "" {
@@ -538,10 +545,13 @@ func (m *Manager) submit(request InstallRequest, requestedBy int64) (*models.Sof
 	if request.Operation == "adopt" && request.Key != legacyoneinstack.TaskComponent {
 		return nil, errors.New("invalid adoption target")
 	}
+	if request.Operation == "nginx_migrate" && (request.Key != "webserver" || len(request.Revision) != 64 || request.ResolvedPackage == nil || request.ResolvedPackage.Component != "nginx") {
+		return nil, errors.New("Nginx migration requires an inspected source and a pinned Nginx package")
+	}
 	if request.Operation == "redis_migrate" && (request.Key != "redis" || len(request.Revision) != 64 || request.ResolvedPackage == nil) {
 		return nil, errors.New("Redis migration requires a confirmed revision and a pinned package")
 	}
-	if request.Operation != "adopt" && request.Operation != "redis_migrate" && !isServiceOperation(request.Operation) {
+	if request.Operation != "adopt" && request.Operation != "redis_migrate" && request.Operation != "nginx_migrate" && !isServiceOperation(request.Operation) {
 		if err := legacyoneinstack.ProtectMutation(m.db, request.Key); err != nil {
 			return nil, err
 		}
@@ -663,7 +673,9 @@ func (m *Manager) submit(request InstallRequest, requestedBy int64) (*models.Sof
 					request.Version,
 				)
 			}
-			operation = "upgrade"
+			if request.Operation != "nginx_migrate" {
+				operation = "upgrade"
+			}
 		}
 	}
 
@@ -1863,6 +1875,8 @@ func operationLabel(operation string) string {
 	switch operation {
 	case "adopt":
 		return "接管"
+	case "nginx_migrate":
+		return "迁移并升级 Nginx"
 	case "redis_migrate":
 		return "迁移 Redis"
 	case "upgrade":
@@ -1888,6 +1902,8 @@ func operationSuccessMessage(operation string) string {
 	switch operation {
 	case "adopt":
 		return "OneinStack 环境同步完成，程序、配置和数据保持原位"
+	case "nginx_migrate":
+		return "Nginx 已迁移并升级，原配置和证书保留"
 	case "redis_migrate":
 		return "Redis 已转为受管组件，配置和数据保留在原目录"
 	case "uninstall":
